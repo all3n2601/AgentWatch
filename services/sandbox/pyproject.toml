@@ -1,0 +1,14 @@
+[project]
+name = "model-passport-sandbox"
+version = "0.1.0"
+description = "Isolated Model Passport assessment runtime"
+requires-python = ">=3.13,<3.15"
+dependencies = ["model-passport-sdk"]
+
+[tool.uv.sources]
+model-passport-sdk = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+

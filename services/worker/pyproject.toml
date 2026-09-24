@@ -1,0 +1,18 @@
+[project]
+name = "model-passport-worker"
+version = "0.1.0"
+description = "Customer-resident Model Passport worker"
+requires-python = ">=3.13,<3.15"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "model-passport-sdk",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[tool.uv.sources]
+model-passport-sdk = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+

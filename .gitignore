@@ -1,0 +1,28 @@
+# JavaScript
+node_modules/
+.next/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+
+# Go
+bin/
+
+# Local configuration and data
+.env
+.env.*
+!.env.example
+.data/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
