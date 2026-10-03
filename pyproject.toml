@@ -1,5 +1,5 @@
 [project]
-name = "model-passport-python-workspace"
+name = "agentwatch-python-workspace"
 version = "0.1.0"
 requires-python = ">=3.13,<3.15"
 
@@ -12,6 +12,7 @@ members = [
 
 [dependency-groups]
 dev = [
+  "httpx>=0.28.1",
   "pytest>=8.3,<9",
   "ruff>=0.11,<1",
 ]

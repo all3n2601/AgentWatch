@@ -1,12 +1,12 @@
 [project]
-name = "model-passport-sandbox"
+name = "agentwatch-sandbox"
 version = "0.1.0"
-description = "Isolated Model Passport assessment runtime"
+description = "AgentWatch sandbox runtime scaffold"
 requires-python = ">=3.13,<3.15"
-dependencies = ["model-passport-sdk"]
+dependencies = ["agentwatch-sdk"]
 
 [tool.uv.sources]
-model-passport-sdk = { workspace = true }
+agentwatch-sdk = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

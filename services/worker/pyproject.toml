@@ -1,16 +1,20 @@
 [project]
-name = "model-passport-worker"
+name = "agentwatch-worker"
 version = "0.1.0"
-description = "Customer-resident Model Passport worker"
+description = "AgentWatch telemetry worker scaffold"
 requires-python = ">=3.13,<3.15"
 dependencies = [
   "fastapi>=0.116,<1",
-  "model-passport-sdk",
+  "agentwatch-sdk",
   "uvicorn[standard]>=0.35,<1",
+  "opentelemetry-sdk>=1.37,<2",
+  "agentwatch-sandbox",
+  "psycopg[binary]>=3.2,<4",
 ]
 
 [tool.uv.sources]
-model-passport-sdk = { workspace = true }
+agentwatch-sdk = { workspace = true }
+agentwatch-sandbox = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

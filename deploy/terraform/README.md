@@ -1,4 +1,3 @@
 # Terraform
 
-Production infrastructure modules will be added alongside the design-partner deployment target.
-
+GCP and GKE infrastructure modules will be added for the AgentWatch deployment.

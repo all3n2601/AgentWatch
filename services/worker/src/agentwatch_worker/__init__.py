@@ -1,0 +1,1 @@
+"""AgentWatch telemetry worker scaffold."""

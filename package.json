@@ -1,5 +1,5 @@
 {
-  "name": "model-passport",
+  "name": "agentwatch",
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.17.1",
@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "pnpm --filter @model-passport/web dev",
+    "dev": "pnpm --filter @agentwatch/web dev",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",

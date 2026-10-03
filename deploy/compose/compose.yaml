@@ -1,12 +1,29 @@
-name: model-passport
+name: agentwatch
 
 services:
+  ollama:
+    image: ollama/ollama@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
+    profiles: [llm]
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    mem_limit: 5g
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-model_passport}
-      POSTGRES_USER: ${POSTGRES_USER:-model_passport}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-model_passport_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-agentwatch}
+      POSTGRES_USER: ${POSTGRES_USER:-agentwatch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentwatch_dev}
     ports:
       - "5432:5432"
     volumes:
@@ -17,49 +34,6 @@ services:
       timeout: 5s
       retries: 10
 
-  minio:
-    image: quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-model_passport}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-model_passport_dev}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio-data:/data
-
-  temporal:
-    image: temporalio/auto-setup:1.28.1
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DB: postgres12
-      DB_PORT: 5432
-      POSTGRES_SEEDS: postgres
-      POSTGRES_USER: ${POSTGRES_USER:-model_passport}
-      POSTGRES_PWD: ${POSTGRES_PASSWORD:-model_passport_dev}
-    ports:
-      - "7233:7233"
-
-  temporal-ui:
-    image: temporalio/ui:2.40.1
-    depends_on:
-      - temporal
-    environment:
-      TEMPORAL_ADDRESS: temporal:7233
-    ports:
-      - "8233:8080"
-
-  opa:
-    image: openpolicyagent/opa:1.4.2-static
-    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policy"]
-    ports:
-      - "8181:8181"
-    volumes:
-      - ../../policy:/policy:ro
-
 volumes:
+  ollama-data:
   postgres-data:
-  minio-data:

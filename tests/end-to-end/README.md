@@ -1,4 +1,3 @@
 # End-to-end tests
 
-User-journey tests for registration, assessment, review, and policy gating live here.
-
+Agent-run telemetry, resource correlation, and bottleneck-attribution journey tests live here.

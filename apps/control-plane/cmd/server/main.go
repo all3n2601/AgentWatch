@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/model-passport/model-passport/apps/control-plane/internal/config"
+	"github.com/all3n2601/AgentWatch/apps/control-plane/internal/config"
 )
 
 type healthResponse struct {

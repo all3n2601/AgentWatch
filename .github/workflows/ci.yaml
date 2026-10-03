@@ -28,6 +28,20 @@ jobs:
 
   python:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: agentwatch_test
+          POSTGRES_USER: agentwatch
+          POSTGRES_PASSWORD: agentwatch_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentwatch -d agentwatch_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      AGENTWATCH_TEST_DATABASE_URL: postgresql://agentwatch:agentwatch_test@localhost:5432/agentwatch_test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -55,5 +69,3 @@ jobs:
       - uses: actions/checkout@v4
       - run: cp .env.example .env
       - run: docker compose -f deploy/compose/compose.yaml config --quiet
-      - run: docker run --rm -v "$PWD/policy:/policy:ro" openpolicyagent/opa:1.4.2-static test /policy
-

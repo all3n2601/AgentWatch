@@ -1,4 +1,4 @@
-from model_passport_worker.app import health
+from agentwatch_worker.app import health
 
 
 def test_health() -> None:
