@@ -8,6 +8,7 @@ members = [
   "services/worker",
   "services/sandbox",
   "packages/sdk-python",
+  "pipelines/data",
 ]
 
 [dependency-groups]
@@ -22,5 +23,5 @@ target-version = "py313"
 line-length = 100
 
 [tool.pytest.ini_options]
-testpaths = ["services/worker/tests", "services/sandbox/tests"]
+testpaths = ["services/worker/tests", "services/sandbox/tests", "pipelines/data/tests"]
 
