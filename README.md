@@ -6,6 +6,11 @@ sandboxes, or retrieval, and displays confidence and model-quality measurements.
 
 An eight-week DADS 7305 MLOps final project.
 
+## Contributing
+
+See [the contributor guide](CONTRIBUTING.md) for setup, branch naming, verification,
+and PR review requirements. Coding agents must also follow [AGENTS.md](AGENTS.md).
+
 ## Current project plans
 
 - [Project completion and testing checklist](docs/project-checklist.md)
