@@ -129,3 +129,20 @@ def test_api_extraction_follows_cursor(monkeypatch, result):
     assert [run.kind for run in extraction.runs] == ["cpu", "coding"]
     assert extraction.runs[0].recorded_at.isoformat() == "2026-10-05T12:00:00+00:00"
     assert extraction.rejections == []
+
+
+def test_coerced_values_are_stored_with_contract_types(result):
+    original = json.loads(json.dumps(result))
+    result["clean"]["submitted_ns"] = str(result["clean"]["submitted_ns"])
+    result["experiment"]["iterations"] = "10"
+    samples = [SAMPLE | {"timestamp_ns": "1"}]
+    run = extract.validate(result, samples, "cpu")
+    assert run.result["clean"]["submitted_ns"] == original["clean"]["submitted_ns"]
+    assert run.result["experiment"]["iterations"] == 10
+    assert run.samples[0]["timestamp_ns"] == 1
+    assert run.source_sha256 == evidence_hash(result) != evidence_hash(original)
+
+
+def test_validated_result_keeps_extra_evidence(result):
+    result["agent"] = {"model": "qwen3:1.7b"}
+    assert extract.validate(result, [], "coding").result["agent"] == {"model": "qwen3:1.7b"}

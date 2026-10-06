@@ -54,13 +54,17 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def validate(result: dict, samples: list[dict], kind: str, recorded_at=None) -> RawRun:
+    """Return the contract-normalized evidence, so coerced values carry their declared types.
+
+    The hash still describes the original evidence, which is what lineage must identify.
+    """
     run = RunResult.model_validate(result)
     checked = [Sample.model_validate(sample).model_dump(mode="json") for sample in samples]
     return RawRun(
         run_id=str(run.run_id),
         kind=kind,
         source="measured",
-        result=result,
+        result=run.model_dump(mode="json"),
         samples=checked,
         source_sha256=evidence_hash(result),
         recorded_at=recorded_at,
