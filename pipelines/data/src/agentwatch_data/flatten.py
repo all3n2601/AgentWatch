@@ -4,6 +4,8 @@ Rows carry identity, feature, rule, and provenance columns. Labels and release m
 added later by the labeling and build stages.
 """
 
+from itertools import pairwise
+
 from agentwatch_data.extract import RawRun
 
 
@@ -17,12 +19,27 @@ def condition(step_id: str) -> str:
     return "baseline" if step_id.startswith("baseline-") else step_id
 
 
+def throttled_delta_usec(counters: list[int]) -> int | None:
+    """Throttling gained across ordered counter readings, or None if it was not measured.
+
+    A decrease between any two consecutive readings means the counter reset, so the
+    window's total is unknown even when the final value exceeds the first.
+    """
+    if len(counters) < 2 or any(later < earlier for earlier, later in pairwise(counters)):
+        return None
+    return counters[-1] - counters[0]
+
+
 def window_readings(samples: list[dict], submitted_ns: int, finished_ns: int) -> dict:
-    """Summarize samples inside the step window, matching CpuSampler.summarize.
+    """Summarize samples inside the step window.
 
     Unavailable readings stay None with a False flag; they are never reported as zero.
+    Unlike CpuSampler.summarize, every consecutive counter pair is checked for resets.
     """
-    rows = [s for s in samples if submitted_ns <= s["timestamp_ns"] <= finished_ns]
+    rows = sorted(
+        (s for s in samples if submitted_ns <= s["timestamp_ns"] <= finished_ns),
+        key=lambda s: s["timestamp_ns"],
+    )
     pressures = [
         row["cpu_pressure"]["some"]["avg10"]
         for row in rows
@@ -30,9 +47,8 @@ def window_readings(samples: list[dict], submitted_ns: int, finished_ns: int) ->
     ]
     stats = [row["cgroup_cpu_stat"] for row in rows if row["cgroup_cpu_stat"]]
     throttled = None
-    if len(stats) >= 2 and all("throttled_usec" in stat for stat in (stats[0], stats[-1])):
-        delta = stats[-1]["throttled_usec"] - stats[0]["throttled_usec"]
-        throttled = delta if delta >= 0 else None  # a counter reset is not a measurement
+    if stats and all("throttled_usec" in stat for stat in stats):
+        throttled = throttled_delta_usec([stat["throttled_usec"] for stat in stats])
     return {
         "cpu_pressure_max_avg10": max(pressures) if pressures else None,
         "cpu_pressure_available": bool(pressures),

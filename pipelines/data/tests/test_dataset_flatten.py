@@ -92,3 +92,32 @@ def test_measured_zero_is_kept():
     readings = window_readings(samples, BASE_NS, BASE_NS + 100)
     assert readings["cpu_pressure_max_avg10"] == 0.0 and readings["cpu_pressure_available"]
     assert readings["cgroup_throttled_usec_delta"] == 0 and readings["cgroup_available"]
+
+
+def test_intermediate_reset_is_not_a_measurement():
+    samples = [sample(0, throttled=100), sample(10, throttled=10), sample(20, throttled=200)]
+    readings = window_readings(samples, BASE_NS, BASE_NS + 100)
+    assert readings["cgroup_throttled_usec_delta"] is None
+    assert readings["cgroup_available"] is False
+
+
+def test_counters_are_compared_in_timestamp_order():
+    samples = [sample(20, throttled=300), sample(0, throttled=100), sample(10, throttled=150)]
+    readings = window_readings(samples, BASE_NS, BASE_NS + 100)
+    assert readings["cgroup_throttled_usec_delta"] == 200
+
+
+def test_missing_counter_in_window_is_not_a_measurement():
+    samples = [sample(0, throttled=100), sample(10, avg10=1.0), sample(20, throttled=200)]
+    samples[1]["cgroup_cpu_stat"] = {"usage_usec": 5}
+    readings = window_readings(samples, BASE_NS, BASE_NS + 100)
+    assert readings["cgroup_throttled_usec_delta"] is None
+
+
+def test_coerced_numeric_strings_flatten_with_contract_types():
+    result = make_result()
+    result["clean"]["submitted_ns"] = str(result["clean"]["submitted_ns"])
+    result["experiment"]["iterations"] = "10"
+    rows = flatten_run(validate(result, [SAMPLE | {"timestamp_ns": str(BASE_NS)}], "cpu"))
+    assert rows[0]["workload_iterations"] == 10
+    assert rows[0]["telemetry_sample_count"] == 1
