@@ -139,3 +139,49 @@ def test_invalid_rules_are_rejected(tmp_path, noise, contention):
     path.write_text(f'version = "x"\n[noise]\n{noise}\n[contention]\n{contention}\n')
     with pytest.raises(LabelingError):
         load_config(path)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+@pytest.mark.parametrize("setting", ["stdev_multiplier", "min_seconds"])
+def test_nonfinite_noise_settings_are_rejected(tmp_path, setting, value):
+    noise = {"stdev_multiplier": "3.0", "min_seconds": "0.01"} | {setting: value}
+    path = tmp_path / "labels.toml"
+    path.write_text(
+        'version = "x"\n[noise]\n'
+        + "".join(f"{key} = {number}\n" for key, number in noise.items())
+        + '[contention]\ncpu = "cpu_sandbox"\n'
+    )
+    with pytest.raises(LabelingError, match=setting):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("index", [0, 5, 6], ids=["baseline", "clean", "contended"])
+def test_nonfinite_durations_fail_instead_of_labeling(config, index, value):
+    rows = run_rows()
+    rows[index] = rows[index] | {"duration_seconds": value}
+    with pytest.raises(LabelingError, match="finite positive"):
+        label_run(rows, config)
+
+
+@pytest.mark.parametrize("value", ["0.4", None])
+def test_nonnumeric_durations_fail(config, value):
+    rows = run_rows()
+    rows[-1] = rows[-1] | {"duration_seconds": value}
+    with pytest.raises(LabelingError, match="finite positive"):
+        label_run(rows, config)
+
+
+@pytest.mark.parametrize(
+    ("duration", "baseline_mean"),
+    [
+        (float("nan"), 0.4),
+        (float("inf"), 0.4),
+        (1.0, float("nan")),
+        (1.0, float("inf")),
+        (1.0, 0.0),
+    ],
+)
+def test_excess_fraction_rejects_invalid_inputs(duration, baseline_mean):
+    with pytest.raises(LabelingError):
+        excess_fraction(duration, baseline_mean)

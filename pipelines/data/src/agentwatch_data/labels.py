@@ -5,6 +5,7 @@ noise threshold, never from the rule baseline, so model and rule can be compared
 """
 
 import hashlib
+import math
 import statistics
 import tomllib
 from dataclasses import dataclass
@@ -47,8 +48,11 @@ def load_config(path: Path | None = None) -> LabelConfig:
         contention=dict(data["contention"]),
         sha256=hashlib.sha256(raw).hexdigest(),
     )
-    if config.stdev_multiplier <= 0 or config.min_seconds < 0:
-        raise LabelingError("Noise threshold settings must be positive")
+    # TOML accepts nan and inf, which would pass sign checks and corrupt every threshold.
+    if not math.isfinite(config.stdev_multiplier) or config.stdev_multiplier <= 0:
+        raise LabelingError("noise.stdev_multiplier must be a finite positive number")
+    if not math.isfinite(config.min_seconds) or config.min_seconds < 0:
+        raise LabelingError("noise.min_seconds must be a finite nonnegative number")
     contended_classes = set(RESOURCE_CLASSES) - {"none"}
     unknown = set(config.contention.values()) - contended_classes
     if unknown:
@@ -56,10 +60,18 @@ def load_config(path: Path | None = None) -> LabelConfig:
     return config
 
 
+def require_positive_finite(value: float, name: str) -> float:
+    """Reject NaN and infinity explicitly: comparisons with NaN are always False, so they
+    slip past sign checks, and clamping would turn them into valid-looking targets."""
+    if not isinstance(value, int | float) or not math.isfinite(value) or value <= 0:
+        raise LabelingError(f"{name} must be a finite positive number, got {value!r}")
+    return value
+
+
 def excess_fraction(duration_seconds: float, baseline_mean_seconds: float) -> float:
     """max(0, min(1, (T - B) / T)): the share of the step beyond the clean baseline."""
-    if duration_seconds <= 0:
-        raise LabelingError("Step duration must be positive")
+    require_positive_finite(duration_seconds, "Step duration")
+    require_positive_finite(baseline_mean_seconds, "Baseline mean duration")
     return max(0.0, min(1.0, (duration_seconds - baseline_mean_seconds) / duration_seconds))
 
 
@@ -68,6 +80,8 @@ def label_run(rows: list[dict], config: LabelConfig) -> list[dict]:
     if len({row["run_id"] for row in rows}) != 1:
         raise LabelingError("label_run expects the steps of exactly one run")
     kind = rows[0]["kind"]
+    for row in rows:
+        require_positive_finite(row["duration_seconds"], f"{row['condition']} step duration")
     baseline = [row["duration_seconds"] for row in rows if row["condition"] == BASELINE]
     if len(baseline) < 2:
         raise LabelingError(f"Run {rows[0]['run_id']} needs at least two baseline steps")

@@ -87,8 +87,10 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1`)
 - `baseline` and `clean` steps are always `none`, because no contention was applied.
 - `label_version` is the rules version plus the first 8 hex digits of the config file's SHA-256,
   so any retuned threshold produces a new version.
-- Runs with unknown conditions, unknown kinds, or fewer than two baseline steps fail labeling
+- Runs with unknown conditions, unknown kinds, fewer than two baseline steps, or any duration
+  that is not a finite positive number (NaN, infinity, zero, or non-numeric) fail labeling
   instead of being guessed. Mixed contention is not defined in `labels-v1`.
+- Rule files with NaN or infinite noise settings are rejected before any labeling runs.
 
 `label_basis` records why each row got its label:
 

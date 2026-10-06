@@ -255,8 +255,8 @@ Repeat it cleanly and with controlled contention. Verify correlation, cleanup, a
 Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](data-card.md):
 
 - [x] Step dataset schema `steps-v1` with column roles and leakage guards (merged in #1).
-- [ ] Run extraction from the API and local evidence with contract validation (in review, #2).
-- [ ] One row per step with per-window resource readings (in review, #3).
+- [x] Run extraction from the API and local evidence with contract validation (merged in #2).
+- [x] One row per step with per-window resource readings (merged in #3).
 - [x] Single-resource labels and the excess-latency target from a frozen, hashed rule file
   (`labels-v1`), with unit tests in `pipelines/data/tests/test_dataset_labels.py`.
 
