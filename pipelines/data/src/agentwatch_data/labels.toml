@@ -1,0 +1,18 @@
+# Step label rules, frozen before any dataset is built.
+# Any change to this file changes label_version, so retuned labels are never silent.
+version = "labels-v1"
+
+[noise]
+# A contended step is labeled with its resource only when its slowdown against the
+# run's clean baseline mean exceeds max(min_seconds, stdev_multiplier * baseline stdev).
+# The scoping report proposes 2-3 baseline standard deviations; 3 is the stricter end.
+stdev_multiplier = 3.0
+# Matches the 10 ms floor of the cpu-queue-v1 rule, so very stable baselines do not
+# turn scheduler jitter into labels.
+min_seconds = 0.01
+
+[contention]
+# Resource each experiment kind contends in its "contended" condition. This is
+# experiment design used for labeling only; it is never a model feature.
+cpu = "cpu_sandbox"
+coding = "cpu_sandbox"

@@ -77,6 +77,31 @@ Labels come from the experiment design and a frozen noise threshold: a step is l
 resource only when contention was applied and its slowdown exceeds the threshold. They do not
 come from the rule baseline, so model and rule can be compared fairly.
 
+The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1`):
+
+- B is the mean duration of the run's own `baseline` steps; at least two are required.
+- The noise threshold is `max(min_seconds, stdev_multiplier × baseline stdev)`, currently
+  `max(0.01 s, 3 × stdev)`.
+- A `contended` step gets the resource its experiment kind contends (`cpu_sandbox` for the CPU
+  and coding experiments) only when `T − B` exceeds the threshold; otherwise `none`.
+- `baseline` and `clean` steps are always `none`, because no contention was applied.
+- `label_version` is the rules version plus the first 8 hex digits of the config file's SHA-256,
+  so any retuned threshold produces a new version.
+- Runs with unknown conditions, unknown kinds, fewer than two baseline steps, or any duration
+  that is not a finite positive number (NaN, infinity, zero, or non-numeric) fail labeling
+  instead of being guessed. Mixed contention is not defined in `labels-v1`.
+- Rule files with NaN or infinite noise settings are rejected before any labeling runs.
+
+`label_basis` records why each row got its label:
+
+| `label_basis` | Meaning |
+|---|---|
+| `baseline_reference` | Baseline step used to compute B |
+| `clean_within_noise` | Clean control within the noise threshold |
+| `clean_exceeded_noise` | Clean control slower than the threshold; a data-quality signal, still `none` |
+| `contention_exceeded_threshold` | Contention applied and the slowdown exceeded the threshold |
+| `contention_below_threshold` | Contention applied but the slowdown stayed within noise, so `none` |
+
 ### Rule baseline
 
 | Column | Type | Description |
@@ -91,14 +116,16 @@ come from the rule baseline, so model and rule can be compared fairly.
 | `condition` | string | Experiment condition: `baseline`, `clean`, or `contended` |
 | `workload` | string | Human-readable workload description |
 | `baseline_mean_seconds` | float | Clean baseline mean duration B used for the regression label |
-| `noise_threshold_seconds` | float | Frozen slowdown threshold used for labeling |
-| `label_version` | string | Version of the labeling rules |
+| `noise_threshold_seconds` | float | Run-specific slowdown threshold derived from the frozen rules |
+| `label_basis` | string | Why the step received its label; see the table above |
+| `label_version` | string | Labeling rules version plus config hash, for example `labels-v1+1a2b3c4d` |
 | `dataset_version` | string | Dataset release this row belongs to |
 | `source_sha256` | string | Hash of the source evidence file |
 
 ## Leakage rules
 
-- `step_id`, `condition`, `rule_prediction`, and `baseline_mean_seconds` are never features.
+- `step_id`, `condition`, `rule_prediction`, `baseline_mean_seconds`, and `label_basis` are never
+  features.
 - Injector configuration and logs are used for labeling only.
 - All clean and contended replays of a task stay in the same split.
 - Preprocessing is fitted on the training split only.
