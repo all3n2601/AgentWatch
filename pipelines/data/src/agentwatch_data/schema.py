@@ -66,7 +66,7 @@ COLUMNS = (
         "cgroup v2 throttled time gained during the step",
         True,
     ),
-    Column("cgroup_available", "bool", Role.FEATURE, "Whether cgroup counters were readable"),
+    Column("cgroup_available", "bool", Role.FEATURE, "Whether a throttling delta was measured"),
     Column("telemetry_sample_count", "int64", Role.FEATURE, "Resource samples inside the window"),
     # Targets
     Column(

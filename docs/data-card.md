@@ -59,7 +59,7 @@ for training targets, baseline comparison, and traceability.
 | `cpu_pressure_max_avg10` | float, nullable | Maximum host CPU PSI `some avg10` (%) during the step |
 | `cpu_pressure_available` | bool | Whether PSI was readable during the step |
 | `cgroup_throttled_usec_delta` | int, nullable | cgroup v2 throttled time gained during the step |
-| `cgroup_available` | bool | Whether cgroup counters were readable |
+| `cgroup_available` | bool | Whether a throttling delta was measured: two or more readable counter samples in the window and no counter reset |
 | `telemetry_sample_count` | int | Resource samples inside the step window |
 
 Missing readings stay null and are paired with an availability flag. They are never stored as
