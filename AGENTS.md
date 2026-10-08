@@ -218,9 +218,12 @@ the directory you are editing, including `apps/web/AGENTS.md` for the web app.
   plainly; never present an untested change as working.
 - Include reproduction or manual verification steps for behavior changes, screenshots
   for visible UI changes, and migration or configuration steps where relevant.
-- Require at least one approval from another contributor with write access. Choose
-  a reviewer familiar with the affected component; authors must not approve their
-  own PRs. After new code changes, obtain a fresh approval of the final version.
+- Require two approvals from contributors with write access: repository owner
+  `all3n2601` plus another reviewer familiar with the affected component. The owner
+  is the sole CODEOWNER for all files; other approvals do not replace owner approval.
+  Authors cannot approve their own PRs. Owner-authored PRs require two other
+  reviewers or an explicitly authorized admin bypass. After new code changes,
+  obtain fresh approvals of the final version.
 - Require the repository's `javascript`, `python`, `go`, and `infrastructure` CI
   checks to pass before merging. Local checks do not replace PR CI. If any check
   is missing or failing, investigate instead of treating it as passed.
