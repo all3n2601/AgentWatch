@@ -9,6 +9,11 @@ the directory you are editing, including `apps/web/AGENTS.md` for the web app.
   and existing implementation. When remote access is available, fetch `origin`
   and inspect relevant open PRs to identify overlapping work. Report unavailable
   remote access instead of assuming the checkout is current.
+- Before starting any coding, pull the latest changes from the task branch's
+  remote counterpart, when one exists, using `git pull --ff-only`, and sync the
+  task branch with the latest `origin/main`. Fetching alone is not sufficient.
+  Preserve local work; if local changes, divergent history, conflicts, or
+  unavailable remote access prevent a safe sync, report the blocker before coding.
 - Start new task branches from the latest `origin/main`. Preserve existing local
   work before switching branches. Never reset, stash, delete, or overwrite another
   contributor's changes without their authorization.
