@@ -252,7 +252,17 @@ Repeat it cleanly and with controlled contention. Verify correlation, cleanup, a
 
 ### Milestone 4 Reproducible dataset and strong rule baseline
 
+Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](data-card.md):
+
+- [x] Step dataset schema `steps-v1` with column roles and leakage guards (merged in #1).
+- [x] Run extraction from the API and local evidence with contract validation (merged in #2).
+- [x] One row per step with per-window resource readings (merged in #3).
+- [x] Single-resource labels and the excess-latency target from a frozen, hashed rule file
+  (`labels-v1`), with unit tests in `pipelines/data/tests/test_dataset_labels.py`.
+
 - [ ] Define labels, slowdown thresholds, noise treatment, mixed-resource labels, and ties.
+  Single-resource labels, thresholds, and noise treatment are defined in `labels-v1`; mixed
+  contention and ties are not yet defined and fail labeling.
 - [ ] Choose whether the regression target is observed queue time or estimated excess latency.
 - [ ] Generate clean, isolated-contention, and mixed-contention replays over fixed tasks.
 - [ ] Store versioned Parquet datasets with GCS/DVC or an explicitly chosen equivalent.

@@ -89,13 +89,16 @@ COLUMNS = (
     Column("workload", "string", Role.LINEAGE, "Human-readable workload description"),
     Column("baseline_mean_seconds", "float64", Role.LINEAGE, "Clean baseline mean duration B"),
     Column("noise_threshold_seconds", "float64", Role.LINEAGE, "Frozen slowdown threshold"),
-    Column("label_version", "string", Role.LINEAGE, "Version of the labeling rules"),
+    Column("label_basis", "string", Role.LINEAGE, "Why the step received its label"),
+    Column("label_version", "string", Role.LINEAGE, "Labeling rules version and config hash"),
     Column("dataset_version", "string", Role.LINEAGE, "Dataset release this row belongs to"),
     Column("source_sha256", "string", Role.LINEAGE, "Hash of the source evidence file"),
 )
 
 # Columns that encode the experiment design or its answer; never model inputs.
-LEAKY_COLUMNS = frozenset({"step_id", "condition", "rule_prediction", "baseline_mean_seconds"})
+LEAKY_COLUMNS = frozenset(
+    {"step_id", "condition", "rule_prediction", "baseline_mean_seconds", "label_basis"}
+)
 
 
 def columns_with(role: Role) -> list[str]:
