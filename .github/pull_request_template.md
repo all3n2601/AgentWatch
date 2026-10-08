@@ -32,6 +32,7 @@ coverage, reproducibility, and overhead. Write N/A when there is no impact. -->
 - [ ] Changes are focused; unrelated work and secrets are excluded.
 - [ ] Relevant local checks passed; limitations are stated above.
 - [ ] Required GitHub CI checks passed on the final version.
-- [ ] A different contributor reviewed and approved the final code changes.
+- [ ] Owner `all3n2601` and another contributor approved the final code changes
+      (owner-authored PRs require two other reviewers or an explicit admin bypass).
 - [ ] Review conversations are resolved and affected documentation is updated.
 

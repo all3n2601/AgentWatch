@@ -60,11 +60,12 @@ keep the work local unless explicitly asked to share an unverified draft.
 Use the PR template to describe the problem, behavior, testing evidence, and
 dependencies. Include UI screenshots and API, migration, configuration, or
 measurement impact where relevant. Request a reviewer familiar with the affected
-component; component owner assignments will be documented once the team agrees
-on primary and backup reviewers.
+component and the repository owner `all3n2601`. The owner is the sole CODEOWNER
+for every file, including `.github/CODEOWNERS`; do not add alternate owners or
+path overrides that remove the mandatory owner approval.
 
-`main` requires a PR, one approval from another contributor, resolved review
-conversations, and the `javascript`, `python`, `go`, and `infrastructure` checks.
+`main` requires a PR, two approvals (owner `all3n2601` plus another contributor),
+resolved review conversations, and the `javascript`, `python`, `go`, and `infrastructure` checks.
 The branch must be up to date with `main`. New reviewable changes dismiss prior
 approvals. Force pushes and deletion of `main` are blocked for contributors.
 Repository administrators have an explicit bypass, including direct pushes;
@@ -78,3 +79,7 @@ artifact substitutions. Address feedback and obtain approval for the final code.
 Coding agents must have user authorization to merge and must not use the admin
 bypass unless the user explicitly authorizes that action.
 After merge, the task branch may be deleted when it is no longer needed by others.
+
+Authors cannot approve their own PRs. Owner-authored PRs require two other
+reviewers or the owner's explicit admin bypass. For everyone else, another
+reviewer's approval alone does not permit merging without owner approval.
