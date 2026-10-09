@@ -256,6 +256,11 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
 
 - [x] Step dataset schema `steps-v1` with column roles and leakage guards (merged in #1).
 - [x] Run extraction from the API and local evidence with contract validation (merged in #2).
+- [x] Extraction integrity (2026-10-08): bounded retries, failure instead of partial
+  extraction, cursor and API row validation, duplicate-run detection across sources, an
+  evidence hash covering telemetry, and per-run telemetry status. Verified against the live
+  ingestion API on a test database with seven real runs; 100% line and branch coverage of
+  `pipelines/data`.
 - [x] One row per step with per-window resource readings (merged in #3).
 - [x] Single-resource labels and the excess-latency target from a frozen, hashed rule file
   (`labels-v1`), with unit tests in `pipelines/data/tests/test_dataset_labels.py`.

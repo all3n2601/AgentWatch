@@ -92,7 +92,7 @@ COLUMNS = (
     Column("label_basis", "string", Role.LINEAGE, "Why the step received its label"),
     Column("label_version", "string", Role.LINEAGE, "Labeling rules version and config hash"),
     Column("dataset_version", "string", Role.LINEAGE, "Dataset release this row belongs to"),
-    Column("source_sha256", "string", Role.LINEAGE, "Hash of the source evidence file"),
+    Column("source_sha256", "string", Role.LINEAGE, "SHA-256 of the run's results and samples"),
 )
 
 # Columns that encode the experiment design or its answer; never model inputs.
