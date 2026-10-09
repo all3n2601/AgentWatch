@@ -86,6 +86,9 @@ class Extraction:
     runs: list[RawRun] = field(default_factory=list)
     rejections: list[Rejection] = field(default_factory=list)
     duplicates: list[str] = field(default_factory=list)  # origins of identical extra copies
+    # Run IDs with conflicting evidence. Kept as data, not only as rejection text, so a
+    # copy of the same run arriving later from another source is rejected too.
+    conflicted: set[str] = field(default_factory=set)
 
 
 class ApiRunRow(BaseModel):
@@ -231,7 +234,11 @@ def fetch_json(url: str, timeout: float, retry: RetryPolicy):
 def parse_page(page, url: str) -> tuple[list, int | None]:
     if not isinstance(page, dict) or not isinstance(page.get("runs"), list):
         raise ExtractionError(f"GET {url} did not return a run history page")
-    cursor = page.get("next_cursor")
+    # A missing cursor is a malformed page, not the last page: treating it as null would
+    # end extraction successfully and silently omit every older run.
+    if "next_cursor" not in page:
+        raise ExtractionError(f"GET {url} returned a history page without next_cursor")
+    cursor = page["next_cursor"]
     if cursor is not None and (type(cursor) is not int or cursor <= 0):
         raise ExtractionError(f"GET {url} returned an invalid next_cursor {cursor!r}")
     return page["runs"], cursor
@@ -290,15 +297,24 @@ def deduplicate(extraction: Extraction) -> Extraction:
     """Keep one copy of runs seen more than once; reject runs whose copies disagree.
 
     A copy with a recorded_at timestamp (from the API) is preferred over a local copy.
+    Once a run ID has conflicting evidence, every copy of it is rejected, including copies
+    that arrive later through combine().
     """
     copies: dict[str, list[RawRun]] = {}
     for run in extraction.runs:
         copies.setdefault(run.run_id, []).append(run)
     unique = Extraction(
-        rejections=list(extraction.rejections), duplicates=list(extraction.duplicates)
+        rejections=list(extraction.rejections),
+        duplicates=list(extraction.duplicates),
+        conflicted=set(extraction.conflicted),
     )
     for run_id, found in copies.items():
+        if run_id in extraction.conflicted:
+            for copy in found:
+                reject(unique, copy.origin, f"Run {run_id} has conflicting evidence elsewhere")
+            continue
         if len({copy.content_sha256 for copy in found}) > 1:
+            unique.conflicted.add(run_id)
             for copy in found:
                 reject(unique, copy.origin, f"Run {run_id} has conflicting evidence in sources")
             continue
@@ -315,6 +331,7 @@ def combine(*extractions: Extraction) -> Extraction:
         merged.runs.extend(extraction.runs)
         merged.rejections.extend(extraction.rejections)
         merged.duplicates.extend(extraction.duplicates)
+        merged.conflicted |= extraction.conflicted
     return deduplicate(merged)
 
 

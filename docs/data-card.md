@@ -38,9 +38,11 @@ directory. `pipelines/data/src/agentwatch_data/extract.py` enforces:
   that fails is recorded as a rejection with its reason; the other runs still extract.
 - Network failures are retried with bounded exponential backoff for timeouts, connection
   errors, and HTTP 429/5xx. If a source still cannot be read, or returns a malformed response,
-  extraction stops with an error instead of producing a partial dataset.
+  extraction stops with an error instead of producing a partial dataset. A history page
+  without `next_cursor` counts as malformed, never as the last page.
 - A run found more than once, locally or through the API, is kept once. Copies whose
-  normalized evidence disagrees are all rejected.
+  normalized evidence disagrees are all rejected, and that run ID stays rejected when the
+  extraction is later combined with other sources.
 - Each run records whether it carried resource samples: `present`, `empty`, or `missing`
   (no samples file). The API cannot distinguish an absent file from an empty one.
 - Identical samples at the same timestamp are collapsed; disagreeing samples reject the run.

@@ -416,3 +416,40 @@ def test_get_json_reads_json_and_ndjson_over_http():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def conflicted_source(tmp_path, result):
+    """A source holding two disagreeing copies of one run."""
+    changed = json.loads(json.dumps(result))
+    changed["contended"]["cpu_seconds"] = 0.5
+    write_run(tmp_path / "a" / "cpu-1", result)
+    write_run(tmp_path / "a" / "cpu-2", changed)
+    return extract_local(tmp_path / "a")
+
+
+def test_conflict_in_one_source_rejects_copies_from_another(tmp_path, result):
+    conflicted = conflicted_source(tmp_path, result)
+    assert conflicted.runs == [] and conflicted.conflicted == {result["run_id"]}
+    write_run(tmp_path / "b" / "cpu-3", result)
+    other = extract_local(tmp_path / "b")
+    for merged in (combine(conflicted, other), combine(other, conflicted)):
+        assert merged.runs == []
+        assert len(merged.rejections) == 3
+        assert merged.conflicted == {result["run_id"]}
+
+
+def test_conflicts_survive_repeated_combination(tmp_path, result):
+    conflicted = conflicted_source(tmp_path, result)
+    write_run(tmp_path / "b" / "cpu-3", result)
+    write_run(tmp_path / "c" / "cpu-4", result)
+    first = combine(conflicted, extract_local(tmp_path / "b"))
+    final = combine(first, extract_local(tmp_path / "c"))
+    assert final.runs == []
+    assert final.conflicted == {result["run_id"]}
+    assert len(final.rejections) == 4
+
+
+def test_history_page_without_next_cursor_stops_extraction(api, result):
+    api.pages["http://api/v1/runs?limit=100"] = {"runs": [api.row(result)]}
+    with pytest.raises(ExtractionError, match="without next_cursor"):
+        extract_api("http://api")
