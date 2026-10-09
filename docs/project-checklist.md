@@ -340,6 +340,9 @@ These are project targets, not achievements inferred from the current demo.
 - [ ] Choose the live transport and resource identity scheme.
 - [ ] Decide the minimum role of Grafana/Prometheus alongside the custom dashboard.
 - [ ] Set the primary evaluation metric, overhead budget, abstention criteria, and promotion gates.
+  Proposed in `eval-contract-v1` (2026-10-09): [the evaluation contract](evaluation-contract.md)
+  and `pipelines/model/evaluation-contract.toml`. Open until reviewed by the dataset and
+  promotion-check owners.
 - [ ] Confirm cloud budget and hardware access before adding deployment obligations.
 
 ## Commands and supporting evidence
