@@ -1,7 +1,13 @@
 # AgentWatch step dataset — data card
 
-Status: draft schema `steps-v1`. No dataset release exists yet. Column definitions live in
-`pipelines/data/src/agentwatch_data/schema.py`; a test fails if this card misses a column.
+Status: draft schema `steps-v1.1`, labels `labels-v1.1`. No dataset release exists yet. Column
+definitions live in `pipelines/data/src/agentwatch_data/schema.py`; a test fails if this card
+misses a column. `validate_rows()` enforces every column's type, nullability, allowed values,
+and bounds, and a golden test runs a real recorded run through every stage against it.
+
+`steps-v1.1` only adds columns to `steps-v1` (`telemetry_coverage`, `telemetry_status`,
+`injection_method`, `agent_model`, `run_passed`, `failed_checks`, `schema_version`); no
+existing column changed meaning.
 
 ## Summary
 
@@ -80,6 +86,7 @@ for training targets, baseline comparison, and traceability.
 | `cgroup_throttled_usec_delta` | int, nullable | cgroup v2 throttled time gained during the step |
 | `cgroup_available` | bool | Whether a throttling delta was measured: two or more readable counter samples in the window and no counter reset |
 | `telemetry_sample_count` | int | Resource samples inside the step window |
+| `telemetry_coverage` | float, nullable | Samples inside the window ÷ samples expected for the step's duration at the run's measured sampling interval (the median gap between its samples), capped at 1. Null when the run's telemetry is not `present` or has fewer than two samples |
 
 Missing readings stay null and are paired with an availability flag. They are never stored as
 zero, because a measured zero and an unavailable reading mean different things. On macOS, PSI and
@@ -96,20 +103,32 @@ Labels come from the experiment design and a frozen noise threshold: a step is l
 resource only when contention was applied and its slowdown exceeds the threshold. They do not
 come from the rule baseline, so model and rule can be compared fairly.
 
-The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1`):
+The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1`):
 
 - B is the mean duration of the run's own `baseline` steps; at least two are required.
 - The noise threshold is `max(min_seconds, stdev_multiplier × baseline stdev)`, currently
   `max(0.01 s, 3 × stdev)`.
 - A `contended` step gets the resource its experiment kind contends (`cpu_sandbox` for the CPU
-  and coding experiments) only when `T − B` exceeds the threshold; otherwise `none`.
+  and coding experiments) only when `T − B` exceeds the threshold; otherwise `none`. Its
+  `injection_method` is the declared method (`worker_queue_blocker`: a competing task submitted
+  ahead to a single-worker pool); other steps record `none`.
 - `baseline` and `clean` steps are always `none`, because no contention was applied.
-- `label_version` is the rules version plus the first 8 hex digits of the config file's SHA-256,
-  so any retuned threshold produces a new version.
-- Runs with unknown conditions, unknown kinds, fewer than two baseline steps, or any duration
-  that is not a finite positive number (NaN, infinity, zero, or non-numeric) fail labeling
-  instead of being guessed. Mixed contention is not defined in `labels-v1`.
-- Rule files with NaN or infinite noise settings are rejected before any labeling runs.
+- `label_version` is the rules version plus the first 8 hex digits of a fingerprint of the
+  validated rule values and the labeling code (`labels.py`, line endings normalized). A retuned
+  threshold or a changed labeling rule produces a new version; comments, formatting, equivalent
+  spellings such as `3` and `3.0`, and Windows line endings do not.
+- A step's condition comes from its position in the run result (`baseline.steps`, `clean`,
+  `contended`), and its `step_id` must agree; a renamed step fails instead of changing role.
+- Runs with unknown conditions, unknown or mixed kinds, repeated step IDs, fewer than two
+  baseline steps, or any duration that is not a finite positive number (NaN, infinity, zero,
+  booleans, or non-numeric) fail labeling instead of being guessed. Mixed contention is not
+  defined in `labels-v1.1`.
+- A run that failed `same_workload_output` did different work under contention, so its
+  slowdown is not attributable and the run is not labeled. Other failed checks are recorded in
+  `failed_checks` but do not block labels: dropping runs because the rule disagreed would select
+  the dataset by the rule's own answer.
+- Rule files must have exactly the expected keys and finite numbers; NaN, infinity, booleans,
+  misspelled or unknown keys, and invalid TOML are rejected before any labeling runs.
 
 `label_basis` records why each row got its label:
 
@@ -132,19 +151,25 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1`)
 
 | Column | Type | Description |
 |---|---|---|
-| `condition` | string | Experiment condition: `baseline`, `clean`, or `contended` |
+| `condition` | string | Experiment condition from the step's position: `baseline`, `clean`, or `contended` |
 | `workload` | string | Human-readable workload description |
+| `injection_method` | string | How contention was applied to the step (`worker_queue_blocker`), or `none` |
+| `agent_model` | string, nullable | Model that invoked the tool in LLM runs, such as `qwen3:1.7b`; null otherwise. Distinguishes LLM-driven coding runs, which share `kind` with direct coding runs |
+| `run_passed` | bool | Whether every experiment check passed |
+| `failed_checks` | string, nullable | Comma-separated names of failed experiment checks, in alphabetical order |
+| `telemetry_status` | string | Run telemetry: `present`, `empty`, `missing` (no samples file), or `no_overlap` (samples exist but none fall inside any step) |
 | `baseline_mean_seconds` | float | Clean baseline mean duration B used for the regression label |
 | `noise_threshold_seconds` | float | Run-specific slowdown threshold derived from the frozen rules |
 | `label_basis` | string | Why the step received its label; see the table above |
-| `label_version` | string | Labeling rules version plus config hash, for example `labels-v1+1a2b3c4d` |
+| `label_version` | string | Labeling rules version plus fingerprint, for example `labels-v1.1+1a2b3c4d` |
+| `schema_version` | string | Dataset schema version the row was built with (`steps-v1.1`) |
 | `dataset_version` | string | Dataset release this row belongs to |
 | `source_sha256` | string | SHA-256 of the run's results and resource samples exactly as received, so any change to either produces a new hash |
 
 ## Leakage rules
 
-- `step_id`, `condition`, `rule_prediction`, `baseline_mean_seconds`, and `label_basis` are never
-  features.
+- `step_id`, `condition`, `rule_prediction`, `baseline_mean_seconds`, `label_basis`,
+  `injection_method`, `run_passed`, and `failed_checks` are never features.
 - Injector configuration and logs are used for labeling only.
 - All clean and contended replays of a task stay in the same split.
 - Preprocessing is fitted on the training split only.
@@ -152,5 +177,20 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1`)
 ## Known limitations
 
 - Current measured data covers one fixed task and two classes.
+- **Labels are trivially predictable on current data.** With only the CPU queue experiment, the
+  contention directly creates queue waiting: on 7 real runs (49 rows), `label_resource` equals
+  `rule_prediction` on every row, and `queue_fraction` alone separates the classes (lowest
+  positive 0.847, highest negative 0.003). Any model will look near-perfect and model-versus-rule
+  comparisons carry no information until inference, retrieval, and mixed contention exist. The
+  split stage must run a leakage check before any evaluation.
+- **Clean controls sometimes exceed the noise threshold** (`clean_exceeded_noise`): 2 of 7 real
+  runs recorded on 2026-10-08 (+0.047 s and +0.035 s against thresholds near 0.02 s) and 0 of 7
+  recorded on 2026-10-09. The rate varies between collections, so it is reported per release
+  and never tuned away.
+- **Telemetry is sparse for short steps.** The worker samples every 250 ms while many steps last
+  0.2–0.5 s, so 20 of 42 rows in six real runs had 0–1 samples. `telemetry_coverage` exposes
+  this; faster sampling belongs to the worker.
+- `task_id` is an interim placeholder (`kind:workload:iterations`): one project at different
+  work sizes becomes several tasks, so a grouped split cannot yet guarantee unseen tasks.
 - Hardware telemetry is unavailable on macOS hosts.
 - Experiment labels are operational proxies and still need natural-overload validation.

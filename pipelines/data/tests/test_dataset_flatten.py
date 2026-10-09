@@ -2,7 +2,12 @@ import json
 
 import pytest
 from agentwatch_data.extract import validate
-from agentwatch_data.flatten import flatten_run, window_readings
+from agentwatch_data.flatten import (
+    FlattenError,
+    flatten_run,
+    sampling_interval_seconds,
+    window_readings,
+)
 from agentwatch_data.schema import COLUMNS
 from dataset_fixtures import BASE_NS, SAMPLE, make_result
 
@@ -77,6 +82,7 @@ def test_window_includes_only_samples_inside_the_step():
         "cgroup_throttled_usec_delta": 300,
         "cgroup_available": True,
         "telemetry_sample_count": 2,
+        "telemetry_coverage": None,
     }
 
 
@@ -121,3 +127,112 @@ def test_coerced_numeric_strings_flatten_with_contract_types():
     rows = flatten_run(validate(result, [SAMPLE | {"timestamp_ns": str(BASE_NS)}], "cpu"))
     assert rows[0]["workload_iterations"] == 10
     assert rows[0]["telemetry_sample_count"] == 1
+
+
+# Conditions come from the result structure
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (
+            lambda r: r["contended"].update(step_id="baseline-9"),
+            "'baseline-9' is recorded in the contended",
+        ),
+        (
+            lambda r: (
+                r["clean"].update(step_id="contended"),
+                r["contended"].update(step_id="clean"),
+            ),
+            "clean position",
+        ),
+        (lambda r: r["baseline"]["steps"][0].update(step_id="warmup-0"), "baseline position"),
+        (lambda r: r["baseline"]["steps"][0].update(step_id="baseline-x"), "baseline position"),
+    ],
+)
+def test_step_ids_must_match_their_position(change, message):
+    result = make_result()
+    change(result)
+    with pytest.raises(FlattenError, match=message):
+        flatten_run(validate(result, [SAMPLE], "cpu"))
+
+
+# Counter chains
+
+
+@pytest.mark.parametrize(
+    "middle",
+    [None, {}, {"usage_usec": 3}],
+    ids=["unreadable", "empty", "no-throttle-key"],
+)
+def test_any_gap_breaks_the_counter_chain(middle):
+    samples = [sample(0, throttled=1), sample(10), sample(20, throttled=9)]
+    samples[1]["cgroup_cpu_stat"] = middle
+    readings = window_readings(samples, BASE_NS, BASE_NS + 100)
+    assert readings["cgroup_throttled_usec_delta"] is None
+    assert readings["cgroup_available"] is False
+
+
+# Telemetry coverage and status
+
+
+def every(interval_ns, count, start=0):
+    return [sample(start + i * interval_ns, avg10=1.0) for i in range(count)]
+
+
+def test_sampling_interval_is_the_median_gap():
+    samples = every(250_000_000, 4) + [sample(10_000_000_000, avg10=1.0)]
+    assert sampling_interval_seconds(samples) == 0.25
+    assert sampling_interval_seconds(every(250_000_000, 1)) is None
+
+
+def test_coverage_compares_received_to_expected_samples():
+    full = window_readings(every(250_000_000, 5), BASE_NS, BASE_NS + 1_000_000_000, 0.25)
+    assert full["telemetry_coverage"] == 1.0
+    sparse = window_readings(every(500_000_000, 2), BASE_NS, BASE_NS + 1_000_000_000, 0.25)
+    assert sparse["telemetry_coverage"] == 0.5
+    assert window_readings([], BASE_NS, BASE_NS + 1_000_000_000, 0.25)["telemetry_coverage"] == 0
+    assert window_readings([], BASE_NS, BASE_NS + 1_000_000_000)["telemetry_coverage"] is None
+
+
+def test_samples_outside_every_step_mean_no_overlap(rows):
+    assert {row["telemetry_status"] for row in rows} == {"no_overlap"}
+    assert {row["telemetry_coverage"] for row in rows} == {None}
+
+
+@pytest.mark.parametrize(
+    ("samples", "status"), [([], "empty"), (every(250_000_000, 40), "present")]
+)
+def test_run_telemetry_status(samples, status):
+    rows = flatten_run(validate(make_result(), samples, "cpu"))
+    assert {row["telemetry_status"] for row in rows} == {status}
+
+
+def test_missing_samples_file_is_reported_as_missing():
+    run = validate(make_result(), [], "cpu", telemetry_status="missing")
+    assert {row["telemetry_status"] for row in flatten_run(run)} == {"missing"}
+
+
+# Run-level lineage
+
+
+def test_passing_run_lineage(rows):
+    row = rows[0]
+    assert (row["run_passed"], row["failed_checks"], row["agent_model"]) == (True, None, None)
+    assert row["schema_version"] == "steps-v1.1"
+
+
+def test_failed_checks_are_recorded_in_order():
+    result = make_result()
+    result["checks"] = {"stable_baseline": False, "queue_increased": False, "passed": False}
+    row = flatten_run(validate(result, [SAMPLE], "cpu"))[0]
+    assert (row["run_passed"], row["failed_checks"]) == (False, "queue_increased,stable_baseline")
+
+
+@pytest.mark.parametrize(
+    ("agent", "model"),
+    [({"model": "qwen3:1.7b"}, "qwen3:1.7b"), ({"model": " "}, None), ({}, None), ("x", None)],
+)
+def test_agent_model_identifies_llm_runs(agent, model):
+    result = make_result() | {"agent": agent}
+    assert flatten_run(validate(result, [SAMPLE], "coding"))[0]["agent_model"] == model
