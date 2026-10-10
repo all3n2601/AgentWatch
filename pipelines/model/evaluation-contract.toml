@@ -1,12 +1,16 @@
 # Evaluation targets and model promotion gates, declared before any model is evaluated.
 # Meaning, rationale, and the change policy are in docs/evaluation-contract.md.
 # Never edit a threshold after seeing test-split results; change the version instead.
+# Reports identify this file by SHA-256 of its parsed contents as canonical JSON, so line
+# endings and comments do not change the identifier.
 version = "eval-contract-v1"
 # "proposed" until reviewed; values marked "proposed" below have no supporting data yet.
 status = "proposed"
 
 [dataset]
+# Compatible minor versions (steps-v1.x, which only add columns) are also accepted.
 schema_version = "steps-v1"
+accept_compatible_minor_versions = true
 label_rules = "labels-v1"
 # Must match RESOURCE_CLASSES in pipelines/data/src/agentwatch_data/schema.py.
 classes = ["none", "cpu_sandbox", "inference", "retrieval"]
@@ -20,9 +24,11 @@ group_key = "task_id"
 train_fraction = 0.70
 validation_fraction = 0.15
 test_fraction = 0.15
-# At least this many injection methods appear only in the test split. Needs an
-# injection-method lineage column, which steps-v1 does not have yet.
+# At least this many injection methods appear only in the test split. Needs the
+# injection_method lineage column and at least two injection methods.
 held_out_injection_methods = 1
+# Needs real task identity from step events; the current task_id is an interim
+# placeholder that can split one project across splits.
 require_unseen_tasks = true
 # Mixed-contention cases must appear in the test split; training may also contain them.
 require_mixed_contention_in_test = true
@@ -30,6 +36,11 @@ require_mixed_contention_in_test = true
 min_test_steps_per_class = 30
 min_clean_test_steps = 100
 min_mixed_contention_test_steps = 30
+
+[leakage]
+# Checked on the training split before evaluation. If any single feature's one-vs-rest
+# AUC for label_resource exceeds this bound, evaluation is blocked. Proposed.
+max_single_feature_auc = 0.98
 
 [classification]
 primary_metric = "macro_f1"
@@ -41,9 +52,10 @@ min_gain_over_rules_mixed = 0.10
 min_gain_over_rules_overall = 0.0
 
 [clean_runs]
-# Share of baseline and clean test steps predicted as any resource other than "none".
-# Abstentions are not counted as false positives; they are limited by [calibration].
-max_false_positive_rate = 0.05
+# Share of steps predicted "none"; abstentions count as misses. Gated on clean steps
+# alone, because baseline steps are the label reference, and on baseline and clean together.
+min_none_rate_clean = 0.95
+min_none_rate_baseline_and_clean = 0.95
 
 [regression]
 metric = "mae"
@@ -81,7 +93,7 @@ unevaluated_gate_blocks_promotion = true
 # accepted model stops small allowed drops from accumulating across promotions.
 regression_references = ["incumbent", "best_accepted_on_test_split"]
 max_macro_f1_drop = 0.01
-max_false_positive_rate_increase = 0.0
+max_clean_none_rate_drop = 0.0
 max_mae_increase = 0.01
 # Proposed. After this many promotion evaluations, freeze a new test split from newly
 # measured runs so repeated comparisons cannot overfit one split.
