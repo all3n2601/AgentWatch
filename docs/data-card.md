@@ -88,6 +88,11 @@ under `.data/datasets/builds/`:
 The command prints the release and report paths. Because rejections live in each build's
 report, a rebuild whose accepted rows are unchanged still records evidence rejected that time.
 
+A build counts as published only once its report is committed. The report is staged before the
+release becomes visible; if committing it still fails, a release that build created is
+withdrawn, so a failed build leaves no unreported release. Releases that already existed, were
+published by a concurrent build, or are named by another build's report are never removed.
+
 - `dataset_version` is `<schema version>+<first 12 hex digits of the rows' SHA-256>`, so the
   same evidence, rules, and code always produce the same version. A changed run, rule, or label
   fingerprint produces a new one.

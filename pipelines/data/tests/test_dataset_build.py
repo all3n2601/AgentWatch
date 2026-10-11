@@ -57,6 +57,15 @@ def releases_in(output):
     return [path for path in output.iterdir() if path.name.startswith(f"{SCHEMA_VERSION}+")]
 
 
+def nothing_published(output):
+    """No release, no staging or withdrawn directory, and no report or staged report."""
+    if not output.exists():
+        return True
+    leftovers = [p for p in output.iterdir() if p.name != "builds"]
+    reports = list((output / "builds").iterdir()) if (output / "builds").exists() else []
+    return leftovers == [] and reports == []
+
+
 def test_release_holds_the_dataset_and_manifest(evidence, tmp_path):
     release = build_from(evidence, tmp_path / "out")
     assert release.name.startswith(f"{SCHEMA_VERSION}+")
@@ -133,7 +142,7 @@ def test_unreadable_source_writes_nothing(tmp_path):
     output = tmp_path / "out"
     with pytest.raises(BuildError, match="could not be read"):
         build_from(tmp_path / "absent", output)
-    assert not output.exists() or list(output.iterdir()) == []
+    assert nothing_published(output)
 
 
 def test_api_failure_writes_nothing(evidence, tmp_path, monkeypatch):
@@ -146,7 +155,7 @@ def test_api_failure_writes_nothing(evidence, tmp_path, monkeypatch):
     output = tmp_path / "out"
     with pytest.raises(BuildError, match="api:http://127.0.0.1:9 could not be read"):
         build(sources, output, now=NOW)
-    assert not output.exists() or list(output.iterdir()) == []
+    assert nothing_published(output)
 
 
 def test_no_usable_rows_fails_the_build(tmp_path):
@@ -187,7 +196,7 @@ def test_a_failed_write_leaves_no_partial_release(evidence, tmp_path, monkeypatc
     output = tmp_path / "out"
     with pytest.raises(OSError, match="No space left"):
         build_from(evidence, output)
-    assert list(output.iterdir()) == []  # no release, no staging, no report
+    assert nothing_published(output)
 
 
 def test_at_least_one_source_is_required(tmp_path):
@@ -269,7 +278,7 @@ def test_a_failed_rename_without_a_competing_release_is_raised(evidence, tmp_pat
     monkeypatch.setattr(build_module.os, "replace", rename_fails)
     with pytest.raises(OSError, match="Read-only"):
         build_from(evidence, tmp_path / "out")
-    assert list((tmp_path / "out").iterdir()) == []
+    assert nothing_published(tmp_path / "out")
 
 
 def test_an_existing_release_without_a_manifest_is_refused(evidence, tmp_path):
@@ -336,3 +345,114 @@ def test_unchanged_data_from_changed_sources_reports_the_new_sources(evidence, t
     report = report_of(second)
     assert [item["source"] for item in report["sources"]] == ["<local:evidence>", "<local:mirror>"]
     assert report["duplicate_copies"] == 1 and report["rejections"] == []
+
+
+# Report commit failures (Allen's second #14 review)
+
+
+def fail_report_commit(monkeypatch, message="No space left on device"):
+    real_replace = build_module.os.replace
+
+    def replace(source, target):
+        if Path(target).suffix == ".json":
+            raise OSError(message)
+        return real_replace(source, target)
+
+    monkeypatch.setattr(build_module.os, "replace", replace)
+
+
+def test_failed_report_commit_withdraws_the_new_release(evidence, tmp_path, monkeypatch):
+    fail_report_commit(monkeypatch)
+    output = tmp_path / "out"
+    with pytest.raises(OSError, match="No space left"):
+        build_from(evidence, output)
+    assert nothing_published(output)
+
+
+def test_failed_report_staging_publishes_nothing(evidence, tmp_path, monkeypatch):
+    real_write = Path.write_text
+
+    def write_text(self, data, *args, **kwargs):
+        if self.name.endswith(".json.tmp"):
+            raise OSError("Read-only file system")
+        return real_write(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+    output = tmp_path / "out"
+    with pytest.raises(OSError, match="Read-only"):
+        build_from(evidence, output)
+    assert nothing_published(output)
+
+
+def test_failed_report_on_reuse_keeps_the_existing_release(evidence, tmp_path, monkeypatch):
+    output = tmp_path / "out"
+    first = result_from(evidence, output)
+    fail_report_commit(monkeypatch)
+    with pytest.raises(OSError):
+        build_from(evidence, output)
+    assert first.release.exists()
+    assert sorted((output / "builds").iterdir()) == [first.report]  # no new or staged report
+    monkeypatch.undo()
+    assert result_from(evidence, output).reused  # the kept release still verifies
+
+
+def test_a_release_another_build_reported_is_never_withdrawn(evidence, tmp_path, monkeypatch):
+    """If a concurrent build reused this release and committed its report, keep it."""
+    output = tmp_path / "out"
+    real_replace = build_module.os.replace
+
+    def replace(source, target):
+        if Path(target).suffix == ".json":
+            other = Path(target).with_name("20991231T000000000000Z-other.json")
+            other.write_text(json.dumps({"release": releases_in(output)[0].name}))
+            raise OSError("No space left on device")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(build_module.os, "replace", replace)
+    with pytest.raises(OSError):
+        build_from(evidence, output)
+    [release] = releases_in(output)
+    assert (release / DATASET_FILE).exists()
+
+
+def test_unrelated_or_unreadable_reports_do_not_stop_a_withdrawal(evidence, tmp_path, monkeypatch):
+    output = tmp_path / "out"
+    (output / "builds").mkdir(parents=True)
+    (output / "builds" / "20000101T000000000000Z-broken.json").write_text("{not json")
+    (output / "builds" / "20000101T000000000001Z-list.json").write_text("[1, 2]")
+    (output / "builds" / "20000101T000000000002Z-other.json").write_text(
+        '{"release": "steps-v0+x"}'
+    )
+    fail_report_commit(monkeypatch)
+    with pytest.raises(OSError):
+        build_from(evidence, output)
+    assert releases_in(output) == []
+
+
+def test_failed_report_after_a_concurrent_release_keeps_it(evidence, tmp_path, monkeypatch):
+    def replace(source, target):
+        if Path(source).is_dir():
+            shutil.copytree(source, target)  # the other build's identical release appears first
+            raise OSError("Directory not empty")
+        raise OSError("No space left on device")  # and then our report commit fails
+
+    monkeypatch.setattr(build_module.os, "replace", replace)
+    output = tmp_path / "out"
+    with pytest.raises(OSError, match="No space left"):
+        build_from(evidence, output)
+    [release] = releases_in(output)
+    assert (release / MANIFEST_FILE).exists()
+    assert list((output / "builds").iterdir()) == []
+
+
+def test_an_unremovable_release_is_logged_not_hidden(evidence, tmp_path, monkeypatch, caplog):
+    fail_report_commit(monkeypatch)
+
+    def cannot_remove(path, ignore_errors=False):
+        if not ignore_errors:
+            raise PermissionError(f"Permission denied: {path}")
+
+    monkeypatch.setattr(build_module.shutil, "rmtree", cannot_remove)
+    with pytest.raises(OSError, match="No space left"), caplog.at_level("ERROR"):
+        build_from(evidence, tmp_path / "out")
+    assert "Could not withdraw unreported release" in caplog.text

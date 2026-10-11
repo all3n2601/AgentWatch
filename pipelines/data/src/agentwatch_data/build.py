@@ -8,7 +8,9 @@ so rebuilding from the same evidence with the same rules and code reuses the sam
 
 Every successful build, new or reused, also writes its own report to builds/<build id>.json
 with that build's sources, duplicate copies, and rejected runs. A rebuild that reuses a
-release therefore still records evidence rejected this time. A failed build writes nothing:
+release therefore still records evidence rejected this time. A build counts as published only
+once its report is committed; if that fails, a release the build created is withdrawn, while
+existing releases are never touched. A failed build writes nothing:
 unreadable sources, invalid rules, schema violations, and empty results stop it, while
 untrustworthy individual runs are rejected and reported.
 """
@@ -213,12 +215,10 @@ def build(
     build_id = f"{built_at:%Y%m%dT%H%M%S%fZ}-{uuid.uuid4().hex[:8]}"
     output_dir.mkdir(parents=True, exist_ok=True)
     release = output_dir / version
-    reused = release.exists() and verify_existing(release, digest)
-    if not reused:
-        reused = write_release(release, final, version, digest, config.label_version)
-    report = write_report(
-        output_dir / BUILDS_DIR / f"{build_id}.json",
-        {
+    report_path = output_dir / BUILDS_DIR / f"{build_id}.json"
+
+    def report(reused: bool) -> dict:
+        return {
             "build_id": build_id,
             "built_at": built_at.isoformat(),
             "dataset_version": version,
@@ -231,17 +231,39 @@ def build(
             "sources": source_summaries,
             "duplicate_copies": len(merged.duplicates),
             "rejections": rejections,
-        },
-    )
+        }
+
+    # A build is published only when its report is committed. The report is staged before
+    # the release becomes visible, so most write failures happen while nothing is published;
+    # if committing the report still fails, a release this build created is withdrawn.
+    created = False
+    staged = None
+    try:
+        reused = release.exists() and verify_existing(release, digest)
+        staged = stage_report(report_path, report(reused))
+        if not reused:
+            reused = write_release(release, final, version, digest, config.label_version)
+            if reused:  # a concurrent build published the identical release first
+                staged = stage_report(report_path, report(reused))
+            created = not reused
+        os.replace(staged, report_path)
+        staged = None
+    except BaseException:
+        if created:
+            withdraw_release(release, report_path.parent)
+        raise
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
     logger.info(
         "%s %s: %d rows, %d rejections; report %s",
         "Reused" if reused else "Built",
         version,
         len(final),
         len(rejections),
-        report.name,
+        report_path.name,
     )
-    return BuildResult(release, report, reused)
+    return BuildResult(release, report_path, reused)
 
 
 def write_release(
@@ -286,14 +308,41 @@ def write_release(
         shutil.rmtree(staging, ignore_errors=True)
 
 
-def write_report(path: Path, report: dict) -> Path:
-    """Write a build report atomically, readable by other users."""
+def stage_report(path: Path, report: dict) -> Path:
+    """Write a build report next to its final name, readable by other users, uncommitted."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json_text(report), encoding="utf-8")
-    temporary.chmod(0o644)
-    os.replace(temporary, path)
-    return path
+    staged = path.with_name(f".{path.name}.tmp")
+    try:
+        staged.write_text(json_text(report), encoding="utf-8")
+        staged.chmod(0o644)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+    return staged
+
+
+def withdraw_release(release: Path, builds_dir: Path) -> None:
+    """Remove a release this failed build created, unless another build already reported it.
+
+    Releases that existed before the build, or that a concurrent build published, are never
+    passed here. A release another build's report names is kept, because that build succeeded.
+    """
+    for path in builds_dir.glob("*.json"):
+        try:
+            other = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # an unreadable report cannot claim the release
+        if isinstance(other, dict) and other.get("release") == release.name:
+            logger.warning("Kept %s: build report %s names it", release.name, path.name)
+            return
+    withdrawn = release.with_name(f".withdrawn-{release.name}-{uuid.uuid4().hex[:8]}")
+    try:
+        os.replace(release, withdrawn)
+        shutil.rmtree(withdrawn)
+    except OSError:
+        logger.exception("Could not withdraw unreported release %s", release.name)
+        return
+    logger.warning("Withdrew %s: its build report could not be written", release.name)
 
 
 def verify_existing(release: Path, digest: str) -> bool:
