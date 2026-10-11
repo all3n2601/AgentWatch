@@ -314,11 +314,12 @@ def extract_api(
     api_url: str,
     page_size: int = API_MAX_PAGE_SIZE,
     timeout: float = 15,
-    retry: RetryPolicy = DEFAULT_RETRY,
+    retry: RetryPolicy | None = None,
 ) -> Extraction:
     """Read every saved run, following the history cursor until the last page."""
     if not 1 <= page_size <= API_MAX_PAGE_SIZE:
         raise ValueError(f"page_size must be between 1 and {API_MAX_PAGE_SIZE}")
+    retry = retry or DEFAULT_RETRY  # read at call time, so callers and tests can replace it
     base = api_url.rstrip("/")
     extraction = Extraction()
     before = None

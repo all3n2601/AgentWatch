@@ -3,7 +3,10 @@ name = "agentwatch-data"
 version = "0.1.0"
 description = "AgentWatch step dataset pipeline: extraction, labeling, validation, and versioning"
 requires-python = ">=3.13,<3.15"
-dependencies = ["agentwatch-worker"]
+dependencies = [
+    "agentwatch-worker",
+    "pyarrow>=21,<23",
+]
 
 [tool.uv.sources]
 agentwatch-worker = { workspace = true }

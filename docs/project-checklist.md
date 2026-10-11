@@ -273,6 +273,10 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   boolean or string coercion); evidence kind, check names, and LLM agent evidence verified;
   telemetry coverage judged against the declared sampling interval, with the measured interval
   recorded. Verified against the live ingestion API with seven real runs.
+- [x] Dataset build (2026-10-11): `make dataset` writes a release named by a content-derived
+  `dataset_version` with `steps.parquet` and `manifest.json`; rebuilds reproduce it byte for
+  byte, failed builds write nothing, and manifests list every rejection with host paths
+  redacted. Plan and dependencies in [the data pipeline plan](data-pipeline-plan.md).
 - [x] Single-resource labels and the excess-latency target from a frozen, hashed rule file
   (`labels-v1`), with unit tests in `pipelines/data/tests/test_dataset_labels.py`.
 
@@ -282,6 +286,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
 - [ ] Choose whether the regression target is observed queue time or estimated excess latency.
 - [ ] Generate clean, isolated-contention, and mixed-contention replays over fixed tasks.
 - [ ] Store versioned Parquet datasets with GCS/DVC or an explicitly chosen equivalent.
+  Versioned Parquet releases are built locally; GCS/DVC storage is not yet set up.
 - [ ] Validate data with TFDV or an explicitly chosen equivalent.
 - [ ] Freeze splits grouped by task and related replay to prevent leakage.
 - [ ] Hold out unseen tasks and at least one injection method.
