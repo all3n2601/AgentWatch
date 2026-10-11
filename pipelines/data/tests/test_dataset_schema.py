@@ -12,6 +12,7 @@ from agentwatch_data.schema import (
     Role,
     SchemaError,
     feature_columns,
+    finite_number,
     validate_rows,
 )
 from test_dataset_end_to_end import build_rows
@@ -124,3 +125,11 @@ def test_rows_must_have_exactly_the_schema_columns(valid_row, change):
 
 def test_timezone_aware_saved_time_is_valid(valid_row):
     validate_rows([valid_row | {"recorded_at": datetime(2026, 10, 9, tzinfo=UTC)}])
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0.25, 0.25), (3, 3.0), (True, None), ("1", None), (float("nan"), None), (10**400, None)],
+)
+def test_finite_number_never_raises(value, expected):
+    assert finite_number(value) == expected

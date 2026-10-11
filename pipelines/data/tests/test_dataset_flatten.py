@@ -332,7 +332,7 @@ def test_flatten_runs_rejects_bad_runs_and_keeps_the_rest():
     assert rejection.origin == "cpu-bad" and "contended position" in rejection.reason
 
 
-@pytest.mark.parametrize("value", [[0.25], {"seconds": 0.25}, "0.25", True, -0.25])
+@pytest.mark.parametrize("value", [[0.25], {"seconds": 0.25}, "0.25", True, -0.25, 10**400])
 def test_malformed_declared_interval_rejects_only_that_run(value):
     """Allen's #13 review: a list interval raised TypeError and aborted the whole batch."""
     bad = make_result()
@@ -344,3 +344,12 @@ def test_malformed_declared_interval_rejects_only_that_run(value):
     assert {row["run_id"] for row in rows} == {good["run_id"]}
     [rejection] = rejections
     assert rejection.origin == "cpu-bad" and "sampling interval" in rejection.reason
+
+
+def test_oversized_interval_is_described_not_printed():
+    """Allen's #13 review: 10**400 raised OverflowError in math.isfinite and aborted the batch."""
+    result = make_result()
+    for name in ("clean", "contended"):
+        result[name]["telemetry"]["interval_seconds"] = 10**400
+    with pytest.raises(FlattenError, match="an integer with 401 digits"):
+        declared_interval_seconds(result)
