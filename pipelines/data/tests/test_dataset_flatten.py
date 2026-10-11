@@ -236,3 +236,23 @@ def test_failed_checks_are_recorded_in_order():
 def test_agent_model_identifies_llm_runs(agent, model):
     result = make_result() | {"agent": agent}
     assert flatten_run(validate(result, [SAMPLE], "coding"))[0]["agent_model"] == model
+
+
+def between_steps():
+    """Samples after baseline-0 finishes (+1 s) and before baseline-1 is submitted (+2 s)."""
+    return [sample(offset, avg10=1.0) for offset in (1_250_000_000, 1_500_000_000, 1_750_000_000)]
+
+
+def test_samples_only_between_steps_mean_no_overlap():
+    rows = flatten_run(validate(make_result(), between_steps(), "cpu"))
+    assert {row["telemetry_status"] for row in rows} == {"no_overlap"}
+    assert {row["telemetry_coverage"] for row in rows} == {None}
+    assert {row["telemetry_sample_count"] for row in rows} == {0}
+
+
+def test_one_sample_inside_one_step_means_present():
+    inside_clean = sample(6_500_000_000, avg10=1.0)  # clean runs from +6 s to +7.000999 s
+    rows = flatten_run(validate(make_result(), between_steps() + [inside_clean], "cpu"))
+    assert {row["telemetry_status"] for row in rows} == {"present"}
+    assert [row["telemetry_sample_count"] for row in rows] == [0, 0, 0, 1, 0]
+    assert all(row["telemetry_coverage"] is not None for row in rows)

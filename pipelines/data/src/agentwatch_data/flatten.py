@@ -110,11 +110,17 @@ def agent_model(result: dict) -> str | None:
 
 
 def telemetry_status(run: RawRun, steps: list[tuple[str, dict]]) -> str:
+    """present only when some sample falls inside some step's own window.
+
+    The span from the first submission to the last finish also covers the idle gaps
+    between steps, so samples taken only in those gaps describe no step.
+    """
     if run.telemetry_status != TELEMETRY_PRESENT:
         return run.telemetry_status
-    start = min(step["submitted_ns"] for _, step in steps)
-    end = max(step["finished_ns"] for _, step in steps)
-    overlaps = any(start <= sample["timestamp_ns"] <= end for sample in run.samples)
+    windows = [(step["submitted_ns"], step["finished_ns"]) for _, step in steps]
+    overlaps = any(
+        start <= sample["timestamp_ns"] <= end for sample in run.samples for start, end in windows
+    )
     return TELEMETRY_PRESENT if overlaps else NO_OVERLAP
 
 
