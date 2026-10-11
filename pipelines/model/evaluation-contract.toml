@@ -8,10 +8,13 @@ version = "eval-contract-v1"
 status = "proposed"
 
 [dataset]
-# Compatible minor versions (steps-v1.x, which only add columns) are also accepted.
-schema_version = "steps-v1"
+# Later compatible minor versions (steps-v1.x, which only add columns) are also accepted.
+schema_version = "steps-v1.1"
 accept_compatible_minor_versions = true
-label_rules = "labels-v1"
+# Pinned exactly: a label-rule change can change labels, so schema compatibility never
+# permits a different label version. Reports record the full label_version with its
+# fingerprint, for example labels-v1.1+740e0355.
+label_rules = "labels-v1.1"
 # Must match RESOURCE_CLASSES in pipelines/data/src/agentwatch_data/schema.py.
 classes = ["none", "cpu_sandbox", "inference", "retrieval"]
 classification_target = "label_resource"
@@ -24,8 +27,8 @@ group_key = "task_id"
 train_fraction = 0.70
 validation_fraction = 0.15
 test_fraction = 0.15
-# At least this many injection methods appear only in the test split. Needs the
-# injection_method lineage column and at least two injection methods.
+# At least this many injection methods, from the injection_method lineage column, appear
+# only in the test split. Needs at least two injection methods; one exists today.
 held_out_injection_methods = 1
 # Needs real task identity from step events; the current task_id is an interim
 # placeholder that can split one project across splits.

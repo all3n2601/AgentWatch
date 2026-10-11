@@ -10,11 +10,12 @@ must be accepted or changed before first use).
 
 ## Dataset and splits
 
-Uses `steps-v1` or a compatible minor version (`steps-v1.x`, which only adds columns), `labels-v1`,
-the classes `none`, `cpu_sandbox`, `inference`, and `retrieval`, and the 70/15/15 split grouped by
-`task_id` from [the data card](data-card.md). The test split contains `measured` runs only and is
-frozen, with its hash recorded, before any tuning. Tuning, calibration, and the abstention
-threshold use the validation split only.
+Uses `steps-v1.1` or a later compatible minor version (`steps-v1.x`, which only adds columns),
+exactly `labels-v1.1`, the classes `none`, `cpu_sandbox`, `inference`, and `retrieval`, and the
+70/15/15 split grouped by `task_id` from [the data card](data-card.md). The test split contains
+`measured` runs only and is frozen, with its hash recorded, before any tuning. Label versions do
+not follow the schema's compatible-minor rule: any other label version needs a contract change.
+Tuning, calibration, and the abstention threshold use the validation split only.
 
 | Requirement | Basis |
 |---|---|
@@ -48,8 +49,8 @@ Some gates cannot be evaluated yet and are reported as not evaluated until their
 | Gate | Needs |
 |---|---|
 | Unseen tasks, and `task_id`-grouped bootstrap intervals | Real task identity in step events; today's `task_id` is an interim placeholder that can place one project in several splits |
-| Held-out injection method | The `injection_method` lineage column and at least two injection methods |
-| Mixed-contention gain | Label rules that define mixed contention and ties; `labels-v1` does not |
+| Held-out injection method | At least two values of the `injection_method` lineage column; only `worker_queue_blocker` exists today |
+| Mixed-contention gain | Label rules that define mixed contention and ties; `labels-v1.1` does not |
 
 ## Promotion
 
@@ -66,12 +67,13 @@ against the incumbent or the best model accepted on that split:
 The rule baseline is the first classification incumbent. After 5 promotion evaluations on one
 test split (**Proposed**), a new test split is frozen from newly measured runs.
 
-Each evaluation report records the contract version and contract hash, the dataset, label, and
-test-split versions, every gate's outcome (pass, fail, inconclusive, or not evaluated), per-class
-precision, recall, and abstention, and 95% bootstrap intervals for macro F1 and MAE resampled by
-`task_id`. Failed and inconclusive results are kept. The contract hash is the first 8 hex digits
-of the SHA-256 of the parsed TOML serialized as canonical JSON (sorted keys, no whitespace), so
-line endings and comment-only edits do not change it.
+Each evaluation report records the contract version and contract hash, the dataset version, the
+full `label_version` including its fingerprint, the test-split hash, every gate's outcome (pass,
+fail, inconclusive, or not evaluated), per-class precision, recall, and abstention, and 95%
+bootstrap intervals for macro F1 and MAE resampled by `task_id`. Failed and inconclusive results
+are kept. The contract hash is the first 8 hex digits of the SHA-256 of the parsed TOML serialized
+as canonical JSON (sorted keys, no whitespace), so line endings and comment-only edits do not
+change it.
 
 ## Change policy
 
