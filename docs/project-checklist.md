@@ -275,8 +275,8 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   recorded. Verified against the live ingestion API with seven real runs.
 - [x] Dataset build (2026-10-11): `make dataset` writes a release named by a content-derived
   `dataset_version` with `steps.parquet` and `manifest.json`; rebuilds reproduce it byte for
-  byte, failed builds write nothing, and manifests list every rejection with host paths
-  redacted. Plan and dependencies in [the data pipeline plan](data-pipeline-plan.md).
+  byte, failed builds write nothing, and every build (new or reused) writes a report listing its
+  sources and rejections with host paths redacted. Plan and dependencies in [the data pipeline plan](data-pipeline-plan.md).
 - [x] Single-resource labels and the excess-latency target from a frozen, hashed rule file
   (`labels-v1`), with unit tests in `pipelines/data/tests/test_dataset_labels.py`.
 

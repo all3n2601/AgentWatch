@@ -33,8 +33,16 @@ def evidence(tmp_path):
     return directory
 
 
-def build_from(directory, output, **kwargs):
+def result_from(directory, output, **kwargs):
     return build([Source("local", str(directory))], output, now=NOW, **kwargs)
+
+
+def build_from(directory, output, **kwargs):
+    return result_from(directory, output, **kwargs).release
+
+
+def report_of(result):
+    return json.loads(result.report.read_text())
 
 
 def manifest_of(release):
@@ -43,6 +51,10 @@ def manifest_of(release):
 
 def leftover_staging(output):
     return [path for path in output.iterdir() if path.name.startswith(".building-")]
+
+
+def releases_in(output):
+    return [path for path in output.iterdir() if path.name.startswith(f"{SCHEMA_VERSION}+")]
 
 
 def test_release_holds_the_dataset_and_manifest(evidence, tmp_path):
@@ -58,8 +70,7 @@ def test_release_holds_the_dataset_and_manifest(evidence, tmp_path):
     assert (manifest["rows"], manifest["runs"], manifest["tasks"]) == (7, 1, 1)
     assert manifest["label_resource"] == {"cpu_sandbox": 1, "none": 6}
     assert manifest["telemetry_status"] == {"present": 7}
-    assert manifest["created_at"] == NOW.isoformat()
-    assert manifest["rejections"] == [] and manifest["duplicate_copies"] == 0
+    assert not {"rejections", "sources", "duplicate_copies"} & manifest.keys()  # content only
     assert manifest["label_version"].startswith("labels-v1.1+")
 
 
@@ -108,14 +119,14 @@ def test_rejected_runs_are_reported_with_redacted_origins(evidence, tmp_path):
     invalid = make_result()
     invalid["clean"]["queue_seconds"] = 5.0
     write_run(evidence / "cpu-invalid", invalid)
-    release = build_from(evidence, tmp_path / "out")
-    manifest = manifest_of(release)
-    stages = sorted(item["stage"] for item in manifest["rejections"])
+    result = result_from(evidence, tmp_path / "out")
+    report = report_of(result)
+    stages = sorted(item["stage"] for item in report["rejections"])
     assert stages == ["extract", "flatten"]
-    text = (release / MANIFEST_FILE).read_text()
+    text = result.report.read_text()
     assert str(tmp_path) not in text and str(Path.home()) not in text
     assert "<local:evidence>/cpu-invalid" in text
-    assert manifest["rows"] == 7  # the good run still builds
+    assert manifest_of(result.release)["rows"] == 7  # the good run still builds
 
 
 def test_unreadable_source_writes_nothing(tmp_path):
@@ -176,7 +187,7 @@ def test_a_failed_write_leaves_no_partial_release(evidence, tmp_path, monkeypatc
     output = tmp_path / "out"
     with pytest.raises(OSError, match="No space left"):
         build_from(evidence, output)
-    assert list(output.iterdir()) == []
+    assert list(output.iterdir()) == []  # no release, no staging, no report
 
 
 def test_at_least_one_source_is_required(tmp_path):
@@ -197,8 +208,10 @@ def test_source_specs_round_trip():
 def test_cli_prints_the_release_and_exits_zero(evidence, tmp_path, capsys):
     code = main(["--source", f"local:{evidence}", "--output", str(tmp_path / "out")])
     assert code == 0
-    printed = Path(capsys.readouterr().out.strip())
-    assert printed.parent == tmp_path / "out" and (printed / DATASET_FILE).exists()
+    printed = dict(line.split(": ", 1) for line in capsys.readouterr().out.strip().splitlines())
+    release, report = Path(printed["release"]), Path(printed["report"])
+    assert release.parent == tmp_path / "out" and (release / DATASET_FILE).exists()
+    assert report.parent == tmp_path / "out" / "builds" and report.exists()
 
 
 @pytest.mark.parametrize(
@@ -216,10 +229,10 @@ def test_sources_with_the_same_name_get_distinct_labels(tmp_path):
         Source("local", str(tmp_path / "a" / "runs")),
         Source("local", str(tmp_path / "b" / "runs")),
     ]
-    release = build(sources, tmp_path / "out", now=NOW)
-    labels = [item["source"] for item in manifest_of(release)["sources"]]
+    result = build(sources, tmp_path / "out", now=NOW)
+    labels = [item["source"] for item in report_of(result)["sources"]]
     assert labels == ["<local:runs#1>", "<local:runs#2>"]
-    assert str(tmp_path) not in (release / MANIFEST_FILE).read_text()
+    assert str(tmp_path) not in result.report.read_text()
 
 
 def test_relative_local_sources_are_redacted(evidence, tmp_path, monkeypatch):
@@ -227,8 +240,8 @@ def test_relative_local_sources_are_redacted(evidence, tmp_path, monkeypatch):
     bad["clean"]["queue_seconds"] = 5.0
     write_run(evidence / "cpu-invalid", bad)
     monkeypatch.chdir(evidence.parent)
-    release = build([Source("local", "evidence")], tmp_path / "out", now=NOW)
-    text = (release / MANIFEST_FILE).read_text()
+    result = build([Source("local", "evidence")], tmp_path / "out", now=NOW)
+    text = result.report.read_text()
     assert str(tmp_path) not in text and "<local:evidence>/cpu-invalid" in text
 
 
@@ -236,13 +249,16 @@ def test_a_concurrent_build_that_finishes_first_is_verified(evidence, tmp_path, 
     real_replace = build_module.os.replace
 
     def other_builder_won(source, target):
+        if not Path(source).is_dir():  # the build report's own atomic rename
+            return real_replace(source, target)
         shutil.copytree(source, target)  # the other build's identical release appears first
         raise OSError("Directory not empty")
 
     monkeypatch.setattr(build_module.os, "replace", other_builder_won)
     output = tmp_path / "out"
-    release = build_from(evidence, output)
-    assert (release / DATASET_FILE).exists() and leftover_staging(output) == []
+    result = result_from(evidence, output)
+    assert result.reused and (result.release / DATASET_FILE).exists()
+    assert leftover_staging(output) == []
     monkeypatch.setattr(build_module.os, "replace", real_replace)
 
 
@@ -274,3 +290,49 @@ def test_module_runs_as_a_command(evidence, tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit) as exited:
         runpy.run_module("agentwatch_data.build", run_name="__main__")
     assert exited.value.code == 0
+
+
+# Per-build reports (Allen's #14 review)
+
+
+def test_every_build_writes_its_own_report(evidence, tmp_path):
+    first = result_from(evidence, tmp_path / "out")
+    second = result_from(evidence, tmp_path / "out")
+    assert first.release == second.release and first.report != second.report
+    assert (first.reused, second.reused) == (False, True)
+    reports = sorted((tmp_path / "out" / "builds").iterdir())
+    assert len(reports) == 2
+    assert stat.S_IMODE(second.report.stat().st_mode) == 0o644
+    report = report_of(second)
+    assert report["dataset_version"] == second.release.name and report["reused_release"]
+    assert (
+        report_of(first)["release"] == first.release.name and not report_of(first)["reused_release"]
+    )
+
+
+def test_rebuild_after_new_rejected_evidence_records_the_rejection(evidence, tmp_path):
+    """Allen's repro: the accepted rows are unchanged, so the release is reused, but the
+    newly rejected run must still be reported."""
+    first = result_from(evidence, tmp_path / "out")
+    invalid = make_result()
+    invalid["clean"]["queue_seconds"] = 5.0
+    write_run(evidence / "cpu-invalid", invalid)
+    second = result_from(evidence, tmp_path / "out")
+    assert second.release == first.release and second.reused
+    report = report_of(second)
+    assert [item["stage"] for item in report["rejections"]] == ["extract"]
+    assert "Duration does not match" in report["rejections"][0]["reason"]
+    assert report["sources"] == [{"source": "<local:evidence>", "runs": 1, "rejections": 1}]
+    assert report_of(first)["rejections"] == []
+
+
+def test_unchanged_data_from_changed_sources_reports_the_new_sources(evidence, tmp_path):
+    first = result_from(evidence, tmp_path / "out")
+    mirror = tmp_path / "mirror"
+    shutil.copytree(evidence, mirror)
+    sources = [Source("local", str(evidence)), Source("local", str(mirror))]
+    second = build(sources, tmp_path / "out", now=NOW)
+    assert second.release == first.release and second.reused
+    report = report_of(second)
+    assert [item["source"] for item in report["sources"]] == ["<local:evidence>", "<local:mirror>"]
+    assert report["duplicate_copies"] == 1 and report["rejections"] == []

@@ -2,11 +2,15 @@
 
     python -m agentwatch_data.build --source local:.data --output .data/datasets
 
-A release is a directory named by its dataset version, holding steps.parquet and
-manifest.json. The version is derived from the rows themselves, so rebuilding from the same
-evidence with the same rules and code produces the same version. A build either writes a
-complete release or nothing: unreadable sources, invalid rules, schema violations, and empty
-results fail the build, while untrustworthy individual runs are rejected and reported.
+A release is an immutable directory named by its dataset version, holding steps.parquet and
+manifest.json, which describe only the dataset content. The version is derived from the rows,
+so rebuilding from the same evidence with the same rules and code reuses the same release.
+
+Every successful build, new or reused, also writes its own report to builds/<build id>.json
+with that build's sources, duplicate copies, and rejected runs. A rebuild that reuses a
+release therefore still records evidence rejected this time. A failed build writes nothing:
+unreadable sources, invalid rules, schema violations, and empty results stop it, while
+untrustworthy individual runs are rejected and reported.
 """
 
 import argparse
@@ -17,6 +21,7 @@ import os
 import shutil
 import sys
 import tempfile
+import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,7 +47,7 @@ from agentwatch_data.schema import COLUMNS, SCHEMA_VERSION, SchemaError, validat
 
 logger = logging.getLogger("agentwatch_data.build")
 
-DATASET_FILE, MANIFEST_FILE = "steps.parquet", "manifest.json"
+DATASET_FILE, MANIFEST_FILE, BUILDS_DIR = "steps.parquet", "manifest.json", "builds"
 CONDITION_ORDER = {"baseline": 0, "clean": 1, "contended": 2}
 ARROW_TYPES = {
     "string": pa.string(),
@@ -59,6 +64,13 @@ ALL_COLUMNS = frozenset(column.name for column in COLUMNS)
 
 class BuildError(RuntimeError):
     """The build cannot produce a trustworthy release; nothing was written."""
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    release: Path  # the immutable release directory
+    report: Path  # this build's report: sources, duplicates, and rejections
+    reused: bool  # the release already existed and was verified, not rewritten
 
 
 @dataclass(frozen=True)
@@ -153,8 +165,8 @@ def build(
     output_dir: Path,
     rules: Path | None = None,
     now: datetime | None = None,
-) -> Path:
-    """Build a release under output_dir and return its directory."""
+) -> BuildResult:
+    """Build or reuse a release under output_dir, and write this build's report."""
     if not sources:
         raise BuildError("At least one source is required")
     redact = Redactor(sources)
@@ -197,36 +209,70 @@ def build(
     except SchemaError as error:
         raise BuildError(f"Rows violate the dataset schema: {error}") from error
 
+    built_at = now or datetime.now(UTC)
+    build_id = f"{built_at:%Y%m%dT%H%M%S%fZ}-{uuid.uuid4().hex[:8]}"
     output_dir.mkdir(parents=True, exist_ok=True)
     release = output_dir / version
-    if release.exists():
-        return verify_existing(release, digest)
+    reused = release.exists() and verify_existing(release, digest)
+    if not reused:
+        reused = write_release(release, final, version, digest, config.label_version)
+    report = write_report(
+        output_dir / BUILDS_DIR / f"{build_id}.json",
+        {
+            "build_id": build_id,
+            "built_at": built_at.isoformat(),
+            "dataset_version": version,
+            "release": version,
+            "reused_release": reused,
+            "label_version": config.label_version,
+            "builder_version": __version__,
+            "rows": len(final),
+            "runs": len({row["run_id"] for row in final}),
+            "sources": source_summaries,
+            "duplicate_copies": len(merged.duplicates),
+            "rejections": rejections,
+        },
+    )
+    logger.info(
+        "%s %s: %d rows, %d rejections; report %s",
+        "Reused" if reused else "Built",
+        version,
+        len(final),
+        len(rejections),
+        report.name,
+    )
+    return BuildResult(release, report, reused)
 
-    staging = Path(tempfile.mkdtemp(prefix=".building-", dir=output_dir))
+
+def write_release(
+    release: Path, rows: list[dict], version: str, digest: str, label_version: str
+) -> bool:
+    """Write a release atomically. Returns True if a concurrent build had already written it.
+
+    The manifest holds only content-derived fields, so rebuilding the same evidence into an
+    empty output directory reproduces both files byte for byte. Build events live in reports.
+    """
+    staging = Path(tempfile.mkdtemp(prefix=".building-", dir=release.parent))
     try:
         # mkdtemp creates the directory owner-only; releases are read by other tools
         # (DVC, Airflow workers, training jobs) that may run as other users.
         staging.chmod(0o755)
         dataset = staging / DATASET_FILE
-        pq.write_table(pa.Table.from_pylist(final, schema=ARROW_SCHEMA), dataset)
+        pq.write_table(pa.Table.from_pylist(rows, schema=ARROW_SCHEMA), dataset)
         manifest = {
             "dataset_version": version,
             "schema_version": SCHEMA_VERSION,
-            "label_version": config.label_version,
+            "label_version": label_version,
             "builder_version": __version__,
-            "created_at": (now or datetime.now(UTC)).isoformat(),
-            "rows": len(final),
-            "runs": len({row["run_id"] for row in final}),
-            "tasks": len({row["task_id"] for row in final}),
+            "rows": len(rows),
+            "runs": len({row["run_id"] for row in rows}),
+            "tasks": len({row["task_id"] for row in rows}),
             "rows_sha256": digest,
             "parquet_sha256": file_sha256(dataset),
-            "label_resource": counts(final, "label_resource"),
-            "label_basis": counts(final, "label_basis"),
-            "condition": counts(final, "condition"),
-            "telemetry_status": counts(final, "telemetry_status"),
-            "sources": source_summaries,
-            "duplicate_copies": len(merged.duplicates),
-            "rejections": rejections,
+            "label_resource": counts(rows, "label_resource"),
+            "label_basis": counts(rows, "label_basis"),
+            "condition": counts(rows, "condition"),
+            "telemetry_status": counts(rows, "telemetry_status"),
         }
         (staging / MANIFEST_FILE).write_text(json_text(manifest), encoding="utf-8")
         try:
@@ -235,19 +281,22 @@ def build(
             if not release.exists():
                 raise
             return verify_existing(release, digest)  # a concurrent build finished first
+        return False
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    logger.info(
-        "Built %s: %d rows from %d runs, %d rejections",
-        version,
-        len(final),
-        manifest["runs"],
-        len(rejections),
-    )
-    return release
 
 
-def verify_existing(release: Path, digest: str) -> Path:
+def write_report(path: Path, report: dict) -> Path:
+    """Write a build report atomically, readable by other users."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json_text(report), encoding="utf-8")
+    temporary.chmod(0o644)
+    os.replace(temporary, path)
+    return path
+
+
+def verify_existing(release: Path, digest: str) -> bool:
     """A release with this version already exists; confirm it is intact and identical."""
     try:
         manifest = json.loads((release / MANIFEST_FILE).read_text(encoding="utf-8"))
@@ -259,7 +308,7 @@ def verify_existing(release: Path, digest: str) -> Path:
     if not intact:
         raise BuildError(f"Existing release {release.name} does not match its manifest")
     logger.info("Release %s already exists and is intact", release.name)
-    return release
+    return True
 
 
 def json_text(value) -> str:
@@ -280,11 +329,12 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try:
         sources = [Source.parse(text) for text in args.source]
-        release = build(sources, args.output, args.rules)
+        result = build(sources, args.output, args.rules)
     except (ValueError, BuildError) as error:
         print(f"Dataset build failed: {error}", file=sys.stderr)
         return 1
-    print(release)
+    print(f"release: {result.release}")
+    print(f"report: {result.report}")
     return 0
 
 
