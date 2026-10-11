@@ -4,6 +4,7 @@ Labels come from the experiment design (which resource was contended) and a froz
 noise threshold, never from the rule baseline, so model and rule can be compared fairly.
 """
 
+import logging
 import math
 import statistics
 import tomllib
@@ -11,8 +12,10 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 
-from agentwatch_data.extract import canonical_sha256
+from agentwatch_data.extract import Rejection, canonical_sha256
 from agentwatch_data.schema import RESOURCE_CLASSES
+
+logger = logging.getLogger(__name__)
 
 BASELINE, CLEAN, CONTENDED = "baseline", "clean", "contended"
 NO_INJECTION = "none"
@@ -85,11 +88,11 @@ def require_text(value, name: str) -> str:
 
 
 def load_config(path: Path | None = None) -> LabelConfig:
-    raw = (
-        path.read_text(encoding="utf-8")
-        if path is not None
-        else files("agentwatch_data").joinpath("labels.toml").read_text(encoding="utf-8")
-    )
+    source = path if path is not None else files("agentwatch_data").joinpath("labels.toml")
+    try:
+        raw = source.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise LabelingError(f"Label rules {source} cannot be read: {error}") from error
     try:
         rules = tomllib.loads(raw)
     except tomllib.TOMLDecodeError as error:
@@ -103,12 +106,13 @@ def load_config(path: Path | None = None) -> LabelConfig:
     for kind, table in rules["contention"].items():
         name = f"contention.{kind}"
         require_keys(table, name, {"resource", "injection_method"})
-        if table["resource"] not in contended_classes:
+        resource = require_text(table["resource"], f"{name}.resource")
+        if resource not in contended_classes:
             raise LabelingError(f"{name}.resource must be one of {sorted(contended_classes)}")
         method = require_text(table["injection_method"], f"{name}.injection_method")
         if method == NO_INJECTION:
             raise LabelingError(f"{name}.injection_method cannot be {NO_INJECTION!r}")
-        contention[kind] = Contention(table["resource"], method)
+        contention[kind] = Contention(resource, method)
     version = require_text(rules["version"], "version")
     multiplier = require_number(noise["stdev_multiplier"], "noise.stdev_multiplier", positive=True)
     floor = require_number(noise["min_seconds"], "noise.min_seconds", positive=False)
@@ -201,13 +205,24 @@ def label_run(rows: list[dict], config: LabelConfig) -> list[dict]:
     return labeled
 
 
-def label_rows(rows: list[dict], config: LabelConfig) -> list[dict]:
-    """Label rows from any number of runs, keeping their original order."""
+def label_rows(rows: list[dict], config: LabelConfig) -> tuple[list[dict], list[Rejection]]:
+    """Label rows from any number of runs, keeping the order of the runs that succeed.
+
+    A run whose evidence cannot be labeled is rejected with its reason and the other runs
+    continue, so one bad run cannot block every later build. Invalid rules are already
+    rejected by load_config before any run is labeled.
+    """
     positions: dict[str, list[int]] = {}
     for index, row in enumerate(rows):
         positions.setdefault(row["run_id"], []).append(index)
-    labeled: list[dict] = [{} for _ in rows]
-    for indexes in positions.values():
-        for index, row in zip(indexes, label_run([rows[i] for i in indexes], config)):
-            labeled[index] = row
-    return labeled
+    labeled: dict[int, dict] = {}
+    rejections = []
+    for run_id, indexes in positions.items():
+        try:
+            run_rows = label_run([rows[i] for i in indexes], config)
+        except LabelingError as error:
+            logger.warning("Rejected run %s at labeling: %s", run_id, error)
+            rejections.append(Rejection(f"run {run_id}", str(error)))
+            continue
+        labeled.update(zip(indexes, run_rows))
+    return [labeled[index] for index in sorted(labeled)], rejections

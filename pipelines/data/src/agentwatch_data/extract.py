@@ -14,6 +14,7 @@ import hashlib
 import http.client
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -33,6 +34,11 @@ logger = logging.getLogger(__name__)
 # Local run directories are named <prefix>-<anything>; the Makefile writes cpu-demo,
 # coding-demo, and llm-demo. The LLM loop records coding experiments.
 KIND_BY_DIRECTORY_PREFIX = {"cpu": "cpu", "coding": "coding", "llm": "coding"}
+# Directories whose runs must carry the LLM agent evidence (result["agent"]).
+AGENT_DIRECTORY_PREFIXES = frozenset({"llm"})
+# Experiment check names are identifiers; anything else could not be stored unambiguously
+# in the comma-separated failed_checks column.
+CHECK_NAME = re.compile(r"[a-z][a-z0-9_]*")
 RESULTS_FILE, SAMPLES_FILE = "results.json", "samples.jsonl"
 API_MAX_PAGE_SIZE = 100  # GET /v1/runs rejects larger limits
 RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
@@ -81,20 +87,29 @@ class Rejection:
     reason: str
 
 
+@dataclass(frozen=True)
+class Duplicate:
+    origin: str  # an identical extra copy that was not kept
+    run_id: str
+
+
 @dataclass
 class Extraction:
     runs: list[RawRun] = field(default_factory=list)
     rejections: list[Rejection] = field(default_factory=list)
-    duplicates: list[str] = field(default_factory=list)  # origins of identical extra copies
+    duplicates: list[Duplicate] = field(default_factory=list)
     # Run IDs with conflicting evidence. Kept as data, not only as rejection text, so a
     # copy of the same run arriving later from another source is rejected too.
     conflicted: set[str] = field(default_factory=set)
 
 
 class ApiRunRow(BaseModel):
-    """One entry of GET /v1/runs, validated before its evidence is trusted."""
+    """One entry of GET /v1/runs, validated before its evidence is trusted.
 
-    model_config = ConfigDict(extra="ignore")
+    Strict, so an integer created_at is not read as a Unix timestamp.
+    """
+
+    model_config = ConfigDict(extra="ignore", strict=True)
     run_id: UUID
     kind: Literal["coding", "cpu"]
     result: dict
@@ -144,9 +159,17 @@ def validate(
     origin: str = "",
     telemetry_status: str | None = None,
 ) -> RawRun:
-    """Return contract-normalized evidence, so coerced values carry their declared types."""
-    run = RunResult.model_validate(result)
-    checked = [Sample.model_validate(sample).model_dump(mode="json") for sample in samples]
+    """Return contract-normalized evidence after strict validation.
+
+    Validation is strict and JSON-mode: the ingestion contracts would otherwise turn true
+    into 1 and "10" into 10, so evidence of the wrong type would pass every later check.
+    """
+    run = RunResult.model_validate_json(json.dumps(result), strict=True)
+    checked = [
+        Sample.model_validate_json(json.dumps(sample), strict=True).model_dump(mode="json")
+        for sample in samples
+    ]
+    check_experiment(run.model_dump(mode="json"), kind)
     order = sorted(range(len(samples)), key=lambda index: checked[index]["timestamp_ns"])
     normalized_samples = collapse_duplicate_samples([checked[index] for index in order])
     normalized_result = run.model_dump(mode="json")
@@ -168,13 +191,29 @@ def validate(
     )
 
 
+def check_experiment(result: dict, kind: str) -> None:
+    """Require the evidence to agree with its declared kind and to name checks plainly."""
+    tests = result["experiment"].get("tests_per_step")
+    if kind == "coding" and not (type(tests) is int and tests >= 1):
+        raise ValueError("A coding run must declare tests_per_step; this evidence is a CPU run")
+    if kind == "cpu" and tests is not None:
+        raise ValueError("A cpu run must not declare tests_per_step; this evidence is a coding run")
+    for name in result["checks"]:
+        if not CHECK_NAME.fullmatch(name):
+            raise ValueError(f"Experiment check name {name!r} is not a lowercase identifier")
+
+
 def reject(extraction: Extraction, origin: str, reason: str) -> None:
     logger.warning("Rejected run evidence from %s: %s", origin, reason)
     extraction.rejections.append(Rejection(origin, reason))
 
 
+def directory_prefix(name: str) -> str:
+    return name.split("-", 1)[0]
+
+
 def kind_for_directory(name: str) -> str | None:
-    return KIND_BY_DIRECTORY_PREFIX.get(name.split("-", 1)[0])
+    return KIND_BY_DIRECTORY_PREFIX.get(directory_prefix(name))
 
 
 def extract_local(data_dir: Path) -> Extraction:
@@ -195,6 +234,10 @@ def extract_local(data_dir: Path) -> Extraction:
             samples = read_jsonl(samples_path) if samples_path.exists() else []
             status = None if samples_path.exists() else TELEMETRY_MISSING
             run = validate(result, samples, kind, origin=str(run_dir), telemetry_status=status)
+            if directory_prefix(run_dir.name) in AGENT_DIRECTORY_PREFIXES and not isinstance(
+                run.result.get("agent"), dict
+            ):
+                raise ValueError("An llm-* run has no agent evidence; the LLM loop did not finish")
         except (OSError, ValueError) as error:  # pydantic ValidationError is a ValueError
             reject(extraction, str(run_dir), summarize(error))
             continue
@@ -247,7 +290,7 @@ def parse_page(page, url: str) -> tuple[list, int | None]:
 def extract_api_row(base: str, row, extraction: Extraction, timeout: float, retry: RetryPolicy):
     origin = f"{base}/v1/runs/{row.get('run_id') if isinstance(row, dict) else '?'}"
     try:
-        listed = ApiRunRow.model_validate(row)
+        listed = ApiRunRow.model_validate_json(json.dumps(row))
     except ValidationError as error:
         reject(extraction, origin, summarize(error))
         return
@@ -320,7 +363,15 @@ def deduplicate(extraction: Extraction) -> Extraction:
             continue
         keep = next((copy for copy in found if copy.recorded_at is not None), found[0])
         unique.runs.append(keep)
-        unique.duplicates.extend(copy.origin for copy in found if copy is not keep)
+        unique.duplicates.extend(Duplicate(c.origin, run_id) for c in found if c is not keep)
+    # A copy dropped earlier as an identical duplicate is rejected once its run conflicts.
+    still_duplicates = []
+    for duplicate in unique.duplicates:
+        if duplicate.run_id in unique.conflicted:
+            reject(unique, duplicate.origin, f"Run {duplicate.run_id} has conflicting evidence")
+        else:
+            still_duplicates.append(duplicate)
+    unique.duplicates = still_duplicates
     return unique
 
 

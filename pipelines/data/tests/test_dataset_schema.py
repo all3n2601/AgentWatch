@@ -82,6 +82,7 @@ def test_release_columns_are_required_when_requested(valid_row):
         ({"tests_per_step": -3}, "tests_per_step must be at least 0"),
         ({"worker_capacity": 0}, "worker_capacity must be at least 1"),
         ({"cgroup_throttled_usec_delta": 2**64}, "outside the int64 range"),
+        ({"cpu_seconds": 10**400}, r"too large for float64 \(401-digit integer\)"),
         ({"cpu_pressure_max_avg10": 150.0}, "at most 100"),
         ({"telemetry_coverage": 1.2}, "telemetry_coverage must be at most 1"),
         ({"label_resource": "gpu"}, "label_resource must be one of"),

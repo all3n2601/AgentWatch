@@ -3,8 +3,8 @@
 Only FEATURE columns may be model inputs. The other roles keep rows traceable and
 labels reproducible without leaking experiment design into predictions.
 
-steps-v1.1 adds columns to steps-v1 without changing any existing column, so v1 readers
-remain valid for the columns they know.
+steps-v1.1 and steps-v1.2 add columns to steps-v1 without changing any existing column, so
+v1 readers remain valid for the columns they know.
 """
 
 import math
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-SCHEMA_VERSION = "steps-v1.1"
+SCHEMA_VERSION = "steps-v1.2"
 
 RESOURCE_CLASSES = ("none", "cpu_sandbox", "inference", "retrieval")
 SOURCES = ("measured", "simulated", "rcaeval")
@@ -167,6 +167,22 @@ COLUMNS = (
         "Run telemetry: present, empty, missing, or no_overlap",
         allowed=TELEMETRY_STATUSES,
     ),
+    Column(
+        "sampling_interval_seconds",
+        "float64",
+        Role.LINEAGE,
+        "Sampler interval declared by the run; telemetry_coverage is judged against it",
+        True,
+        minimum=0,
+    ),
+    Column(
+        "measured_sampling_interval_seconds",
+        "float64",
+        Role.LINEAGE,
+        "Median gap between the run's samples, for comparison with the declared interval",
+        True,
+        minimum=0,
+    ),
     seconds("baseline_mean_seconds", Role.LINEAGE, "Clean baseline mean duration B"),
     seconds("noise_threshold_seconds", Role.LINEAGE, "Frozen slowdown threshold"),
     Column(
@@ -234,8 +250,13 @@ def check_value(column: Column, value) -> str | None:
             return f"must be an integer, got {value!r}"
         if not INT64_MIN <= value <= INT64_MAX:
             return f"is outside the int64 range: {value}"
-    elif not math.isfinite(value):
-        return f"must be finite, got {value!r}"
+    else:
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:  # an integer too large to be a float64
+            return f"is too large for float64 ({len(str(abs(value)))}-digit integer)"
+        if not finite:
+            return f"must be finite, got {value!r}"
     if column.minimum is not None and value < column.minimum:
         return f"must be at least {column.minimum}, got {value}"
     if column.maximum is not None and value > column.maximum:
