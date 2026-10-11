@@ -268,6 +268,11 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   labels for runs with different workload output, and a label fingerprint covering rule values
   and labeling code. Golden test on a recorded run in `pipelines/data/tests/fixtures/`; 100%
   line and branch coverage of `pipelines/data`.
+- [x] Verification review fixes (2026-10-11), `steps-v1.2`: flattening and labeling reject bad
+  runs individually instead of failing a whole build; strict JSON validation of evidence (no
+  boolean or string coercion); evidence kind, check names, and LLM agent evidence verified;
+  telemetry coverage judged against the declared sampling interval, with the measured interval
+  recorded. Verified against the live ingestion API with seven real runs.
 - [x] Single-resource labels and the excess-latency target from a frozen, hashed rule file
   (`labels-v1`), with unit tests in `pipelines/data/tests/test_dataset_labels.py`.
 

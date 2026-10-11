@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from agentwatch_data.extract import extract_local
-from agentwatch_data.flatten import flatten_run
+from agentwatch_data.flatten import flatten_runs
 from agentwatch_data.labels import label_rows, load_config
 from agentwatch_data.schema import COLUMNS, RELEASE_COLUMNS, SCHEMA_VERSION, validate_rows
 
@@ -18,7 +18,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def build_rows():
     extraction = extract_local(FIXTURES)
     assert extraction.rejections == []
-    return label_rows([row for run in extraction.runs for row in flatten_run(run)], load_config())
+    rows, flatten_rejections = flatten_runs(extraction.runs)
+    labeled, label_rejections = label_rows(rows, load_config())
+    assert flatten_rejections == [] and label_rejections == []
+    return labeled
 
 
 @pytest.fixture(scope="module")
@@ -50,7 +53,10 @@ def test_macos_telemetry_is_present_but_unavailable(rows):
     assert {row["telemetry_status"] for row in rows} == {"present"}
     assert not any(row["cpu_pressure_available"] or row["cgroup_available"] for row in rows)
     assert all(row["cpu_pressure_max_avg10"] is None for row in rows)
-    assert all(0 < row["telemetry_coverage"] <= 1 for row in rows)
+    assert all(row["telemetry_coverage"] == 1.0 for row in rows)
+    assert {row["sampling_interval_seconds"] for row in rows} == {0.25}
+    [measured] = {row["measured_sampling_interval_seconds"] for row in rows}
+    assert measured == pytest.approx(0.255, abs=0.01)
 
 
 def test_lineage_identifies_versions_and_evidence(rows):

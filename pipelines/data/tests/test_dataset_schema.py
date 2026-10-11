@@ -12,6 +12,7 @@ from agentwatch_data.schema import (
     Role,
     SchemaError,
     feature_columns,
+    finite_number,
     validate_rows,
 )
 from test_dataset_end_to_end import build_rows
@@ -82,6 +83,7 @@ def test_release_columns_are_required_when_requested(valid_row):
         ({"tests_per_step": -3}, "tests_per_step must be at least 0"),
         ({"worker_capacity": 0}, "worker_capacity must be at least 1"),
         ({"cgroup_throttled_usec_delta": 2**64}, "outside the int64 range"),
+        ({"cpu_seconds": 10**400}, r"too large for float64 \(401-digit integer\)"),
         ({"cpu_pressure_max_avg10": 150.0}, "at most 100"),
         ({"telemetry_coverage": 1.2}, "telemetry_coverage must be at most 1"),
         ({"label_resource": "gpu"}, "label_resource must be one of"),
@@ -123,3 +125,11 @@ def test_rows_must_have_exactly_the_schema_columns(valid_row, change):
 
 def test_timezone_aware_saved_time_is_valid(valid_row):
     validate_rows([valid_row | {"recorded_at": datetime(2026, 10, 9, tzinfo=UTC)}])
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0.25, 0.25), (3, 3.0), (True, None), ("1", None), (float("nan"), None), (10**400, None)],
+)
+def test_finite_number_never_raises(value, expected):
+    assert finite_number(value) == expected
