@@ -1,6 +1,7 @@
 # Step label rules, frozen before any dataset is built.
-# Any change to this file changes label_version, so retuned labels are never silent.
-version = "labels-v1"
+# label_version fingerprints these values and the labeling code, so retuned labels are
+# never silent. Comments and formatting do not change it.
+version = "labels-v1.1"
 
 [noise]
 # A contended step is labeled with its resource only when its slowdown against the
@@ -11,8 +12,14 @@ stdev_multiplier = 3.0
 # turn scheduler jitter into labels.
 min_seconds = 0.01
 
-[contention]
-# Resource each experiment kind contends in its "contended" condition. This is
-# experiment design used for labeling only; it is never a model feature.
-cpu = "cpu_sandbox"
-coding = "cpu_sandbox"
+# What each experiment kind applies in its "contended" condition. This is experiment
+# design used for labeling and evaluation splits only; it is never a model feature.
+
+[contention.cpu]
+resource = "cpu_sandbox"
+# A competing task is submitted ahead of the measured step to a single-worker pool.
+injection_method = "worker_queue_blocker"
+
+[contention.coding]
+resource = "cpu_sandbox"
+injection_method = "worker_queue_blocker"

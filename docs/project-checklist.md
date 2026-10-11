@@ -262,11 +262,17 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   ingestion API on a test database with seven real runs; 100% line and branch coverage of
   `pipelines/data`.
 - [x] One row per step with per-window resource readings (merged in #3).
+- [x] Row and label integrity (2026-10-09), `steps-v1.1` and `labels-v1.1`: conditions taken from
+  the result structure, schema validation of every column (type, nullability, allowed values,
+  bounds), telemetry coverage and status, run checks and injection method as lineage, refused
+  labels for runs with different workload output, and a label fingerprint covering rule values
+  and labeling code. Golden test on a recorded run in `pipelines/data/tests/fixtures/`; 100%
+  line and branch coverage of `pipelines/data`.
 - [x] Single-resource labels and the excess-latency target from a frozen, hashed rule file
   (`labels-v1`), with unit tests in `pipelines/data/tests/test_dataset_labels.py`.
 
 - [ ] Define labels, slowdown thresholds, noise treatment, mixed-resource labels, and ties.
-  Single-resource labels, thresholds, and noise treatment are defined in `labels-v1`; mixed
+  Single-resource labels, thresholds, and noise treatment are defined in `labels-v1.1`; mixed
   contention and ties are not yet defined and fail labeling.
 - [ ] Choose whether the regression target is observed queue time or estimated excess latency.
 - [ ] Generate clean, isolated-contention, and mixed-contention replays over fixed tasks.
@@ -274,7 +280,8 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
 - [ ] Validate data with TFDV or an explicitly chosen equivalent.
 - [ ] Freeze splits grouped by task and related replay to prevent leakage.
 - [ ] Hold out unseen tasks and at least one injection method.
-- [ ] Exclude injection configuration and label-generation metadata from model features.
+- [x] Exclude injection configuration and label-generation metadata from model features
+  (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
 - [ ] Evaluate the expanded rule baseline before training the learned model.
 
 **Exit test:** Rebuild labels and features from recorded evidence. Validate schema, missingness,
