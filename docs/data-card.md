@@ -1,13 +1,14 @@
 # AgentWatch step dataset — data card
 
-Status: draft schema `steps-v1.1`, labels `labels-v1.1`. No dataset release exists yet. Column
+Status: draft schema `steps-v1.2`, labels `labels-v1.1`. No dataset release exists yet. Column
 definitions live in `pipelines/data/src/agentwatch_data/schema.py`; a test fails if this card
 misses a column. `validate_rows()` enforces every column's type, nullability, allowed values,
 and bounds, and a golden test runs a real recorded run through every stage against it.
 
-`steps-v1.1` only adds columns to `steps-v1` (`telemetry_coverage`, `telemetry_status`,
-`injection_method`, `agent_model`, `run_passed`, `failed_checks`, `schema_version`); no
-existing column changed meaning.
+`steps-v1.1` added `telemetry_coverage`, `telemetry_status`, `injection_method`,
+`agent_model`, `run_passed`, `failed_checks`, and `schema_version` to `steps-v1`; `steps-v1.2`
+adds `sampling_interval_seconds` and `measured_sampling_interval_seconds` and judges
+`telemetry_coverage` against the declared interval. No existing column changed meaning or type.
 
 ## Summary
 
@@ -37,21 +38,35 @@ Every row records its origin in `source`.
 ### Extraction guarantees
 
 Measured runs come from the ingestion API (`GET /v1/runs` and each run's `samples.jsonl`) or
-from local run directories named `cpu-*`, `coding-*`, or `llm-*` anywhere under a data
-directory. `pipelines/data/src/agentwatch_data/extract.py` enforces:
+from local run directories named `cpu`, `coding`, or `llm`, or starting with `cpu-`,
+`coding-`, or `llm-`, anywhere under a data directory.
+`pipelines/data/src/agentwatch_data/extract.py` enforces:
 
-- Every run, sample, and API history row is validated against the ingestion contracts. A run
-  that fails is recorded as a rejection with its reason; the other runs still extract.
+- Every run, sample, and API history row is validated **strictly** against the ingestion
+  contracts. Values of the wrong JSON type are rejected rather than coerced: `true` is not a
+  number, `"10"` is not an integer, and an integer is not a timestamp. A run that fails is
+  recorded as a rejection with its reason; the other runs still extract.
+- The evidence must match its declared kind: a `coding` run declares `tests_per_step`, and a
+  `cpu` run does not. A run in an `llm-*` directory must carry the agent evidence
+  (`result["agent"]`); without it the LLM loop did not finish.
+- Experiment check names must be lowercase identifiers (`[a-z][a-z0-9_]*`), so `failed_checks`
+  stays unambiguous.
 - Network failures are retried with bounded exponential backoff for timeouts, connection
-  errors, and HTTP 429/5xx. If a source still cannot be read, or returns a malformed response,
+  errors, and HTTP 429, 500, 502, 503, and 504. If a source still cannot be read, or returns a malformed response,
   extraction stops with an error instead of producing a partial dataset. A history page
   without `next_cursor` counts as malformed, never as the last page.
 - A run found more than once, locally or through the API, is kept once. Copies whose
-  normalized evidence disagrees are all rejected, and that run ID stays rejected when the
-  extraction is later combined with other sources.
+  normalized evidence disagrees are all rejected, including copies already set aside as
+  duplicates, and that run ID stays rejected when the extraction is later combined with other
+  sources.
 - Each run records whether it carried resource samples: `present`, `empty`, or `missing`
   (no samples file). The API cannot distinguish an absent file from an empty one.
 - Identical samples at the same timestamp are collapsed; disagreeing samples reject the run.
+
+Flattening and labeling also reject untrustworthy runs one at a time, with a reason, while the
+other runs continue (`flatten_runs` and `label_rows` return rows and rejections). Only invalid
+label rules or an unreadable source stop a build, so one bad run can never block every later
+build.
 
 ## Column roles
 
@@ -84,9 +99,9 @@ for training targets, baseline comparison, and traceability.
 | `cpu_pressure_max_avg10` | float, nullable | Maximum host CPU PSI `some avg10` (%) during the step |
 | `cpu_pressure_available` | bool | Whether PSI was readable during the step |
 | `cgroup_throttled_usec_delta` | int, nullable | cgroup v2 throttled time gained during the step |
-| `cgroup_available` | bool | Whether a throttling delta was measured: two or more readable counter samples in the window and no counter reset |
+| `cgroup_available` | bool | Whether a throttling delta was measured: at least two samples in the window, every one with a readable counter, and no decrease between consecutive readings |
 | `telemetry_sample_count` | int | Resource samples inside the step window |
-| `telemetry_coverage` | float, nullable | Samples inside the window ÷ samples expected for the step's duration at the run's measured sampling interval (the median gap between its samples), capped at 1. Null when the run's telemetry is not `present` or has fewer than two samples |
+| `telemetry_coverage` | float, nullable | Samples inside the window ÷ whole declared sampling intervals in the step (`floor(duration / sampling_interval_seconds)`), capped at 1. Judged against the declared interval because a measured one cannot reveal uniform sample loss. Null when telemetry is not `present`, no interval is declared, or the step is shorter than one interval |
 
 Missing readings stay null and are paired with an availability flag. They are never stored as
 zero, because a measured zero and an unavailable reading mean different things. On macOS, PSI and
@@ -124,7 +139,7 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
   booleans, or non-numeric) fail labeling instead of being guessed. Mixed contention is not
   defined in `labels-v1.1`.
 - A run that failed `same_workload_output` did different work under contention, so its
-  slowdown is not attributable and the run is not labeled. Other failed checks are recorded in
+  slowdown is not attributable and the run is rejected from the dataset with that reason. Other failed checks are recorded in
   `failed_checks` but do not block labels: dropping runs because the rule disagreed would select
   the dataset by the rule's own answer.
 - Rule files must have exactly the expected keys and finite numbers; NaN, infinity, booleans,
@@ -158,13 +173,15 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 | `run_passed` | bool | Whether every experiment check passed |
 | `failed_checks` | string, nullable | Comma-separated names of failed experiment checks, in alphabetical order |
 | `telemetry_status` | string | Run telemetry: `present`, `empty`, `missing` (no samples file), or `no_overlap` (samples exist but none fall inside any step) |
+| `sampling_interval_seconds` | float, nullable | Interval the run's sampler declared in its step telemetry (0.25 s for the current worker); null when not recorded |
+| `measured_sampling_interval_seconds` | float, nullable | Median gap between the run's samples. Compare with the declared interval to spot sampler drift or bursts; never used for coverage |
 | `baseline_mean_seconds` | float | Clean baseline mean duration B used for the regression label |
 | `noise_threshold_seconds` | float | Run-specific slowdown threshold derived from the frozen rules |
 | `label_basis` | string | Why the step received its label; see the table above |
 | `label_version` | string | Labeling rules version plus fingerprint, for example `labels-v1.1+1a2b3c4d` |
-| `schema_version` | string | Dataset schema version the row was built with (`steps-v1.1`) |
+| `schema_version` | string | Dataset schema version the row was built with (`steps-v1.2`) |
 | `dataset_version` | string | Dataset release this row belongs to |
-| `source_sha256` | string | SHA-256 of the run's results and resource samples exactly as received, so any change to either produces a new hash |
+| `source_sha256` | string | SHA-256 of the run's results and its samples as received, before contract normalization, serialized as canonical JSON (sorted keys, samples ordered by timestamp). Any change to a value produces a new hash; key order, sample order, and whitespace do not |
 
 ## Leakage rules
 

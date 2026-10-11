@@ -21,7 +21,7 @@ version = "labels-test"
 stdev_multiplier = {multiplier}
 min_seconds = {floor}
 [contention.cpu]
-resource = "{resource}"
+resource = {resource}
 injection_method = "{method}"
 """
 
@@ -42,7 +42,7 @@ def run_rows(run_id="run-1", kind="coding", clean=0.362, contended=2.868, failed
 
 
 def write_rules(tmp_path, text=None, **values):
-    values = {"multiplier": "3.0", "floor": "0.01", "resource": "cpu_sandbox"} | values
+    values = {"multiplier": "3.0", "floor": "0.01", "resource": '"cpu_sandbox"'} | values
     values.setdefault("method", "worker_queue_blocker")
     path = tmp_path / "labels.toml"
     path.write_text(text if text is not None else VALID_RULES.format(**values))
@@ -115,7 +115,8 @@ def test_excess_fraction_is_clamped():
 def test_rows_from_several_runs_keep_order_and_own_baselines(config):
     first, second = run_rows("a"), run_rows("b", kind="cpu", contended=0.37)
     mixed = [row for pair in zip(first, second) for row in pair]
-    labeled = label_rows(mixed, config)
+    labeled, rejections = label_rows(mixed, config)
+    assert rejections == []
     assert [row["run_id"] for row in labeled] == [row["run_id"] for row in mixed]
     by_run = {row["run_id"]: row for row in labeled if row["condition"] == "contended"}
     assert by_run["a"]["label_resource"] == "cpu_sandbox"
@@ -156,13 +157,6 @@ def duplicated_step(rows):
 def test_unlabelable_evidence_fails_loudly(config, rows, message):
     with pytest.raises(LabelingError, match=re.escape(message)):
         label_run(rows, config)
-
-
-def test_duplicated_baseline_would_have_shifted_the_threshold():
-    """Why duplicate steps are refused: a repeated baseline narrows the stdev."""
-    import statistics
-
-    assert statistics.stdev(BASELINE_SECONDS + [0.368]) < statistics.stdev(BASELINE_SECONDS)
 
 
 @pytest.mark.parametrize("failed", ["contention_detected", "stable_baseline,queue_increased"])
@@ -214,10 +208,13 @@ def test_excess_fraction_rejects_invalid_inputs(duration, baseline_mean):
         {"floor": "-1"},
         {"multiplier": "true"},
         {"floor": '"0.01"'},
-        {"resource": "gpu"},
-        {"resource": "none"},
+        {"resource": '"gpu"'},
+        {"resource": '"none"'},
         {"method": "none"},
         {"method": " "},
+        {"resource": '["cpu_sandbox"]'},
+        {"resource": "{ a = 1 }"},
+        {"resource": "3"},
     ],
 )
 def test_invalid_rules_are_rejected(tmp_path, values):
@@ -251,7 +248,7 @@ def test_nonfinite_noise_settings_are_rejected(tmp_path, setting, key, value):
 )
 def test_malformed_rule_files_give_clear_errors(tmp_path, text, message):
     if "{multiplier}" in text:
-        text = text.format(multiplier=3, floor=0.01, resource="cpu_sandbox", method="m")
+        text = text.format(multiplier=3, floor=0.01, resource='"cpu_sandbox"', method="m")
     with pytest.raises(LabelingError, match=re.escape(message)):
         load_config(write_rules(tmp_path, text=text))
 
@@ -300,3 +297,21 @@ def test_invalidating_check_on_any_row_blocks_the_run(config):
     rows[-1] = rows[-1] | {"failed_checks": "same_workload_output"}
     with pytest.raises(LabelingError, match="not attributable"):
         label_run(rows, config)
+
+
+def test_one_unlabelable_run_is_rejected_and_the_rest_are_labeled(config):
+    good_a, good_b = run_rows("a"), run_rows("b", kind="cpu")
+    bad = run_rows("bad", failed="same_workload_output")
+    labeled, rejections = label_rows(good_a + bad + good_b, config)
+    assert [row["run_id"] for row in labeled] == ["a"] * 7 + ["b"] * 7
+    [rejection] = rejections
+    assert rejection.origin == "run bad" and "not attributable" in rejection.reason
+
+
+def test_unreadable_rule_files_raise_labeling_errors(tmp_path):
+    with pytest.raises(LabelingError, match="cannot be read"):
+        load_config(tmp_path / "absent.toml")
+    binary = tmp_path / "binary.toml"
+    binary.write_bytes(b"\xff\xfe not utf-8")
+    with pytest.raises(LabelingError, match="cannot be read"):
+        load_config(binary)

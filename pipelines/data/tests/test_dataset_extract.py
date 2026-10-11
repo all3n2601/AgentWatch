@@ -9,6 +9,7 @@ from agentwatch_data.extract import (
     TELEMETRY_EMPTY,
     TELEMETRY_MISSING,
     TELEMETRY_PRESENT,
+    Duplicate,
     ExtractionError,
     RetryPolicy,
     combine,
@@ -102,8 +103,9 @@ def test_local_runs_are_validated_and_tagged(tmp_path, result):
 
 
 def test_runs_are_discovered_in_any_named_directory(tmp_path):
-    for name in ("cpu-300000", "coding-run-7", "nested/llm-demo"):
-        write_run(tmp_path / name, make_result())
+    write_run(tmp_path / "cpu-300000", make_result())
+    write_run(tmp_path / "coding-run-7", make_result("coding"))
+    write_run(tmp_path / "nested" / "llm-demo", make_result("coding", agent_model="qwen3:1.7b"))
     extraction = extract_local(tmp_path)
     assert sorted(run.kind for run in extraction.runs) == ["coding", "coding", "cpu"]
     assert extraction.rejections == []
@@ -199,22 +201,70 @@ def test_conflicting_duplicate_samples_are_rejected(tmp_path, result):
     assert "Samples disagree at timestamp_ns" in rejection.reason
 
 
-def test_coerced_values_are_stored_with_contract_types(result):
-    original = json.loads(json.dumps(result))
-    result["clean"]["submitted_ns"] = str(result["clean"]["submitted_ns"])
-    result["experiment"]["iterations"] = "10"
-    run = extract.validate(result, [SAMPLE | {"timestamp_ns": "1"}], "cpu")
-    assert run.result["clean"]["submitted_ns"] == original["clean"]["submitted_ns"]
-    assert run.result["experiment"]["iterations"] == 10
-    assert run.samples[0]["timestamp_ns"] == 1
-    assert run.source_sha256 != evidence_hash(original, [SAMPLE])
-    normalized = extract.validate(original, [SAMPLE], "cpu")
-    assert run.content_sha256 == normalized.content_sha256
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("experiment", "iterations"), True),
+        (("experiment", "iterations"), "10"),
+        (("experiment", "worker_capacity"), True),
+        (("clean", "submitted_ns"), "1700000006000000000"),
+        (("contended", "cpu_seconds"), True),
+    ],
+)
+def test_evidence_of_the_wrong_type_is_rejected_not_coerced(tmp_path, result, path, value):
+    """The contracts would turn true into 1 and "10" into 10; strict validation refuses."""
+    section, key = path
+    result[section][key] = value
+    write_run(tmp_path / "cpu-demo", result)
+    extraction = extract_local(tmp_path)
+    assert extraction.runs == []
+    assert f"{section}.{key}" in extraction.rejections[0].reason
 
 
-def test_validated_result_keeps_extra_evidence(result):
-    result["agent"] = {"model": "qwen3:1.7b"}
-    assert extract.validate(result, [], "coding").result["agent"] == {"model": "qwen3:1.7b"}
+@pytest.mark.parametrize(
+    ("field", "value"), [("timestamp_ns", True), ("timestamp_ns", "1"), ("unavailable", "x")]
+)
+def test_samples_of_the_wrong_type_are_rejected(tmp_path, result, field, value):
+    write_run(tmp_path / "cpu-demo", result, samples=(SAMPLE | {field: value},))
+    assert extract_local(tmp_path).runs == []
+
+
+def test_pressure_reading_true_is_not_a_number(tmp_path, result):
+    reading = SAMPLE | {"cpu_pressure": {"some": {"avg10": True}}}
+    write_run(tmp_path / "cpu-demo", result, samples=(reading,))
+    assert extract_local(tmp_path).runs == []
+
+
+@pytest.mark.parametrize(
+    ("directory", "kind_of_evidence", "message"),
+    [
+        ("cpu-demo", "coding", "this evidence is a coding run"),
+        ("coding-demo", "cpu", "this evidence is a CPU run"),
+    ],
+)
+def test_directory_kind_must_match_the_evidence(tmp_path, directory, kind_of_evidence, message):
+    write_run(tmp_path / directory, make_result(kind_of_evidence))
+    [rejection] = extract_local(tmp_path).rejections
+    assert message in rejection.reason
+
+
+def test_llm_runs_must_carry_agent_evidence(tmp_path):
+    write_run(tmp_path / "llm-demo", make_result("coding"))
+    [rejection] = extract_local(tmp_path).rejections
+    assert "no agent evidence" in rejection.reason
+
+
+@pytest.mark.parametrize("name", ["same_workload_output ", "", "a,b", "Stable", "9lives"])
+def test_check_names_must_be_identifiers(tmp_path, result, name):
+    result["checks"] = {name: False, "passed": False}
+    write_run(tmp_path / "cpu-demo", result)
+    [rejection] = extract_local(tmp_path).rejections
+    assert "not a lowercase identifier" in rejection.reason
+
+
+def test_validated_result_keeps_extra_evidence():
+    result = make_result("coding", agent_model="qwen3:1.7b")
+    assert extract.validate(result, [], "coding").result["agent"]["model"] == "qwen3:1.7b"
 
 
 # Duplicate runs across sources
@@ -227,7 +277,7 @@ def test_same_run_from_two_sources_is_kept_once(tmp_path, api, result):
     merged = combine(local, remote)
     [run] = merged.runs
     assert run.recorded_at is not None  # the API copy carries the saved time
-    assert merged.duplicates == [str(tmp_path / "cpu-demo")]
+    assert merged.duplicates == [Duplicate(str(tmp_path / "cpu-demo"), result["run_id"])]
     assert merged.rejections == []
 
 
@@ -253,7 +303,7 @@ def test_run_listed_twice_by_one_source_is_kept_once(tmp_path, result):
 
 
 def test_api_extraction_follows_cursor(api, result):
-    second = make_result()
+    second = make_result("coding")
     api.add_page(None, [api.row(result)], 7, limit=1)
     api.add_page(7, [api.row(second, kind="coding", created_at="2026-10-05T12:05:00Z")], None, 1)
     extraction = extract_api("http://api/", page_size=1)
@@ -317,6 +367,7 @@ def test_cursor_that_does_not_advance_stops_extraction(api):
     [
         {"created_at": None},
         {"created_at": "2026-10-05T12:00:00"},
+        {"created_at": 1791200000},
         {"kind": "gpu"},
         {"run_id": "not-a-uuid"},
     ],
@@ -453,3 +504,17 @@ def test_history_page_without_next_cursor_stops_extraction(api, result):
     api.pages["http://api/v1/runs?limit=100"] = {"runs": [api.row(result)]}
     with pytest.raises(ExtractionError, match="without next_cursor"):
         extract_api("http://api")
+
+
+def test_dropped_duplicate_is_rejected_once_its_run_conflicts(tmp_path, result):
+    """combine(combine(B, C), A): C was an identical copy of B until A disagreed."""
+    changed = json.loads(json.dumps(result))
+    changed["contended"]["cpu_seconds"] = 0.5
+    write_run(tmp_path / "b" / "cpu-b", result)
+    write_run(tmp_path / "c" / "cpu-c", result)
+    write_run(tmp_path / "a" / "cpu-a", changed)
+    first = combine(extract_local(tmp_path / "b"), extract_local(tmp_path / "c"))
+    assert len(first.duplicates) == 1
+    final = combine(first, extract_local(tmp_path / "a"))
+    assert final.runs == [] and final.duplicates == []
+    assert len(final.rejections) == 3

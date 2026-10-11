@@ -4,12 +4,16 @@ Rows carry identity, feature, rule, and provenance columns. Labels and release m
 added later by the labeling and build stages.
 """
 
+import logging
+import math
 import re
 import statistics
 from itertools import pairwise
 
-from agentwatch_data.extract import TELEMETRY_PRESENT, RawRun
+from agentwatch_data.extract import TELEMETRY_PRESENT, RawRun, Rejection
 from agentwatch_data.schema import SCHEMA_VERSION
+
+logger = logging.getLogger(__name__)
 
 BASELINE_STEP_ID = re.compile(r"baseline-\d+")
 NO_OVERLAP = "no_overlap"  # the run has samples, but none inside any of its steps
@@ -56,8 +60,29 @@ def throttled_delta_usec(counters: list[int | None]) -> int | None:
     return counters[-1] - counters[0]
 
 
+def declared_interval_seconds(result: dict) -> float | None:
+    """The sampler's configured interval, as recorded in the step telemetry summaries."""
+    declared = {
+        step["telemetry"]["interval_seconds"]
+        for step in (result["clean"], result["contended"])
+        if isinstance(step.get("telemetry"), dict) and "interval_seconds" in step["telemetry"]
+    }
+    if len(declared) > 1:
+        raise FlattenError(f"Steps declare different sampling intervals: {sorted(declared)}")
+    interval = next(iter(declared), None)
+    if interval is None:
+        return None
+    if isinstance(interval, bool) or not isinstance(interval, int | float) or interval <= 0:
+        raise FlattenError(f"Declared sampling interval {interval!r} is not a positive number")
+    return float(interval)
+
+
 def sampling_interval_seconds(samples: list[dict]) -> float | None:
-    """The run's actual sampling interval: the median gap between consecutive samples."""
+    """The run's measured sampling interval: the median gap between consecutive samples.
+
+    Recorded for diagnosis only. It cannot detect uniform sample loss (gaps simply grow),
+    so coverage is judged against the declared interval instead.
+    """
     gaps = [(b["timestamp_ns"] - a["timestamp_ns"]) / 1e9 for a, b in pairwise(samples)]
     gaps = [gap for gap in gaps if gap > 0]
     return statistics.median(gaps) if gaps else None
@@ -87,7 +112,9 @@ def window_readings(
     throttled = throttled_delta_usec(counters)
     coverage = None
     if interval_seconds:
-        expected = (finished_ns - submitted_ns) / 1e9 / interval_seconds
+        # Whole intervals inside the window: a healthy sampler delivers at least this many.
+        # A step shorter than one interval cannot show whether samples were lost.
+        expected = math.floor((finished_ns - submitted_ns) / 1e9 / interval_seconds)
         coverage = min(1.0, len(rows) / expected) if expected > 0 else None
     return {
         "cpu_pressure_max_avg10": max(pressures) if pressures else None,
@@ -130,7 +157,10 @@ def flatten_run(run: RawRun) -> list[dict]:
     steps = conditioned_steps(result)
     failed = failed_checks(result)
     status = telemetry_status(run, steps)
-    interval = sampling_interval_seconds(run.samples) if status == TELEMETRY_PRESENT else None
+    declared = declared_interval_seconds(result)
+    present = status == TELEMETRY_PRESENT
+    measured = sampling_interval_seconds(run.samples) if present else None
+    interval = declared if present else None
     shared = {
         "run_id": run.run_id,
         "task_id": task_id(run),
@@ -145,6 +175,8 @@ def flatten_run(run: RawRun) -> list[dict]:
         "run_passed": result["checks"]["passed"],
         "failed_checks": ",".join(failed) or None,
         "telemetry_status": status,
+        "sampling_interval_seconds": declared,
+        "measured_sampling_interval_seconds": measured,
         "schema_version": SCHEMA_VERSION,
         "source_sha256": run.source_sha256,
     }
@@ -164,3 +196,15 @@ def flatten_run(run: RawRun) -> list[dict]:
         | window_readings(run.samples, step["submitted_ns"], step["finished_ns"], interval)
         for condition, step in steps
     ]
+
+
+def flatten_runs(runs: list[RawRun]) -> tuple[list[dict], list[Rejection]]:
+    """Flatten every run; a run whose structure is untrustworthy is rejected, not fatal."""
+    rows, rejections = [], []
+    for run in runs:
+        try:
+            rows.extend(flatten_run(run))
+        except FlattenError as error:
+            logger.warning("Rejected run %s at flattening: %s", run.run_id, error)
+            rejections.append(Rejection(run.origin or f"run {run.run_id}", str(error)))
+    return rows, rejections
