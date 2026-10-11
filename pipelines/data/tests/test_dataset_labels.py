@@ -174,7 +174,7 @@ def test_nonfinite_durations_fail_instead_of_labeling(config, index, value):
         label_run(rows, config)
 
 
-@pytest.mark.parametrize("value", ["0.4", None, True])
+@pytest.mark.parametrize("value", ["0.4", None, True, 10**400])
 def test_nonnumeric_durations_fail(config, value):
     rows = run_rows()
     rows[-1] = rows[-1] | {"duration_seconds": value}
@@ -215,6 +215,8 @@ def test_excess_fraction_rejects_invalid_inputs(duration, baseline_mean):
         {"resource": '["cpu_sandbox"]'},
         {"resource": "{ a = 1 }"},
         {"resource": "3"},
+        {"multiplier": "9" * 400},
+        {"floor": "9" * 400},
     ],
 )
 def test_invalid_rules_are_rejected(tmp_path, values):

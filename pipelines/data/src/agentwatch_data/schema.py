@@ -226,6 +226,28 @@ def feature_columns() -> list[str]:
     return columns_with(Role.FEATURE)
 
 
+def finite_number(value) -> float | None:
+    """value as a finite float64, or None when it is not one.
+
+    Booleans are not numbers here, and an integer too large for float64 (JSON and TOML both
+    allow arbitrarily large integers) is rejected instead of raising OverflowError.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def brief(value) -> str:
+    """A short repr for error messages; a huge integer is described, not printed."""
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) >= 10**18:
+        return f"an integer with {len(str(abs(value)))} digits"
+    return repr(value)
+
+
 def check_value(column: Column, value) -> str | None:
     """Return why value violates the column, or None when it is valid."""
     if value is None:

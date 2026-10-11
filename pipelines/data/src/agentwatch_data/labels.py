@@ -5,7 +5,6 @@ noise threshold, never from the rule baseline, so model and rule can be compared
 """
 
 import logging
-import math
 import statistics
 import tomllib
 from dataclasses import dataclass
@@ -13,7 +12,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from agentwatch_data.extract import Rejection, canonical_sha256
-from agentwatch_data.schema import RESOURCE_CLASSES
+from agentwatch_data.schema import RESOURCE_CLASSES, brief, finite_number
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +72,13 @@ def require_keys(table, name: str, required: set[str]) -> dict:
 
 
 def require_number(value, name: str, *, positive: bool) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        raise LabelingError(f"{name} must be a finite number, got {value!r}")
-    if value < 0 or (positive and value == 0):
+    number = finite_number(value)
+    if number is None:
+        raise LabelingError(f"{name} must be a finite number, got {brief(value)}")
+    if number < 0 or (positive and number == 0):
         bound = "positive" if positive else "nonnegative"
-        raise LabelingError(f"{name} must be {bound}, got {value!r}")
-    return float(value)
+        raise LabelingError(f"{name} must be {bound}, got {brief(value)}")
+    return number
 
 
 def require_text(value, name: str) -> str:
@@ -128,13 +128,9 @@ def load_config(path: Path | None = None) -> LabelConfig:
 def require_positive_finite(value: float, name: str) -> float:
     """Reject NaN, infinity, and booleans explicitly: comparisons with NaN are always False,
     so they slip past sign checks, and clamping would turn them into valid-looking targets."""
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int | float)
-        or not math.isfinite(value)
-        or value <= 0
-    ):
-        raise LabelingError(f"{name} must be a finite positive number, got {value!r}")
+    number = finite_number(value)
+    if number is None or number <= 0:
+        raise LabelingError(f"{name} must be a finite positive number, got {brief(value)}")
     return value
 
 

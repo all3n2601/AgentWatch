@@ -11,7 +11,7 @@ import statistics
 from itertools import pairwise
 
 from agentwatch_data.extract import TELEMETRY_PRESENT, RawRun, Rejection
-from agentwatch_data.schema import SCHEMA_VERSION
+from agentwatch_data.schema import SCHEMA_VERSION, brief, finite_number
 
 logger = logging.getLogger(__name__)
 
@@ -73,16 +73,12 @@ def declared_interval_seconds(result: dict) -> float | None:
         if not isinstance(telemetry, dict) or "interval_seconds" not in telemetry:
             continue
         value = telemetry["interval_seconds"]
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int | float)
-            or not math.isfinite(value)
-            or value <= 0
-        ):
+        interval = finite_number(value)
+        if interval is None or interval <= 0:
             raise FlattenError(
-                f"{name} declares sampling interval {value!r}, not a positive number"
+                f"{name} declares sampling interval {brief(value)}, not a positive number"
             )
-        declared.append(float(value))
+        declared.append(interval)
     if len(set(declared)) > 1:
         raise FlattenError(f"Steps declare different sampling intervals: {sorted(set(declared))}")
     return declared[0] if declared else None
