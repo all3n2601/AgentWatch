@@ -68,6 +68,33 @@ other runs continue (`flatten_runs` and `label_rows` return rows and rejections)
 label rules or an unreadable source stop a build, so one bad run can never block every later
 build.
 
+## Releases
+
+Build a release with `make dataset`; set `DATASET_SOURCES` to combine sources, for example
+`make dataset DATASET_SOURCES="local:.data api:http://127.0.0.1:8090"`. The command runs
+`python -m agentwatch_data.build` (`pipelines/data/src/agentwatch_data/build.py`), prints the
+release directory, and exits 1 with a reason when the build fails.
+
+A release is a directory under `.data/datasets/` named by its `dataset_version`:
+
+| File | Contents |
+|---|---|
+| `steps.parquet` | Every row, every schema column, with Arrow types and nullability taken from `schema.py`; rows ordered by run, then condition, then baseline repeat |
+| `manifest.json` | Dataset, schema, label, and builder versions; build time; row, run, and task counts; label, basis, condition, and telemetry-status counts; per-source run and rejection counts; duplicate copies; every rejection with its stage and reason; SHA-256 of the canonical rows and of the Parquet file |
+
+- `dataset_version` is `<schema version>+<first 12 hex digits of the rows' SHA-256>`, so the
+  same evidence, rules, and code always produce the same version. A changed run, rule, or label
+  fingerprint produces a new one.
+- Building a version that already exists verifies its manifest hashes instead of rewriting it;
+  a mismatch fails the build.
+- A build writes everything into a staging directory and renames it into place only when it is
+  complete, so a failed build never leaves a partial release.
+- The build fails, writing nothing, when a source cannot be read, the label rules are invalid,
+  any row violates the schema, or no usable rows remain. Individual untrustworthy runs are
+  rejected and listed in the manifest instead.
+- Host paths never appear in a manifest: local sources are labeled by directory name, such as
+  `<local:coding-demo>`, and the home directory by `~`.
+
 ## Column roles
 
 Only **feature** columns may be model inputs. Labels, rule output, and lineage columns are kept
