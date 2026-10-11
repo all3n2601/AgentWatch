@@ -17,6 +17,7 @@ from agentwatch_data.build import (
     Source,
     build,
     main,
+    published_releases,
 )
 from agentwatch_data.schema import SCHEMA_VERSION
 from dataset_fixtures import make_result, write_run
@@ -347,7 +348,7 @@ def test_unchanged_data_from_changed_sources_reports_the_new_sources(evidence, t
     assert report["duplicate_copies"] == 1 and report["rejections"] == []
 
 
-# Report commit failures (Allen's second #14 review)
+# Publication is the report commit; builds never delete releases (Allen's #14 reviews)
 
 
 def fail_report_commit(monkeypatch, message="No space left on device"):
@@ -361,12 +362,18 @@ def fail_report_commit(monkeypatch, message="No space left on device"):
     monkeypatch.setattr(build_module.os, "replace", replace)
 
 
-def test_failed_report_commit_withdraws_the_new_release(evidence, tmp_path, monkeypatch):
-    fail_report_commit(monkeypatch)
+def test_failed_report_commit_leaves_an_unpublished_release(evidence, tmp_path, monkeypatch):
     output = tmp_path / "out"
+    fail_report_commit(monkeypatch)
     with pytest.raises(OSError, match="No space left"):
         build_from(evidence, output)
-    assert nothing_published(output)
+    [release] = releases_in(output)
+    assert published_releases(output) == []  # not published: no report names it
+    assert list((output / "builds").iterdir()) == []  # no report, no staged report
+    monkeypatch.undo()
+    retry = result_from(evidence, output)  # recovery: verify and publish it
+    assert retry.reused and retry.release == release
+    assert published_releases(output) == [release]
 
 
 def test_failed_report_staging_publishes_nothing(evidence, tmp_path, monkeypatch):
@@ -390,43 +397,33 @@ def test_failed_report_on_reuse_keeps_the_existing_release(evidence, tmp_path, m
     fail_report_commit(monkeypatch)
     with pytest.raises(OSError):
         build_from(evidence, output)
-    assert first.release.exists()
-    assert sorted((output / "builds").iterdir()) == [first.report]  # no new or staged report
+    assert sorted((output / "builds").iterdir()) == [first.report]
     monkeypatch.undo()
-    assert result_from(evidence, output).reused  # the kept release still verifies
+    assert result_from(evidence, output).reused
+    assert published_releases(output) == [first.release]
 
 
-def test_a_release_another_build_reported_is_never_withdrawn(evidence, tmp_path, monkeypatch):
-    """If a concurrent build reused this release and committed its report, keep it."""
+def test_a_concurrent_successful_build_keeps_its_dataset(evidence, tmp_path, monkeypatch):
+    """Allen's interleaving: A publishes the release and its report commit fails, while B
+    verifies that release and commits its report in between. B's dataset must survive."""
     output = tmp_path / "out"
     real_replace = build_module.os.replace
+    outcome = {}
 
     def replace(source, target):
-        if Path(target).suffix == ".json":
-            other = Path(target).with_name("20991231T000000000000Z-other.json")
-            other.write_text(json.dumps({"release": releases_in(output)[0].name}))
-            raise OSError("No space left on device")
+        if Path(target).suffix == ".json" and "b" not in outcome:
+            monkeypatch.setattr(build_module.os, "replace", real_replace)
+            outcome["b"] = result_from(evidence, output)  # B runs to completion here
+            raise OSError("No space left on device")  # then A's report commit fails
         return real_replace(source, target)
 
     monkeypatch.setattr(build_module.os, "replace", replace)
-    with pytest.raises(OSError):
-        build_from(evidence, output)
-    [release] = releases_in(output)
-    assert (release / DATASET_FILE).exists()
-
-
-def test_unrelated_or_unreadable_reports_do_not_stop_a_withdrawal(evidence, tmp_path, monkeypatch):
-    output = tmp_path / "out"
-    (output / "builds").mkdir(parents=True)
-    (output / "builds" / "20000101T000000000000Z-broken.json").write_text("{not json")
-    (output / "builds" / "20000101T000000000001Z-list.json").write_text("[1, 2]")
-    (output / "builds" / "20000101T000000000002Z-other.json").write_text(
-        '{"release": "steps-v0+x"}'
-    )
-    fail_report_commit(monkeypatch)
-    with pytest.raises(OSError):
-        build_from(evidence, output)
-    assert releases_in(output) == []
+    with pytest.raises(OSError, match="No space left"):
+        build_from(evidence, output)  # builder A
+    b = outcome["b"]
+    assert b.reused and b.report.exists()
+    assert (b.release / DATASET_FILE).exists() and (b.release / MANIFEST_FILE).exists()
+    assert published_releases(output) == [b.release]
 
 
 def test_failed_report_after_a_concurrent_release_keeps_it(evidence, tmp_path, monkeypatch):
@@ -445,14 +442,20 @@ def test_failed_report_after_a_concurrent_release_keeps_it(evidence, tmp_path, m
     assert list((output / "builds").iterdir()) == []
 
 
-def test_an_unremovable_release_is_logged_not_hidden(evidence, tmp_path, monkeypatch, caplog):
-    fail_report_commit(monkeypatch)
-
-    def cannot_remove(path, ignore_errors=False):
-        if not ignore_errors:
-            raise PermissionError(f"Permission denied: {path}")
-
-    monkeypatch.setattr(build_module.shutil, "rmtree", cannot_remove)
-    with pytest.raises(OSError, match="No space left"), caplog.at_level("ERROR"):
-        build_from(evidence, tmp_path / "out")
-    assert "Could not withdraw unreported release" in caplog.text
+def test_published_releases_follow_valid_reports_only(evidence, tmp_path):
+    output = tmp_path / "out"
+    first = result_from(evidence, output)
+    write_run(evidence / "cpu-extra", make_result())
+    later = datetime(2026, 10, 12, tzinfo=UTC)
+    second = build([Source("local", str(evidence))], output, now=later)
+    reuse = build([Source("local", str(evidence))], output, now=datetime(2026, 10, 13, tzinfo=UTC))
+    assert reuse.reused and reuse.release == second.release  # a later reuse keeps its position
+    builds = output / "builds"
+    (builds / "19990101T000000000000Z-broken.json").write_text("{not json")
+    (builds / "19990101T000000000001Z-list.json").write_text("[1, 2]")
+    (builds / "19990101T000000000002Z-gone.json").write_text('{"release": "steps-v1.2+gone"}')
+    (builds / "19990101T000000000003Z-escape.json").write_text('{"release": "../evidence"}')
+    (builds / "19990101T000000000004Z-number.json").write_text('{"release": 7}')
+    assert published_releases(output) == [first.release, second.release]
+    assert published_releases(output) == published_releases(output)  # stable
+    assert published_releases(tmp_path / "absent") == []

@@ -88,10 +88,12 @@ under `.data/datasets/builds/`:
 The command prints the release and report paths. Because rejections live in each build's
 report, a rebuild whose accepted rows are unchanged still records evidence rejected that time.
 
-A build counts as published only once its report is committed. The report is staged before the
-release becomes visible; if committing it still fails, a release that build created is
-withdrawn, so a failed build leaves no unreported release. Releases that already existed, were
-published by a concurrent build, or are named by another build's report are never removed.
+A release is **published** only when a committed build report names it, and consumers should
+select releases with `published_releases()` in `build.py`. Builds never delete releases, so
+concurrent builds cannot remove each other's datasets. The report is staged before the release
+directory appears, so most write failures leave nothing behind; if committing the report still
+fails, the build fails and may leave an unpublished release directory, which the next
+successful build verifies and publishes.
 
 - `dataset_version` is `<schema version>+<first 12 hex digits of the rows' SHA-256>`, so the
   same evidence, rules, and code always produce the same version. A changed run, rule, or label
@@ -99,7 +101,7 @@ published by a concurrent build, or are named by another build's report are neve
 - Building a version that already exists verifies its manifest hashes instead of rewriting it;
   a mismatch fails the build.
 - A build writes everything into a staging directory and renames it into place only when it is
-  complete, so a failed build never leaves a partial release.
+  complete, so a failed build never leaves a partial release, and never publishes one.
 - The build fails, writing nothing, when a source cannot be read, the label rules are invalid,
   any row violates the schema, or no usable rows remain. Individual untrustworthy runs are
   rejected and listed in that build's report instead.
