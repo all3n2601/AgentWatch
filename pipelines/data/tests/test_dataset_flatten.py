@@ -1,10 +1,13 @@
 import json
+import math
 
 import pytest
 from agentwatch_data.extract import validate
 from agentwatch_data.flatten import (
     FlattenError,
+    declared_interval_seconds,
     flatten_run,
+    flatten_runs,
     sampling_interval_seconds,
     window_readings,
 )
@@ -120,15 +123,6 @@ def test_missing_counter_in_window_is_not_a_measurement():
     assert readings["cgroup_throttled_usec_delta"] is None
 
 
-def test_coerced_numeric_strings_flatten_with_contract_types():
-    result = make_result()
-    result["clean"]["submitted_ns"] = str(result["clean"]["submitted_ns"])
-    result["experiment"]["iterations"] = "10"
-    rows = flatten_run(validate(result, [SAMPLE | {"timestamp_ns": str(BASE_NS)}], "cpu"))
-    assert rows[0]["workload_iterations"] == 10
-    assert rows[0]["telemetry_sample_count"] == 1
-
-
 # Conditions come from the result structure
 
 
@@ -219,7 +213,9 @@ def test_missing_samples_file_is_reported_as_missing():
 def test_passing_run_lineage(rows):
     row = rows[0]
     assert (row["run_passed"], row["failed_checks"], row["agent_model"]) == (True, None, None)
-    assert row["schema_version"] == "steps-v1.1"
+    assert row["schema_version"] == "steps-v1.2"
+    assert row["sampling_interval_seconds"] == 0.25  # declared, even without overlapping samples
+    assert row["measured_sampling_interval_seconds"] is None
 
 
 def test_failed_checks_are_recorded_in_order():
@@ -234,7 +230,7 @@ def test_failed_checks_are_recorded_in_order():
     [({"model": "qwen3:1.7b"}, "qwen3:1.7b"), ({"model": " "}, None), ({}, None), ("x", None)],
 )
 def test_agent_model_identifies_llm_runs(agent, model):
-    result = make_result() | {"agent": agent}
+    result = make_result("coding") | {"agent": agent}
     assert flatten_run(validate(result, [SAMPLE], "coding"))[0]["agent_model"] == model
 
 
@@ -256,3 +252,104 @@ def test_one_sample_inside_one_step_means_present():
     assert {row["telemetry_status"] for row in rows} == {"present"}
     assert [row["telemetry_sample_count"] for row in rows] == [0, 0, 0, 1, 0]
     assert all(row["telemetry_coverage"] is not None for row in rows)
+
+
+# Coverage is judged against the declared sampling interval
+
+
+def contended_window():
+    result = make_result()
+    return result, result["contended"]["submitted_ns"], result["contended"]["finished_ns"]
+
+
+def test_uniform_sample_loss_lowers_coverage():
+    """Two of every three samples lost: gaps grow, so a measured interval would hide it."""
+    result, start, end = contended_window()
+    whole_intervals = math.floor((end - start) / 1e9 / 0.25)  # 11 in a 2.999 s window
+    kept = [sample(start - BASE_NS + i * 750_000_000, avg10=1.0) for i in range(4)]
+    row = flatten_run(validate(result, kept, "cpu"))[-1]
+    assert row["telemetry_coverage"] == pytest.approx(4 / whole_intervals)
+    assert row["telemetry_coverage"] < 0.4
+    assert row["measured_sampling_interval_seconds"] == 0.75
+    assert row["sampling_interval_seconds"] == 0.25
+
+
+def test_echoed_samples_do_not_collapse_coverage():
+    result, start, _ = contended_window()
+    healthy = [start - BASE_NS + i * 250_000_000 for i in range(12)]
+    echoed = [sample(t, avg10=1.0) for t in healthy] + [sample(t + 1_000_000) for t in healthy]
+    row = flatten_run(validate(result, echoed, "cpu"))[-1]
+    assert row["telemetry_coverage"] == 1.0
+    assert row["measured_sampling_interval_seconds"] == pytest.approx(0.001)
+
+
+def test_steps_shorter_than_one_interval_have_no_coverage():
+    readings = window_readings([sample(0, avg10=1.0)], BASE_NS, BASE_NS + 200_000_000, 0.25)
+    assert readings["telemetry_coverage"] is None and readings["telemetry_sample_count"] == 1
+
+
+def test_coverage_is_null_without_a_declared_interval():
+    result = make_result()
+    for step in (result["clean"], result["contended"]):
+        step.pop("telemetry")
+    rows = flatten_run(validate(result, every(250_000_000, 40), "cpu"))
+    assert {row["telemetry_coverage"] for row in rows} == {None}
+    assert {row["sampling_interval_seconds"] for row in rows} == {None}
+
+
+@pytest.mark.parametrize(
+    ("clean", "contended", "message"),
+    [
+        (0.25, 0.5, "different sampling intervals"),
+        (0, 0, "not a positive number"),
+        ([0.25], 0.25, "clean declares sampling interval \\[0.25\\]"),
+        (0.25, {"seconds": 0.25}, "contended declares sampling interval"),
+        ("0.25", 0.25, "not a positive number"),
+        (True, True, "not a positive number"),
+        ([0.25], {"a": 1}, "clean declares"),
+    ],
+)
+def test_declared_interval_must_be_consistent_and_positive(clean, contended, message):
+    result = make_result()
+    result["clean"]["telemetry"]["interval_seconds"] = clean
+    result["contended"]["telemetry"]["interval_seconds"] = contended
+    with pytest.raises(FlattenError, match=message):
+        declared_interval_seconds(result)
+
+
+# One bad run never blocks the others
+
+
+def test_flatten_runs_rejects_bad_runs_and_keeps_the_rest():
+    bad = make_result()
+    bad["contended"]["step_id"] = "baseline-9"
+    good = make_result()
+    rows, rejections = flatten_runs(
+        [validate(bad, [SAMPLE], "cpu", origin="cpu-bad"), validate(good, [SAMPLE], "cpu")]
+    )
+    assert {row["run_id"] for row in rows} == {good["run_id"]}
+    [rejection] = rejections
+    assert rejection.origin == "cpu-bad" and "contended position" in rejection.reason
+
+
+@pytest.mark.parametrize("value", [[0.25], {"seconds": 0.25}, "0.25", True, -0.25, 10**400])
+def test_malformed_declared_interval_rejects_only_that_run(value):
+    """Allen's #13 review: a list interval raised TypeError and aborted the whole batch."""
+    bad = make_result()
+    bad["clean"]["telemetry"]["interval_seconds"] = value
+    good = make_result()
+    rows, rejections = flatten_runs(
+        [validate(good, [SAMPLE], "cpu"), validate(bad, [SAMPLE], "cpu", origin="cpu-bad")]
+    )
+    assert {row["run_id"] for row in rows} == {good["run_id"]}
+    [rejection] = rejections
+    assert rejection.origin == "cpu-bad" and "sampling interval" in rejection.reason
+
+
+def test_oversized_interval_is_described_not_printed():
+    """Allen's #13 review: 10**400 raised OverflowError in math.isfinite and aborted the batch."""
+    result = make_result()
+    for name in ("clean", "contended"):
+        result[name]["telemetry"]["interval_seconds"] = 10**400
+    with pytest.raises(FlattenError, match="an integer with 401 digits"):
+        declared_interval_seconds(result)

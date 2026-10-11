@@ -29,25 +29,39 @@ def make_step(name, offset, queue_ns=1_000_000):
     }
 
 
-def make_result():
+# Shaped like the step telemetry summaries the worker records for clean and contended steps.
+TELEMETRY = {"sample_count": 0, "interval_seconds": 0.25, "status": "unavailable_or_no_samples"}
+
+
+def make_result(kind="cpu", agent_model=None):
+    """A deterministic run shaped like the worker's results.json for the given kind."""
     baseline = [make_step(f"baseline-{i}", i * 2_000_000_000) for i in range(3)]
     contended = make_step("contended", 8_000_000_000, queue_ns=2_000_000_000) | {
-        "resource": "cpu_sandbox"
+        "resource": "cpu_sandbox",
+        "telemetry": dict(TELEMETRY),
     }
-    return {
+    coding = kind == "coding"
+    result = {
         "run_id": str(uuid4()),
         "experiment": {
             "worker_capacity": 1,
             "iterations": 10,
+            "competing_iterations": 80,
             "baseline_repeats": 3,
-            "workload": "fixed SHA-256 CPU task",
+            "workload": "fixed Python project: run three tests"
+            if coding
+            else "fixed SHA-256 CPU task",
+            "tests_per_step": 3 if coding else None,
         },
         "baseline": {"execution_cv": 0.01, "queue_threshold_seconds": 0.01, "steps": baseline},
-        "clean": make_step("clean", 6_000_000_000),
+        "clean": make_step("clean", 6_000_000_000) | {"telemetry": dict(TELEMETRY)},
         "contended": contended,
         "checks": {"contention_detected": True, "passed": True},
         "limitations": [],
     }
+    if agent_model is not None:
+        result["agent"] = {"model": agent_model, "status": "passed"}
+    return result
 
 
 SAMPLE = {
