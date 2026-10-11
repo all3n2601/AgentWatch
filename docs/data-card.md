@@ -200,7 +200,7 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 | `run_passed` | bool | Whether every experiment check passed |
 | `failed_checks` | string, nullable | Comma-separated names of failed experiment checks, in alphabetical order |
 | `telemetry_status` | string | Run telemetry: `present`, `empty`, `missing` (no samples file), or `no_overlap` (samples exist but none fall inside any step) |
-| `sampling_interval_seconds` | float, nullable | Interval the run's sampler declared in its step telemetry (0.25 s for the current worker); null when not recorded |
+| `sampling_interval_seconds` | float, nullable | Interval the run's sampler declared in its step telemetry (0.25 s for the current worker); null when not recorded. A declared value that is not a finite positive number, or clean and contended values that disagree, rejects the run |
 | `measured_sampling_interval_seconds` | float, nullable | Median gap between the run's samples. Compare with the declared interval to spot sampler drift or bursts; never used for coverage |
 | `baseline_mean_seconds` | float | Clean baseline mean duration B used for the regression label |
 | `noise_threshold_seconds` | float | Run-specific slowdown threshold derived from the frozen rules |

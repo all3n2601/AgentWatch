@@ -299,7 +299,15 @@ def test_coverage_is_null_without_a_declared_interval():
 
 @pytest.mark.parametrize(
     ("clean", "contended", "message"),
-    [(0.25, 0.5, "different sampling intervals"), (0, 0, "not a positive number")],
+    [
+        (0.25, 0.5, "different sampling intervals"),
+        (0, 0, "not a positive number"),
+        ([0.25], 0.25, "clean declares sampling interval \\[0.25\\]"),
+        (0.25, {"seconds": 0.25}, "contended declares sampling interval"),
+        ("0.25", 0.25, "not a positive number"),
+        (True, True, "not a positive number"),
+        ([0.25], {"a": 1}, "clean declares"),
+    ],
 )
 def test_declared_interval_must_be_consistent_and_positive(clean, contended, message):
     result = make_result()
@@ -322,3 +330,17 @@ def test_flatten_runs_rejects_bad_runs_and_keeps_the_rest():
     assert {row["run_id"] for row in rows} == {good["run_id"]}
     [rejection] = rejections
     assert rejection.origin == "cpu-bad" and "contended position" in rejection.reason
+
+
+@pytest.mark.parametrize("value", [[0.25], {"seconds": 0.25}, "0.25", True, -0.25])
+def test_malformed_declared_interval_rejects_only_that_run(value):
+    """Allen's #13 review: a list interval raised TypeError and aborted the whole batch."""
+    bad = make_result()
+    bad["clean"]["telemetry"]["interval_seconds"] = value
+    good = make_result()
+    rows, rejections = flatten_runs(
+        [validate(good, [SAMPLE], "cpu"), validate(bad, [SAMPLE], "cpu", origin="cpu-bad")]
+    )
+    assert {row["run_id"] for row in rows} == {good["run_id"]}
+    [rejection] = rejections
+    assert rejection.origin == "cpu-bad" and "sampling interval" in rejection.reason

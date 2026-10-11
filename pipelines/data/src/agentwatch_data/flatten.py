@@ -61,20 +61,31 @@ def throttled_delta_usec(counters: list[int | None]) -> int | None:
 
 
 def declared_interval_seconds(result: dict) -> float | None:
-    """The sampler's configured interval, as recorded in the step telemetry summaries."""
-    declared = {
-        step["telemetry"]["interval_seconds"]
-        for step in (result["clean"], result["contended"])
-        if isinstance(step.get("telemetry"), dict) and "interval_seconds" in step["telemetry"]
-    }
-    if len(declared) > 1:
-        raise FlattenError(f"Steps declare different sampling intervals: {sorted(declared)}")
-    interval = next(iter(declared), None)
-    if interval is None:
-        return None
-    if isinstance(interval, bool) or not isinstance(interval, int | float) or interval <= 0:
-        raise FlattenError(f"Declared sampling interval {interval!r} is not a positive number")
-    return float(interval)
+    """The sampler's configured interval, as recorded in the step telemetry summaries.
+
+    Step telemetry is an untyped extra field in the ingestion contract, so each recorded value
+    is validated before any comparison: a list or table must become a FlattenError (a
+    per-run rejection), never a TypeError that aborts the whole batch.
+    """
+    declared = []
+    for name in ("clean", "contended"):
+        telemetry = result[name].get("telemetry")
+        if not isinstance(telemetry, dict) or "interval_seconds" not in telemetry:
+            continue
+        value = telemetry["interval_seconds"]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise FlattenError(
+                f"{name} declares sampling interval {value!r}, not a positive number"
+            )
+        declared.append(float(value))
+    if len(set(declared)) > 1:
+        raise FlattenError(f"Steps declare different sampling intervals: {sorted(set(declared))}")
+    return declared[0] if declared else None
 
 
 def sampling_interval_seconds(samples: list[dict]) -> float | None:
