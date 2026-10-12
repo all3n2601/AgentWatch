@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs llm-up llm-down demo-llm record-llm infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs dataset llm-up llm-down demo-llm record-llm infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -37,6 +37,12 @@ record-cpu: ## Run the CPU experiment and save it through the API
 import-runs: ## Import existing local experiment results, spans, and samples
 	uv run --package agentwatch-worker python -m agentwatch_worker.publish --output .data/coding-demo --kind coding
 	uv run --package agentwatch-worker python -m agentwatch_worker.publish --output .data/cpu-demo --kind cpu
+
+DATASET_SOURCES ?= local:.data
+DATASET_OUTPUT ?= .data/datasets
+
+dataset: ## Build a versioned step dataset release (DATASET_SOURCES="local:.data api:http://127.0.0.1:8090")
+	uv run --package agentwatch-data python -m agentwatch_data.build $(foreach source,$(DATASET_SOURCES),--source $(source)) --output $(DATASET_OUTPUT)
 
 llm-up: ## Start Docker Ollama and download the small tool-capable model
 	docker compose -f deploy/compose/compose.yaml --profile llm up -d --wait ollama

@@ -68,6 +68,46 @@ other runs continue (`flatten_runs` and `label_rows` return rows and rejections)
 label rules or an unreadable source stop a build, so one bad run can never block every later
 build.
 
+## Releases
+
+Build a release with `make dataset`; set `DATASET_SOURCES` to combine sources, for example
+`make dataset DATASET_SOURCES="local:.data api:http://127.0.0.1:8090"`. The command runs
+`python -m agentwatch_data.build` (`pipelines/data/src/agentwatch_data/build.py`), prints the
+release directory, and exits 1 with a reason when the build fails.
+
+A release is an immutable directory under `.data/datasets/` named by its `dataset_version`.
+Every successful build, whether it creates a release or reuses one, also writes its own report
+under `.data/datasets/builds/`:
+
+| File | Contents |
+|---|---|
+| `<version>/steps.parquet` | Every row, every schema column, with Arrow types and nullability taken from `schema.py`; rows ordered by run, then condition, then baseline repeat |
+| `<version>/manifest.json` | Content only: dataset, schema, label, and builder versions; row, run, and task counts; label, basis, condition, and telemetry-status counts; SHA-256 of the canonical rows and of the Parquet file. Rebuilding the same evidence reproduces it byte for byte |
+| `builds/<build id>.json` | That build's events: build time, the release it created or reused (`reused_release`), per-source run and rejection counts, duplicate copies, and every rejection with its stage and reason |
+
+The command prints the release and report paths. Because rejections live in each build's
+report, a rebuild whose accepted rows are unchanged still records evidence rejected that time.
+
+A release is **published** only when a committed build report names it, and consumers should
+select releases with `published_releases()` in `build.py`. Builds never delete releases, so
+concurrent builds cannot remove each other's datasets. The report is staged before the release
+directory appears, so most write failures leave nothing behind; if committing the report still
+fails, the build fails and may leave an unpublished release directory, which the next
+successful build verifies and publishes.
+
+- `dataset_version` is `<schema version>+<first 12 hex digits of the rows' SHA-256>`, so the
+  same evidence, rules, and code always produce the same version. A changed run, rule, or label
+  fingerprint produces a new one.
+- Building a version that already exists verifies its manifest hashes instead of rewriting it;
+  a mismatch fails the build.
+- A build writes everything into a staging directory and renames it into place only when it is
+  complete, so a failed build never leaves a partial release, and never publishes one.
+- The build fails, writing nothing, when a source cannot be read, the label rules are invalid,
+  any row violates the schema, or no usable rows remain. Individual untrustworthy runs are
+  rejected and listed in that build's report instead.
+- Host paths never appear in a manifest or report: local sources are labeled by directory name, such as
+  `<local:coding-demo>`, and the home directory by `~`.
+
 ## Column roles
 
 Only **feature** columns may be model inputs. Labels, rule output, and lineage columns are kept
