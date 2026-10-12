@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 import stat
@@ -19,7 +20,8 @@ from agentwatch_data.build import (
     main,
     published_releases,
 )
-from agentwatch_data.schema import SCHEMA_VERSION
+from agentwatch_data.releases import main as releases_main
+from agentwatch_data.schema import SCHEMA_VERSION, contract
 from dataset_fixtures import make_result, write_run
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -82,6 +84,12 @@ def test_release_holds_the_dataset_and_manifest(evidence, tmp_path):
     assert manifest["telemetry_status"] == {"present": 7}
     assert not {"rejections", "sources", "duplicate_copies"} & manifest.keys()  # content only
     assert manifest["label_version"].startswith("labels-v1.1+")
+    shipped = json.loads((release / "schema.json").read_text())
+    assert shipped == contract() and shipped["schema_version"] == SCHEMA_VERSION
+    assert (
+        manifest["schema_sha256"]
+        == hashlib.sha256((release / "schema.json").read_bytes()).hexdigest()
+    )
 
 
 def test_release_files_are_readable_by_other_users(evidence, tmp_path):
@@ -459,3 +467,29 @@ def test_published_releases_follow_valid_reports_only(evidence, tmp_path):
     assert published_releases(output) == [first.release, second.release]
     assert published_releases(output) == published_releases(output)  # stable
     assert published_releases(tmp_path / "absent") == []
+
+
+def test_latest_published_release_is_printed(evidence, tmp_path, capsys):
+    output = tmp_path / "out"
+    assert releases_main(["--output", str(output)]) == 1
+    assert "No published release" in capsys.readouterr().err
+    first = result_from(evidence, output)
+    write_run(evidence / "cpu-extra", make_result())
+    second = build([Source("local", str(evidence))], output, now=datetime(2026, 10, 12, tzinfo=UTC))
+    assert releases_main(["--output", str(output)]) == 0
+    assert capsys.readouterr().out.strip() == str(second.release)
+    assert first.release != second.release
+
+
+def test_releases_module_runs_as_a_command(evidence, tmp_path, monkeypatch):
+    import runpy
+    import sys
+
+    result_from(evidence, tmp_path / "out")
+    monkeypatch.setattr(
+        sys, "argv", ["agentwatch_data.releases", "--output", str(tmp_path / "out")]
+    )
+    monkeypatch.delitem(sys.modules, "agentwatch_data.releases", raising=False)
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_module("agentwatch_data.releases", run_name="__main__")
+    assert exited.value.code == 0

@@ -1,0 +1,29 @@
+{
+  "builder_version": "0.1.0",
+  "condition": {
+    "baseline": 5,
+    "clean": 1,
+    "contended": 1
+  },
+  "dataset_version": "steps-v1.2+c7f59fba9305",
+  "label_basis": {
+    "baseline_reference": 5,
+    "clean_within_noise": 1,
+    "contention_exceeded_threshold": 1
+  },
+  "label_resource": {
+    "cpu_sandbox": 1,
+    "none": 6
+  },
+  "label_version": "labels-v1.1+9d791c89",
+  "parquet_sha256": "b899d8e91447eadb444c1919c8e01ab2e55afb5e2c1da71e26344d05d4451126",
+  "rows": 7,
+  "rows_sha256": "c7f59fba93056b73dec9e16dfd7ce2fbcf010b4f94483f19fcc23a9425053a3d",
+  "runs": 1,
+  "schema_sha256": "2869baf5459f50798ceb9dc40ac094031319358a73a16c8fd5aa5e55f5d72bfb",
+  "schema_version": "steps-v1.2",
+  "tasks": 1,
+  "telemetry_status": {
+    "present": 7
+  }
+}

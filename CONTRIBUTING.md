@@ -36,6 +36,7 @@ Run checks for the components you changed. The exact CI baseline is in
 | --- | --- |
 | JavaScript/TypeScript | `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build` |
 | Python | `uv run ruff check .`, `uv run pytest` |
+| Dataset quality gate (`pipelines/validation`, Python 3.13, macOS arm64 or Linux x86_64) | `uv run --project pipelines/validation pytest pipelines/validation/tests` |
 | Go | Inspect `gofmt -d apps/control-plane apps/cli`; run `go vet ./apps/control-plane/... ./apps/cli/...` and `go test ./apps/control-plane/... ./apps/cli/...` |
 | Infrastructure | `docker compose -f deploy/compose/compose.yaml config --quiet` with the required local environment |
 | Documentation only | Check accuracy, referenced paths, and Markdown formatting |

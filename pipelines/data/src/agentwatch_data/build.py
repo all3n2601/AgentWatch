@@ -49,11 +49,12 @@ from agentwatch_data.extract import (
 )
 from agentwatch_data.flatten import flatten_runs
 from agentwatch_data.labels import LabelingError, label_rows, load_config
-from agentwatch_data.schema import COLUMNS, SCHEMA_VERSION, SchemaError, validate_rows
+from agentwatch_data.schema import COLUMNS, SCHEMA_VERSION, SchemaError, contract, validate_rows
 
 logger = logging.getLogger("agentwatch_data.build")
 
 DATASET_FILE, MANIFEST_FILE, BUILDS_DIR = "steps.parquet", "manifest.json", "builds"
+SCHEMA_FILE = "schema.json"  # the column contract, for tools that cannot import this package
 CONDITION_ORDER = {"baseline": 0, "clean": 1, "contended": 2}
 ARROW_TYPES = {
     "string": pa.string(),
@@ -280,6 +281,7 @@ def write_release(
         staging.chmod(0o755)
         dataset = staging / DATASET_FILE
         pq.write_table(pa.Table.from_pylist(rows, schema=ARROW_SCHEMA), dataset)
+        (staging / SCHEMA_FILE).write_text(json_text(contract()), encoding="utf-8")
         manifest = {
             "dataset_version": version,
             "schema_version": SCHEMA_VERSION,
@@ -290,6 +292,7 @@ def write_release(
             "tasks": len({row["task_id"] for row in rows}),
             "rows_sha256": digest,
             "parquet_sha256": file_sha256(dataset),
+            "schema_sha256": file_sha256(staging / SCHEMA_FILE),
             "label_resource": counts(rows, "label_resource"),
             "label_basis": counts(rows, "label_basis"),
             "condition": counts(rows, "condition"),

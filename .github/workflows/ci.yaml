@@ -52,6 +52,20 @@ jobs:
       - run: uv run ruff check .
       - run: uv run pytest
 
+  data-validation:
+    # The TFDV quality gate has its own environment (TensorFlow is too heavy for the shared
+    # workspace) and supports CPython 3.13 on Linux x86_64 and macOS arm64.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: pipelines/validation/uv.lock
+      - run: uv sync --project pipelines/validation --frozen
+      - run: uv run --project pipelines/validation --frozen pytest pipelines/validation/tests
+
   go:
     runs-on: ubuntu-latest
     steps:

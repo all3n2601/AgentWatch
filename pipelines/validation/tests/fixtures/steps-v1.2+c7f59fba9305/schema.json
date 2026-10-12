@@ -1,0 +1,397 @@
+{
+  "columns": [
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "run_id",
+      "nullable": false,
+      "role": "id"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "step_id",
+      "nullable": false,
+      "role": "id"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "task_id",
+      "nullable": false,
+      "role": "id"
+    },
+    {
+      "allowed": [
+        "cpu",
+        "coding"
+      ],
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "kind",
+      "nullable": false,
+      "role": "id"
+    },
+    {
+      "allowed": [
+        "measured",
+        "simulated",
+        "rcaeval"
+      ],
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "source",
+      "nullable": false,
+      "role": "id"
+    },
+    {
+      "allowed": null,
+      "dtype": "timestamp[us, tz=UTC]",
+      "maximum": null,
+      "minimum": null,
+      "name": "recorded_at",
+      "nullable": true,
+      "role": "id"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "queue_seconds",
+      "nullable": false,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "execution_seconds",
+      "nullable": false,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "duration_seconds",
+      "nullable": false,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "cpu_seconds",
+      "nullable": false,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": 1,
+      "minimum": 0,
+      "name": "queue_fraction",
+      "nullable": false,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "int64",
+      "maximum": null,
+      "minimum": 1,
+      "name": "workload_iterations",
+      "nullable": false,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "int64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "tests_per_step",
+      "nullable": true,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "int64",
+      "maximum": null,
+      "minimum": 1,
+      "name": "worker_capacity",
+      "nullable": false,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": 100,
+      "minimum": 0,
+      "name": "cpu_pressure_max_avg10",
+      "nullable": true,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "bool",
+      "maximum": null,
+      "minimum": null,
+      "name": "cpu_pressure_available",
+      "nullable": false,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "int64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "cgroup_throttled_usec_delta",
+      "nullable": true,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "bool",
+      "maximum": null,
+      "minimum": null,
+      "name": "cgroup_available",
+      "nullable": false,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "int64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "telemetry_sample_count",
+      "nullable": false,
+      "role": "feature"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": 1,
+      "minimum": 0,
+      "name": "telemetry_coverage",
+      "nullable": true,
+      "role": "feature"
+    },
+    {
+      "allowed": [
+        "none",
+        "cpu_sandbox",
+        "inference",
+        "retrieval"
+      ],
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "label_resource",
+      "nullable": false,
+      "role": "label"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": 1,
+      "minimum": 0,
+      "name": "label_excess_fraction",
+      "nullable": false,
+      "role": "label"
+    },
+    {
+      "allowed": [
+        "none",
+        "cpu_sandbox",
+        "inference",
+        "retrieval"
+      ],
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "rule_prediction",
+      "nullable": false,
+      "role": "rule"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "rule_version",
+      "nullable": false,
+      "role": "rule"
+    },
+    {
+      "allowed": [
+        "baseline",
+        "clean",
+        "contended"
+      ],
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "condition",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "workload",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "injection_method",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "agent_model",
+      "nullable": true,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "bool",
+      "maximum": null,
+      "minimum": null,
+      "name": "run_passed",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "failed_checks",
+      "nullable": true,
+      "role": "lineage"
+    },
+    {
+      "allowed": [
+        "present",
+        "empty",
+        "missing",
+        "no_overlap"
+      ],
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "telemetry_status",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "sampling_interval_seconds",
+      "nullable": true,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "measured_sampling_interval_seconds",
+      "nullable": true,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "baseline_mean_seconds",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "float64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "noise_threshold_seconds",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": [
+        "baseline_reference",
+        "clean_within_noise",
+        "clean_exceeded_noise",
+        "contention_exceeded_threshold",
+        "contention_below_threshold"
+      ],
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "label_basis",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "label_version",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "schema_version",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "dataset_version",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "source_sha256",
+      "nullable": false,
+      "role": "lineage"
+    }
+  ],
+  "schema_version": "steps-v1.2"
+}

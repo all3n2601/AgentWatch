@@ -287,7 +287,10 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
 - [ ] Generate clean, isolated-contention, and mixed-contention replays over fixed tasks.
 - [ ] Store versioned Parquet datasets with GCS/DVC or an explicitly chosen equivalent.
   Versioned Parquet releases are built locally; GCS/DVC storage is not yet set up.
-- [ ] Validate data with TFDV or an explicitly chosen equivalent.
+- [x] Validate data with TFDV or an explicitly chosen equivalent (2026-10-12): `make
+  validate-dataset` checks a release with TFDV 1.21 against the frozen schema in
+  `pipelines/validation/schema/steps.pbtxt`; schema anomalies fail the gate and drift against the
+  previous passing release is reported. Gate tests at 100% line and branch coverage.
 - [ ] Freeze splits grouped by task and related replay to prevent leakage.
 - [ ] Hold out unseen tasks and at least one injection method.
 - [x] Exclude injection configuration and label-generation metadata from model features

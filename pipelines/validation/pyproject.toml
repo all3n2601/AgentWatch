@@ -1,0 +1,16 @@
+[project]
+name = "agentwatch-validation"
+version = "0.1.0"
+description = "AgentWatch dataset quality gate: TFDV statistics, frozen schema, anomalies, and drift"
+# TFDV 1.21 publishes wheels for CPython 3.10-3.13 on macOS arm64 and Linux x86_64 only.
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "tensorflow-data-validation==1.21.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
