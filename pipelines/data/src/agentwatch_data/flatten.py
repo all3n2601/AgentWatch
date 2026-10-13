@@ -34,6 +34,12 @@ def conditioned_steps(result: dict) -> list[tuple[str, dict]]:
 
     The step_id must agree with that position. Deriving the condition from the name alone
     would let a renamed contended step silently become a baseline reference.
+
+    The worker runs steps one after another (baselines, then clean, then contended) on the
+    same fixed work, so overlapping windows or differing output checksums mean the evidence
+    cannot be compared: a baseline overlapping contention would bias the reference, and a
+    step that did different work explains its own slowdown. The producer's
+    same_workload_output check covers only clean against contended, so all are checked here.
     """
     steps = [("baseline", step) for step in result["baseline"]["steps"]]
     steps += [("clean", result["clean"]), ("contended", result["contended"])]
@@ -44,6 +50,17 @@ def conditioned_steps(result: dict) -> list[tuple[str, dict]]:
         )
         if not matches:
             raise FlattenError(f"Step {step_id!r} is recorded in the {condition} position")
+    for (_, earlier), (_, later) in pairwise(steps):
+        if earlier["finished_ns"] > later["submitted_ns"]:
+            raise FlattenError(
+                f"Step {later['step_id']!r} starts before {earlier['step_id']!r} finishes"
+            )
+    checksums = {step["checksum"] for _, step in steps}
+    if len(checksums) != 1 or not next(iter(checksums)).strip():
+        raise FlattenError(
+            f"Steps report {len(checksums)} different output checksums; they did not all do "
+            "the same work"
+        )
     return steps
 
 
@@ -77,6 +94,12 @@ def declared_interval_seconds(result: dict) -> float | None:
         if interval is None or interval <= 0:
             raise FlattenError(
                 f"{name} declares sampling interval {brief(value)}, not a positive number"
+            )
+        # Coverage divides whole nanoseconds by it, so it must be at least 1 ns and finite
+        # when scaled; 5e-324 passes the check above but its expected sample count is inf.
+        if not math.isfinite(interval * 1e9) or interval * 1e9 < 1:
+            raise FlattenError(
+                f"{name} declares sampling interval {brief(value)}, outside 1 ns and above"
             )
         declared.append(interval)
     if len(set(declared)) > 1:
@@ -115,13 +138,18 @@ def window_readings(
         for row in rows
         if row["cpu_pressure"] and "avg10" in row["cpu_pressure"].get("some", {})
     ]
+    # As with the throttling counter, a reading missing from any sample voids the window:
+    # a maximum over the samples that happened to carry PSI is not the step's maximum.
+    if len(pressures) != len(rows):
+        pressures = []
     counters = [(row["cgroup_cpu_stat"] or {}).get("throttled_usec") for row in rows]
     throttled = throttled_delta_usec(counters)
     coverage = None
     if interval_seconds:
         # Whole intervals inside the window: a healthy sampler delivers at least this many.
-        # A step shorter than one interval cannot show whether samples were lost.
-        expected = math.floor((finished_ns - submitted_ns) / 1e9 / interval_seconds)
+        # A step shorter than one interval cannot show whether samples were lost. Integer
+        # nanoseconds, because floor(0.3 / 0.1) is 2 in floating point.
+        expected = (finished_ns - submitted_ns) // round(interval_seconds * 1e9)
         coverage = min(1.0, len(rows) / expected) if expected > 0 else None
     return {
         "cpu_pressure_max_avg10": max(pressures) if pressures else None,

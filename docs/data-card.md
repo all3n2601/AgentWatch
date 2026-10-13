@@ -179,12 +179,12 @@ for training targets, baseline comparison, and traceability.
 | `workload_iterations` | int | Fixed work size of the step |
 | `tests_per_step` | int, nullable | Tests executed by the tool step |
 | `worker_capacity` | int | Sandbox workers available |
-| `cpu_pressure_max_avg10` | float, nullable | Maximum host CPU PSI `some avg10` (%) during the step |
-| `cpu_pressure_available` | bool | Whether PSI was readable during the step |
-| `cgroup_throttled_usec_delta` | int, nullable | cgroup v2 throttled time gained during the step |
+| `cpu_pressure_max_avg10` | float, nullable | Maximum host CPU PSI `some avg10` (%) over the samples inside the step; null unless every one of them carried PSI |
+| `cpu_pressure_available` | bool | Whether every sample inside the step carried a PSI reading (and there was at least one) |
+| `cgroup_throttled_usec_delta` | int, nullable | cgroup v2 throttled time gained between the first and last samples inside the step, a lower bound for the whole step; `telemetry_coverage` shows how much of the step the samples span |
 | `cgroup_available` | bool | Whether a throttling delta was measured: at least two samples in the window, every one with a readable counter, and no decrease between consecutive readings |
 | `telemetry_sample_count` | int | Resource samples inside the step window |
-| `telemetry_coverage` | float, nullable | Samples inside the window ÷ whole declared sampling intervals in the step (`floor(duration / sampling_interval_seconds)`), capped at 1. Judged against the declared interval because a measured one cannot reveal uniform sample loss. Null when telemetry is not `present`, no interval is declared, or the step is shorter than one interval |
+| `telemetry_coverage` | float, nullable | Samples inside the window ÷ whole declared sampling intervals in the step (`floor(duration / sampling_interval_seconds)`, in integer nanoseconds), capped at 1. A declared interval must be at least 1 ns. Judged against the declared interval because a measured one cannot reveal uniform sample loss. Null when telemetry is not `present`, no interval is declared, or the step is shorter than one interval |
 
 Missing readings stay null and are paired with an availability flag. They are never stored as
 zero, because a measured zero and an unavailable reading mean different things. On macOS, PSI and
@@ -214,11 +214,18 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 - `label_version` is the rules version plus the first 8 hex digits of a fingerprint of the
   validated rule values and the labeling code (`labels.py`, line endings normalized). A retuned
   threshold or a changed labeling rule produces a new version; comments, formatting, equivalent
-  spellings such as `3` and `3.0`, and Windows line endings do not.
+  spellings such as `3` and `3.0`, and Windows line endings do not. The packaged label version
+  is pinned in `test_dataset_labels.py`, so any change to the rules or `labels.py` fails CI
+  until the PR updates the pin, and a change that can alter labels also bumps `version` (which
+  the evaluation contract pins).
 - A step's condition comes from its position in the run result (`baseline.steps`, `clean`,
   `contended`), and its `step_id` must agree; a renamed step fails instead of changing role.
+- Steps must run one after another in that order, with no overlapping windows, and every step
+  must report the same nonblank output `checksum`. A baseline overlapping contention would bias
+  the reference, and a step that did different work explains its own slowdown; the producer's
+  `same_workload_output` check covers only clean against contended.
 - Runs with unknown conditions, unknown or mixed kinds, repeated step IDs, fewer than two
-  baseline steps, or any duration that is not a finite positive number (NaN, infinity, zero,
+  baseline steps, other than exactly one clean and one contended step, or any duration that is not a finite positive number (NaN, infinity, zero,
   booleans, or non-numeric) fail labeling instead of being guessed. Mixed contention is not
   defined in `labels-v1.1`.
 - A run that failed `same_workload_output` did different work under contention, so its

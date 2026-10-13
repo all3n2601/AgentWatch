@@ -332,7 +332,9 @@ def test_flatten_runs_rejects_bad_runs_and_keeps_the_rest():
     assert rejection.origin == "cpu-bad" and "contended position" in rejection.reason
 
 
-@pytest.mark.parametrize("value", [[0.25], {"seconds": 0.25}, "0.25", True, -0.25, 10**400])
+@pytest.mark.parametrize(
+    "value", [[0.25], {"seconds": 0.25}, "0.25", True, -0.25, 10**400, 5e-324, 1e-10, 1e300]
+)
 def test_malformed_declared_interval_rejects_only_that_run(value):
     """Allen's #13 review: a list interval raised TypeError and aborted the whole batch."""
     bad = make_result()
@@ -353,3 +355,59 @@ def test_oversized_interval_is_described_not_printed():
         result[name]["telemetry"]["interval_seconds"] = 10**400
     with pytest.raises(FlattenError, match="an integer with 401 digits"):
         declared_interval_seconds(result)
+
+
+# Audit fixes
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        lambda result: result["baseline"]["steps"][0],  # never compared by the producer
+        lambda result: result["clean"],
+        lambda result: result["contended"],
+    ],
+    ids=["baseline", "clean", "contended"],
+)
+def test_a_step_that_did_different_work_rejects_the_run(step):
+    result = make_result()
+    step(result)["checksum"] = "different"
+    result["checks"] = {"contention_detected": True, "passed": True}  # no output check at all
+    with pytest.raises(FlattenError, match="2 different output checksums"):
+        flatten_run(validate(result, [SAMPLE], "cpu"))
+
+
+def test_a_blank_checksum_cannot_show_the_work_was_the_same():
+    result = make_result()
+    for step in result["baseline"]["steps"] + [result["clean"], result["contended"]]:
+        step["checksum"] = " "
+    with pytest.raises(FlattenError, match="did not all do the same work"):
+        flatten_run(validate(result, [SAMPLE], "cpu"))
+
+
+def test_overlapping_steps_reject_the_run():
+    """A baseline inside the contention window would bias the reference and share samples."""
+    result = make_result()
+    shifted = result["baseline"]["steps"][2]
+    shift = result["contended"]["submitted_ns"] + 500_000_000 - shifted["submitted_ns"]
+    for key in ("submitted_ns", "started_ns", "finished_ns"):
+        shifted[key] += shift
+    with pytest.raises(FlattenError, match="starts before 'baseline-2' finishes"):
+        flatten_run(validate(result, [SAMPLE], "cpu"))
+
+
+def test_coverage_counts_whole_intervals_in_integer_nanoseconds():
+    """floor(0.3 / 0.1) is 2 in floating point, which hid a lost sample."""
+    samples = [sample(0), sample(100_000_000)]
+    window = window_readings(samples, BASE_NS, BASE_NS + 300_000_000, interval_seconds=0.1)
+    assert window["telemetry_coverage"] == pytest.approx(2 / 3)
+
+
+def test_psi_missing_from_some_samples_is_not_a_maximum():
+    samples = [sample(0, avg10=5.0)] + [sample(i * 250_000_000) for i in range(1, 8)]
+    window = window_readings(samples, BASE_NS, BASE_NS + 2_000_000_000)
+    assert window["cpu_pressure_max_avg10"] is None
+    assert window["cpu_pressure_available"] is False
+    complete = [sample(i * 250_000_000, avg10=float(i)) for i in range(8)]
+    window = window_readings(complete, BASE_NS, BASE_NS + 2_000_000_000)
+    assert (window["cpu_pressure_max_avg10"], window["cpu_pressure_available"]) == (7.0, True)

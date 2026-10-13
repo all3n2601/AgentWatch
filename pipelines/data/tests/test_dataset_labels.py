@@ -61,6 +61,20 @@ def test_packaged_rules_are_frozen_and_versioned(config):
     assert config.label_version == f"labels-v1.1+{config.fingerprint[:8]}"
 
 
+# The full label_version of the packaged rules and labeling code, pinned so no change to
+# either reaches a release unnoticed. When this fails: if the change can alter any label
+# (a rule value, the threshold or excess formula, which rows are labeled or rejected), bump
+# `version` in labels.toml, which also needs an evaluation-contract change; otherwise, for a
+# comment or refactor, keep the version. Either way, update the pin in the same PR.
+PINNED_LABEL_VERSION = "labels-v1.1+fd085fa4"
+
+
+def test_label_version_is_pinned(config):
+    assert config.label_version == PINNED_LABEL_VERSION, (
+        "labels.py or labels.toml changed; see the comment above PINNED_LABEL_VERSION"
+    )
+
+
 def test_real_run_is_labeled_from_experiment_design(config):
     labeled = label_run(run_rows(), config)
     assert [row["label_resource"] for row in labeled] == ["none"] * 6 + ["cpu_sandbox"]
@@ -152,6 +166,9 @@ def duplicated_step(rows):
         (run_rows()[:-1] + [run_rows(kind="cpu")[-1]], "mixes experiment kinds"),
         (run_rows(failed="same_workload_output"), "not attributable"),
         (run_rows(failed="queue_increased,same_workload_output"), "not attributable"),
+        (run_rows()[:-1], "exactly one contended step"),
+        (run_rows() + [run_rows()[-1] | {"step_id": "contended-2"}], "exactly one contended"),
+        ([row for row in run_rows() if row["condition"] != "clean"], "exactly one clean step"),
     ],
 )
 def test_unlabelable_evidence_fails_loudly(config, rows, message):
