@@ -348,6 +348,32 @@ redaction, resource limits, backups, cost controls, and the full CI release path
 
 ## Final project acceptance still to demonstrate
 
+### Optimization extension planned October 13 2026
+
+The [optimization layer plan](optimization-plan.md) adds the following future work. All items
+are unimplemented/unverified; the planning update is not execution evidence. O labels match
+task titles on the Team Planner; its generated card IDs are separate. The board stages run
+from M3 through M6 and do not renumber the implementation milestones above.
+
+- [ ] O01 — Rohit: accept policy/evaluation contracts and numerical gates after C01/A04/M01.
+- [ ] O02 — Allen: validated versioned manual controls and audit history after O01/B01/B02.
+- [ ] O03 — Akshayaa: bounded runner admission and cleanup after O02/A02/A03.
+- [ ] O04 — Akshay: paired-run manifests and comparison validation after O01/D02.
+- [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
+- [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
+- [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
+  and operator opt-in required for actuation.
+- [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.
+- [ ] X02 retains optimization contracts, manifests, runbooks and failed/inconclusive evidence.
+
+**Exit test:** Compare preregistered fixed limits against baseline on compatible repeated
+workloads; record completion time, throughput, tail latency, task quality, overhead and failures.
+Prove cancellation/permit cleanup, missing-evidence handling and disable/restore. Keep numerical
+gates proposed until O01 accepts them, preserve the existing CPU noise gate, and do not claim
+improvement or enable adaptive control from an uncontrolled/inconclusive comparison.
+
+### Core acceptance targets
+
 These are project targets, not achievements inferred from the current demo.
 
 - [ ] All three resource classes work on the chosen workload.
