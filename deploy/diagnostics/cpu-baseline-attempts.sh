@@ -7,6 +7,14 @@
 # Usage: deploy/diagnostics/cpu-baseline-attempts.sh [ATTEMPTS]   (default 5)
 set -u
 attempts="${1:-5}"
+max_attempts=50
+case "$attempts" in
+  '' | *[!0-9]*) echo "ATTEMPTS must be a whole number from 1 to $max_attempts, got '$attempts'" >&2; exit 2 ;;
+esac
+if [ "$attempts" -lt 1 ] || [ "$attempts" -gt "$max_attempts" ]; then
+  echo "ATTEMPTS must be a whole number from 1 to $max_attempts, got '$attempts'" >&2
+  exit 2
+fi
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 out="$repo/.data/a01-cpu-baseline-$(date -u +%Y%m%dT%H%M%SZ)"
 attempt_timeout_s=300
@@ -21,20 +29,29 @@ conditions() {
   echo "wsl_loadavg=$(cut -d' ' -f1-3 /proc/loadavg)"
   echo "wsl_cpu_pressure=$(head -1 /proc/pressure/cpu 2>/dev/null || echo unavailable)"
   if [ "$on_wsl" = yes ] && command -v powershell.exe >/dev/null; then
+    # Win32_PerfFormattedData uses invariant names; Get-Counter paths are localized.
     timeout 30 powershell.exe -NoProfile -NonInteractive -Command '
       $battery = Get-CimInstance Win32_Battery
       $status = if ($battery) { $battery.BatteryStatus } else { "no battery" }
-      $load = (Get-Counter "\Processor(_Total)\% Processor Time" -SampleInterval 1 -MaxSamples 3).CounterSamples |
-        Measure-Object CookedValue -Average
+      $readings = 1..3 | ForEach-Object {
+        (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor |
+          Where-Object { $_.Name -eq "_Total" }).PercentProcessorTime
+        Start-Sleep -Seconds 1
+      }
       "windows_battery_status=$status (2 = on AC power, 1 = discharging)"
       "windows_power_scheme=$(powercfg /getactivescheme)"
-      "windows_cpu_percent_3s_mean={0:N1}" -f $load.Average' 2>&1 | tr -d '\r'
+      "windows_cpu_percent_3s_mean={0:N1}" -f ($readings | Measure-Object -Average).Average' 2>&1 | tr -d '\r'
   else
     echo "windows_conditions=unavailable (not WSL)"
   fi
 }
 
-mkdir -p "$out"
+mkdir -p "$repo/.data"
+# mkdir without -p fails if a run started in the same second already owns this directory.
+if ! mkdir "$out" 2>/dev/null; then
+  echo "Refusing to overwrite existing evidence: $out" >&2
+  exit 2
+fi
 cd "$repo" || exit 1
 {
   echo "attempts_declared=$attempts"

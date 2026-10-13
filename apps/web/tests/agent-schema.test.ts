@@ -109,3 +109,25 @@ test("invalid optional agent evidence does not hide the measured coding run", ()
   assert.equal(parsed.agent, undefined);
   assert.equal(parsed.checks.passed, true);
 });
+
+test("model placement evidence from GPU runs does not invalidate the agent view", () => {
+  const placement = {
+    source: "ollama /api/ps",
+    status: "measured",
+    size_bytes: 1702593821,
+    size_vram_bytes: 1702593821,
+    gpu_memory_fraction: 1,
+    digest: null,
+    observed_at: "2026-10-13T23:01:58.123456+00:00",
+    read_seconds: 0.004,
+  };
+  const data = evidence();
+  const withPlacement = {
+    ...data,
+    model_placement: { ...placement, status: "malformed", reason: "not JSON" },
+    inference: [{ ...data.inference[0], model_placement: placement }],
+  };
+  const agent = agentSchema.parse(withPlacement);
+  assert.equal(agent.inference.length, 1);
+  assert.equal(agent.inference[0].metrics.eval_count, 0);
+});

@@ -1,13 +1,20 @@
+import argparse
 import http.client
 import io
 import json
 import sys
 import urllib.error
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+from datetime import datetime, timedelta
 
 import pytest
 from agentwatch_worker import llm_demo
-from agentwatch_worker.llm_demo import agent_loop, model_placement, observe_model_placement
+from agentwatch_worker.llm_demo import (
+    agent_loop,
+    model_placement,
+    normalized_model_name,
+    observe_model_placement,
+)
 
 
 class Span:
@@ -159,6 +166,84 @@ def test_unloaded_model_is_unavailable_not_cpu():
 
 
 @pytest.mark.parametrize(
+    ("name", "normalized"),
+    [
+        ("qwen3", "qwen3:latest"),
+        ("qwen3:1.7b", "qwen3:1.7b"),
+        (" qwen3:1.7b ", "qwen3:1.7b"),
+        ("library/qwen3:1.7b", "qwen3:1.7b"),
+        ("registry.ollama.ai/library/qwen3", "qwen3:latest"),
+        ("user/custom", "user/custom:latest"),
+        ("localhost:5000/team/model", "localhost:5000/team/model:latest"),
+        ("localhost:5000/team/model:v2", "localhost:5000/team/model:v2"),
+    ],
+)
+def test_model_names_are_compared_in_ollamas_canonical_form(name, normalized):
+    assert normalized_model_name(name) == normalized
+
+
+@pytest.mark.parametrize("requested", ["qwen3", "qwen3:latest", "library/qwen3"])
+def test_untagged_or_namespaced_model_matches_its_listed_name(requested):
+    placement = model_placement(loaded(name="qwen3:latest"), requested)
+    assert placement["status"] == "measured"
+
+
+def test_different_tag_of_the_same_model_is_not_matched():
+    placement = model_placement(loaded(name="qwen3:latest"), "qwen3:1.7b")
+    assert placement["status"] == "unavailable"
+
+
+def test_non_string_listed_names_are_ignored():
+    response = loaded()
+    response["models"].insert(0, {"name": None, "model": 7, "size": 1, "size_vram": 1})
+    assert model_placement(response, "qwen3:1.7b")["status"] == "measured"
+
+
+class RecordingTracer:
+    def __init__(self, events):
+        self.events = events
+
+    @contextmanager
+    def start_as_current_span(self, name):
+        self.events.append(f"enter {name}")
+        yield Span()
+        self.events.append(f"exit {name}")
+
+
+def test_placement_is_read_after_each_inference_span_closes():
+    events = []
+    responses = iter([tool_call(), {"message": {"role": "assistant", "content": "Checks passed."}}])
+    evidence = {}
+
+    def observe():
+        events.append("placement")
+        return {"status": "measured", "read": len(events)}
+
+    agent_loop(
+        lambda _payload: next(responses),
+        fixture_result,
+        RecordingTracer(events),
+        "test-model",
+        evidence,
+        observe,
+    )
+    assert events == [
+        "enter llm.chat",
+        "exit llm.chat",
+        "placement",
+        "enter tool.run_tests",
+        "exit tool.run_tests",
+        "enter llm.chat",
+        "exit llm.chat",
+        "placement",
+    ]
+    assert [item["model_placement"]["status"] for item in evidence["inference"]] == [
+        "measured",
+        "measured",
+    ]
+
+
+@pytest.mark.parametrize(
     "response",
     [
         {},
@@ -193,7 +278,8 @@ def test_placement_request_failure_is_recorded_as_unavailable(failure, reported)
     assert placement["reason"].startswith("placement request failed:")
     assert reported in placement["reason"]
     assert "gpu_memory_fraction" not in placement
-    assert isinstance(placement["observed_at_unix_ns"], int)
+    assert datetime.fromisoformat(placement["observed_at"]).utcoffset() == timedelta(0)
+    assert placement["read_seconds"] >= 0
 
 
 def respond_with(body: bytes):
@@ -201,6 +287,10 @@ def respond_with(body: bytes):
         return io.BytesIO(body)
 
     return urlopen
+
+
+def unreachable_urlopen(*_args, **_kwargs):
+    raise urllib.error.URLError("connection refused")
 
 
 @pytest.mark.parametrize("body", [b"\xff", b"not json", b'{"models": '])
@@ -239,5 +329,59 @@ def test_failed_placement_read_preserves_completed_run(monkeypatch, tmp_path):
     results = json.loads((tmp_path / "results.json").read_text())
     assert agent["status"] == "passed"
     assert agent["model_placement"]["status"] == "malformed"
+    assert [item["model_placement"]["status"] for item in agent["inference"]] == [
+        "malformed",
+        "malformed",
+    ]
     assert results["checks"]["passed"]
     assert results["agent"]["model_placement"]["status"] == "malformed"
+
+
+@pytest.mark.parametrize(
+    ("urlopen", "placement_status"),
+    [
+        (respond_with(json.dumps(loaded()).encode()), "measured"),
+        (unreachable_urlopen, "unavailable"),
+    ],
+)
+def test_failed_run_records_placement_and_keeps_its_own_error(
+    monkeypatch, tmp_path, urlopen, placement_status
+):
+    # A final answer without a tool call fails the loop after one inference request.
+    monkeypatch.setattr(
+        llm_demo,
+        "ollama_chat",
+        lambda _url, _payload: {"message": {"role": "assistant", "content": "I ran them."}},
+    )
+    monkeypatch.setattr(llm_demo.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(
+        sys, "argv", ["llm_demo", "--url", "http://ollama.test", "--output", str(tmp_path)]
+    )
+
+    with pytest.raises(ValueError, match="did not complete"):
+        llm_demo.main()
+
+    agent = json.loads((tmp_path / "agent.json").read_text())
+    assert agent["status"] == "failed"
+    assert "did not complete" in agent["error"]
+    assert agent["model_placement"]["status"] == placement_status
+    assert agent["inference"][0]["model_placement"]["status"] == placement_status
+    assert not (tmp_path / "results.json").exists()
+
+
+@pytest.mark.parametrize(
+    "url", ["127.0.0.1:11434", "ftp://127.0.0.1:11434", "http://", "localhost", ""]
+)
+def test_ollama_url_must_be_http(monkeypatch, tmp_path, url):
+    with pytest.raises(argparse.ArgumentTypeError):
+        llm_demo.ollama_base_url(url)
+    monkeypatch.setattr(sys, "argv", ["llm_demo", "--url", url, "--output", str(tmp_path)])
+    with pytest.raises(SystemExit) as exited:
+        llm_demo.main()
+    assert exited.value.code == 2
+    assert not (tmp_path / "agent.json").exists()
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:11435", "https://ollama.example:443/"])
+def test_valid_ollama_urls_are_accepted(url):
+    assert llm_demo.ollama_base_url(url) == url

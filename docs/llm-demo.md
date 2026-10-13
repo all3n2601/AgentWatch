@@ -18,12 +18,21 @@ make demo-llm
 
 `AGENTWATCH_LLM_GPU=1 make llm-up` adds `deploy/compose/compose.gpu.yaml`, which reserves the
 host's NVIDIA GPUs for the Ollama service. It needs Docker Desktop with WSL2 GPU support or the
-NVIDIA Container Toolkit; without the variable the CPU-only service is unchanged.
+NVIDIA Container Toolkit; without the variable the CPU-only service is unchanged. Only `0`, `1`,
+or unset are accepted; other values stop `make llm-up` instead of silently running on CPU.
+Docker is expected to refuse the GPU reservation on a host without NVIDIA support; that failure
+path has not been exercised because the team's only GPU machine was used for verification.
 
 If another Ollama already listens on 11434, set `OLLAMA_HOST_PORT` (for example 11435). Make
 targets derive `OLLAMA_URL` from it; when running the Python module directly, export
-`OLLAMA_URL=http://127.0.0.1:11435` as well. Each run records Ollama's reported model placement
-(`model_placement` in `agent.json`), read from `/api/ps` after the loop.
+`OLLAMA_URL=http://127.0.0.1:11435` as well. The URL must be `http://` or `https://` with a host.
+
+Each run records Ollama's reported model placement from `/api/ps`: after every inference request
+(`inference[].model_placement`) and once more after the loop, or when the run fails
+(`model_placement`). Each reading is taken after its `llm.chat` span closes, so inference timings
+exclude it, but the `agent.tool_loop` span includes these short requests; `read_seconds`
+records each one's duration (bounded by a 10 s timeout). Model names are compared in Ollama's
+canonical form, so `qwen3` matches the listed `qwen3:latest`.
 The Windows GPU laptop setup, its measured signals, and their limits are in
 [the GPU measurement access record](gpu-measurement-access.md).
 
@@ -60,8 +69,9 @@ Each execution replaces `.data/llm-demo/`:
 - `agent.json`: exact messages, tool result, final answer, request wall times,
   Ollama token counts and nanosecond timing fields, model placement, status and failure details.
   Placement is `measured`, `unavailable` (model unloaded or `/api/ps` unreachable), or
-  `malformed` (inconsistent sizes, or a response that is not valid UTF-8 JSON). It never
-  defaults to CPU or GPU, and a failed placement read does not change a completed run's status.
+  `malformed` (inconsistent sizes, or a response that is not valid UTF-8 JSON), with a
+  UTC `observed_at` timestamp. It never defaults to CPU or GPU, and a failed placement read
+  does not change a run's status or replace its recorded error.
 - `agent-spans.jsonl`: OpenTelemetry agent loop, tool invocation, and inference spans;
   these are also embedded in `results.json` so the dashboard can display them from history.
 - `results.json`, `spans.jsonl`, `samples.jsonl`, `report.html`: existing measured
@@ -98,10 +108,12 @@ fixture, not a container security boundary. General live-agent ingestion remains
 
 RTX 5070 Laptop GPU (8 GiB) through Docker Desktop and WSL2, same image and model ID.
 Run `7afc596d-131f-4ba6-a374-4ffad0ccce01` used the committed override with port 11435 and passed;
-Ollama reported 100% of the model in VRAM. The final-code rerun `dd25e410-ad19-48ff-af93-461d9ae0ca6f`
-completed the tool loop with the same placement but was inconclusive: its coding baseline CV was
-19.3%. Neither was published to dashboard history. Details, both inconclusive runs, and
-unavailable signals are in [the access record](gpu-measurement-access.md).
+Ollama reported 100% of the model in VRAM. Later reruns completed the tool loop with the same
+placement but were inconclusive on the coding baseline gate (`dd25e410-ad19-48ff-af93-461d9ae0ca6f`,
+CV 19.3%; `ec908384-e9bc-45ad-9788-b22a3ac0d668`, CV 17.3%). One rerun failed when the model
+repeated `run_tests` and the dispatcher rejected it; it still recorded per-request and failure
+placement. None were published to dashboard history. Details and unavailable signals are in
+[the access record](gpu-measurement-access.md).
 
 ## Verified locally — October 2, 2026
 

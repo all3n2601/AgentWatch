@@ -20,11 +20,17 @@ for resource in cpu memory io; do show "/proc/pressure/$resource"; done
 section "cgroup"
 mount | grep -E '^cgroup2? ' || echo "no cgroup mount found"
 show /sys/fs/cgroup/cgroup.controllers
-group=$(cut -d: -f3 /proc/self/cgroup | head -1)
-echo "self cgroup: ${group:-unknown}"
-for file in cpu.stat cpu.max cpu.pressure memory.current memory.max; do
-  show "/sys/fs/cgroup${group}/$file" 6
-done
+# Only the unified (cgroup v2) entry, `0::<path>`, names files under /sys/fs/cgroup; hybrid
+# hosts also list v1 controller lines first.
+if group=$(grep -m1 '^0::' /proc/self/cgroup 2>/dev/null); then
+  group=${group#0::}
+  echo "self cgroup v2 path: $group"
+  for file in cpu.stat cpu.max cpu.pressure memory.current memory.max; do
+    show "/sys/fs/cgroup${group%/}/$file" 6
+  done
+else
+  echo "self cgroup v2 path: unavailable (no 0:: entry in /proc/self/cgroup)"
+fi
 
 section "nvidia"
 smi=$(command -v nvidia-smi || true)
