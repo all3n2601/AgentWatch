@@ -205,6 +205,34 @@ the directory you are editing, including `apps/web/AGENTS.md` for the web app.
   Push unverified work only if the user explicitly requests that exception, and
   clearly describe the limitation in a draft PR.
 
+## Keep task and main history tidy
+
+- Use one active PR per task. Add related defects, regression tests, documentation,
+  and review fixes to that task's existing branch and PR while it is open; do not
+  create a new PR for every audit finding, edit, or agent session.
+- Split work only when it has an independent purpose and can be tested, reviewed,
+  merged, and reverted separately, or when size makes one review impractical.
+  Explain the split and link related PRs and their merge order. Shared filenames
+  alone do not require consolidation; unrelated changes must still stay separate.
+- Complete a task's planned audit and verification before requesting review.
+  Batch related findings into a verified milestone instead of publishing a stream
+  of speculative fixes. A genuinely urgent independent fix may ship separately;
+  explain why. Do not delay necessary fixes solely to reduce the PR count.
+- Before pushing, inspect `git diff origin/main...HEAD` and
+  `git log --oneline origin/main..HEAD`. Include only the task's changes and use
+  concrete titles describing behavior, not generic "audit gaps" or "updates".
+- Merge PRs using squash only: one reviewed task becomes one commit on `main`.
+  Use the final PR title as the squash title (`<type>: <specific change>`) and a
+  concise PR description as its body. Review the generated message before merge;
+  do not append the branch's full work-in-progress commit log.
+- Local checkpoint commits and main-sync merges may exist on a task branch; they
+  are omitted by the squash merge. Do not force-push or rewrite shared history
+  merely to make that branch's graph tidy. After squash merge, start a new task
+  from the latest `origin/main`; do not reuse the merged branch.
+- Existing published history must remain intact unless the owner explicitly
+  authorizes a coordinated history rewrite. Never close, replace, or combine
+  another contributor's open PRs without their authorization.
+
 ## Meaningful commits and pushes
 
 - Review `git diff` and `git status` before committing. Include only intended

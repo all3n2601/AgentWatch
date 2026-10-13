@@ -27,6 +27,33 @@ credentials, or local `.data` evidence.
    Avoid unrelated formatting, broad cleanup, empty commits, and pushes after
    every edit.
 
+## Keep history tidy
+
+Use one active branch and PR per task. Put related audit findings and review fixes
+in the existing PR while it is open. Finish the planned audit and local checks
+before requesting review, and push at verified milestones rather than after each
+edit. Split only for independently testable and reversible changes or an
+impractically large review; link the related PRs and explain the split and merge
+order. Different pipeline stages can justify separate PRs, but a new agent
+session or another finding in the same task does not.
+
+Before pushing, review `git diff origin/main...HEAD` and
+`git log --oneline origin/main..HEAD`. Use a specific behavior-focused PR title,
+for example `fix: reject mismatched step checksums`, instead of `fix: audit gaps`.
+
+GitHub permits **squash merges only**, giving each merged PR one commit on `main`.
+The existing main ruleset also requires linear history and permits only squash.
+Use the PR title (`<type>: <specific change>`) and a concise PR description for
+the squash message; review it before merging. Task branches can contain useful
+checkpoint commits and merges from main without adding them to main's history.
+Start the next task from the latest `origin/main`, not the merged task branch.
+
+These settings apply to future merges; existing commits are preserved. Do not
+rewrite published history or close/consolidate another contributor's PRs without
+explicit authorization. PR scope is a contributor and reviewer responsibility;
+squash settings cannot determine whether two tasks should be combined. Existing
+review, CI, and administrator-bypass requirements still apply.
+
 ## Verify before pushing
 
 Run checks for the components you changed. The exact CI baseline is in
