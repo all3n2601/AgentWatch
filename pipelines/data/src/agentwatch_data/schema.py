@@ -218,6 +218,29 @@ LEAKY_COLUMNS = frozenset(
 RELEASE_COLUMNS = frozenset({"dataset_version"})
 
 
+def contract() -> dict:
+    """The column contract as JSON-ready data, shipped with every release as schema.json.
+
+    Tools that cannot import this package (the TFDV quality gate runs in its own
+    environment) read the contract from the release instead.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "columns": [
+            {
+                "name": column.name,
+                "dtype": column.dtype,
+                "role": str(column.role),
+                "nullable": column.nullable,
+                "allowed": list(column.allowed) if column.allowed is not None else None,
+                "minimum": column.minimum,
+                "maximum": column.maximum,
+            }
+            for column in COLUMNS
+        ],
+    }
+
+
 def columns_with(role: Role) -> list[str]:
     return [column.name for column in COLUMNS if column.role == role]
 

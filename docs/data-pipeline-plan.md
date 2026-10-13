@@ -28,8 +28,8 @@ branch coverage, and exercised against real recorded runs and the live ingestion
 | Extract | Strict validation, retries, cursor and row checks, duplicate detection | Done (#2, #10, #13) |
 | Flatten | Step rows, telemetry windows, coverage against the declared interval | Done (#3, #12, #13) |
 | Label | `labels-v1.1`, `injection_method`, per-run rejection | Done (#5, #12, #13) |
-| **5. Build** | `make dataset`: versioned Parquet release with manifest | This PR |
-| 6. Quality gate | TFDV statistics and a frozen schema; anomalies fail the build. TFDV 1.21 runs on Python 3.13 (verified) but pulls in TensorFlow (~1.7 GB), so it is an optional extra used by the pipeline job, not a core dependency | Next |
+| 5. Build | `make dataset`: versioned Parquet release, manifest, and per-build report | Done (#14) |
+| **6. Quality gate** | `make validate-dataset`: TFDV statistics against a frozen, reviewed schema; anomalies fail, drift is reported. Isolated in `pipelines/validation` because TFDV brings TensorFlow (~1.7 GB) | This PR |
 | 7. Splits | 70/15/15 grouped by `task_id`, frozen to a split file; the contract's leakage check | Next |
 | 8. Versioning | DVC with a GCS remote; a rebuild from the same evidence reproduces the same version | Next |
 | Hardening pass | Request batching for large API histories; anything left from reviews | Before Airflow |
