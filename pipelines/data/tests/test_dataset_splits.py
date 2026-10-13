@@ -75,7 +75,7 @@ def write_verdict(
         "attempt": named,
         "release": release.name,
         "status": "passed",
-        "validated_at": "2026-10-14T00:00:00+00:00",
+        "validated_at": "2026-10-01T00:00:00+00:00",
         "release_parquet_sha256": manifest["parquet_sha256"],
         "release_contract_sha256": manifest["schema_sha256"],
         "schema_sha256": hashlib.sha256(text.encode()).hexdigest(),
@@ -115,7 +115,7 @@ def resign(release: Path) -> None:
 def rows_of(path: Path, name: str) -> list[dict]:
     """The synthetic release's queue timing separates its classes, so its leakage check is
     blocked; tests that read its rows opt in explicitly."""
-    return load_split(path, name, FROZEN, allow_unchecked_leakage=True)
+    return load_split(path, name, CONTRACT, FROZEN, allow_unchecked_leakage=True)
 
 
 def resigned(directory: Path, split: dict) -> Path:
@@ -325,26 +325,50 @@ def test_a_changed_split_file_is_refused(release):
     split = json.loads(result.path.read_text())
     split["groups"] = {task: "train" for task in split["groups"]}
     result.path.write_text(json.dumps(split))
-    with pytest.raises(SplitError, match="does not match its content"):
+    with pytest.raises(SplitError, match="is not what .* produce"):
         rows_of(result.path, "train")
-    with pytest.raises(SplitError, match="does not match its content"):
+    with pytest.raises(SplitError, match="Existing split .* does not match its content"):
         split_of(release)
 
 
-def test_a_resigned_split_that_moves_tasks_is_refused(release):
-    result = split_of(release)
-    split = json.loads(result.path.read_text())
-    split["groups"] = {task: "train" for task in split["groups"]}
-    with pytest.raises(SplitError, match="assigns tasks differently"):
-        rows_of(resigned(result.path.parent, split), "train")
+REBUILT = "is not what .* produce; run make split-dataset"
 
 
-def test_a_split_whose_rows_changed_is_refused(release):
+def edit(split: dict, change) -> dict:
+    change(split)
+    return split
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda s: s.update(groups={task: "train" for task in s["groups"]}),  # moves tasks
+        lambda s: s["splits"]["test"].update(rows_sha256="0" * 64),
+        lambda s: s["leakage"].update(status=PASSED, reason=None),  # unblocks leakage
+        lambda s: s["excluded_runs"].append(
+            {"run_id": "x", "source": "measured", "reason": "cherry-picked"}
+        ),
+        lambda s: s["contract"].update(group_key="run_id"),
+        lambda s: s["contract"].update(test_sources=["simulated"]),
+        lambda s: s.update(label_version="labels-v1.1+00000000"),
+    ],
+    ids=["groups", "rows", "leakage", "excluded", "group-key", "test-sources", "labels"],
+)
+def test_a_resigned_split_that_differs_from_its_rebuild_is_refused(release, change):
+    """Its id was recomputed to match, so only rebuilding from the release can catch it."""
     result = split_of(release)
-    split = json.loads(result.path.read_text())
-    split["splits"]["test"]["rows_sha256"] = "0" * 64
-    with pytest.raises(SplitError, match="test rows .* do not match"):
-        rows_of(resigned(result.path.parent, split), "test")
+    split = edit(json.loads(result.path.read_text()), change)
+    with pytest.raises(SplitError, match=REBUILT):
+        load_split(resigned(result.path.parent, split), "train", CONTRACT, FROZEN, True)
+
+
+def test_a_split_made_under_another_contract_is_refused(release, tmp_path):
+    result = split_of(release)
+    contract = edited_contract(
+        tmp_path, ("max_single_feature_auc = 0.98", "max_single_feature_auc = 0.99")
+    )
+    with pytest.raises(SplitError, match=REBUILT):
+        load_split(result.path, "train", contract, FROZEN, True)
 
 
 def test_a_split_file_must_keep_its_name_and_folder(release):
@@ -364,23 +388,15 @@ def test_a_split_of_a_different_release_is_refused(release):
     table = pq.read_table(release / DATASET_FILE)
     pq.write_table(table.slice(0, 20), release / DATASET_FILE)
     resign(release)
-    with pytest.raises(SplitError, match="is not the one split"):
+    with pytest.raises(SplitError, match="changed since it was validated"):
         rows_of(result.path, "train")
-
-
-def test_a_split_that_puts_disallowed_sources_in_test_is_refused(release, tmp_path):
-    result = split_of(release)
-    split = json.loads(result.path.read_text())
-    split["contract"]["test_sources"] = ["simulated"]
-    with pytest.raises(SplitError, match="disallowed sources"):
-        rows_of(resigned(result.path.parent, split), "test")
 
 
 def test_splits_without_a_passing_leakage_check_are_refused_by_default(release):
     result = split_of(release)
     assert result.split["leakage"]["status"] == BLOCKED
     with pytest.raises(SplitError, match="leakage check is blocked; the contract blocks"):
-        load_split(result.path, "train", FROZEN)
+        load_split(result.path, "train", CONTRACT, FROZEN)
     assert len(rows_of(result.path, "train")) == 10  # explicit opt-in for exploration
 
 
@@ -388,7 +404,7 @@ def test_splits_with_a_passing_leakage_check_load(release, monkeypatch):
     passed = {"status": PASSED, "reason": None}
     monkeypatch.setattr(splits_module, "leakage_check", lambda train, contract: passed)
     result = split_of(release)
-    assert len(load_split(result.path, "validation", FROZEN)) == 10
+    assert len(load_split(result.path, "validation", CONTRACT, FROZEN)) == 10
 
 
 @pytest.fixture
@@ -397,23 +413,26 @@ def usable_split(release, monkeypatch):
     passed = {"status": PASSED, "reason": None}
     monkeypatch.setattr(splits_module, "leakage_check", lambda train, contract: passed)
     path = split_of(release).path
-    assert len(load_split(path, "train", FROZEN)) == 10
+    assert len(load_split(path, "train", CONTRACT, FROZEN)) == 10
     return path
 
 
 def test_an_existing_split_is_refused_after_a_later_failed_verdict(release, usable_split):
     write_verdict(
-        release, attempt="20261015T000000000000Z-b", status="failed", validated_at="2026-10-15"
+        release,
+        attempt="20261002T000000000000Z-b",
+        status="failed",
+        validated_at="2026-10-02T00:00:00+00:00",
     )
     for allow in (False, True):  # the leakage opt-in never bypasses the gate
         with pytest.raises(SplitError, match="failed its latest quality gate"):
-            load_split(usable_split, "train", FROZEN, allow_unchecked_leakage=allow)
+            load_split(usable_split, "train", CONTRACT, FROZEN, allow_unchecked_leakage=allow)
 
 
 def test_an_existing_split_is_refused_once_its_verdict_is_gone(release, usable_split):
     shutil.rmtree(release.parent / "validations")
     with pytest.raises(SplitError, match="has no quality-gate verdict"):
-        load_split(usable_split, "test", FROZEN)
+        load_split(usable_split, "test", CONTRACT, FROZEN)
 
 
 def test_an_existing_split_is_refused_under_a_changed_frozen_schema(
@@ -422,18 +441,21 @@ def test_an_existing_split_is_refused_under_a_changed_frozen_schema(
     changed = tmp_path / "steps.pbtxt"
     changed.write_text(FROZEN.read_text() + "# reviewed change\n")
     with pytest.raises(SplitError, match="validated against a different schema"):
-        load_split(usable_split, "train", changed)
+        load_split(usable_split, "train", CONTRACT, changed)
     # Revalidated under the new schema, the release passes, but this split predates it.
     write_verdict(
-        release, attempt="20261015T000000000000Z-c", frozen=changed, validated_at="2026-10-15"
+        release,
+        attempt="20261002T000000000000Z-c",
+        frozen=changed,
+        validated_at="2026-10-02T00:00:00+00:00",
     )
-    with pytest.raises(SplitError, match="made under a different frozen schema"):
-        load_split(usable_split, "train", changed)
+    with pytest.raises(SplitError, match=REBUILT):
+        load_split(usable_split, "train", CONTRACT, changed)
 
 
 def test_unknown_split_names_are_refused(release):
     with pytest.raises(SplitError, match="Unknown split"):
-        load_split(split_of(release).path, "holdout", FROZEN)
+        load_split(split_of(release).path, "holdout", CONTRACT, FROZEN)
 
 
 def test_a_failed_write_leaves_nothing(release, monkeypatch):
@@ -457,7 +479,10 @@ def test_an_unvalidated_release_is_refused(release):
 
 def test_a_failed_latest_verdict_is_refused(release):
     write_verdict(
-        release, attempt="20261015T000000000000Z-b", status="failed", validated_at="2026-10-15"
+        release,
+        attempt="20261002T000000000000Z-b",
+        status="failed",
+        validated_at="2026-10-02T00:00:00+00:00",
     )
     with pytest.raises(SplitError, match="failed its latest quality gate"):
         split_of(release)
@@ -465,21 +490,47 @@ def test_a_failed_latest_verdict_is_refused(release):
 
 def test_a_later_pass_supersedes_an_earlier_failure(release):
     shutil.rmtree(release.parent / "validations")
-    write_verdict(release, attempt="a1", status="failed", validated_at="2026-10-13")
-    write_verdict(release, attempt="a2", validated_at="2026-10-14")
+    write_verdict(release, attempt="a1", status="failed", validated_at="2026-09-30T00:00:00+00:00")
+    write_verdict(release, attempt="a2")
     assert split_of(release).split["release"] == release.name
 
 
-def test_uncommitted_and_malformed_attempts_are_ignored(release):
-    validations = release.parent / "validations" / release.name
-    later = {"status": "failed", "validated_at": "9999"}
-    write_verdict(release, attempt=".attempt-staging", **later)  # staging is hidden
-    write_verdict(release, attempt="renamed", result_attempt="other", **later)
-    write_verdict(release, attempt="moved", **later | {"release": "elsewhere"})
-    write_verdict(release, attempt="untimed", **later | {"validated_at": None})
-    (validations / "broken").mkdir()
-    (validations / "broken" / "result.json").write_text("{not json")
+def test_staging_attempts_are_ignored(release):
+    write_verdict(
+        release,
+        attempt=".attempt-staging",
+        status="failed",
+        validated_at="2026-10-02T00:00:00+00:00",
+    )
     assert split_of(release).split["release"] == release.name
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"result_attempt": "other"},  # names another attempt
+        {"release": "elsewhere"},
+        {"validated_at": None},
+        {"validated_at": "2026-10-02"},  # no time zone
+        {"status": "maybe"},
+        {"validated_at": "2999-01-01T00:00:00+00:00"},  # in the future
+    ],
+)
+def test_damaged_or_impossible_attempts_make_the_verdict_unknown(release, fields):
+    """The gate commits attempts by rename, so a bad one must not let an older pass count."""
+    write_verdict(release, attempt="20261002T000000000000Z-b", **{"status": "failed"} | fields)
+    with pytest.raises(SplitError, match="verdict of .* is unknown"):
+        split_of(release)
+
+
+@pytest.mark.parametrize("content", ["{not json", None])
+def test_unreadable_attempts_make_the_verdict_unknown(release, content):
+    damaged = release.parent / "validations" / release.name / "20261002T000000000000Z-b"
+    damaged.mkdir()
+    if content is not None:
+        (damaged / "result.json").write_text(content)
+    with pytest.raises(SplitError, match="verdict of .* is unknown"):
+        split_of(release)
 
 
 def test_a_release_changed_since_validation_is_refused(release):

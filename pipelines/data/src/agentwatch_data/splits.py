@@ -19,8 +19,9 @@ records the task assignment, a hash of each split's rows (the "test-split hash" 
 reports record), counts, held-out injection methods, and the contract's leakage check on the
 training split. A blocked or inconclusive leakage check does not fail the split, which is kept
 as evidence, but load_split refuses to hand its rows to training or evaluation. load_split
-also rechecks the release's latest quality-gate verdict every time, so a split made before a
-later failed validation cannot be used to bypass the gate.
+also rechecks the release's latest quality-gate verdict and rebuilds the split on every read,
+so neither a split made before a later failed validation nor an edited split file can be used
+to bypass the gate or the leakage check.
 """
 
 import argparse
@@ -34,6 +35,7 @@ import tempfile
 import tomllib
 from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -204,28 +206,49 @@ def text_sha256(path: Path) -> str:
     return hashlib.sha256(text.replace("\r\n", "\n").encode()).hexdigest()
 
 
-def latest_verdict(release: Path) -> dict | None:
-    """The release's latest committed quality-gate attempt, read as the gate writes it.
+def validated_time(result: dict) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(result["validated_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo is not None else None
 
-    The gate commits each attempt as validations/<release>/<attempt>/result.json; staging
-    directories are hidden, and a result must name its own attempt and release.
+
+def latest_verdict(release: Path, now: datetime | None = None) -> dict | None:
+    """The release's latest committed quality-gate attempt, by the gate's own rules.
+
+    The gate commits each attempt as validations/<release>/<attempt>/result.json through a
+    rename; staging directories are hidden. A committed attempt that is missing its result,
+    unreadable, malformed, or validated in the future makes the verdict unknown, so an older
+    attempt can never stand in for it. Keep this in step with committed_attempts in gate.py.
     """
-    attempts = []
-    for path in (release.parent / VALIDATIONS_DIR / release.name).glob(f"*/{RESULT_FILE}"):
-        if path.parent.name.startswith("."):
+    now = now or datetime.now(UTC)
+    attempts, damaged = [], []
+    base = release.parent / VALIDATIONS_DIR / release.name
+    for directory in sorted(base.iterdir()) if base.is_dir() else []:
+        if directory.name.startswith(".") or not directory.is_dir():
             continue
         try:
-            result = json.loads(path.read_text(encoding="utf-8"))
+            result = json.loads((directory / RESULT_FILE).read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            continue
+            result = None
+        moment = validated_time(result) if isinstance(result, dict) else None
         if (
-            isinstance(result, dict)
-            and result.get("attempt") == path.parent.name
-            and result.get("release") == release.name
-            and isinstance(result.get("validated_at"), str)
+            moment is None
+            or result.get("attempt") != directory.name
+            or result.get("release") != release.name
+            or result.get("status") not in ("passed", "failed")
         ):
-            attempts.append(result)
-    return max(attempts, key=lambda r: (r["validated_at"], r["attempt"]), default=None)
+            damaged.append(directory.name)
+        elif moment > now:
+            damaged.append(f"{directory.name} (validated in the future)")
+        else:
+            attempts.append((moment, result["attempt"], result))
+    if damaged:
+        raise SplitError(
+            f"Quality-gate verdict of {release.name} is unknown: damaged attempts {damaged}"
+        )
+    return max(attempts, key=lambda item: item[:2])[2] if attempts else None
 
 
 def require_passing_verdict(release: Path, manifest: dict, frozen_schema: Path) -> None:
@@ -460,59 +483,46 @@ def write_atomic(path: Path, text: str) -> None:
 
 
 def load_split(
-    path: Path, name: str, frozen_schema: Path, allow_unchecked_leakage: bool = False
+    path: Path,
+    name: str,
+    contract_path: Path,
+    frozen_schema: Path,
+    allow_unchecked_leakage: bool = False,
 ) -> list[dict]:
-    """The rows of one split, verified against the split file, its release, and the gate.
+    """The rows of one split, after proving the split file is exactly what it should be.
 
-    Training and evaluation should read splits through this, so a changed release or split
-    file is refused instead of silently producing different rows. The release's latest
-    quality-gate verdict must still be a pass against frozen_schema, the schema the split was
-    made under; there is no way to skip this. A split whose leakage check did not pass is
-    refused too, as the contract blocks evaluation on it; exploration may pass
-    allow_unchecked_leakage=True, which skips only that check, and its results must not be
-    reported as an evaluation.
+    Training and evaluation should read splits through this. The release's latest
+    quality-gate verdict must still be a pass against frozen_schema, and the split is rebuilt
+    from the release, the contract, and that schema: any difference from the file, whether an
+    edited assignment, exclusion, leakage status, or contract field, is refused, even when the
+    file's id was recomputed to match. There is no way to skip these checks. A split whose
+    leakage check did not pass is refused too, as the contract blocks evaluation on it;
+    exploration may pass allow_unchecked_leakage=True, which skips only that check, and its
+    results must not be reported as an evaluation.
     """
     if name not in SPLITS:
         raise SplitError(f"Unknown split {name!r}; expected one of {list(SPLITS)}")
     split = read_object(path, "Split")
-    content = {key: value for key, value in split.items() if key != "split_id"}
-    if (
-        split.get("split_id") != f"{SPLIT_METHOD}+{canonical_sha256(content)[:12]}"
-        or path.stem != split["split_id"]
-        or path.parent.name != split.get("release")
-    ):
+    if path.stem != split.get("split_id") or path.parent.name != split.get("release"):
         raise SplitError(f"Split {path.name} does not match its content or location")
-    fractions = split["contract"]["fractions"]
-    if any(assign(group, fractions) != part for group, part in split["groups"].items()):
-        raise SplitError(f"Split {path.name} assigns tasks differently from {SPLIT_METHOD}")
-    release = path.parents[2] / split["release"]
+    contract = load_contract(contract_path)
+    release = path.parents[2] / path.parent.name
     manifest, rows = load_release(release)
-    if manifest["parquet_sha256"] != split["release_parquet_sha256"]:
-        raise SplitError(f"Release {release.name} is not the one split {path.name} was made from")
+    check_compatibility(contract, manifest)
     # The verdict can change after the split was made, so it is checked on every read.
     require_passing_verdict(release, manifest, frozen_schema)
-    if text_sha256(frozen_schema) != split["frozen_schema_sha256"]:
+    expected = describe(release, manifest, rows, contract, text_sha256(frozen_schema))
+    if json.loads(json_text(expected)) != split:
         raise SplitError(
-            f"Split {path.name} was made under a different frozen schema than "
-            f"{frozen_schema.name}; run make split-dataset"
+            f"Split {path.name} is not what {release.name}, {contract.version}, and "
+            f"{frozen_schema.name} produce; run make split-dataset"
         )
-    leakage = split["leakage"]["status"]
+    leakage = expected["leakage"]["status"]
     if leakage != PASSED and not allow_unchecked_leakage:
         raise SplitError(
             f"Split {path.name}: its leakage check is {leakage}; the contract blocks evaluation"
         )
-    group_key, sources = split["contract"]["group_key"], split["contract"]["test_sources"]
-    excluded = {run["run_id"] for run in split["excluded_runs"]}
-    selected = [
-        row
-        for row in rows
-        if split["groups"].get(row[group_key]) == name and row["run_id"] not in excluded
-    ]
-    if name == "test" and any(row["source"] not in sources for row in selected):
-        raise SplitError(f"Split {path.name} would put disallowed sources in the test split")
-    if rows_sha256(split["dataset_version"], selected) != split["splits"][name]["rows_sha256"]:
-        raise SplitError(f"The {name} rows of {path.name} do not match their recorded hash")
-    return selected
+    return partition(rows, contract)[1][name]
 
 
 def main(argv: list[str] | None = None) -> int:
