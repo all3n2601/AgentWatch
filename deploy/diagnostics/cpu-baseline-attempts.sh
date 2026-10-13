@@ -5,16 +5,22 @@
 # On WSL it also records Windows power and CPU load, which the VM's PSI cannot see.
 #
 # Usage: deploy/diagnostics/cpu-baseline-attempts.sh [ATTEMPTS]   (default 5)
+# ATTEMPTS is 1-50, written without leading zeros; anything else exits 2 before any evidence
+# directory is created or any attempt is scheduled.
 set -u
 attempts="${1:-5}"
 max_attempts=50
-case "$attempts" in
-  '' | *[!0-9]*) echo "ATTEMPTS must be a whole number from 1 to $max_attempts, got '$attempts'" >&2; exit 2 ;;
-esac
-if [ "$attempts" -lt 1 ] || [ "$attempts" -gt "$max_attempts" ]; then
-  echo "ATTEMPTS must be a whole number from 1 to $max_attempts, got '$attempts'" >&2
+reject_attempts() {
+  echo "ATTEMPTS must be a whole number from 1 to $max_attempts without leading zeros, got '$attempts'" >&2
   exit 2
-fi
+}
+# Check the shape before any arithmetic: at most two digits and no leading zero, so the
+# comparison below can never overflow the shell's integers or see octal-looking input.
+case "$attempts" in
+  [1-9] | [1-9][0-9]) ;;
+  *) reject_attempts ;;
+esac
+[ "$attempts" -le "$max_attempts" ] || reject_attempts
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 out="$repo/.data/a01-cpu-baseline-$(date -u +%Y%m%dT%H%M%SZ)"
 attempt_timeout_s=300
