@@ -1,10 +1,12 @@
 """Real Ollama tool-calling smoke test using the trusted coding experiment."""
 
 import argparse
+import http.client
 import json
 import os
 import time
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 from opentelemetry.sdk.trace import TracerProvider
@@ -24,6 +26,20 @@ TOOL = {
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
 }
+INITIAL_MESSAGES = (
+    {
+        "role": "system",
+        "content": "Use run_tests exactly once with empty arguments {}. It takes no parameters. "
+        "Report its actual checks and timings. "
+        "Do not invent results. After the tool returns, give a concise final summary.",
+    },
+    {
+        "role": "user",
+        "content": "Run the project's tests and check whether AgentWatch detects waiting "
+        "when its single coding worker is busy. Use the run_tests tool now.",
+    },
+)
+CHAT_OPTIONS = {"temperature": 0, "num_ctx": 4096, "num_predict": 256}
 
 
 def ollama_chat(url: str, payload: dict) -> dict:
@@ -40,26 +56,75 @@ def ollama_chat(url: str, payload: dict) -> dict:
     return result
 
 
+def ollama_loaded_models(url: str) -> dict:
+    with urllib.request.urlopen(url.rstrip("/") + "/api/ps", timeout=10) as response:
+        return json.load(response)
+
+
+def model_placement(loaded: dict, model: str) -> dict:
+    """Summarize where Ollama reports the model's memory, from one /api/ps response.
+
+    Ollama's own "100% GPU" display is size_vram / size. This is model placement,
+    not GPU utilization or saturation.
+    """
+    source = {"source": "ollama /api/ps"}
+    models = loaded.get("models") if isinstance(loaded, dict) else None
+    if not isinstance(models, list):
+        return source | {"status": "malformed", "reason": "response has no models list"}
+    entry = next(
+        (
+            item
+            for item in models
+            if isinstance(item, dict) and model in (item.get("name"), item.get("model"))
+        ),
+        None,
+    )
+    if entry is None:
+        return source | {"status": "unavailable", "reason": "model is not currently loaded"}
+    size, size_vram = entry.get("size"), entry.get("size_vram")
+    valid = all(
+        isinstance(value, int) and not isinstance(value, bool) for value in (size, size_vram)
+    )
+    if not valid or size <= 0 or not 0 <= size_vram <= size:
+        return source | {
+            "status": "malformed",
+            "reason": "size/size_vram are not consistent byte counts",
+        }
+    details = entry.get("details") if isinstance(entry.get("details"), dict) else {}
+    return source | {
+        "status": "measured",
+        "size_bytes": size,
+        "size_vram_bytes": size_vram,
+        "gpu_memory_fraction": size_vram / size,
+        "digest": entry.get("digest"),
+        "quantization_level": details.get("quantization_level"),
+        "context_length": entry.get("context_length"),
+    }
+
+
+def observe_model_placement(fetch_loaded: Callable[[], dict], model: str) -> dict:
+    observed_at = time.time_ns()
+    try:
+        placement = model_placement(fetch_loaded(), model)
+    # Transport and decoding failures only; the measured tool loop has already finished,
+    # so a missing placement reading must not turn a completed run into a failure.
+    except (OSError, http.client.HTTPException, json.JSONDecodeError) as error:
+        placement = {
+            "source": "ollama /api/ps",
+            "status": "unavailable",
+            "reason": f"placement request failed: {error}",
+        }
+    return placement | {"observed_at_unix_ns": observed_at}
+
+
 def agent_loop(chat, execute, tracer, model: str, evidence: dict) -> dict:
-    messages = evidence["messages"] = [
-        {
-            "role": "system",
-            "content": "Use run_tests exactly once with empty arguments {}. It takes no parameters. "
-            "Report its actual checks and timings. "
-            "Do not invent results. After the tool returns, give a concise final summary.",
-        },
-        {
-            "role": "user",
-            "content": "Run the project's tests and check whether AgentWatch detects waiting "
-            "when its single coding worker is busy. Use the run_tests tool now.",
-        },
-    ]
+    messages = evidence["messages"] = [dict(message) for message in INITIAL_MESSAGES]
     result = None
     for index in range(3):
         started = time.time_ns()
         with tracer.start_as_current_span("llm.chat") as span:
             span.set_attributes(
-                {"gen_ai.request.model": model, "agentwatch.resource_class": "inference_cpu"}
+                {"gen_ai.request.model": model, "agentwatch.resource_class": "inference"}
             )
             response = chat(
                 {
@@ -68,7 +133,7 @@ def agent_loop(chat, execute, tracer, model: str, evidence: dict) -> dict:
                     "tools": [TOOL],
                     "stream": False,
                     "think": False,
-                    "options": {"temperature": 0, "num_ctx": 4096, "num_predict": 256},
+                    "options": dict(CHAT_OPTIONS),
                 }
             )
             metrics = {
@@ -178,9 +243,9 @@ def main():
         "endpoint": args.url,
         "status": "running",
         "limitations": [
-            "Docker CPU inference; GPU attribution is not tested",
+            "Model placement is Ollama's reported memory split, not GPU utilization or saturation",
+            "No GPU samples or inference queue attribution are recorded by this demo",
             "Inference wall time includes transport and server work; no inferred queue split",
-            "Inference is measured on CPU; no inference queue attribution is available",
             "Fixed trusted tool, not arbitrary agent code execution",
         ],
     }
@@ -216,6 +281,10 @@ def main():
                     result["agent"] = evidence
             finally:
                 provider.shutdown()
+        # Read while the model is still within Ollama's keep-alive window.
+        evidence["model_placement"] = observe_model_placement(
+            lambda: ollama_loaded_models(args.url), args.model
+        )
         evidence["spans"] = [
             json.loads(line)
             for line in (output / "agent-spans.jsonl").read_text().splitlines()

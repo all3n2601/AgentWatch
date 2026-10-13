@@ -66,9 +66,18 @@ completed CPU/coding experiment evidence rather than OTLP or arbitrary live agen
 - [x] Rerun/start/stop commands documented in [the LLM guide](llm-demo.md).
 - [x] Qwen3 agent timeline, inference request metrics, token counts, and expandable conversation
   displayed in a dedicated dashboard Agent view, with spans retained in saved result evidence.
+- [x] Optional NVIDIA GPU Compose override and configurable Ollama host port; CPU-only default
+  unchanged. Tool loop ran on one RTX 5070 laptop GPU, 2026-10-13, run
+  `7afc596d-131f-4ba6-a374-4ffad0ccce01` ([GPU access record](gpu-measurement-access.md)).
+- [x] Ollama model placement recorded from `/api/ps` instead of a hard-coded CPU label.
 - [ ] Generalized ingestion of arbitrary agent/inference traces beyond this fixed tool loop.
 - [ ] Tool execution isolated inside its own container.
 - [ ] GPU inference, retrieval tools, agent failures, and longer multi-tool tasks validated.
+  Only the fixed tool loop has run on a local laptop GPU; L4/GCP, vLLM, retrieval, failure,
+  and multi-tool cases remain. The first request after creating the GPU container took
+  53–64 s for an unexplained reason.
+- [ ] GPU resource samples recorded by AgentWatch itself (A04). A01 used an `nvidia-smi`
+  diagnostic that is not ingested or correlated with steps.
 
 ### Dashboard
 
@@ -199,6 +208,10 @@ These can be completed before adding an agent.
 ### Measurement validity
 
 - [ ] Run the sampler on actual Linux hosts with CPU pressure and cgroup v2 enabled.
+  2026-10-13: PSI and cgroup v2 readings were available in WSL2 Ubuntu on the GPU laptop
+  ([access record](gpu-measurement-access.md)); WSL2 measures its VM, so a non-WSL host remains.
+- [ ] Establish a stable CPU baseline on the GPU laptop. 2026-10-13: 4 of 9 coding experiments
+  passed the unchanged 15% variability gate (CVs 11.4–42.2%); validation is inconclusive there.
 - [ ] Exercise supported and unavailable cgroup configurations, permissions, and malformed counters.
 - [ ] Measure achieved sampling intervals, missed samples, and short-step coverage.
 - [ ] Compare a genuinely CPU-starved task with a busy worker queue and a naturally long clean task.

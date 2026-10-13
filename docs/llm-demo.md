@@ -14,6 +14,19 @@ make llm-up
 make demo-llm
 ```
 
+### Optional NVIDIA GPU and port
+
+`AGENTWATCH_LLM_GPU=1 make llm-up` adds `deploy/compose/compose.gpu.yaml`, which reserves the
+host's NVIDIA GPUs for the Ollama service. It needs Docker Desktop with WSL2 GPU support or the
+NVIDIA Container Toolkit; without the variable the CPU-only service is unchanged.
+
+If another Ollama already listens on 11434, set `OLLAMA_HOST_PORT` (for example 11435). Make
+targets derive `OLLAMA_URL` from it; when running the Python module directly, export
+`OLLAMA_URL=http://127.0.0.1:11435` as well. Each run records Ollama's reported model placement
+(`model_placement` in `agent.json`), read from `/api/ps` after the loop.
+The Windows GPU laptop setup, its measured signals, and their limits are in
+[the GPU measurement access record](gpu-measurement-access.md).
+
 To retain the coding measurements in the existing dashboard, start PostgreSQL and
 run the ingestion API and web app in separate terminals:
 
@@ -45,7 +58,9 @@ The optional `llm` profile prevents ordinary `make infra-up` from downloading an
 Each execution replaces `.data/llm-demo/`:
 
 - `agent.json`: exact messages, tool result, final answer, request wall times,
-  Ollama token counts and nanosecond timing fields, status and failure details.
+  Ollama token counts and nanosecond timing fields, model placement, status and failure details.
+  Placement is `measured`, `unavailable` (model unloaded or `/api/ps` unreachable), or
+  `malformed`; an unavailable reading never defaults to CPU or GPU.
 - `agent-spans.jsonl`: OpenTelemetry agent loop, tool invocation, and inference spans;
   these are also embedded in `results.json` so the dashboard can display them from history.
 - `results.json`, `spans.jsonl`, `samples.jsonl`, `report.html`: existing measured
@@ -69,11 +84,23 @@ the Python runner read exported environment variables; they do not load `.env` a
 
 ## Limits
 
-This is CPU inference on this Mac's Docker runtime. It does not validate GPU inference,
-vLLM queue attribution, retrieval contention, or production model quality. Request
+The demo runs on Docker CPU by default and on an NVIDIA GPU with the optional override. It does
+not sample GPU resources, attribute inference contention, or validate vLLM queues, retrieval
+contention, L4/GCP performance, or production model quality. Model placement shows where Ollama
+loaded the model, not GPU utilization or saturation. The first request after creating the
+GPU container was 53–64 s on the verified laptop, for an unexplained reason. Request
 wall time includes transport and inference; Ollama's server durations are kept as reported
 and are not converted into an invented queue split. The fixed coding tool is a trusted
 fixture, not a container security boundary. General live-agent ingestion remains future work.
+
+## Verified on an NVIDIA GPU — October 13, 2026
+
+RTX 5070 Laptop GPU (8 GiB) through Docker Desktop and WSL2, same image and model ID.
+Run `7afc596d-131f-4ba6-a374-4ffad0ccce01` used the committed override with port 11435 and passed;
+Ollama reported 100% of the model in VRAM. The final-code rerun `dd25e410-ad19-48ff-af93-461d9ae0ca6f`
+completed the tool loop with the same placement but was inconclusive: its coding baseline CV was
+19.3%. Neither was published to dashboard history. Details, both inconclusive runs, and
+unavailable signals are in [the access record](gpu-measurement-access.md).
 
 ## Verified locally — October 2, 2026
 
