@@ -362,6 +362,12 @@ These are project targets, not achievements inferred from the current demo.
 
 ## Decisions to settle during the remaining work
 
+C01 proposal (2026-10-11): [shared live contracts](shared-event-contracts.md) documents
+StepEvent, ResourceSample, FeatureRow and Prediction, including identity, clocks, unavailable
+readings, retries, failure/cancellation and abstention. This is a specification for team review,
+not implemented live ingestion. All three teams' acceptance, API/SDK implementation and lifecycle
+verification remain open; no milestone or verification checkbox is completed by this proposal.
+
 - [ ] Define the duration/clock contract and what the UI may call queue, execution, or estimated work.
 - [ ] Define which infrastructure telemetry can support a resource attribution versus contextual evidence.
 - [ ] Choose the live transport and resource identity scheme.
