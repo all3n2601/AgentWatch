@@ -35,12 +35,16 @@ branch coverage, and exercised against real recorded runs and the live ingestion
 | **7. Splits** | `make split-dataset`: 70/15/15 grouped by `task_id` from the evaluation contract, measured-only test split, a deterministic split file with per-split row hashes, and the contract's leakage check | This PR |
 | 8. Versioning | DVC with a GCS remote; a rebuild from the same evidence reproduces the same version | Next |
 | Hardening pass | Request batching for large API histories; anything left from reviews | Before Airflow |
-| 9. More resources | Prometheus reader; `steps-v2` inference and retrieval features; `labels-v2` with mixed contention | Waits on B |
-| 10. Real collection | Scheduled runs over a task suite on a Linux GCP VM, where PSI and cgroup readings exist | Waits on A, B, F |
+| 9. More resources | Prometheus reader; `steps-v2` inference and retrieval features; `labels-v2` with mixed contention. Split follow-ups: force at least one injection method wholly into test, and check that mixed-contention cases reach test | Waits on B |
+| 10. Real collection | Scheduled runs over a task suite on a Linux GCP VM, where PSI and cgroup readings exist. Split follow-up: rebuild and re-split once step events carry a real `task_id`, so the test split holds unseen tasks and training is no longer empty | Waits on A, B, F |
 | 11. Airflow DAG | collect → extract → validate → build → split → version, with retries and alerts | After 6–8 |
 | 12. Reports | Quality, slice, label-sanity, and drift statistics per release | After 11 |
 | 13. Shared features | The live attribution service reuses `window_readings` and related code | With E |
 | 14. Demo | Corrupted evidence rejected live; lineage from model to dataset to raw run | Last |
+
+Split items owned elsewhere: the minimum test counts are judged by evaluation from the counts
+each split file records, and freezing a new test split after 5 promotion evaluations is the
+promotion owner's call (it means a new `SPLIT_METHOD`).
 
 ## What the pipeline needs from other workstreams
 
