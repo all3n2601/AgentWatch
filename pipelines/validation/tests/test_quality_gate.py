@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,7 +20,9 @@ from agentwatch_validation.gate import (
     STATISTICS_FILE,
     VALIDATIONS_DIR,
     GateError,
+    committed_attempts,
     freeze_schema,
+    latest_result,
     load_release,
     previous_passing,
     validate,
@@ -52,12 +55,15 @@ def schema(release, tmp_path):
     return path
 
 
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def resign(release: Path) -> None:
-    """Update the manifest after deliberately changing the data, so integrity checks pass."""
+    """Update the manifest after deliberately changing the release, so integrity checks pass."""
     manifest = json.loads((release / "manifest.json").read_text())
-    manifest["parquet_sha256"] = hashlib.sha256(
-        (release / "steps.parquet").read_bytes()
-    ).hexdigest()
+    manifest["parquet_sha256"] = sha256(release / "steps.parquet")
+    manifest["schema_sha256"] = sha256(release / "schema.json")
     (release / "manifest.json").write_text(json.dumps(manifest))
 
 
@@ -69,6 +75,17 @@ def change_column(release: Path, name: str, values, as_type=None) -> None:
     array = pa.array(values, type=field.type)
     pq.write_table(
         table.set_column(table.column_names.index(name), field, array), release / "steps.parquet"
+    )
+    resign(release)
+
+
+def retype(release: Path, name: str, values, arrow_type) -> None:
+    """Store a column with a different physical type than the contract declares."""
+    table = pq.read_table(release / "steps.parquet")
+    index = table.column_names.index(name)
+    array = pa.array(values, type=arrow_type)
+    pq.write_table(
+        table.set_column(index, pa.field(name, arrow_type), array), release / "steps.parquet"
     )
     resign(release)
 
@@ -120,7 +137,14 @@ def test_valid_release_passes_and_records_its_result(release, schema, datasets):
     assert result["anomalies"] == [] and result["drift"] == []
     assert result["baseline_release"] is None
     assert result["validated_at"] == NOW.isoformat()
-    assert (datasets / VALIDATIONS_DIR / release.name / STATISTICS_FILE).is_file()
+    attempt = outcome.result_path.parent
+    assert attempt.parent == datasets / VALIDATIONS_DIR / release.name
+    assert result["attempt"] == attempt.name
+    assert result["statistics_sha256"] == sha256(attempt / STATISTICS_FILE)
+    manifest = json.loads((release / "manifest.json").read_text())
+    assert result["release_parquet_sha256"] == manifest["parquet_sha256"]
+    assert result["release_contract_sha256"] == manifest["schema_sha256"]
+    assert sorted(path.name for path in attempt.parent.iterdir()) == [attempt.name]  # no staging
 
 
 @pytest.mark.parametrize(
@@ -142,16 +166,46 @@ def test_anomalies_fail_the_gate(release, schema, column, values, anomaly, as_ty
     assert found["feature"] == column and anomaly in found["types"]
 
 
-def test_type_change_fails_the_gate(release, schema):
-    table = pq.read_table(release / "steps.parquet")
-    index = table.column_names.index("workload")
-    numbers = pa.array([1.5] * 7)
-    pq.write_table(
-        table.set_column(index, pa.field("workload", pa.float64()), numbers),
-        release / "steps.parquet",
-    )
+@pytest.mark.parametrize(
+    ("column", "values", "arrow_type"),
+    [
+        ("worker_capacity", ["1"] * 7, pa.string()),  # would convert to a valid integer
+        ("cpu_pressure_available", ["1"] * 7, pa.string()),  # would convert to a valid boolean
+        ("worker_capacity", [1.0] * 7, pa.float64()),
+        ("workload", [1.5] * 7, pa.float64()),
+        ("recorded_at", [1] * 7, pa.int64()),
+    ],
+)
+def test_parquet_types_that_differ_from_the_contract_are_refused(
+    release, schema, column, values, arrow_type
+):
+    retype(release, column, values, arrow_type)
+    with pytest.raises(GateError, match=f"Parquet column {column} is .* contract declares"):
+        validate(release, schema)
+
+
+def test_a_declared_type_change_fails_the_frozen_schema(release, schema):
+    """Changing the contract with the data keeps the release consistent; TFDV still blocks it."""
+    retype(release, "worker_capacity", ["1"] * 7, pa.string())
+    contract = json.loads((release / "schema.json").read_text())
+    for column in contract["columns"]:
+        if column["name"] == "worker_capacity":
+            column.update(dtype="string", minimum=None)
+    (release / "schema.json").write_text(json.dumps(contract))
     resign(release)
-    assert validate(release, schema, now=NOW).status == FAILED
+    outcome = validate(release, schema, now=NOW)
+    assert outcome.status == FAILED
+    [found] = outcome.result["anomalies"]
+    assert found["feature"] == "worker_capacity"
+
+
+def test_an_unsupported_contract_dtype_is_refused(release, schema):
+    contract = json.loads((release / "schema.json").read_text())
+    contract["columns"][0]["dtype"] = "decimal128"
+    (release / "schema.json").write_text(json.dumps(contract))
+    resign(release)
+    with pytest.raises(GateError, match="unsupported contract dtype 'decimal128'"):
+        validate(release, schema)
 
 
 # Drift against the previous passing release
@@ -169,22 +223,111 @@ def test_drift_is_reported_against_the_previous_passing_release(datasets, releas
     assert drift["types"] == ["COMPARATOR_L_INFTY_HIGH"]
 
 
-def test_baseline_ignores_failed_unreadable_and_incomplete_results(datasets, release, schema):
+def passing(release: str, attempt: str, **fields) -> dict:
+    return {
+        "attempt": attempt,
+        "release": release,
+        "status": PASSED,
+        "validated_at": "9999",
+        "statistics_sha256": hashlib.sha256(b"").hexdigest(),
+    } | fields
+
+
+def test_baseline_ignores_failed_unreadable_and_uncommitted_attempts(datasets, release, schema):
     validations = datasets / VALIDATIONS_DIR
-    for name, content in [
-        ("failed", {"release": "failed", "status": FAILED, "validated_at": "9999"}),
-        ("broken", "{not json"),
-        ("list", [1, 2]),
-        ("no-stats", {"release": "no-stats", "status": PASSED, "validated_at": "9999"}),
-    ]:
-        (validations / name).mkdir(parents=True)
+    hidden = [
+        ("failed", "a1", passing("failed", "a1", status=FAILED)),
+        ("broken", "a1", "{not json"),
+        ("list", "a1", [1, 2]),
+        ("staged", ".attempt-x", passing("staged", ".attempt-x")),  # not committed yet
+        ("renamed", "a1", passing("renamed", "other")),  # result names another attempt
+        ("moved", "a1", passing("elsewhere", "a1")),  # result names another release
+        ("untimed", "a1", passing("untimed", "a1", validated_at=None)),
+        ("no-stats", "a1", passing("no-stats", "a1")),
+        ("tampered", "a1", passing("tampered", "a1")),  # statistics do not match the result
+    ]
+    for name, attempt, content in hidden:
+        (validations / name / attempt).mkdir(parents=True)
         text = content if isinstance(content, str) else json.dumps(content)
-        (validations / name / RESULT_FILE).write_text(text)
+        (validations / name / attempt / RESULT_FILE).write_text(text)
+    (validations / "tampered" / "a1" / STATISTICS_FILE).write_text("datasets {}")
+    (validations / "stray-file").write_text("")
     assert previous_passing(datasets, release.name) == (None, None)
     validate(release, schema, now=NOW)
     assert previous_passing(datasets, release.name) == (None, None)  # never itself
     baseline, stats = previous_passing(datasets, "another")
     assert baseline == release.name and stats.datasets[0].num_examples == 7
+
+
+def test_no_validations_means_no_baseline_and_no_verdict(datasets, release):
+    assert previous_passing(datasets, release.name) == (None, None)
+    assert latest_result(datasets, release.name) == (None, None)
+
+
+# Validation attempts
+
+
+def minimum(stats, feature: str) -> float:
+    [found] = [f for f in stats.datasets[0].features if f.path.step == [feature]]
+    return found.num_stats.min
+
+
+def test_revalidation_keeps_earlier_evidence_but_its_verdict_is_the_latest(
+    datasets, release, schema
+):
+    first = validate(release, schema, now=NOW)
+    change_column(release, "duration_seconds", [-1.0] * 7)
+    second = validate(release, schema, now=datetime(2026, 10, 13, tzinfo=UTC))
+    assert second.status == FAILED
+    attempts = committed_attempts(datasets, release.name)
+    assert [result["status"] for result, _ in attempts] == [PASSED, FAILED]
+    assert json.loads(first.result_path.read_text())["status"] == PASSED  # evidence preserved
+    assert latest_result(datasets, release.name)[0]["status"] == FAILED
+    assert previous_passing(datasets, "another") == (None, None)  # no longer a baseline
+
+
+def test_a_failed_commit_leaves_the_previous_attempt_paired_with_its_statistics(
+    datasets, release, schema, monkeypatch
+):
+    validate(release, schema, now=NOW)
+    change_column(release, "duration_seconds", [-1.0] * 7)
+
+    def fail(source, target):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gate.os, "replace", fail)
+    with pytest.raises(OSError, match="disk full"):
+        validate(release, schema, now=datetime(2026, 10, 13, tzinfo=UTC))
+    [(result, attempt)] = committed_attempts(datasets, release.name)
+    assert sorted(path.name for path in attempt.parent.iterdir()) == [attempt.name]
+    baseline, stats = previous_passing(datasets, "another")
+    assert baseline == release.name and result["status"] == PASSED
+    assert minimum(stats, "duration_seconds") >= 0  # the statistics that passed, not the new ones
+
+
+def test_concurrent_attempts_commit_separately(datasets, release, schema, monkeypatch):
+    """A second attempt that completes while the first is committing does not disturb it."""
+    replace, interleaved = os.replace, []
+
+    def commit_after_another_attempt(source, target):
+        if not interleaved:
+            interleaved.append(None)  # the other attempt commits normally
+            interleaved[0] = validate(release, schema, now=NOW)
+        replace(source, target)
+
+    monkeypatch.setattr(gate.os, "replace", commit_after_another_attempt)
+    outcome = validate(release, schema, now=NOW)
+    attempts = committed_attempts(datasets, release.name)
+    assert len(attempts) == 2
+    assert {directory for _, directory in attempts} == {
+        outcome.result_path.parent,
+        interleaved[0].result_path.parent,
+    }
+    for result, directory in attempts:
+        assert result["statistics_sha256"] == sha256(directory / STATISTICS_FILE)
+    assert sorted(p.name for p in attempts[0][1].parent.iterdir()) == sorted(
+        d.name for _, d in attempts
+    )
 
 
 # Releases and schemas the gate refuses

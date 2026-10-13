@@ -2,9 +2,11 @@
 
     python -m agentwatch_data.build --source local:.data --output .data/datasets
 
-A release is an immutable directory named by its dataset version, holding steps.parquet and
-manifest.json, which describe only the dataset content. The version is derived from the rows,
-so rebuilding from the same evidence with the same rules and code reuses the same release.
+A release is an immutable directory named by its dataset version, holding steps.parquet,
+schema.json (the column contract), and manifest.json, which describe only the dataset content.
+The version is derived from the rows, the contract, and the release format, so rebuilding from
+the same evidence with the same rules and code reuses the same release, while a release in an
+older format or with an older contract is left untouched and superseded by a new version.
 
 Every successful build, new or reused, also writes its own report to builds/<build id>.json
 with that build's sources, duplicate copies, and rejected runs. A rebuild that reuses a
@@ -55,6 +57,9 @@ logger = logging.getLogger("agentwatch_data.build")
 
 DATASET_FILE, MANIFEST_FILE, BUILDS_DIR = "steps.parquet", "manifest.json", "builds"
 SCHEMA_FILE = "schema.json"  # the column contract, for tools that cannot import this package
+# The files a release holds. Format 1 (before schema.json) had only the Parquet and manifest;
+# bump this whenever the set of files or the manifest's meaning changes.
+RELEASE_FORMAT = 2
 CONDITION_ORDER = {"baseline": 0, "clean": 1, "contended": 2}
 ARROW_TYPES = {
     "string": pa.string(),
@@ -148,6 +153,21 @@ def rows_digest(rows: list[dict]) -> str:
     return canonical_sha256(serializable)
 
 
+def release_digest(rows_sha256: str) -> str:
+    """Identify a whole release: its rows, the column contract it ships, and its format.
+
+    Releases are never rewritten, so anything a release must contain is part of its identity;
+    otherwise an older release with the same rows would be reused without it.
+    """
+    return canonical_sha256(
+        {"release_format": RELEASE_FORMAT, "contract": contract(), "rows_sha256": rows_sha256}
+    )
+
+
+def contract_text() -> str:
+    return json_text(contract())
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -209,7 +229,7 @@ def build(
 
     labeled.sort(key=step_order)
     digest = rows_digest(labeled)
-    version = f"{SCHEMA_VERSION}+{digest[:12]}"
+    version = f"{SCHEMA_VERSION}+{release_digest(digest)[:12]}"
     final = [row | {"dataset_version": version} for row in labeled]
     try:
         validate_rows(final, ALL_COLUMNS)
@@ -281,8 +301,9 @@ def write_release(
         staging.chmod(0o755)
         dataset = staging / DATASET_FILE
         pq.write_table(pa.Table.from_pylist(rows, schema=ARROW_SCHEMA), dataset)
-        (staging / SCHEMA_FILE).write_text(json_text(contract()), encoding="utf-8")
+        (staging / SCHEMA_FILE).write_text(contract_text(), encoding="utf-8")
         manifest = {
+            "release_format": RELEASE_FORMAT,
             "dataset_version": version,
             "schema_version": SCHEMA_VERSION,
             "label_version": label_version,
@@ -351,12 +372,17 @@ def published_releases(output_dir: Path) -> list[Path]:
 
 def verify_existing(release: Path, digest: str) -> bool:
     """A release with this version already exists; confirm it is intact and identical."""
+    expected_contract = hashlib.sha256(contract_text().encode()).hexdigest()
     try:
         manifest = json.loads((release / MANIFEST_FILE).read_text(encoding="utf-8"))
-        intact = manifest["rows_sha256"] == digest and manifest["parquet_sha256"] == file_sha256(
-            release / DATASET_FILE
+        intact = (
+            manifest["release_format"] == RELEASE_FORMAT
+            and manifest["rows_sha256"] == digest
+            and manifest["parquet_sha256"] == file_sha256(release / DATASET_FILE)
+            and manifest["schema_sha256"] == expected_contract
+            and file_sha256(release / SCHEMA_FILE) == expected_contract
         )
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         raise BuildError(f"Existing release {release.name} is unreadable: {error}") from error
     if not intact:
         raise BuildError(f"Existing release {release.name} does not match its manifest")

@@ -7,24 +7,34 @@ schema.json, and manifest.json for integrity.
     python -m agentwatch_validation validate --release <dir> --schema <steps.pbtxt>
     python -m agentwatch_validation freeze-schema --release <dir> --schema <steps.pbtxt>
 
-Schema anomalies (a missing or unexpected column, a type change, a value outside its domain,
-an unknown category, a required value missing) fail the gate. Drift against the previous
-passing release is reported but does not fail it: new contention or tasks legitimately shift
-distributions. Results are written to <datasets>/validations/<release>/.
+A release whose Parquet columns or types disagree with its own contract is refused before any
+conversion. Schema anomalies (a missing or unexpected column, a type change, a value outside
+its domain, an unknown category, a required value missing) fail the gate. Drift against the
+previous passing release is reported but does not fail it: new contention or tasks
+legitimately shift distributions.
+
+Each validation is an attempt, committed as one immutable directory,
+<datasets>/validations/<release>/<attempt>/, holding result.json and the statistics it was
+computed from. A release's verdict is its latest committed attempt; earlier attempts are kept
+as evidence.
 """
 
 import hashlib
 import json
 import os
+import shutil
+import tempfile
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 import tensorflow_data_validation as tfdv
 from google.protobuf import text_format
-from tensorflow_metadata.proto.v0 import anomalies_pb2, schema_pb2
+from tensorflow_metadata.proto.v0 import anomalies_pb2, schema_pb2, statistics_pb2
 
 from agentwatch_validation import __version__
 
@@ -38,12 +48,13 @@ PASSED, FAILED = "passed", "failed"
 DRIFT_COLUMNS = ("label_resource", "condition", "label_basis", "telemetry_status", "kind")
 DRIFT_L_INFINITY_THRESHOLD = 0.25
 
-FEATURE_TYPES = {
-    "string": schema_pb2.BYTES,
-    "float64": schema_pb2.FLOAT,
-    "int64": schema_pb2.INT,
-    "bool": schema_pb2.INT,
-    "timestamp[us, tz=UTC]": schema_pb2.INT,
+# Contract dtype -> (the Arrow type the builder writes, the TFDV feature type it becomes).
+DTYPES = {
+    "string": (pa.string(), schema_pb2.BYTES),
+    "float64": (pa.float64(), schema_pb2.FLOAT),
+    "int64": (pa.int64(), schema_pb2.INT),
+    "bool": (pa.bool_(), schema_pb2.INT),
+    "timestamp[us, tz=UTC]": (pa.timestamp("us", tz="UTC"), schema_pb2.INT),
 }
 
 
@@ -68,6 +79,10 @@ class Outcome:
 
 def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def sha256(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def text_sha256(path: Path) -> str:
@@ -103,7 +118,25 @@ def load_release(path: Path) -> Release:
     table = pq.read_table(path / DATASET_FILE)
     if table.column_names != columns:
         raise GateError(f"{path.name}: Parquet columns do not match the column contract")
+    check_types(path.name, table.schema, contract)
     return Release(path, manifest, contract, to_frame(table.to_pandas(), contract))
+
+
+def check_types(release: str, schema: pa.Schema, contract: dict) -> None:
+    """Refuse Parquet columns whose physical type differs from the contract.
+
+    to_frame converts declared integer and boolean columns, and that conversion would quietly
+    turn a string column holding "1" into a valid integer, hiding the type change from TFDV.
+    """
+    for column in contract["columns"]:
+        name, dtype = column["name"], column["dtype"]
+        if dtype not in DTYPES:
+            raise GateError(f"{release}: column {name} has unsupported contract dtype {dtype!r}")
+        actual = schema.field(name).type
+        if not actual.equals(DTYPES[dtype][0]):
+            raise GateError(
+                f"{release}: Parquet column {name} is {actual}, but the contract declares {dtype}"
+            )
 
 
 def to_frame(frame: pd.DataFrame, contract: dict) -> pd.DataFrame:
@@ -142,7 +175,7 @@ def freeze_schema(release: Release) -> schema_pb2.Schema:
     features = {feature.name: feature for feature in schema.feature}
     for column in release.contract["columns"]:
         feature = features.get(column["name"]) or schema.feature.add(name=column["name"])
-        feature.type = FEATURE_TYPES[column["dtype"]]
+        feature.type = DTYPES[column["dtype"]][1]
         feature.ClearField("domain_info")
         feature.presence.min_fraction = 0.0 if column["nullable"] else 1.0
         feature.presence.min_count = 0 if column["nullable"] else 1
@@ -202,26 +235,61 @@ def classify(anomalies) -> tuple[list[dict], list[dict]]:
     return blocking, drift
 
 
-def previous_passing(datasets: Path, current: str):
-    """The most recently validated passing release other than current, with its statistics."""
-    candidates = []
-    for result_path in (datasets / VALIDATIONS_DIR).glob(f"*/{RESULT_FILE}"):
+def committed_attempts(datasets: Path, release: str) -> list[tuple[dict, Path]]:
+    """A release's committed validation attempts, oldest first, as (result, directory).
+
+    Staging directories (hidden) and results that do not name their own attempt directory and
+    release are not attempts.
+    """
+    attempts = []
+    for directory in (datasets / VALIDATIONS_DIR / release).glob(f"*/{RESULT_FILE}"):
+        directory = directory.parent
+        if directory.name.startswith("."):
+            continue
         try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
+            result = json.loads((directory / RESULT_FILE).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        stats_path = result_path.with_name(STATISTICS_FILE)
         if (
             isinstance(result, dict)
-            and result.get("status") == PASSED
-            and result.get("release") != current
-            and stats_path.is_file()
+            and result.get("attempt") == directory.name
+            and result.get("release") == release
+            and isinstance(result.get("validated_at"), str)
         ):
-            candidates.append((str(result.get("validated_at", "")), result["release"], stats_path))
+            attempts.append((result, directory))
+    return sorted(attempts, key=lambda item: (item[0]["validated_at"], item[0]["attempt"]))
+
+
+def latest_result(datasets: Path, release: str) -> tuple[dict, Path] | tuple[None, None]:
+    """A release's verdict: its latest committed attempt, or (None, None) if never validated."""
+    attempts = committed_attempts(datasets, release)
+    return attempts[-1] if attempts else (None, None)
+
+
+def previous_passing(datasets: Path, current: str):
+    """The most recently validated release, other than current, whose verdict is a pass.
+
+    Returns its name and the exact statistics that attempt passed with. A release whose latest
+    attempt failed is not a baseline, even though its earlier passing attempts are kept.
+    """
+    candidates = []
+    validations = datasets / VALIDATIONS_DIR
+    for release_dir in validations.iterdir() if validations.is_dir() else []:
+        if release_dir.name == current or not release_dir.is_dir():
+            continue
+        result, attempt = latest_result(datasets, release_dir.name)
+        if result is None or result.get("status") != PASSED:
+            continue
+        try:
+            text = (attempt / STATISTICS_FILE).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if sha256(text) == result.get("statistics_sha256"):
+            candidates.append((result["validated_at"], result["attempt"], result["release"], text))
     if not candidates:
         return None, None
-    _, release, stats_path = max(candidates)
-    return release, tfdv.load_stats_text(str(stats_path))
+    *_, release, text = max(candidates)
+    return release, text_format.Parse(text, statistics_pb2.DatasetFeatureStatisticsList())
 
 
 def validate(release_path: Path, schema_path: Path, now: datetime | None = None) -> Outcome:
@@ -233,32 +301,66 @@ def validate(release_path: Path, schema_path: Path, now: datetime | None = None)
     anomalies = tfdv.validate_statistics(stats, schema, previous_statistics=baseline_stats)
     blocking, drift = classify(anomalies)
     status = FAILED if blocking else PASSED
+    validated_at = now or datetime.now(UTC)
+    attempt = f"{validated_at:%Y%m%dT%H%M%S%fZ}-{uuid.uuid4().hex[:8]}"
+    statistics_text = text_format.MessageToString(stats)
     result = {
+        "attempt": attempt,
         "release": release_path.name,
         "status": status,
-        "validated_at": (now or datetime.now(UTC)).isoformat(),
+        "validated_at": validated_at.isoformat(),
         "examples": int(stats.datasets[0].num_examples),
+        # What this verdict is bound to: the exact data, contract, frozen schema, and statistics.
+        "release_parquet_sha256": release.manifest["parquet_sha256"],
+        "release_contract_sha256": release.manifest["schema_sha256"],
         "schema_file": schema_path.name,
         "schema_sha256": text_sha256(schema_path),
         "schema_version": release.contract["schema_version"],
+        "statistics_sha256": sha256(statistics_text),
         "baseline_release": baseline_release,
         "anomalies": blocking,
         "drift": drift,
         "gate_version": __version__,
         "tfdv_version": tfdv.__version__,
     }
-    out = datasets / VALIDATIONS_DIR / release_path.name
-    write_atomic(out / STATISTICS_FILE, text_format.MessageToString(stats))
-    write_atomic(out / RESULT_FILE, json.dumps(result, indent=2, sort_keys=True) + "\n")
-    return Outcome(status, result, out / RESULT_FILE)
+    directory = commit_attempt(
+        datasets / VALIDATIONS_DIR / release_path.name,
+        attempt,
+        {
+            STATISTICS_FILE: statistics_text,
+            RESULT_FILE: json.dumps(result, indent=2, sort_keys=True) + "\n",
+        },
+    )
+    return Outcome(status, result, directory / RESULT_FILE)
+
+
+def commit_attempt(parent: Path, attempt: str, files: dict[str, str]) -> Path:
+    """Write an attempt's files into private staging, then rename the directory into place.
+
+    The rename is the commit: readers see all of an attempt's files or none, and concurrent
+    attempts never share a staging path. A failure leaves earlier attempts untouched.
+    """
+    parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".attempt-", dir=parent))
+    try:
+        staging.chmod(0o755)  # mkdtemp is owner-only; Airflow and DVC may run as other users
+        for name, text in files.items():
+            (staging / name).write_text(text, encoding="utf-8")
+            (staging / name).chmod(0o644)
+        os.replace(staging, parent / attempt)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return parent / attempt
 
 
 def write_atomic(path: Path, text: str) -> None:
     """Write text so readers never see a partial file; readable by other users."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    staged = path.with_name(f".{path.name}.tmp")
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    staged = Path(name)
     try:
-        staged.write_text(text, encoding="utf-8")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text)
         staged.chmod(0o644)
         os.replace(staged, path)
     finally:
