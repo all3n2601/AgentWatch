@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 import stat
@@ -5,6 +6,7 @@ import urllib.error
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from agentwatch_data import build as build_module
@@ -13,13 +15,16 @@ from agentwatch_data.build import (
     ARROW_SCHEMA,
     DATASET_FILE,
     MANIFEST_FILE,
+    RELEASE_FORMAT,
+    SCHEMA_FILE,
     BuildError,
     Source,
     build,
     main,
     published_releases,
 )
-from agentwatch_data.schema import SCHEMA_VERSION
+from agentwatch_data.releases import main as releases_main
+from agentwatch_data.schema import SCHEMA_VERSION, contract
 from dataset_fixtures import make_result, write_run
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -58,6 +63,34 @@ def releases_in(output):
     return [path for path in output.iterdir() if path.name.startswith(f"{SCHEMA_VERSION}+")]
 
 
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write_format_1_release(release, output):
+    """Publish release as the builder wrote it before schema.json (release format 1).
+
+    The version came from the rows alone, and the manifest had no format or contract hash.
+    """
+    manifest = manifest_of(release)
+    name = f"{SCHEMA_VERSION}+{manifest['rows_sha256'][:12]}"
+    legacy = output / name
+    legacy.mkdir(parents=True)
+    table = pq.read_table(release / DATASET_FILE)
+    index = table.column_names.index("dataset_version")
+    versions = pa.array([name] * table.num_rows, pa.string())
+    pq.write_table(
+        table.set_column(index, table.schema.field(index), versions), legacy / DATASET_FILE
+    )
+    del manifest["release_format"], manifest["schema_sha256"]
+    manifest |= {"dataset_version": name, "parquet_sha256": sha256(legacy / DATASET_FILE)}
+    (legacy / MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    report = {"build_id": "format-1", "built_at": "2026-10-01T00:00:00+00:00", "release": name}
+    (output / "builds").mkdir()
+    (output / "builds" / "20261001T000000000000Z-format-1.json").write_text(json.dumps(report))
+    return legacy
+
+
 def nothing_published(output):
     """No release, no staging or withdrawn directory, and no report or staged report."""
     if not output.exists():
@@ -82,6 +115,10 @@ def test_release_holds_the_dataset_and_manifest(evidence, tmp_path):
     assert manifest["telemetry_status"] == {"present": 7}
     assert not {"rejections", "sources", "duplicate_copies"} & manifest.keys()  # content only
     assert manifest["label_version"].startswith("labels-v1.1+")
+    shipped = json.loads((release / "schema.json").read_text())
+    assert shipped == contract() and shipped["schema_version"] == SCHEMA_VERSION
+    assert manifest["schema_sha256"] == sha256(release / "schema.json")
+    assert manifest["release_format"] == RELEASE_FORMAT
 
 
 def test_release_files_are_readable_by_other_users(evidence, tmp_path):
@@ -111,6 +148,61 @@ def test_a_tampered_release_is_refused(evidence, tmp_path):
     release = build_from(evidence, output)
     (release / DATASET_FILE).write_bytes(b"tampered")
     with pytest.raises(BuildError, match="does not match its manifest"):
+        build_from(evidence, output)
+
+
+def test_a_tampered_contract_is_refused_on_reuse(evidence, tmp_path):
+    output = tmp_path / "out"
+    release = build_from(evidence, output)
+    (release / SCHEMA_FILE).write_text("{}\n")
+    with pytest.raises(BuildError, match="does not match its manifest"):
+        build_from(evidence, output)
+
+
+def test_a_changed_contract_produces_a_new_version(evidence, tmp_path, monkeypatch):
+    first = build_from(evidence, tmp_path / "out")
+    changed = contract() | {"columns": contract()["columns"][::-1]}
+    monkeypatch.setattr(build_module, "contract", lambda: changed)
+    second = build_from(evidence, tmp_path / "out")
+    assert second != first
+    assert json.loads((second / SCHEMA_FILE).read_text()) == changed
+    assert manifest_of(first)["rows_sha256"] == manifest_of(second)["rows_sha256"]
+
+
+def test_a_format_1_release_is_superseded_not_reused(evidence, tmp_path, capsys):
+    """A release from before schema.json is kept as it was, and a rebuild publishes a new one."""
+    current = build_from(evidence, tmp_path / "current")
+    output = tmp_path / "out"
+    legacy = write_format_1_release(current, output)
+    before = {path.name: path.read_bytes() for path in legacy.iterdir()}
+    result = result_from(evidence, output)
+    assert not result.reused and result.release != legacy
+    assert {path.name: path.read_bytes() for path in legacy.iterdir()} == before
+    assert (result.release / DATASET_FILE).read_bytes() == (current / DATASET_FILE).read_bytes()
+    manifest = manifest_of(result.release)
+    assert manifest["schema_sha256"] == sha256(result.release / SCHEMA_FILE)
+    assert published_releases(output) == [legacy, result.release]
+    assert releases_main(["--output", str(output)]) == 0
+    assert capsys.readouterr().out.strip() == str(result.release)
+    assert result_from(evidence, output).reused  # and the upgraded release is reused from now on
+
+
+@pytest.mark.parametrize("damage", ["release_format", "schema_sha256"])
+def test_an_existing_release_with_incomplete_metadata_is_refused(evidence, tmp_path, damage):
+    output = tmp_path / "out"
+    release = build_from(evidence, output)
+    manifest = manifest_of(release)
+    del manifest[damage]
+    (release / MANIFEST_FILE).write_text(json.dumps(manifest))
+    with pytest.raises(BuildError, match="is unreadable"):
+        build_from(evidence, output)
+
+
+def test_an_existing_release_with_a_non_object_manifest_is_refused(evidence, tmp_path):
+    output = tmp_path / "out"
+    release = build_from(evidence, output)
+    (release / MANIFEST_FILE).write_text("[1, 2]")
+    with pytest.raises(BuildError, match="is unreadable"):
         build_from(evidence, output)
 
 
@@ -459,3 +551,29 @@ def test_published_releases_follow_valid_reports_only(evidence, tmp_path):
     assert published_releases(output) == [first.release, second.release]
     assert published_releases(output) == published_releases(output)  # stable
     assert published_releases(tmp_path / "absent") == []
+
+
+def test_latest_published_release_is_printed(evidence, tmp_path, capsys):
+    output = tmp_path / "out"
+    assert releases_main(["--output", str(output)]) == 1
+    assert "No published release" in capsys.readouterr().err
+    first = result_from(evidence, output)
+    write_run(evidence / "cpu-extra", make_result())
+    second = build([Source("local", str(evidence))], output, now=datetime(2026, 10, 12, tzinfo=UTC))
+    assert releases_main(["--output", str(output)]) == 0
+    assert capsys.readouterr().out.strip() == str(second.release)
+    assert first.release != second.release
+
+
+def test_releases_module_runs_as_a_command(evidence, tmp_path, monkeypatch):
+    import runpy
+    import sys
+
+    result_from(evidence, tmp_path / "out")
+    monkeypatch.setattr(
+        sys, "argv", ["agentwatch_data.releases", "--output", str(tmp_path / "out")]
+    )
+    monkeypatch.delitem(sys.modules, "agentwatch_data.releases", raising=False)
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_module("agentwatch_data.releases", run_name="__main__")
+    assert exited.value.code == 0

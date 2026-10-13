@@ -8,9 +8,11 @@ from agentwatch_data.schema import (
     COLUMNS,
     LEAKY_COLUMNS,
     RELEASE_COLUMNS,
+    SCHEMA_VERSION,
     TELEMETRY_STATUSES,
     Role,
     SchemaError,
+    contract,
     feature_columns,
     finite_number,
     validate_rows,
@@ -133,3 +135,30 @@ def test_timezone_aware_saved_time_is_valid(valid_row):
 )
 def test_finite_number_never_raises(value, expected):
     assert finite_number(value) == expected
+
+
+# The TFDV quality gate (pipelines/validation) runs in its own environment, so these checks
+# keep its committed inputs in step with this contract without importing TensorFlow.
+
+VALIDATION = Path(__file__).resolve().parents[2] / "validation"
+
+
+def test_frozen_tfdv_schema_lists_exactly_the_contract_columns():
+    import re
+
+    frozen = (VALIDATION / "schema" / "steps.pbtxt").read_text(encoding="utf-8")
+    assert frozen.startswith(f"# Frozen TFDV schema for {SCHEMA_VERSION}.")
+    names = re.findall(r'^feature \{\n  name: "([^"]+)"', frozen, flags=re.MULTILINE)
+    assert sorted(names) == sorted(column.name for column in COLUMNS), (
+        "Refresh pipelines/validation/schema/steps.pbtxt with freeze-schema after a schema change"
+    )
+
+
+def test_validation_fixture_carries_the_current_contract():
+    import json
+
+    [fixture] = sorted((VALIDATION / "tests" / "fixtures").iterdir())
+    shipped = json.loads((fixture / "schema.json").read_text(encoding="utf-8"))
+    assert shipped == contract(), (
+        "Rebuild pipelines/validation/tests/fixtures from the golden run after a schema change"
+    )
