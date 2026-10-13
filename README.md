@@ -38,7 +38,9 @@ Run `make llm-up` to start Docker Ollama and download Qwen3 1.7B, then `make dem
 With the ingestion API running, `make record-llm` saves the model-invoked coding experiment
 to dashboard history. The **Agent** tab shows its actual conversation, inference timings,
 token counts, and model/tool timeline, with evidence retained both locally and in the saved run.
-See [the Docker LLM test guide](docs/llm-demo.md) for setup, evidence, and CPU-only limits.
+See [the Docker LLM test guide](docs/llm-demo.md) for setup, evidence, and limits.
+`AGENTWATCH_LLM_GPU=1 make llm-up` adds optional NVIDIA GPU access; the measured signals on the
+team's GPU laptop are in [the GPU measurement access record](docs/gpu-measurement-access.md).
 
 ## First working experiment
 
