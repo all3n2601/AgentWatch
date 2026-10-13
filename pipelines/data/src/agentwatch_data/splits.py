@@ -18,7 +18,9 @@ deterministic and the split id is derived from it, so rerunning reuses the same 
 records the task assignment, a hash of each split's rows (the "test-split hash" evaluation
 reports record), counts, held-out injection methods, and the contract's leakage check on the
 training split. A blocked or inconclusive leakage check does not fail the split, which is kept
-as evidence, but load_split refuses to hand its rows to training or evaluation.
+as evidence, but load_split refuses to hand its rows to training or evaluation. load_split
+also rechecks the release's latest quality-gate verdict every time, so a split made before a
+later failed validation cannot be used to bypass the gate.
 """
 
 import argparse
@@ -457,13 +459,18 @@ def write_atomic(path: Path, text: str) -> None:
         staged.unlink(missing_ok=True)
 
 
-def load_split(path: Path, name: str, allow_unchecked_leakage: bool = False) -> list[dict]:
-    """The rows of one split, verified against the split file and its release.
+def load_split(
+    path: Path, name: str, frozen_schema: Path, allow_unchecked_leakage: bool = False
+) -> list[dict]:
+    """The rows of one split, verified against the split file, its release, and the gate.
 
     Training and evaluation should read splits through this, so a changed release or split
-    file is refused instead of silently producing different rows. A split whose leakage check
-    did not pass is refused too, as the contract blocks evaluation on it; exploration may pass
-    allow_unchecked_leakage=True, and its results must not be reported as an evaluation.
+    file is refused instead of silently producing different rows. The release's latest
+    quality-gate verdict must still be a pass against frozen_schema, the schema the split was
+    made under; there is no way to skip this. A split whose leakage check did not pass is
+    refused too, as the contract blocks evaluation on it; exploration may pass
+    allow_unchecked_leakage=True, which skips only that check, and its results must not be
+    reported as an evaluation.
     """
     if name not in SPLITS:
         raise SplitError(f"Unknown split {name!r}; expected one of {list(SPLITS)}")
@@ -478,15 +485,22 @@ def load_split(path: Path, name: str, allow_unchecked_leakage: bool = False) -> 
     fractions = split["contract"]["fractions"]
     if any(assign(group, fractions) != part for group, part in split["groups"].items()):
         raise SplitError(f"Split {path.name} assigns tasks differently from {SPLIT_METHOD}")
+    release = path.parents[2] / split["release"]
+    manifest, rows = load_release(release)
+    if manifest["parquet_sha256"] != split["release_parquet_sha256"]:
+        raise SplitError(f"Release {release.name} is not the one split {path.name} was made from")
+    # The verdict can change after the split was made, so it is checked on every read.
+    require_passing_verdict(release, manifest, frozen_schema)
+    if text_sha256(frozen_schema) != split["frozen_schema_sha256"]:
+        raise SplitError(
+            f"Split {path.name} was made under a different frozen schema than "
+            f"{frozen_schema.name}; run make split-dataset"
+        )
     leakage = split["leakage"]["status"]
     if leakage != PASSED and not allow_unchecked_leakage:
         raise SplitError(
             f"Split {path.name}: its leakage check is {leakage}; the contract blocks evaluation"
         )
-    release = path.parents[2] / split["release"]
-    manifest, rows = load_release(release)
-    if manifest["parquet_sha256"] != split["release_parquet_sha256"]:
-        raise SplitError(f"Release {release.name} is not the one split {path.name} was made from")
     group_key, sources = split["contract"]["group_key"], split["contract"]["test_sources"]
     excluded = {run["run_id"] for run in split["excluded_runs"]}
     selected = [

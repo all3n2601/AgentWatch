@@ -115,7 +115,7 @@ def resign(release: Path) -> None:
 def rows_of(path: Path, name: str) -> list[dict]:
     """The synthetic release's queue timing separates its classes, so its leakage check is
     blocked; tests that read its rows opt in explicitly."""
-    return load_split(path, name, allow_unchecked_leakage=True)
+    return load_split(path, name, FROZEN, allow_unchecked_leakage=True)
 
 
 def resigned(directory: Path, split: dict) -> Path:
@@ -380,7 +380,7 @@ def test_splits_without_a_passing_leakage_check_are_refused_by_default(release):
     result = split_of(release)
     assert result.split["leakage"]["status"] == BLOCKED
     with pytest.raises(SplitError, match="leakage check is blocked; the contract blocks"):
-        load_split(result.path, "train")
+        load_split(result.path, "train", FROZEN)
     assert len(rows_of(result.path, "train")) == 10  # explicit opt-in for exploration
 
 
@@ -388,12 +388,52 @@ def test_splits_with_a_passing_leakage_check_load(release, monkeypatch):
     passed = {"status": PASSED, "reason": None}
     monkeypatch.setattr(splits_module, "leakage_check", lambda train, contract: passed)
     result = split_of(release)
-    assert len(load_split(result.path, "validation")) == 10
+    assert len(load_split(result.path, "validation", FROZEN)) == 10
+
+
+@pytest.fixture
+def usable_split(release, monkeypatch):
+    """A split that loads with default options: its leakage check passed."""
+    passed = {"status": PASSED, "reason": None}
+    monkeypatch.setattr(splits_module, "leakage_check", lambda train, contract: passed)
+    path = split_of(release).path
+    assert len(load_split(path, "train", FROZEN)) == 10
+    return path
+
+
+def test_an_existing_split_is_refused_after_a_later_failed_verdict(release, usable_split):
+    write_verdict(
+        release, attempt="20261015T000000000000Z-b", status="failed", validated_at="2026-10-15"
+    )
+    for allow in (False, True):  # the leakage opt-in never bypasses the gate
+        with pytest.raises(SplitError, match="failed its latest quality gate"):
+            load_split(usable_split, "train", FROZEN, allow_unchecked_leakage=allow)
+
+
+def test_an_existing_split_is_refused_once_its_verdict_is_gone(release, usable_split):
+    shutil.rmtree(release.parent / "validations")
+    with pytest.raises(SplitError, match="has no quality-gate verdict"):
+        load_split(usable_split, "test", FROZEN)
+
+
+def test_an_existing_split_is_refused_under_a_changed_frozen_schema(
+    release, usable_split, tmp_path
+):
+    changed = tmp_path / "steps.pbtxt"
+    changed.write_text(FROZEN.read_text() + "# reviewed change\n")
+    with pytest.raises(SplitError, match="validated against a different schema"):
+        load_split(usable_split, "train", changed)
+    # Revalidated under the new schema, the release passes, but this split predates it.
+    write_verdict(
+        release, attempt="20261015T000000000000Z-c", frozen=changed, validated_at="2026-10-15"
+    )
+    with pytest.raises(SplitError, match="made under a different frozen schema"):
+        load_split(usable_split, "train", changed)
 
 
 def test_unknown_split_names_are_refused(release):
     with pytest.raises(SplitError, match="Unknown split"):
-        load_split(split_of(release).path, "holdout")
+        load_split(split_of(release).path, "holdout", FROZEN)
 
 
 def test_a_failed_write_leaves_nothing(release, monkeypatch):

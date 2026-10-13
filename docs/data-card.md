@@ -190,12 +190,17 @@ release (`pipelines/data/src/agentwatch_data/splits.py`).
   conditions, sources, injection methods), and each split's `rows_sha256`, a hash of the
   release version and its rows' `(run_id, step_id)`: the test-split hash evaluation reports
   record.
-- Training and evaluation read rows with `load_split(path, "train")`. It verifies that the
-  file's name and folder match its content, that every task is assigned as `split-v1` assigns
-  it, the release, and that split's row hash, so a changed, moved, or re-signed release or
-  split is refused rather than silently giving different rows. It also refuses a split whose
-  leakage check did not pass; exploration can opt in with `allow_unchecked_leakage=True`, and
-  its results must not be reported as an evaluation.
+- Training and evaluation read rows with `load_split(path, "train", frozen_schema)`. It
+  verifies that the file's name and folder match its content, that every task is assigned as
+  `split-v1` assigns it, the release, and that split's row hash, so a changed, moved, or
+  re-signed release or split is refused rather than silently giving different rows.
+- On every read it also rechecks the quality gate: the release's latest committed verdict must
+  still be a pass against the given frozen schema, and the split must have been made under that
+  schema. A split kept from before a later failed validation, or a schema change, is refused;
+  there is no option to skip this.
+- It refuses a split whose leakage check did not pass. Exploration can opt in with
+  `allow_unchecked_leakage=True`, which skips only that check; its results must not be reported
+  as an evaluation.
 
 ## Column roles
 
