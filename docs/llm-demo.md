@@ -60,7 +60,8 @@ Each execution replaces `.data/llm-demo/`:
 - `agent.json`: exact messages, tool result, final answer, request wall times,
   Ollama token counts and nanosecond timing fields, model placement, status and failure details.
   Placement is `measured`, `unavailable` (model unloaded or `/api/ps` unreachable), or
-  `malformed`; an unavailable reading never defaults to CPU or GPU.
+  `malformed` (inconsistent sizes, or a response that is not valid UTF-8 JSON). It never
+  defaults to CPU or GPU, and a failed placement read does not change a completed run's status.
 - `agent-spans.jsonl`: OpenTelemetry agent loop, tool invocation, and inference spans;
   these are also embedded in `results.json` so the dashboard can display them from history.
 - `results.json`, `spans.jsonl`, `samples.jsonl`, `report.html`: existing measured

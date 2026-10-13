@@ -104,15 +104,22 @@ def model_placement(loaded: dict, model: str) -> dict:
 
 def observe_model_placement(fetch_loaded: Callable[[], dict], model: str) -> dict:
     observed_at = time.time_ns()
+    # Only transport and response-decoding failures are contained: the measured tool loop has
+    # already finished, so an ancillary placement reading must not turn a completed run into a
+    # failure. Programming errors still propagate.
     try:
         placement = model_placement(fetch_loaded(), model)
-    # Transport and decoding failures only; the measured tool loop has already finished,
-    # so a missing placement reading must not turn a completed run into a failure.
-    except (OSError, http.client.HTTPException, json.JSONDecodeError) as error:
+    except (OSError, http.client.HTTPException) as error:
         placement = {
             "source": "ollama /api/ps",
             "status": "unavailable",
             "reason": f"placement request failed: {error}",
+        }
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        placement = {
+            "source": "ollama /api/ps",
+            "status": "malformed",
+            "reason": f"placement response is not valid UTF-8 JSON: {error}",
         }
     return placement | {"observed_at_unix_ns": observed_at}
 
