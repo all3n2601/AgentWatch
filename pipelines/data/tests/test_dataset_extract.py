@@ -527,25 +527,51 @@ def test_dropped_duplicate_is_rejected_once_its_run_conflicts(tmp_path, result):
 # Audit fixes
 
 
-def test_deeply_nested_json_rejects_only_its_run(tmp_path, result):
-    """json raises RecursionError on deep nesting, which used to abort the whole extraction."""
+def nested(depth: int) -> str:
+    return "[" * depth + "]" * depth
+
+
+@pytest.mark.parametrize(
+    "depth",
+    [extract.MAX_JSON_DEPTH + 1, 100_000],  # parses everywhere; RecursionError on Python 3.13
+)
+def test_json_nested_beyond_the_limit_rejects_only_its_run(tmp_path, result, depth):
+    """The limit is explicit, so the outcome is the same on every supported Python."""
     write_run(tmp_path / "cpu-good", result)
     (tmp_path / "cpu-deep").mkdir()
-    (tmp_path / "cpu-deep" / "results.json").write_text("[" * 100_000 + "]" * 100_000)
+    (tmp_path / "cpu-deep" / "results.json").write_text(nested(depth))
     write_run(tmp_path / "cpu-deep-samples", make_result())
-    (tmp_path / "cpu-deep-samples" / "samples.jsonl").write_text("[" * 100_000 + "]" * 100_000)
+    (tmp_path / "cpu-deep-samples" / "samples.jsonl").write_text(nested(depth))
     extraction = extract_local(tmp_path)
     assert [run.run_id for run in extraction.runs] == [result["run_id"]]
-    reasons = sorted(rejection.reason for rejection in extraction.rejections)
-    assert all("nested too deeply" in reason for reason in reasons) and len(reasons) == 2
+    reasons = [rejection.reason for rejection in extraction.rejections]
+    assert len(reasons) == 2 and all("nested more than 64 levels deep" in r for r in reasons)
 
 
-def test_deeply_nested_api_responses_are_malformed(monkeypatch):
+def test_json_at_the_limit_is_accepted():
+    assert extract.nesting_depth(extract.parse_json(nested(extract.MAX_JSON_DEPTH))) == 64
+    assert extract.nesting_depth(extract.parse_json('{"a": [1, {"b": 2}], "c": 3}')) == 3
+    assert extract.nesting_depth(extract.parse_json("7")) == 0
+
+
+def test_recursion_errors_from_the_parser_become_the_same_rejection(monkeypatch):
+    """Python 3.13's json raises RecursionError; whatever the version, the message matches."""
+
+    def overflow(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(extract.json, "loads", overflow)
+    with pytest.raises(ValueError, match="nested more than 64 levels deep"):
+        extract.parse_json("[]")
+
+
+@pytest.mark.parametrize("depth", [extract.MAX_JSON_DEPTH + 1, 100_000])
+def test_deeply_nested_api_responses_are_malformed(monkeypatch, depth):
     def deep(url, timeout):
-        return extract.parse_json("[" * 100_000 + "]" * 100_000)
+        return extract.parse_json(nested(depth))
 
     monkeypatch.setattr(extract, "get_json", deep)
-    with pytest.raises(ExtractionError, match="malformed JSON: JSON is nested too deeply"):
+    with pytest.raises(ExtractionError, match="malformed JSON: JSON is nested more than 64"):
         extract_api("http://api")
 
 

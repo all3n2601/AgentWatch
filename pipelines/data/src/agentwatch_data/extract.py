@@ -48,6 +48,10 @@ MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 # RFC 3339 date and time with an explicit offset; numeric strings are not timestamps.
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})")
+# Recorded evidence nests 4 levels deep (samples 2). The limit is explicit because whether
+# deep JSON fails to parse depends on the Python version: 3.13 raises RecursionError, while
+# 3.14.7 parses it and leaves later stages to fail differently.
+MAX_JSON_DEPTH = 64
 # When identical copies of a run differ only in telemetry status, keep the most informative.
 TELEMETRY_PREFERENCE = {"present": 0, "empty": 1, "missing": 2}
 
@@ -153,15 +157,32 @@ def unique_keys(pairs: list[tuple]) -> dict:
 
 
 def parse_json(text: str):
-    """Strict JSON: repeated keys are an error, and so is nesting too deep to parse.
+    """Strict JSON: repeated keys are an error, and so is nesting beyond MAX_JSON_DEPTH.
 
-    json raises RecursionError, not ValueError, on deep nesting; left alone, one such file
-    would abort the whole extraction instead of rejecting its run.
+    Some Python versions raise RecursionError (not ValueError) on deep nesting, which left
+    alone would abort the whole extraction instead of rejecting one run; others parse it.
+    Both end in the same ValueError, so behavior does not depend on the interpreter.
     """
+    too_deep = f"JSON is nested more than {MAX_JSON_DEPTH} levels deep"
     try:
-        return json.loads(text, object_pairs_hook=unique_keys)
+        value = json.loads(text, object_pairs_hook=unique_keys)
     except RecursionError as error:
-        raise ValueError("JSON is nested too deeply") from error
+        raise ValueError(too_deep) from error
+    if nesting_depth(value) > MAX_JSON_DEPTH:
+        raise ValueError(too_deep)
+    return value
+
+
+def nesting_depth(value) -> int:
+    """How many objects and arrays deep value goes, counted without recursion."""
+    deepest, pending = 0, [(value, 1)]
+    while pending:
+        item, depth = pending.pop()
+        if isinstance(item, dict | list):
+            deepest = max(deepest, depth)
+            children = item.values() if isinstance(item, dict) else item
+            pending.extend((child, depth + 1) for child in children)
+    return deepest
 
 
 def read_jsonl(path: Path) -> list[dict]:

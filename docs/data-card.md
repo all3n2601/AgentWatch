@@ -49,8 +49,9 @@ from local run directories named `cpu`, `coding`, or `llm`, or starting with `cp
   offset). A run that fails is recorded as a rejection with its reason; the other runs still
   extract.
 - JSON is parsed strictly: an object that repeats a key is rejected rather than silently
-  keeping the last value, and JSON nested too deeply to parse rejects its run instead of
-  aborting the extraction.
+  keeping the last value, and JSON nested more than 64 levels deep (recorded evidence nests 4)
+  rejects its run instead of aborting the extraction. The limit is explicit so the result is
+  the same on every supported Python version.
 - Run directories and evidence files must be real, not symbolic links: a linked run directory
   or a linked `results.json` or `samples.jsonl` is rejected with a reason, never skipped or
   read from outside the data directory.
