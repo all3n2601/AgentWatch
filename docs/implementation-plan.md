@@ -9,6 +9,12 @@ verification status. The eight-week sequence below is the original target plan, 
 
 Planning horizon: Eight weeks; relative weeks, not committed calendar dates.
 
+Planning addition, 2026-10-13: the [optimization layer plan](optimization-plan.md) adds
+manual inference/test concurrency controls and controlled evaluation after reliable telemetry.
+It assigns O01–O07 across all six contributors, reserves GPU execution for Benoy, and keeps
+adaptive control as a gated stretch task. This is new scope, not implemented behavior or an
+extension of the original schedule with committed dates.
+
 ## 1. Architecture
 
 AgentWatch is a resource-bottleneck profiler with an MLOps lifecycle for its attribution model.
@@ -25,6 +31,8 @@ Clean replay + contention injectors -> labeled Parquet dataset on GCS
                                     -> rule baseline + LightGBM training
                                     -> held-out evaluation + CI gate -> MLflow registry
 Canary evaluation + drift checks -> Airflow retraining pipeline
+Accepted telemetry + manual concurrency policy -> runner admission limits
+                                               -> paired evaluation + dashboard comparison
 ```
 
 | Layer | Planned tools |
@@ -36,6 +44,7 @@ Canary evaluation + drift checks -> Airflow retraining pipeline
 | Serving | FastAPI, Postgres, Grafana, Alertmanager |
 | Automation | Airflow, GitHub Actions, Helm, Artifact Registry |
 | Platform | GCP, GKE, Docker |
+| Optimization | Versioned manual concurrency limits; optional bounded rule controller after evaluation |
 
 These are proposed dependencies from the supplied plan, not a claim that they are installed or
 that this repository currently deploys them. Confirm runtime compatibility during implementation.
@@ -112,6 +121,8 @@ operational integration. Current completed work, remaining features, and test ga
 - Add reproducible data generation, validation, strong rule evaluation, and learned attribution.
 - Add model serving, MLflow tracking/registration, confidence calibration, and release gates.
 - Add monitoring, isolated canary evaluation, retraining, deployment, and operational runbooks.
+- Add the [optimization layer](optimization-plan.md): manual limits, runner admission evidence,
+  controlled evaluation and restore controls; gate any adaptive follow-up on measured results.
 
 ## 6. Main risks and fallback
 
