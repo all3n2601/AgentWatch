@@ -224,16 +224,27 @@ These can be completed before adding an agent.
 
 ### Milestone 1 Live run lifecycle before an agent
 
-- [ ] Add run creation and explicit queued, running, completed, failed, and cancelled states.
-- [ ] Generalize step contracts beyond the completed CPU/coding experiment shape.
-- [ ] Accept incremental step events and resource samples before a run is complete.
-- [ ] Record parent/child span relationships and resource/service identity.
+- [x] Add run creation and explicit queued, running, completed, failed, and cancelled states.
+- [x] Generalize step contracts beyond the completed CPU/coding experiment shape.
+- [x] Accept incremental step events and resource samples before a run is complete.
+- [x] Record parent/child step/span identity and registered resource/service identity.
+  B01, October 14, 2026: [live API and handoff](live-ingestion.md), strict Python producer
+  records/client, generated OpenAPI/TypeScript types and additive migration 0002. Isolated
+  PostgreSQL regressions in `services/worker/tests/test_live_api.py` cover ordering, retries,
+  conflicts, rollback, gaps, cancellation, late evidence and populated-schema upgrades.
+  Cancellation requests producer cleanup; process termination remains unverified A03 work.
+  Local verification: 578 Python tests passed with the dedicated PostgreSQL database (no skips),
+  Ruff passed, and JavaScript lint/typecheck/13 tests/build passed. Go formatting/vet/tests and
+  Compose validation passed. A real HTTP Python SDK smoke exercised synthetic test-database
+  creation, missing revisions, prefix application, completion, retries and conflict rejection.
+  PR CI/reviewer acceptance and actual producer/frontend integration remain separate gates.
 - [ ] Join samples to steps in the service rather than trusting only precomputed experiment summaries.
 - [ ] Add automatic dashboard updates, connection status, last-update time, and stale-data indicators.
   Completed-history polling, source status, and last-refresh time now exist; live-run streaming and
   stale-event indicators remain unfinished.
 - [ ] Display active steps, terminal failures, and incomplete telemetry without misleading totals.
 - [ ] Provide an instrumentation client for controlled test workloads.
+  B01 provides transport/models; A02 still must connect actual agent instrumentation.
 
 **Exit test:** A scripted workload creates a run, reports multiple steps while executing, and
 finishes or fails. The dashboard updates automatically. Event retries, out-of-order delivery,
