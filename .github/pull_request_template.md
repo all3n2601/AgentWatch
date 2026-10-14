@@ -4,7 +4,8 @@
 
 ## Scope and dependencies
 
-<!-- List affected components, overlapping work, and dependent PRs/merge order. -->
+<!-- Link the task and related open PRs. Explain why this is a separate task if
+related work is already open, and list affected components and merge order. -->
 
 ## Verification
 
@@ -29,7 +30,12 @@ coverage, reproducibility, and overhead. Write N/A when there is no impact. -->
 
 ## Review checklist
 
+- [ ] This is the task's one active PR, or the independent scope/split is explained above.
+- [ ] Related audit findings and review fixes are included; the planned audit is complete.
 - [ ] Changes are focused; unrelated work and secrets are excluded.
+- [ ] PR title describes the resulting behavior using `<type>: <specific change>`.
+- [ ] At merge: squash only, with the final PR title and a concise description;
+      no work-in-progress commit log.
 - [ ] Relevant local checks passed; limitations are stated above.
 - [ ] Required GitHub CI checks passed on the final version.
 - [ ] Owner `all3n2601` and another contributor approved the final code changes

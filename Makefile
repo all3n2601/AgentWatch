@@ -58,9 +58,16 @@ split-dataset: ## Freeze train/validation/test splits of the newest release (ref
 freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest release; review the diff in a PR
 	release=$$($(LATEST_RELEASE)) && uv run --project pipelines/validation python -m agentwatch_validation freeze-schema --release "$$release" --schema $(VALIDATION_SCHEMA)
 
-llm-up: ## Start Docker Ollama and download the small tool-capable model
-	docker compose -f deploy/compose/compose.yaml --profile llm up -d --wait ollama
-	docker compose -f deploy/compose/compose.yaml exec -T ollama ollama pull $${AGENTWATCH_LLM_MODEL:-qwen3:1.7b}
+# Make variables rather than shell defaults: Windows make may run recipes through cmd.exe.
+AGENTWATCH_LLM_MODEL ?= qwen3:1.7b
+OLLAMA_HOST_PORT ?= 11434
+OLLAMA_URL ?= http://127.0.0.1:$(OLLAMA_HOST_PORT)
+export AGENTWATCH_LLM_MODEL OLLAMA_HOST_PORT OLLAMA_URL
+LLM_COMPOSE = docker compose -f deploy/compose/compose.yaml $(if $(filter 1,$(AGENTWATCH_LLM_GPU)),-f deploy/compose/compose.gpu.yaml)
+
+llm-up: ## Start Docker Ollama (AGENTWATCH_LLM_GPU=1 for NVIDIA, OLLAMA_HOST_PORT to move it) and pull the model
+	$(LLM_COMPOSE) --profile llm up -d --wait ollama
+	$(LLM_COMPOSE) exec -T ollama ollama pull $(AGENTWATCH_LLM_MODEL)
 
 llm-down: ## Stop the local LLM while retaining downloaded models
 	docker compose -f deploy/compose/compose.yaml stop ollama
