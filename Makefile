@@ -66,6 +66,7 @@ export AGENTWATCH_LLM_MODEL OLLAMA_HOST_PORT OLLAMA_URL
 LLM_COMPOSE = docker compose -f deploy/compose/compose.yaml $(if $(filter 1,$(AGENTWATCH_LLM_GPU)),-f deploy/compose/compose.gpu.yaml)
 
 llm-up: ## Start Docker Ollama (AGENTWATCH_LLM_GPU=1 for NVIDIA, OLLAMA_HOST_PORT to move it) and pull the model
+	$(if $(filter-out 0 1,$(AGENTWATCH_LLM_GPU)),$(error AGENTWATCH_LLM_GPU must be 0 or 1 (got '$(AGENTWATCH_LLM_GPU)')))
 	$(LLM_COMPOSE) --profile llm up -d --wait ollama
 	$(LLM_COMPOSE) exec -T ollama ollama pull $(AGENTWATCH_LLM_MODEL)
 

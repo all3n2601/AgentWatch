@@ -79,6 +79,44 @@ def evidence():
 
 
 @pytest.fixture
+def agent_placement_evidence():
+    """LLM demo agent evidence carrying each model_placement state the demo can record."""
+    measured = {
+        "source": "ollama /api/ps",
+        "status": "measured",
+        "size_bytes": 1_702_593_821,
+        "size_vram_bytes": 1_702_593_821,
+        "gpu_memory_fraction": 1.0,
+        "digest": None,
+        "quantization_level": "Q4_K_M",
+        "context_length": 4096,
+        "observed_at": "2026-10-13T23:01:58.123456+00:00",
+        "read_seconds": 0.004,
+    }
+    unavailable = {
+        "source": "ollama /api/ps",
+        "status": "unavailable",
+        "reason": "placement request failed: connection refused",
+        "observed_at": "2026-10-13T23:02:00.000001+00:00",
+        "read_seconds": 0.0,
+    }
+    return {
+        "model": "qwen3:1.7b",
+        "status": "passed",
+        "inference": [
+            {"request_index": 0, "wall_seconds": 0.36, "metrics": {}, "model_placement": measured},
+            {
+                "request_index": 1,
+                "wall_seconds": 1.17,
+                "metrics": {},
+                "model_placement": unavailable,
+            },
+        ],
+        "model_placement": measured,
+    }
+
+
+@pytest.fixture
 def client(monkeypatch):
     dsn = os.environ.get("AGENTWATCH_TEST_DATABASE_URL")
     if not dsn:

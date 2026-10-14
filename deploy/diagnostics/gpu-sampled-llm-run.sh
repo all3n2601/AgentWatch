@@ -51,6 +51,20 @@ timeout "$demo_timeout_s" uv run --package agentwatch-worker \
 demo_status=$?
 sleep 3
 
-echo "probe_finished_utc=$(date -u +%FT%T.%NZ)" >> "$out/probe-meta.txt"
-echo "llm_demo_exit_status=$demo_status" >> "$out/probe-meta.txt"
+# A sampler that exited early leaves a gap at the end of gpu-samples.csv; say so explicitly.
+if [ -z "$sampler_pid" ]; then
+  sampler_state="not started (nvidia-smi unavailable)"
+elif kill -0 "$sampler_pid" 2>/dev/null; then
+  sampler_state="running at end of run"
+else
+  wait "$sampler_pid"
+  sampler_state="exited early with status $? (see gpu-sampler.err)"
+  sampler_pid=
+fi
+{
+  echo "probe_finished_utc=$(date -u +%FT%T.%NZ)"
+  echo "nvidia_smi_timestamp_utc_offset_end=$(date +%z)"
+  echo "gpu_sampler=$sampler_state"
+  echo "llm_demo_exit_status=$demo_status"
+} >> "$out/probe-meta.txt"
 exit "$demo_status"

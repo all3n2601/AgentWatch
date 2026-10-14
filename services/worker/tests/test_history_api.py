@@ -68,3 +68,14 @@ def test_artifacts_belong_to_the_selected_saved_run(client, evidence):
     assert "attachment" in exported.headers["content-disposition"]
     assert client.get(f"/v1/runs/{run_id}/artifacts/unknown").status_code == 404
     assert client.get(f"/v1/runs/{uuid4()}/artifacts/results.json").status_code == 404
+
+
+def test_saved_llm_run_keeps_its_model_placement_evidence(
+    client, evidence, agent_placement_evidence
+):
+    evidence["result"]["agent"] = agent_placement_evidence
+    assert client.post("/v1/runs", json=evidence).status_code == 201
+    run_id = evidence["result"]["run_id"]
+    exported = client.get(f"/v1/runs/{run_id}/artifacts/results.json").json()
+    assert exported["agent"] == agent_placement_evidence
+    assert client.post("/v1/runs", json=evidence).status_code == 200

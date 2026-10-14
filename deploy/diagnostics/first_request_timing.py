@@ -20,6 +20,7 @@ Usage: OLLAMA_URL=http://127.0.0.1:11435 uv run --package agentwatch-worker \
 
 import argparse
 import json
+import math
 import os
 import time
 import urllib.request
@@ -31,6 +32,8 @@ from agentwatch_worker.llm_demo import (
     INITIAL_MESSAGES,
     TOOL,
     model_placement,
+    observe_model_placement,
+    ollama_base_url,
     ollama_chat,
     ollama_loaded_models,
 )
@@ -65,6 +68,15 @@ def unload(url: str, model: str) -> None:
     raise RuntimeError(f"{model} was still loaded after {UNLOAD_TIMEOUT_SECONDS} s")
 
 
+def duration_seconds(nanoseconds: object) -> float | None:
+    """Convert an Ollama nanosecond duration, or return None when it is absent or invalid."""
+    if isinstance(nanoseconds, bool) or not isinstance(nanoseconds, int | float):
+        return None
+    if not math.isfinite(nanoseconds) or nanoseconds < 0:
+        return None
+    return nanoseconds / 1e9
+
+
 def timed_request(url: str, model: str, with_tools: bool, user_prompt: str | None = None) -> dict:
     messages = [dict(message) for message in INITIAL_MESSAGES]
     if user_prompt is not None:
@@ -82,15 +94,12 @@ def timed_request(url: str, model: str, with_tools: bool, user_prompt: str | Non
     started = time.monotonic_ns()
     response = ollama_chat(url, payload)
     wall_seconds = (time.monotonic_ns() - started) / 1e9
-    placement = model_placement(ollama_loaded_models(url), model)
+    placement = observe_model_placement(lambda: ollama_loaded_models(url), model)
     return {
         "started_at": started_at.isoformat(),
         "wall_seconds": wall_seconds,
-        # Missing Ollama fields stay null rather than becoming a measured zero.
-        **{
-            f"{field}_seconds": response[field] / 1e9 if field in response else None
-            for field in DURATION_FIELDS
-        },
+        # Missing or invalid Ollama fields stay null rather than becoming a measured zero.
+        **{f"{field}_seconds": duration_seconds(response.get(field)) for field in DURATION_FIELDS},
         "prompt_eval_count": response.get("prompt_eval_count"),
         "eval_count": response.get("eval_count"),
         "requested_tool": bool(response["message"].get("tool_calls")),
@@ -161,7 +170,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--protocol", choices=sorted(PROTOCOLS), required=True)
     parser.add_argument("--model", default=os.environ.get("AGENTWATCH_LLM_MODEL", "qwen3:1.7b"))
-    parser.add_argument("--url", default=os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"))
+    parser.add_argument(
+        "--url",
+        type=ollama_base_url,
+        default=os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"),
+    )
     args = parser.parse_args()
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = Path(".data") / f"a01-first-request-{args.protocol}-{stamp}"
@@ -187,6 +200,12 @@ def main() -> None:
     recorder = Recorder(output / "requests.jsonl")
     try:
         PROTOCOLS[args.protocol](args.url, args.model, recorder)
+    except Exception as error:
+        # Keep why the declared protocol stopped next to the requests it did complete.
+        (output / "aborted.json").write_text(
+            json.dumps({"aborted_at": datetime.now(UTC).isoformat(), "error": repr(error)}) + "\n"
+        )
+        raise
     finally:
         recorder.stream.close()
     print(f"Evidence: {output}")
