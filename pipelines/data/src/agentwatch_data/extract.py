@@ -14,6 +14,7 @@ import hashlib
 import http.client
 import json
 import logging
+import os
 import re
 import time
 import urllib.error
@@ -21,13 +22,13 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
 from agentwatch_worker.contracts import RunResult, Sample
-from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError
+from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,17 @@ CHECK_NAME = re.compile(r"[a-z][a-z0-9_]*")
 RESULTS_FILE, SAMPLES_FILE = "results.json", "samples.jsonl"
 API_MAX_PAGE_SIZE = 100  # GET /v1/runs rejects larger limits
 RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
+# Bounds on one API response, so a slow or oversized response cannot stall extraction.
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+READ_CHUNK_BYTES = 64 * 1024
+# RFC 3339 date and time with an explicit offset; numeric strings are not timestamps.
+TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})")
+# Recorded evidence nests 4 levels deep (samples 2). The limit is explicit because whether
+# deep JSON fails to parse depends on the Python version: 3.13 raises RecursionError, while
+# 3.14.7 parses it and leaves later stages to fail differently.
+MAX_JSON_DEPTH = 64
+# When identical copies of a run differ only in telemetry status, keep the most informative.
+TELEMETRY_PREFERENCE = {"present": 0, "empty": 1, "missing": 2}
 
 # Whether a run carried resource samples at all; distinct from samples that miss a step.
 TELEMETRY_PRESENT, TELEMETRY_EMPTY, TELEMETRY_MISSING = "present", "empty", "missing"
@@ -106,7 +118,8 @@ class Extraction:
 class ApiRunRow(BaseModel):
     """One entry of GET /v1/runs, validated before its evidence is trusted.
 
-    Strict, so an integer created_at is not read as a Unix timestamp.
+    Strict, so an integer created_at is not read as a Unix timestamp, and created_at must be
+    an RFC 3339 date and time: pydantic would otherwise read "1791200000" as one.
     """
 
     model_config = ConfigDict(extra="ignore", strict=True)
@@ -114,6 +127,14 @@ class ApiRunRow(BaseModel):
     kind: Literal["coding", "cpu"]
     result: dict
     created_at: AwareDatetime
+
+    @field_validator("created_at", mode="plain")
+    @classmethod
+    def rfc3339(cls, value) -> datetime:
+        # Replaces pydantic's parsing: under any validator, strict mode stops accepting strings.
+        if not isinstance(value, str) or not TIMESTAMP.fullmatch(value):
+            raise ValueError("created_at must be an RFC 3339 date and time with an offset")
+        return datetime.fromisoformat(value)  # also rejects impossible dates
 
 
 def canonical_sha256(value) -> str:
@@ -126,15 +147,55 @@ def evidence_hash(result: dict, samples: Iterable[dict] = ()) -> str:
     return canonical_sha256({"result": result, "samples": list(samples)})
 
 
+def unique_keys(pairs: list[tuple]) -> dict:
+    """A JSON object whose keys are all distinct; json would silently keep the last one."""
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        repeated = sorted({key for key in keys if keys.count(key) > 1})
+        raise ValueError(f"JSON object repeats keys {repeated}")
+    return dict(pairs)
+
+
+def parse_json(text: str):
+    """Strict JSON: repeated keys are an error, and so is nesting beyond MAX_JSON_DEPTH.
+
+    Some Python versions raise RecursionError (not ValueError) on deep nesting, which left
+    alone would abort the whole extraction instead of rejecting one run; others parse it.
+    Both end in the same ValueError, so behavior does not depend on the interpreter.
+    """
+    too_deep = f"JSON is nested more than {MAX_JSON_DEPTH} levels deep"
+    try:
+        value = json.loads(text, object_pairs_hook=unique_keys)
+    except RecursionError as error:
+        raise ValueError(too_deep) from error
+    if nesting_depth(value) > MAX_JSON_DEPTH:
+        raise ValueError(too_deep)
+    return value
+
+
+def nesting_depth(value) -> int:
+    """How many objects and arrays deep value goes, counted without recursion."""
+    deepest, pending = 0, [(value, 1)]
+    while pending:
+        item, depth = pending.pop()
+        if isinstance(item, dict | list):
+            deepest = max(deepest, depth)
+            children = item.values() if isinstance(item, dict) else item
+            pending.extend((child, depth + 1) for child in children)
+    return deepest
+
+
 def read_jsonl(path: Path) -> list[dict]:
     rows = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
         try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError as error:
-            raise ValueError(f"{path.name} line {number}: {error.msg}") from error
+            rows.append(parse_json(line))
+        except ValueError as error:
+            raise ValueError(
+                f"{path.name} line {number}: {getattr(error, 'msg', error)}"
+            ) from error
     return rows
 
 
@@ -216,21 +277,42 @@ def kind_for_directory(name: str) -> str | None:
     return KIND_BY_DIRECTORY_PREFIX.get(directory_prefix(name))
 
 
+def run_directories(data_dir: Path, extraction: Extraction) -> list[Path]:
+    """Every directory under data_dir holding results.json, without following links.
+
+    A linked run directory would otherwise vanish without a trace, so it is rejected.
+    """
+    found = []
+    for root, directories, files in os.walk(data_dir):  # does not follow directory links
+        for name in directories:
+            linked = Path(root) / name
+            if linked.is_symlink() and (linked / RESULTS_FILE).exists():
+                reason = "Run directory is a symbolic link, which is not followed; copy it"
+                reject(extraction, str(linked), reason)
+        if RESULTS_FILE in files:
+            found.append(Path(root))
+    return sorted(found)
+
+
 def extract_local(data_dir: Path) -> Extraction:
     """Read every run directory (one containing results.json) anywhere under data_dir."""
     if not data_dir.is_dir():
         raise ExtractionError(f"Local evidence directory {data_dir} does not exist")
     extraction = Extraction()
-    for results_path in sorted(data_dir.rglob(RESULTS_FILE)):
-        run_dir = results_path.parent
+    for run_dir in run_directories(data_dir, extraction):
+        results_path = run_dir / RESULTS_FILE
         kind = kind_for_directory(run_dir.name)
         if kind is None:
             prefixes = ", ".join(f"{prefix}-*" for prefix in KIND_BY_DIRECTORY_PREFIX)
             reject(extraction, str(run_dir), f"Unknown experiment kind; name it {prefixes}")
             continue
         samples_path = run_dir / SAMPLES_FILE
+        if results_path.is_symlink() or samples_path.is_symlink():
+            # A link can point anywhere, so the evidence would not be the directory's own.
+            reject(extraction, str(run_dir), "Evidence files must not be symbolic links")
+            continue
         try:
-            result = json.loads(results_path.read_text(encoding="utf-8"))
+            result = parse_json(results_path.read_text(encoding="utf-8"))
             samples = read_jsonl(samples_path) if samples_path.exists() else []
             status = None if samples_path.exists() else TELEMETRY_MISSING
             run = validate(result, samples, kind, origin=str(run_dir), telemetry_status=status)
@@ -245,12 +327,33 @@ def extract_local(data_dir: Path) -> Extraction:
     return finish(extraction, str(data_dir))
 
 
+def read_body(
+    response, url: str, timeout: float, clock: Callable[[], float] = time.monotonic
+) -> bytes:
+    """Read a response within one overall deadline and size limit.
+
+    The socket timeout bounds each read, not the whole response, so a server sending a few
+    bytes at a time could stall extraction indefinitely. Exceeding the deadline is a
+    retryable timeout; an oversized response is not.
+    """
+    deadline = clock() + timeout
+    body = bytearray()
+    while chunk := response.read1(READ_CHUNK_BYTES):
+        body += chunk
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise ExtractionError(f"GET {url} returned more than {MAX_RESPONSE_BYTES} bytes")
+        if clock() > deadline:
+            raise TimeoutError(f"GET {url} took longer than {timeout}s")
+    return bytes(body)
+
+
 def get_json(url: str, timeout: float):
     """One HTTP GET; JSON or newline-delimited JSON depending on the response type."""
     with urllib.request.urlopen(url, timeout=timeout) as response:
+        text = read_body(response, url, timeout).decode()
         if "ndjson" in response.headers.get("Content-Type", ""):
-            return [json.loads(line) for line in response.read().decode().splitlines() if line]
-        return json.load(response)
+            return [parse_json(line) for line in text.splitlines() if line]
+        return parse_json(text)
 
 
 def fetch_json(url: str, timeout: float, retry: RetryPolicy):
@@ -274,9 +377,12 @@ def fetch_json(url: str, timeout: float, retry: RetryPolicy):
     raise ExtractionError(f"GET {url} failed after {retry.attempts} attempts: {failure}")
 
 
-def parse_page(page, url: str) -> tuple[list, int | None]:
+def parse_page(page, url: str, limit: int) -> tuple[list, int | None]:
     if not isinstance(page, dict) or not isinstance(page.get("runs"), list):
         raise ExtractionError(f"GET {url} did not return a run history page")
+    runs = page["runs"]
+    if len(runs) > limit:
+        raise ExtractionError(f"GET {url} returned {len(runs)} runs for a limit of {limit}")
     # A missing cursor is a malformed page, not the last page: treating it as null would
     # end extraction successfully and silently omit every older run.
     if "next_cursor" not in page:
@@ -284,7 +390,11 @@ def parse_page(page, url: str) -> tuple[list, int | None]:
     cursor = page["next_cursor"]
     if cursor is not None and (type(cursor) is not int or cursor <= 0):
         raise ExtractionError(f"GET {url} returned an invalid next_cursor {cursor!r}")
-    return page["runs"], cursor
+    # The API sets a cursor only when more runs exist, after a full page; a cursor after a
+    # short or empty page would let a broken server keep extraction paging indefinitely.
+    if cursor is not None and len(runs) != limit:
+        raise ExtractionError(f"GET {url} returned a cursor after a partial page")
+    return runs, cursor
 
 
 def extract_api_row(base: str, row, extraction: Extraction, timeout: float, retry: RetryPolicy):
@@ -319,6 +429,9 @@ def extract_api(
     """Read every saved run, following the history cursor until the last page."""
     if not 1 <= page_size <= API_MAX_PAGE_SIZE:
         raise ValueError(f"page_size must be between 1 and {API_MAX_PAGE_SIZE}")
+    parsed = urllib.parse.urlparse(api_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"API URL {api_url!r} must be http:// or https:// with a host")
     retry = retry or DEFAULT_RETRY  # read at call time, so callers and tests can replace it
     base = api_url.rstrip("/")
     extraction = Extraction()
@@ -326,7 +439,7 @@ def extract_api(
     while True:
         query = {"limit": page_size} | ({"before": before} if before else {})
         url = f"{base}/v1/runs?{urllib.parse.urlencode(query)}"
-        rows, cursor = parse_page(fetch_json(url, timeout, retry), url)
+        rows, cursor = parse_page(fetch_json(url, timeout, retry), url, page_size)
         for row in rows:
             extract_api_row(base, row, extraction, timeout, retry)
         if cursor is None:
@@ -340,9 +453,12 @@ def extract_api(
 def deduplicate(extraction: Extraction) -> Extraction:
     """Keep one copy of runs seen more than once; reject runs whose copies disagree.
 
-    A copy with a recorded_at timestamp (from the API) is preferred over a local copy.
-    Once a run ID has conflicting evidence, every copy of it is rejected, including copies
-    that arrive later through combine().
+    Which identical copy is kept never depends on source order, because its recorded_at
+    and source_sha256 reach the rows and so the dataset version: a copy with recorded_at
+    (from the API) is preferred, then the earliest recorded_at, then the most telemetry
+    (present, then empty, then missing), then the smallest source_sha256 and origin. Once a
+    run ID has conflicting evidence, every copy of it is rejected, including copies that
+    arrive later through combine().
     """
     copies: dict[str, list[RawRun]] = {}
     for run in extraction.runs:
@@ -362,7 +478,7 @@ def deduplicate(extraction: Extraction) -> Extraction:
             for copy in found:
                 reject(unique, copy.origin, f"Run {run_id} has conflicting evidence in sources")
             continue
-        keep = next((copy for copy in found if copy.recorded_at is not None), found[0])
+        keep = min(found, key=preference)
         unique.runs.append(keep)
         unique.duplicates.extend(Duplicate(c.origin, run_id) for c in found if c is not keep)
     # A copy dropped earlier as an identical duplicate is rejected once its run conflicts.
@@ -374,6 +490,19 @@ def deduplicate(extraction: Extraction) -> Extraction:
             still_duplicates.append(duplicate)
     unique.duplicates = still_duplicates
     return unique
+
+
+def preference(copy: RawRun) -> tuple:
+    recorded = (
+        copy.recorded_at.astimezone(UTC) if copy.recorded_at else datetime.max.replace(tzinfo=UTC)
+    )
+    return (
+        copy.recorded_at is None,
+        recorded,
+        TELEMETRY_PREFERENCE[copy.telemetry_status],
+        copy.source_sha256,
+        copy.origin,
+    )
 
 
 def combine(*extractions: Extraction) -> Extraction:

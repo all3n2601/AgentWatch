@@ -17,8 +17,9 @@ recorded runs (local results.json + samples.jsonl, or GET /v1/runs)
   -> split     70/15/15 grouped by task_id, measured-only test, leakage check
 ```
 
-Every stage rejects untrustworthy runs individually with a reason. Only an unreadable source,
-invalid label rules, a schema violation, or an empty result stops a build, and a failed build
+Every stage rejects untrustworthy runs individually with a reason, including runs whose rows
+break the dataset schema. Only an unreadable source, invalid label rules, an empty result, or a
+defect in the builder itself stops a build, and a failed build
 writes nothing. Each stage is in `pipelines/data/src/agentwatch_data/`, tested at 100% line and
 branch coverage, and exercised against real recorded runs and the live ingestion API.
 
@@ -34,7 +35,7 @@ branch coverage, and exercised against real recorded runs and the live ingestion
 | 6. Quality gate | `make validate-dataset`: TFDV statistics against a frozen, reviewed schema; anomalies fail, drift is reported. Isolated in `pipelines/validation` because TFDV brings TensorFlow (~1.7 GB) | Done (#16) |
 | **7. Splits** | `make split-dataset`: 70/15/15 grouped by `task_id` from the evaluation contract, measured-only test split, a deterministic split file with per-split row hashes, and the contract's leakage check | This PR |
 | 8. Versioning | DVC with a GCS remote; a rebuild from the same evidence reproduces the same version | Next |
-| Hardening pass | Request batching for large API histories; anything left from reviews | Before Airflow |
+| Hardening pass | Request batching for large API histories; sweeping staging left by killed builds; anything left from reviews | Before Airflow |
 | 9. More resources | Prometheus reader; `steps-v2` inference and retrieval features; `labels-v2` with mixed contention. Split follow-ups: force at least one injection method wholly into test, and check that mixed-contention cases reach test | Waits on B |
 | 10. Real collection | Scheduled runs over a task suite on a Linux GCP VM, where PSI and cgroup readings exist. Split follow-up: rebuild and re-split once step events carry a real `task_id`, so the test split holds unseen tasks and training is no longer empty | Waits on A, B, F |
 | 11. Airflow DAG | collect → extract → validate → build → split → version, with retries and alerts | After 6–8 |

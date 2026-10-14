@@ -158,6 +158,9 @@ def check_run(rows: list[dict]) -> None:
         raise LabelingError(f"Labels are not defined for conditions {sorted(unknown)}")
     if sum(row["condition"] == BASELINE for row in rows) < 2:
         raise LabelingError(f"Run {run_id} needs at least two baseline steps")
+    for condition in (CLEAN, CONTENDED):
+        if sum(row["condition"] == condition for row in rows) != 1:
+            raise LabelingError(f"Run {run_id} needs exactly one {condition} step")
     failed = {name for row in rows for name in (row.get("failed_checks") or "").split(",") if name}
     invalidating = failed.intersection(DESIGN_INVALIDATING_CHECKS)
     if invalidating:
