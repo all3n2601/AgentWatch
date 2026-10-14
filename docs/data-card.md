@@ -184,7 +184,7 @@ for training targets, baseline comparison, and traceability.
 | `cgroup_throttled_usec_delta` | int, nullable | cgroup v2 throttled time gained between the first and last samples inside the step, a lower bound for the whole step; `telemetry_coverage` shows how much of the step the samples span |
 | `cgroup_available` | bool | Whether a throttling delta was measured: at least two samples in the window, every one with a readable counter, and no decrease between consecutive readings |
 | `telemetry_sample_count` | int | Resource samples inside the step window |
-| `telemetry_coverage` | float, nullable | Samples inside the window ÷ whole declared sampling intervals in the step (`floor(duration / sampling_interval_seconds)`, in integer nanoseconds), capped at 1. A declared interval must be at least 1 ns. Judged against the declared interval because a measured one cannot reveal uniform sample loss. Null when telemetry is not `present`, no interval is declared, or the step is shorter than one interval |
+| `telemetry_coverage` | float, nullable | Samples inside the window (from submission to finish, both inclusive; a sample exactly where touching steps meet counts in both, so each step's throttling delta starts or ends at the same counter reading) ÷ whole declared sampling intervals in the step (`floor(duration / sampling_interval_seconds)`, in integer nanoseconds), capped at 1. A declared interval must be at least 1 ns. Judged against the declared interval because a measured one cannot reveal uniform sample loss. Null when telemetry is not `present`, no interval is declared, or the step is shorter than one interval |
 
 Missing readings stay null and are paired with an availability flag. They are never stored as
 zero, because a measured zero and an unavailable reading mean different things. On macOS, PSI and
@@ -221,13 +221,17 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 - A step's condition comes from its position in the run result (`baseline.steps`, `clean`,
   `contended`), and its `step_id` must agree; a renamed step fails instead of changing role.
 - Steps must run one after another in that order, with no overlapping windows, and every step
-  must report the same nonblank output `checksum`. A baseline overlapping contention would bias
+  must report the same nonblank output `checksum`. Steps may touch (one finishing at the
+  nanosecond the next is submitted). A baseline overlapping contention would bias
   the reference, and a step that did different work explains its own slowdown; the producer's
   `same_workload_output` check covers only clean against contended.
 - Runs with unknown conditions, unknown or mixed kinds, repeated step IDs, fewer than two
-  baseline steps, other than exactly one clean and one contended step, or any duration that is not a finite positive number (NaN, infinity, zero,
-  booleans, or non-numeric) fail labeling instead of being guessed. Mixed contention is not
-  defined in `labels-v1.1`.
+  baseline steps, other than exactly one clean and one contended step, or any duration that
+  is not a finite positive number (NaN, infinity, zero, booleans, or non-numeric) fail
+  labeling instead of being guessed. Mixed contention is not defined in `labels-v1.1`.
+  Flattening always yields exactly one clean and one contended row per run, because the
+  ingestion contract has one of each, so that check only guards direct callers of
+  `label_rows` and changes no label the pipeline produces.
 - A run that failed `same_workload_output` did different work under contention, so its
   slowdown is not attributable and the run is rejected from the dataset with that reason. Other failed checks are recorded in
   `failed_checks` but do not block labels: dropping runs because the rule disagreed would select

@@ -1,5 +1,6 @@
 import json
 import math
+from itertools import pairwise
 
 import pytest
 from agentwatch_data.extract import validate
@@ -411,3 +412,36 @@ def test_psi_missing_from_some_samples_is_not_a_maximum():
     complete = [sample(i * 250_000_000, avg10=float(i)) for i in range(8)]
     window = window_readings(complete, BASE_NS, BASE_NS + 2_000_000_000)
     assert (window["cpu_pressure_max_avg10"], window["cpu_pressure_available"]) == (7.0, True)
+
+
+def test_touching_steps_are_accepted():
+    """Back-to-back steps (one finishes the nanosecond the next is submitted) are sequential."""
+    result = make_result()
+    steps = result["baseline"]["steps"] + [result["clean"], result["contended"]]
+    for earlier, later in pairwise(steps):
+        shift = earlier["finished_ns"] - later["submitted_ns"]
+        for key in ("submitted_ns", "started_ns", "finished_ns"):
+            later[key] += shift
+    rows = flatten_run(validate(result, [SAMPLE], "cpu"))
+    assert len(rows) == 5
+
+
+def test_a_sample_where_touching_steps_meet_counts_in_both():
+    """Windows are inclusive at both ends, so the boundary reading closes one step's counter
+    delta and opens the next one's, rather than being lost to one of them."""
+    boundary = 1_000_000_000
+    samples = [
+        sample(0, throttled=100),
+        sample(boundary, throttled=150),
+        sample(2 * boundary, throttled=175),
+    ]
+    first = window_readings(samples, BASE_NS, BASE_NS + boundary)
+    second = window_readings(samples, BASE_NS + boundary, BASE_NS + 2 * boundary)
+    assert (first["telemetry_sample_count"], second["telemetry_sample_count"]) == (2, 2)
+    assert (first["cgroup_throttled_usec_delta"], second["cgroup_throttled_usec_delta"]) == (50, 25)
+
+
+def test_every_flattened_run_has_exactly_one_clean_and_one_contended_row(rows):
+    """Why the labeling guard against other counts changes no label the pipeline produces."""
+    conditions = [row["condition"] for row in rows]
+    assert (conditions.count("clean"), conditions.count("contended")) == (1, 1)

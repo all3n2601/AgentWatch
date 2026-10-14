@@ -62,10 +62,12 @@ def test_packaged_rules_are_frozen_and_versioned(config):
 
 
 # The full label_version of the packaged rules and labeling code, pinned so no change to
-# either reaches a release unnoticed. When this fails: if the change can alter any label
-# (a rule value, the threshold or excess formula, which rows are labeled or rejected), bump
-# `version` in labels.toml, which also needs an evaluation-contract change; otherwise, for a
-# comment or refactor, keep the version. Either way, update the pin in the same PR.
+# either reaches a release unnoticed. When this fails: if the change can alter the label of
+# any row the pipeline produces, or whether such a run is labeled at all (a rule value, the
+# threshold or excess formula, a new rejection reachable from flatten_runs), bump `version`
+# in labels.toml, which also needs an evaluation-contract change. Otherwise (a comment, a
+# refactor, or a guard against rows flattening cannot produce) keep the version, and say why
+# in the PR. Either way, update the pin in the same PR.
 PINNED_LABEL_VERSION = "labels-v1.1+fd085fa4"
 
 
