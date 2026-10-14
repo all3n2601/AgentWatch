@@ -93,6 +93,7 @@ feature {
   type: FLOAT
   float_domain {
     min: 0.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 1.0
@@ -109,6 +110,7 @@ feature {
   type: FLOAT
   float_domain {
     min: 0.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 1.0
@@ -125,6 +127,7 @@ feature {
   type: FLOAT
   float_domain {
     min: 0.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 1.0
@@ -141,6 +144,7 @@ feature {
   type: FLOAT
   float_domain {
     min: 0.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 1.0
@@ -158,6 +162,7 @@ feature {
   float_domain {
     min: 0.0
     max: 1.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 1.0
@@ -195,11 +200,6 @@ feature {
     min_fraction: 0.0
     min_count: 0
   }
-  shape {
-    dim {
-      size: 1
-    }
-  }
 }
 feature {
   name: "worker_capacity"
@@ -223,6 +223,7 @@ feature {
   float_domain {
     min: 0.0
     max: 100.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 0.0
@@ -296,15 +297,11 @@ feature {
   float_domain {
     min: 0.0
     max: 1.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 0.0
     min_count: 0
-  }
-  shape {
-    dim {
-      size: 1
-    }
   }
 }
 feature {
@@ -337,6 +334,7 @@ feature {
   float_domain {
     min: 0.0
     max: 1.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 1.0
@@ -491,15 +489,11 @@ feature {
   type: FLOAT
   float_domain {
     min: 0.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 0.0
     min_count: 0
-  }
-  shape {
-    dim {
-      size: 1
-    }
   }
 }
 feature {
@@ -507,15 +501,11 @@ feature {
   type: FLOAT
   float_domain {
     min: 0.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 0.0
     min_count: 0
-  }
-  shape {
-    dim {
-      size: 1
-    }
   }
 }
 feature {
@@ -523,6 +513,7 @@ feature {
   type: FLOAT
   float_domain {
     min: 0.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 1.0
@@ -539,6 +530,7 @@ feature {
   type: FLOAT
   float_domain {
     min: 0.0
+    disallow_inf: true
   }
   presence {
     min_fraction: 1.0
