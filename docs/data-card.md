@@ -44,29 +44,45 @@ from local run directories named `cpu`, `coding`, or `llm`, or starting with `cp
 
 - Every run, sample, and API history row is validated **strictly** against the ingestion
   contracts. Values of the wrong JSON type are rejected rather than coerced: `true` is not a
-  number, `"10"` is not an integer, and an integer is not a timestamp. A run that fails is
-  recorded as a rejection with its reason; the other runs still extract.
+  number, `"10"` is not an integer, and neither an integer nor a numeric string such as
+  `"1791200000"` is a timestamp (`created_at` must be an RFC 3339 date and time with an
+  offset). A run that fails is recorded as a rejection with its reason; the other runs still
+  extract.
+- JSON is parsed strictly: an object that repeats a key is rejected rather than silently
+  keeping the last value, and JSON nested more than 64 levels deep (recorded evidence nests 4)
+  rejects its run instead of aborting the extraction. The limit is explicit so the result is
+  the same on every supported Python version.
+- Run directories and evidence files must be real, not symbolic links: a linked run directory
+  or a linked `results.json` or `samples.jsonl` is rejected with a reason, never skipped or
+  read from outside the data directory.
 - The evidence must match its declared kind: a `coding` run declares `tests_per_step`, and a
   `cpu` run does not. A run in an `llm-*` directory must carry the agent evidence
   (`result["agent"]`); without it the LLM loop did not finish.
 - Experiment check names must be lowercase identifiers (`[a-z][a-z0-9_]*`), so `failed_checks`
   stays unambiguous.
-- Network failures are retried with bounded exponential backoff for timeouts, connection
-  errors, and HTTP 429, 500, 502, 503, and 504. If a source still cannot be read, or returns a malformed response,
-  extraction stops with an error instead of producing a partial dataset. A history page
-  without `next_cursor` counts as malformed, never as the last page.
+- The API URL must be `http://` or `https://` with a host. Network failures are retried with
+  bounded exponential backoff for timeouts, connection errors, and HTTP 429, 500, 502, 503, and
+  504. Each response must arrive within one overall deadline (the request timeout bounds the
+  whole body, not each read) and within 64 MiB. If a source still cannot be read, or returns a
+  malformed response, extraction stops with an error instead of producing a partial dataset.
+- History pages must keep the API's contract: no more runs than the requested limit, and a
+  `next_cursor` only after a full page, strictly smaller than the last. A page without
+  `next_cursor` counts as malformed, never as the last page.
 - A run found more than once, locally or through the API, is kept once. Copies whose
   normalized evidence disagrees are all rejected, including copies already set aside as
   duplicates, and that run ID stays rejected when the extraction is later combined with other
-  sources.
+  sources. Which identical copy is kept never depends on source order: an API copy, then the
+  earliest saved time, then the most telemetry (`present`, `empty`, `missing`), then the
+  smallest raw-evidence hash.
 - Each run records whether it carried resource samples: `present`, `empty`, or `missing`
   (no samples file). The API cannot distinguish an absent file from an empty one.
 - Identical samples at the same timestamp are collapsed; disagreeing samples reject the run.
 
 Flattening and labeling also reject untrustworthy runs one at a time, with a reason, while the
-other runs continue (`flatten_runs` and `label_rows` return rows and rejections). Only invalid
-label rules or an unreadable source stop a build, so one bad run can never block every later
-build.
+other runs continue (`flatten_runs` and `label_rows` return rows and rejections), and so does
+schema validation, which checks each run's rows on its own. Only invalid label rules, an
+unreadable source, no usable rows, or a defect in the builder itself stop a build, so one bad
+run can never block every later build.
 
 ## Releases
 
@@ -83,14 +99,18 @@ under `.data/datasets/builds/`:
 |---|---|
 | `<version>/steps.parquet` | Every row, every schema column, with Arrow types and nullability taken from `schema.py`; rows ordered by run, then condition, then baseline repeat |
 | `<version>/schema.json` | The column contract (names, types, roles, nullability, allowed values, bounds), for tools that cannot import `schema.py` |
-| `<version>/manifest.json` | Content only: release format (currently 2); dataset, schema, label, and builder versions; row, run, and task counts; label, basis, condition, and telemetry-status counts; SHA-256 of the canonical rows, the Parquet file, and `schema.json`. Rebuilding the same evidence reproduces it byte for byte |
+| `<version>/manifest.json` | Content only: release format (currently 2); dataset, schema, label, and builder versions; row, run, and task counts; label, basis, condition, and telemetry-status counts; SHA-256 of the canonical rows, the Parquet file, and `schema.json`. With the same code and locked dependencies, rebuilding the same evidence reproduces it byte for byte |
 | `builds/<build id>.json` | That build's events: build time, the release it created or reused (`reused_release`), per-source run and rejection counts, duplicate copies, and every rejection with its stage and reason |
 
 The command prints the release and report paths. Because rejections live in each build's
 report, a rebuild whose accepted rows are unchanged still records evidence rejected that time.
 
 A release is **published** only when a committed build report names it, and consumers should
-select releases with `published_releases()` in `build.py`. Builds never delete releases, so
+select releases with `published_releases()` in `build.py`. They are ordered by their latest
+report, so the newest is the release the last successful build created or reused, and
+`make dataset` followed by `make validate-dataset` checks what was just built. A report
+publishes nothing unless it names a real release directory (not a link) whose manifest
+carries that version. Builds never delete releases, so
 concurrent builds cannot remove each other's datasets. The report is staged before the release
 directory appears, so most write failures leave nothing behind; if committing the report still
 fails, the build fails and may leave an unpublished release directory, which the next
@@ -98,7 +118,8 @@ successful build verifies and publishes.
 
 - `dataset_version` is `<schema version>+<first 12 hex digits of a SHA-256 over the rows' digest,
   the column contract, and the release format>`, so the same evidence, rules, and code always
-  produce the same version. A changed run, rule, label fingerprint, contract, or release format
+  produce the same version, whatever the order of the sources and whatever time zone the API
+  reports saved times in (they are hashed in UTC, as Parquet stores them). A changed run, rule, label fingerprint, contract, or release format
   produces a new one.
 - Releases are never rewritten, so a release in an older format is never upgraded in place. A
   format 1 release (from before `schema.json` existed) stays as it was, and the next build
@@ -106,13 +127,18 @@ successful build verifies and publishes.
   published release.
 - Building a version that already exists verifies its format and the hashes of its rows,
   Parquet file, and contract instead of rewriting it; a mismatch fails the build.
-- A build writes everything into a staging directory and renames it into place only when it is
-  complete, so a failed build never leaves a partial release, and never publishes one.
+- A build writes everything into a staging directory, fsyncs it, and renames it into place only
+  when it is complete, so a failed or crashed build never leaves a partial release, and never
+  publishes one.
 - The build fails, writing nothing, when a source cannot be read, the label rules are invalid,
-  any row violates the schema, or no usable rows remain. Individual untrustworthy runs are
+  no usable rows remain, or the builder itself produces an invalid release. Individual
+  untrustworthy runs, including runs whose rows break the schema (`stage: "schema"`), are
   rejected and listed in that build's report instead.
 - Host paths never appear in a manifest or report: local sources are labeled by directory name, such as
-  `<local:coding-demo>`, and the home directory by `~`.
+  `<local:coding-demo>`, and the home directory by `~` (skipped when there is no home, or it
+  is `/`, as in some containers).
+- Staging directories and staged reports left by a killed build are hidden and harmless, but
+  are not yet cleaned up automatically; that sweep is part of the planned hardening pass.
 
 ## Quality gate
 
@@ -125,12 +151,17 @@ fails, so Airflow and scripts can stop on it.
   verifies the Parquet and contract hashes before reading anything, then refuses the release if
   any Parquet column's physical type differs from the contract. This happens before columns are
   converted for TFDV, so a string column holding `"1"` cannot pass as an integer or boolean.
+  It also refuses what TFDV cannot see once columns are converted: NaN in a float column
+  (pandas would turn it into a missing value), an empty or whitespace-only string, and a
+  release with no rows (TFDV checks nothing on zero examples).
 - TFDV statistics are compared with a **frozen schema**,
   `pipelines/validation/schema/steps.pbtxt`. It is generated by `make freeze-dataset-schema`
   and changed only in a reviewed PR. Its domains come from the contract, not from the values
   seen so far: all four resource classes are allowed even though only two occur today, and
   free-text columns such as `workload` and `task_id` have no domain, so new tasks are not
-  anomalies.
+  anomalies. Float columns disallow ±inf. Required columns have a fixed shape (one value in
+  every row); nullable columns have none, so a column that is null in only some rows, such as
+  `tests_per_step` when coding and CPU runs are mixed, passes.
 - **Schema anomalies fail the gate:** a missing or unexpected column, a type change, a value
   outside its range, an unknown category, a missing required value, or a violated dataset
   constraint.
@@ -145,9 +176,15 @@ fails, so Airflow and scripts can stop on it.
   concurrent attempts never share files. `result.json` records the status, anomalies, drift,
   baseline release, the release's Parquet and contract hashes, the frozen schema's hash, the
   statistics' hash, and the gate and TFDV versions.
-- A release's verdict is its **latest committed attempt**; earlier attempts are kept as
-  evidence. The drift baseline is the most recently validated other release whose verdict is a
-  pass, using the exact statistics of that passing attempt (checked against its recorded hash).
+- A release's verdict is its **latest committed attempt**, ordered by validation time;
+  earlier attempts are kept as evidence. Attempt files are fsynced before and after the
+  rename. A committed attempt whose result is missing, unreadable, or names another attempt or
+  release, or one validated in the future, makes the verdict **unknown** instead of letting an
+  older attempt stand in for it; inspect it, and the verdict returns once it is repaired or
+  removed.
+- The drift baseline is the most recently validated other release whose verdict is a pass
+  against the **same frozen schema**, using the exact statistics of that passing attempt
+  (checked against its recorded hash). A release whose verdict is unknown is never a baseline.
 - Main-suite tests fail if the frozen schema's columns or the gate's test fixture drift from
   this contract.
 

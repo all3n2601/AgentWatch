@@ -268,7 +268,7 @@ def test_invalid_rules_fail_the_build(evidence, tmp_path):
         build_from(evidence, tmp_path / "out", rules=rules)
 
 
-def test_schema_violations_fail_the_build(evidence, tmp_path, monkeypatch):
+def test_no_usable_rows_after_schema_rejections_fails_the_build(evidence, tmp_path, monkeypatch):
     real = build_module.label_rows
 
     def broken(rows, config):
@@ -276,9 +276,63 @@ def test_schema_violations_fail_the_build(evidence, tmp_path, monkeypatch):
         return [row | {"queue_fraction": 2.0} for row in labeled], rejections
 
     monkeypatch.setattr(build_module, "label_rows", broken)
-    with pytest.raises(BuildError, match="violate the dataset schema"):
+    with pytest.raises(BuildError, match="No usable rows"):
         build_from(evidence, tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        lambda result: result["contended"].update(rule_version=""),  # contract allows ""
+        lambda result: result["experiment"].update(workload=" "),
+    ],
+    ids=["empty-rule-version", "blank-workload"],
+)
+def test_a_run_the_contract_accepts_but_the_schema_does_not_is_rejected_alone(
+    evidence, tmp_path, corrupt
+):
+    """One such run used to stop every build until someone deleted it by hand."""
+    bad = make_result()
+    corrupt(bad)
+    write_run(evidence / "cpu-loose", bad)
+    result = result_from(evidence, tmp_path / "out")
+    [rejection] = [item for item in report_of(result)["rejections"] if item["stage"] == "schema"]
+    assert (
+        rejection["origin"].endswith("cpu-loose")
+        and "must be a nonempty string" in rejection["reason"]
+    )
+    assert manifest_of(result.release)["runs"] == 1  # the recorded run still builds
+
+
+def test_psi_above_100_is_rejected_alone(evidence, tmp_path):
+    result = make_result()
+    window = result["clean"]["submitted_ns"] + 1
+    samples = [
+        {
+            "timestamp_ns": window,
+            "cpu_pressure": {"some": {"avg10": 150.0, "avg60": 0.0, "avg300": 0.0, "total": 1}},
+            "cgroup_cpu_stat": None,
+            "unavailable": [],
+        }
+    ]
+    write_run(evidence / "cpu-psi", result, samples)
+    built = result_from(evidence, tmp_path / "out")
+    reasons = [item["reason"] for item in report_of(built)["rejections"]]
+    assert any("cpu_pressure_max_avg10 must be at most 100" in reason for reason in reasons)
+
+
+def test_a_builder_defect_still_fails_the_whole_build(evidence, tmp_path, monkeypatch):
+    real = build_module.validate_rows
+
+    def fail_release_check(rows, expected=None):
+        if expected == build_module.ALL_COLUMNS:
+            raise build_module.SchemaError("dataset_version malformed")
+        return real(rows, expected)
+
+    monkeypatch.setattr(build_module, "validate_rows", fail_release_check)
+    with pytest.raises(BuildError, match="Release rows violate the dataset schema"):
+        build_from(evidence, tmp_path / "out")
 
 
 def test_a_failed_write_leaves_no_partial_release(evidence, tmp_path, monkeypatch):
@@ -541,7 +595,7 @@ def test_published_releases_follow_valid_reports_only(evidence, tmp_path):
     later = datetime(2026, 10, 12, tzinfo=UTC)
     second = build([Source("local", str(evidence))], output, now=later)
     reuse = build([Source("local", str(evidence))], output, now=datetime(2026, 10, 13, tzinfo=UTC))
-    assert reuse.reused and reuse.release == second.release  # a later reuse keeps its position
+    assert reuse.reused and reuse.release == second.release
     builds = output / "builds"
     (builds / "19990101T000000000000Z-broken.json").write_text("{not json")
     (builds / "19990101T000000000001Z-list.json").write_text("[1, 2]")
@@ -577,3 +631,76 @@ def test_releases_module_runs_as_a_command(evidence, tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exited:
         runpy.run_module("agentwatch_data.releases", run_name="__main__")
     assert exited.value.code == 0
+
+
+# Audit fixes
+
+
+def test_the_newest_published_release_is_the_one_last_built(evidence, tmp_path, capsys):
+    """Rebuilding older evidence must make that release the one later steps act on."""
+    output = tmp_path / "out"
+    first = result_from(evidence, output)
+    write_run(evidence / "cpu-extra", make_result())
+    second = build([Source("local", str(evidence))], output, now=datetime(2026, 10, 12, tzinfo=UTC))
+    shutil.rmtree(evidence / "cpu-extra")
+    again = build([Source("local", str(evidence))], output, now=datetime(2026, 10, 13, tzinfo=UTC))
+    assert again.reused and again.release == first.release
+    assert published_releases(output) == [second.release, first.release]
+    assert releases_main(["--output", str(output)]) == 0
+    assert capsys.readouterr().out.strip() == str(first.release)
+
+
+def test_reports_naming_anything_but_a_real_release_publish_nothing(evidence, tmp_path):
+    output = tmp_path / "out"
+    real = result_from(evidence, output).release
+    builds = output / "builds"
+    lookalike = output / f"{SCHEMA_VERSION}+{'a' * 12}"
+    lookalike.mkdir()
+    (lookalike / MANIFEST_FILE).write_text("{}")  # its manifest names no version
+    linked = output / f"{SCHEMA_VERSION}+{'b' * 12}"
+    linked.symlink_to(real, target_is_directory=True)
+    bare = output / f"{SCHEMA_VERSION}+{'c' * 12}"
+    bare.mkdir()  # no manifest at all
+    names = ["x" * 300, lookalike.name, linked.name, bare.name, "steps-v1.2+ABCDEF"]
+    for index, name in enumerate(names):
+        report = {"release": name, "built_at": "2099-01-01T00:00:00+00:00"}
+        (builds / f"2099010{index}T000000000000Z-bad.json").write_text(json.dumps(report))
+    assert published_releases(output) == [real]  # and the 300-character name does not crash
+
+
+def test_source_order_does_not_change_the_version(tmp_path):
+    result = make_result()
+    result["baseline"]["execution_cv"] = 0.0
+    loose = json.loads(json.dumps(result))
+    loose["baseline"]["execution_cv"] = 0  # same evidence, different raw bytes
+    write_run(tmp_path / "x" / "cpu-1", result)
+    write_run(tmp_path / "y" / "cpu-1", loose)
+    sources = [Source("local", str(tmp_path / "x")), Source("local", str(tmp_path / "y"))]
+    forward = build(sources, tmp_path / "a", now=NOW).release
+    backward = build(sources[::-1], tmp_path / "b", now=NOW).release
+    assert forward.name == backward.name
+
+
+def test_the_recorded_time_zone_does_not_change_the_version():
+    from datetime import timedelta, timezone
+
+    row = {"recorded_at": datetime(2026, 10, 5, 12, tzinfo=UTC), "run_id": "r"}
+    eastern = row | {"recorded_at": row["recorded_at"].astimezone(timezone(timedelta(hours=-4)))}
+    assert build_module.rows_digest([row]) == build_module.rows_digest([eastern])
+
+
+@pytest.mark.parametrize("home", [None, "/"])
+def test_redaction_survives_a_container_without_a_usable_home(tmp_path, monkeypatch, home):
+    def no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(build_module.Path, "home", no_home if home is None else lambda: Path(home))
+    redact = build_module.Redactor([Source("local", str(tmp_path / "ev"))])
+    assert redact("/var/data/cpu-1 failed") == "/var/data/cpu-1 failed"  # no stray "~"
+
+
+def test_parquet_is_written_with_declared_options(evidence, tmp_path):
+    release = build_from(evidence, tmp_path / "out")
+    metadata = pq.ParquetFile(release / DATASET_FILE).metadata
+    assert metadata.row_group(0).column(0).compression == "SNAPPY"
+    assert metadata.format_version == "2.6"
