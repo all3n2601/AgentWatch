@@ -1,0 +1,16 @@
+# Optional NVIDIA GPU access for the Docker Ollama service. CPU-only setup does not use it.
+#
+#   docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.gpu.yaml \
+#     --profile llm up -d --wait ollama
+#
+# or `AGENTWATCH_LLM_GPU=1 make llm-up`. Requires Docker Desktop with WSL2 GPU support or the
+# NVIDIA Container Toolkit. See docs/gpu-measurement-access.md for verified configurations.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
