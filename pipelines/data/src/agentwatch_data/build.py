@@ -17,8 +17,9 @@ releases with published_releases(). Builds never delete releases, so concurrent 
 remove each other's datasets. A build whose report cannot be committed fails and may leave an
 unpublished release directory, which the next successful build verifies and publishes. A
 failed build otherwise writes nothing:
-unreadable sources, invalid rules, schema violations, and empty results stop it, while
-untrustworthy individual runs are rejected and reported.
+unreadable sources, invalid rules, empty results, and defects in the builder itself stop it,
+while untrustworthy individual runs, including runs whose rows break the dataset schema, are
+rejected and reported.
 """
 
 import argparse
@@ -26,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -72,6 +74,16 @@ ARROW_SCHEMA = pa.schema(
     [pa.field(column.name, ARROW_TYPES[column.dtype], column.nullable) for column in COLUMNS]
 )
 ALL_COLUMNS = frozenset(column.name for column in COLUMNS)
+# Written explicitly rather than left to pyarrow's defaults, so the bytes of a release depend
+# only on its rows, this code, and the locked pyarrow version.
+PARQUET_OPTIONS = {
+    "compression": "snappy",
+    "version": "2.6",
+    "data_page_version": "1.0",
+    "use_dictionary": True,
+    "write_statistics": True,
+}
+RELEASE_NAME = re.compile(r"[a-z]+-v\d+\.\d+\+[0-9a-f]{12}")
 
 
 class BuildError(RuntimeError):
@@ -119,7 +131,9 @@ class Redactor:
             label = f"<local:{name}>" if names[resolved.name] == 1 else f"<local:{name}#{index}>"
             self.labels[source] = label
             replacements[str(resolved)] = label
-        replacements[str(Path.home().resolve())] = "~"
+        home = home_directory()
+        if home is not None:
+            replacements[str(home)] = "~"
         # Longest first, so a source inside the home directory keeps its own label.
         self.replacements = sorted(replacements.items(), key=lambda item: -len(item[0]))
 
@@ -130,6 +144,19 @@ class Redactor:
         for path, label in self.replacements:
             text = text.replace(path, label)
         return text
+
+
+def home_directory() -> Path | None:
+    """The resolved home directory, or None where there is none worth redacting.
+
+    Containers may run as a user with no home (Path.home raises), or with HOME=/, which
+    would turn every slash in a report into "~".
+    """
+    try:
+        home = Path.home().resolve()
+    except (RuntimeError, OSError):
+        return None
+    return None if home == Path(home.anchor) else home
 
 
 def extract(source: Source) -> Extraction:
@@ -147,7 +174,14 @@ def step_order(row: dict) -> tuple:
 def rows_digest(rows: list[dict]) -> str:
     """Identify the dataset content independently of file encoding."""
     serializable = [
-        row | {"recorded_at": row["recorded_at"].isoformat() if row["recorded_at"] else None}
+        # In UTC, as Parquet stores it: the same moment written with another offset (the API
+        # returns its database session's time zone) must not change the version.
+        row
+        | {
+            "recorded_at": row["recorded_at"].astimezone(UTC).isoformat()
+            if row["recorded_at"]
+            else None
+        }
         for row in rows
     ]
     return canonical_sha256(serializable)
@@ -219,10 +253,13 @@ def build(
     merged = combine(*extractions)
     rows, flatten_rejections = flatten_runs(merged.runs)
     labeled, label_rejections = label_rows(rows, config)
+    origins = {run.run_id: run.origin for run in merged.runs}
+    labeled, schema_rejections = validate_runs(labeled, origins)
     rejections = (
         rejection_records("extract", merged.rejections, redact)
         + rejection_records("flatten", flatten_rejections, redact)
         + rejection_records("label", label_rejections, redact)
+        + rejection_records("schema", schema_rejections, redact)
     )
     if not labeled:
         raise BuildError(f"No usable rows: every run was rejected ({len(rejections)} rejections)")
@@ -231,10 +268,10 @@ def build(
     digest = rows_digest(labeled)
     version = f"{SCHEMA_VERSION}+{release_digest(digest)[:12]}"
     final = [row | {"dataset_version": version} for row in labeled]
-    try:
+    try:  # every run already passed; a failure here is a defect in the builder itself
         validate_rows(final, ALL_COLUMNS)
     except SchemaError as error:
-        raise BuildError(f"Rows violate the dataset schema: {error}") from error
+        raise BuildError(f"Release rows violate the dataset schema: {error}") from error
 
     built_at = now or datetime.now(UTC)
     build_id = f"{built_at:%Y%m%dT%H%M%S%fZ}-{uuid.uuid4().hex[:8]}"
@@ -272,6 +309,7 @@ def build(
                 staged = stage_report(report_path, report(reused))
         os.replace(staged, report_path)
         staged = None
+        fsync_directory(report_path.parent)
     finally:
         if staged is not None:
             staged.unlink(missing_ok=True)
@@ -286,13 +324,50 @@ def build(
     return BuildResult(release, report_path, reused)
 
 
+def validate_runs(rows: list[dict], origins: dict[str, str]) -> tuple[list[dict], list[Rejection]]:
+    """Check each run's rows against the schema; a run that fails is rejected, not fatal.
+
+    The ingestion contract is looser than the dataset schema (it allows an empty
+    rule_version, or PSI above 100), so one such run must not stop every later build.
+    """
+    runs: dict[str, list[dict]] = {}
+    for row in rows:
+        runs.setdefault(row["run_id"], []).append(row)
+    valid, rejections = [], []
+    for run_id, run_rows in runs.items():
+        try:
+            validate_rows(run_rows)
+        except SchemaError as error:
+            logger.warning("Rejected run %s at schema validation: %s", run_id, error)
+            rejections.append(Rejection(origins.get(run_id) or f"run {run_id}", str(error)))
+            continue
+        valid.extend(run_rows)
+    return valid, rejections
+
+
+def fsync_file(path: Path) -> None:
+    with path.open("rb") as stream:
+        os.fsync(stream.fileno())
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def write_release(
     release: Path, rows: list[dict], version: str, digest: str, label_version: str
 ) -> bool:
     """Write a release atomically. Returns True if a concurrent build had already written it.
 
-    The manifest holds only content-derived fields, so rebuilding the same evidence into an
-    empty output directory reproduces both files byte for byte. Build events live in reports.
+    The manifest holds only content-derived fields and Parquet is written with declared
+    options, so with the same code and locked dependencies, rebuilding the same evidence into
+    an empty output directory reproduces both files byte for byte. Build events live in
+    reports. Files are fsynced before the rename, so after a crash a release is whole or
+    absent.
     """
     staging = Path(tempfile.mkdtemp(prefix=".building-", dir=release.parent))
     try:
@@ -300,7 +375,7 @@ def write_release(
         # (DVC, Airflow workers, training jobs) that may run as other users.
         staging.chmod(0o755)
         dataset = staging / DATASET_FILE
-        pq.write_table(pa.Table.from_pylist(rows, schema=ARROW_SCHEMA), dataset)
+        pq.write_table(pa.Table.from_pylist(rows, schema=ARROW_SCHEMA), dataset, **PARQUET_OPTIONS)
         (staging / SCHEMA_FILE).write_text(contract_text(), encoding="utf-8")
         manifest = {
             "release_format": RELEASE_FORMAT,
@@ -320,12 +395,17 @@ def write_release(
             "telemetry_status": counts(rows, "telemetry_status"),
         }
         (staging / MANIFEST_FILE).write_text(json_text(manifest), encoding="utf-8")
+        # Durable before the rename publishes it: after a crash a release is whole or absent.
+        for name in (DATASET_FILE, SCHEMA_FILE, MANIFEST_FILE):
+            fsync_file(staging / name)
+        fsync_directory(staging)
         try:
             os.replace(staging, release)  # atomic on one filesystem: the release appears whole
         except OSError:
             if not release.exists():
                 raise
             return verify_existing(release, digest)  # a concurrent build finished first
+        fsync_directory(release.parent)
         return False
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -338,6 +418,7 @@ def stage_report(path: Path, report: dict) -> Path:
     try:
         staged.write_text(json_text(report), encoding="utf-8")
         staged.chmod(0o644)
+        fsync_file(staged)
     except BaseException:
         staged.unlink(missing_ok=True)
         raise
@@ -345,13 +426,16 @@ def stage_report(path: Path, report: dict) -> Path:
 
 
 def published_releases(output_dir: Path) -> list[Path]:
-    """Releases named by at least one committed build report, in order of first publication.
+    """Releases named by at least one committed build report, by their latest report.
 
-    A release directory without a report came from a build that failed before publishing;
-    it is not published until a later build verifies it and commits a report.
+    The last one is the release the most recent successful build created or reused, so
+    `make dataset` followed by `make validate-dataset` checks what was just built. A release
+    directory without a report came from a build that failed before publishing; it is not
+    published until a later build verifies it and commits a report. A report naming anything
+    but a real release directory of that version publishes nothing.
     """
     builds = output_dir / BUILDS_DIR
-    first_report: dict[str, tuple[str, str]] = {}
+    latest_report: dict[str, tuple[str, str]] = {}
     for path in builds.glob("*.json") if builds.is_dir() else []:
         try:
             report = json.loads(path.read_text(encoding="utf-8"))
@@ -360,14 +444,26 @@ def published_releases(output_dir: Path) -> list[Path]:
         if not isinstance(report, dict):
             continue
         name, built_at = report.get("release"), report.get("built_at")
-        # Only a plain directory name: a report cannot point outside the output directory.
-        if not isinstance(name, str) or Path(name).name != name or name in ("", ".", ".."):
-            continue
-        if not (output_dir / name / MANIFEST_FILE).is_file():
+        if not isinstance(name, str) or not is_release(output_dir, name):
             continue
         key = (built_at if isinstance(built_at, str) else "", path.name)
-        first_report[name] = min(first_report.get(name, key), key)
-    return [output_dir / name for name in sorted(first_report, key=first_report.get)]
+        latest_report[name] = max(latest_report.get(name, key), key)
+    return [output_dir / name for name in sorted(latest_report, key=latest_report.get)]
+
+
+def is_release(output_dir: Path, name: str) -> bool:
+    """A release directory named like a version, not a link, whose manifest says so."""
+    # The name pattern also keeps a report from pointing outside the output directory.
+    if not RELEASE_NAME.fullmatch(name):
+        return False
+    directory = output_dir / name
+    try:
+        if directory.is_symlink() or not directory.is_dir():
+            return False
+        manifest = json.loads((directory / MANIFEST_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(manifest, dict) and manifest.get("dataset_version") == name
 
 
 def verify_existing(release: Path, digest: str) -> bool:

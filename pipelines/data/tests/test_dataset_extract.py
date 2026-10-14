@@ -355,11 +355,11 @@ def test_malformed_history_pages_stop_extraction(api, page):
 
 
 def test_cursor_that_does_not_advance_stops_extraction(api):
-    api.add_page(None, [], 7)
-    api.add_page(7, [], 7)
+    api.add_page(None, [api.row(make_result())], 7, limit=1)
+    api.add_page(7, [api.row(make_result())], 7, limit=1)
     with pytest.raises(ExtractionError, match="does not advance"):
-        extract_api("http://api")
-    assert len(api.calls) == 2
+        extract_api("http://api", page_size=1)
+    assert len([call for call in api.calls if "/v1/runs?" in call]) == 2
 
 
 @pytest.mark.parametrize(
@@ -368,6 +368,10 @@ def test_cursor_that_does_not_advance_stops_extraction(api):
         {"created_at": None},
         {"created_at": "2026-10-05T12:00:00"},
         {"created_at": 1791200000},
+        {"created_at": "1791200000"},  # pydantic alone reads numeric strings as epochs
+        {"created_at": "0"},
+        {"created_at": "2026-10-05"},
+        {"created_at": "2026-13-45T12:00:00Z"},
         {"kind": "gpu"},
         {"run_id": "not-a-uuid"},
     ],
@@ -518,3 +522,189 @@ def test_dropped_duplicate_is_rejected_once_its_run_conflicts(tmp_path, result):
     final = combine(first, extract_local(tmp_path / "a"))
     assert final.runs == [] and final.duplicates == []
     assert len(final.rejections) == 3
+
+
+# Audit fixes
+
+
+def nested(depth: int) -> str:
+    return "[" * depth + "]" * depth
+
+
+@pytest.mark.parametrize(
+    "depth",
+    [extract.MAX_JSON_DEPTH + 1, 100_000],  # parses everywhere; RecursionError on Python 3.13
+)
+def test_json_nested_beyond_the_limit_rejects_only_its_run(tmp_path, result, depth):
+    """The limit is explicit, so the outcome is the same on every supported Python."""
+    write_run(tmp_path / "cpu-good", result)
+    (tmp_path / "cpu-deep").mkdir()
+    (tmp_path / "cpu-deep" / "results.json").write_text(nested(depth))
+    write_run(tmp_path / "cpu-deep-samples", make_result())
+    (tmp_path / "cpu-deep-samples" / "samples.jsonl").write_text(nested(depth))
+    extraction = extract_local(tmp_path)
+    assert [run.run_id for run in extraction.runs] == [result["run_id"]]
+    reasons = [rejection.reason for rejection in extraction.rejections]
+    assert len(reasons) == 2 and all("nested more than 64 levels deep" in r for r in reasons)
+
+
+def test_json_at_the_limit_is_accepted():
+    assert extract.nesting_depth(extract.parse_json(nested(extract.MAX_JSON_DEPTH))) == 64
+    assert extract.nesting_depth(extract.parse_json('{"a": [1, {"b": 2}], "c": 3}')) == 3
+    assert extract.nesting_depth(extract.parse_json("7")) == 0
+
+
+def test_recursion_errors_from_the_parser_become_the_same_rejection(monkeypatch):
+    """Python 3.13's json raises RecursionError; whatever the version, the message matches."""
+
+    def overflow(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(extract.json, "loads", overflow)
+    with pytest.raises(ValueError, match="nested more than 64 levels deep"):
+        extract.parse_json("[]")
+
+
+@pytest.mark.parametrize("depth", [extract.MAX_JSON_DEPTH + 1, 100_000])
+def test_deeply_nested_api_responses_are_malformed(monkeypatch, depth):
+    def deep(url, timeout):
+        return extract.parse_json(nested(depth))
+
+    monkeypatch.setattr(extract, "get_json", deep)
+    with pytest.raises(ExtractionError, match="malformed JSON: JSON is nested more than 64"):
+        extract_api("http://api")
+
+
+def test_repeated_json_keys_are_rejected(tmp_path, result):
+    text = json.dumps(result)
+    other = str(uuid4())
+    write_run(tmp_path / "cpu-twice", result)
+    (tmp_path / "cpu-twice" / "results.json").write_text(text[:-1] + f', "run_id": "{other}"}}')
+    extraction = extract_local(tmp_path)
+    assert extraction.runs == []
+    [rejection] = extraction.rejections
+    assert "repeats keys ['run_id']" in rejection.reason
+
+
+def test_repeated_keys_in_a_samples_line_are_rejected(tmp_path, result):
+    write_run(tmp_path / "cpu-1", result)
+    (tmp_path / "cpu-1" / "samples.jsonl").write_text('{"timestamp_ns": 1, "timestamp_ns": 2}\n')
+    [rejection] = extract_local(tmp_path).rejections
+    assert "samples.jsonl line 1" in rejection.reason and "repeats keys" in rejection.reason
+
+
+def test_linked_run_directories_are_rejected_not_skipped(tmp_path, result):
+    outside = tmp_path / "outside"
+    write_run(outside / "cpu-real", result)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "cpu-linked").symlink_to(outside / "cpu-real", target_is_directory=True)
+    extraction = extract_local(data)
+    assert extraction.runs == []
+    [rejection] = extraction.rejections
+    assert rejection.origin.endswith("cpu-linked") and "symbolic link" in rejection.reason
+
+
+@pytest.mark.parametrize("linked", ["results.json", "samples.jsonl"])
+def test_linked_evidence_files_are_rejected(tmp_path, result, linked):
+    write_run(tmp_path / "outside" / "cpu-real", result)
+    data = tmp_path / "data"
+    (data / "cpu-1").mkdir(parents=True)
+    for name in ("results.json", "samples.jsonl"):
+        source = tmp_path / "outside" / "cpu-real" / name
+        target = data / "cpu-1" / name
+        if name == linked:
+            target.symlink_to(source)
+        else:
+            target.write_bytes(source.read_bytes())
+    [rejection] = extract_local(data).rejections
+    assert "must not be symbolic links" in rejection.reason
+
+
+def test_a_page_larger_than_the_limit_stops_extraction(api, result):
+    api.add_page(None, [api.row(make_result()), api.row(make_result())], None, limit=1)
+    with pytest.raises(ExtractionError, match="returned 2 runs for a limit of 1"):
+        extract_api("http://api", page_size=1)
+
+
+@pytest.mark.parametrize("rows", [0, 1])
+def test_a_cursor_after_a_partial_page_stops_extraction(api, rows):
+    api.add_page(None, [api.row(make_result()) for _ in range(rows)], 99, limit=2)
+    with pytest.raises(ExtractionError, match="cursor after a partial page"):
+        extract_api("http://api", page_size=2)
+    assert len([call for call in api.calls if "/v1/runs?" in call]) == 1
+
+
+class Dripping:
+    """A response that hands over its body a few bytes at a time."""
+
+    def __init__(self, body: bytes, size: int):
+        self.chunks = [body[i : i + size] for i in range(0, len(body), size)]
+
+    def read1(self, limit):
+        return self.chunks.pop(0) if self.chunks else b""
+
+
+def test_a_response_is_read_within_one_overall_deadline():
+    clock = iter(range(100)).__next__  # one second passes per read
+    with pytest.raises(TimeoutError, match="took longer than 3s"):
+        extract.read_body(Dripping(b"x" * 40, 4), "http://api/v1/runs", 3, clock)
+    assert extract.read_body(Dripping(b"abc", 1), "http://api", 10, clock) == b"abc"
+
+
+def test_a_slow_response_is_retried_as_a_timeout(api, no_sleep, result):
+    api.add_page(None, [api.row(result)], None)
+    api.fail("/v1/runs?limit=100", TimeoutError("took longer than 15s"))
+    assert len(extract_api("http://api").runs) == 1
+
+
+def test_an_oversized_response_stops_extraction(monkeypatch):
+    monkeypatch.setattr(extract, "MAX_RESPONSE_BYTES", 10)
+    with pytest.raises(ExtractionError, match="more than 10 bytes"):
+        extract.read_body(Dripping(b"x" * 11, 4), "http://api", 10)
+
+
+@pytest.mark.parametrize("url", ["localhost:8090", "/v1/runs", "file:///etc", "http://"])
+def test_api_urls_must_be_http_with_a_host(url):
+    with pytest.raises(ValueError, match="must be http:// or https:// with a host"):
+        extract_api(url)
+
+
+def copies_with_different_raw_bytes(tmp_path, result):
+    """Two copies of one run whose normalized evidence is identical but raw bytes are not."""
+    result["baseline"]["execution_cv"] = 0.0
+    loose = json.loads(json.dumps(result))
+    loose["baseline"]["execution_cv"] = 0  # written as an integer; normalizes to 0.0
+    write_run(tmp_path / "x" / "cpu-1", result)
+    write_run(tmp_path / "y" / "cpu-1", loose)
+    return extract_local(tmp_path / "x"), extract_local(tmp_path / "y")
+
+
+def test_the_kept_copy_does_not_depend_on_source_order(tmp_path, result):
+    x, y = copies_with_different_raw_bytes(tmp_path, result)
+    assert x.runs[0].source_sha256 != y.runs[0].source_sha256
+    assert x.runs[0].content_sha256 == y.runs[0].content_sha256
+    forward, backward = combine(x, y), combine(y, x)
+    assert forward.runs == backward.runs and len(forward.duplicates) == 1
+
+
+def test_the_earliest_saved_api_copy_is_kept_whatever_the_order(api, result):
+    from datetime import UTC, datetime
+
+    def listed(created_at):
+        api.pages.clear()
+        api.add_page(None, [api.row(result, created_at=created_at)], None)
+        return extract_api("http://api")
+
+    october, january = listed("2026-10-05T12:00:00Z"), listed("2026-01-01T00:00:00+05:00")
+    for merged in (combine(october, january), combine(january, october)):
+        assert merged.runs[0].recorded_at == datetime(2025, 12, 31, 19, tzinfo=UTC)
+
+
+def test_the_copy_with_more_telemetry_is_kept_whatever_the_order(tmp_path, result):
+    write_run(tmp_path / "a" / "cpu-1", result, samples=())  # an empty samples file
+    write_run(tmp_path / "b" / "cpu-1", result)
+    (tmp_path / "b" / "cpu-1" / "samples.jsonl").unlink()  # no samples file at all
+    empty, missing = extract_local(tmp_path / "a"), extract_local(tmp_path / "b")
+    for merged in (combine(empty, missing), combine(missing, empty)):
+        assert merged.runs[0].telemetry_status == TELEMETRY_EMPTY
