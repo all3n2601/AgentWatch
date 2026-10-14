@@ -306,7 +306,12 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   are refused, schema anomalies fail the gate, and drift against the previous passing release is
   reported. Each attempt commits its result and statistics as one directory (2026-10-13). Gate
   tests at 100% line and branch coverage.
-- [ ] Freeze splits grouped by task and related replay to prevent leakage.
+- [x] Freeze splits grouped by task and related replay to prevent leakage (2026-10-13): `make
+  split-dataset` splits only releases with a passing quality-gate verdict, 70/15/15 by hashed
+  `task_id` from the evaluation contract, keeps non-measured runs out of test, records per-split
+  row hashes, and runs the contract's single-feature AUC leakage check on the training split
+  (`test_dataset_splits.py`, 100% line and branch coverage). Unseen tasks still depend on a real
+  `task_id`.
 - [ ] Hold out unseen tasks and at least one injection method.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).

@@ -1,6 +1,7 @@
 # AgentWatch step dataset — data card
 
-Status: draft schema `steps-v1.2`, labels `labels-v1.1`. No dataset release exists yet. Column
+Status: draft schema `steps-v1.2`, labels `labels-v1.1`. Releases are built locally from recorded
+runs (`make dataset`), gated (`make validate-dataset`), and split (`make split-dataset`). Column
 definitions live in `pipelines/data/src/agentwatch_data/schema.py`; a test fails if this card
 misses a column. `validate_rows()` enforces every column's type, nullability, allowed values,
 and bounds, and a golden test runs a real recorded run through every stage against it.
@@ -188,6 +189,58 @@ fails, so Airflow and scripts can stop on it.
 - Main-suite tests fail if the frozen schema's columns or the gate's test fixture drift from
   this contract.
 
+## Splits
+
+`make split-dataset` freezes the train, validation, and test splits of the newest published
+release (`pipelines/data/src/agentwatch_data/splits.py`).
+
+- **Only gated releases.** The release must verify against its manifest, and its latest
+  committed quality-gate attempt must be a pass for exactly its current Parquet and contract
+  hashes and for the reviewed frozen schema. Otherwise nothing is written and the command says
+  to run `make validate-dataset`.
+- **Settings come from the evaluation contract** (`pipelines/model/evaluation-contract.toml`):
+  the 70/15/15 fractions, the `task_id` group key, the sources allowed in the test split, and
+  the leakage bound. The group key must be `task_id` and the test sources must be known
+  sources. The release's schema and label versions must be ones the contract evaluates. The
+  split records the contract version and its 8-digit hash.
+- **Grouped and stable.** Each task is assigned by hashing `split-v1:<task_id>`, so all of a
+  task's runs, baselines, and replays share one split. While the contract's fractions are
+  unchanged, a task keeps its split in every later release: new tasks never move old ones, and a
+  task once tested is never trained on. Changing the fractions moves tasks near the boundaries,
+  so it needs a new contract version and a new test split. The fractions hold over many tasks,
+  not for a handful.
+- **Measured runs only in test.** A run whose source the contract does not allow in the test
+  split is excluded there, not moved to training, and listed under `excluded_runs`.
+- **Leakage check on the training split.** For every feature and class, the one-vs-rest AUC
+  (Mann-Whitney, ties averaged, a missing reading ranked below every value, folded so that 1.0
+  means perfect separation in either direction). Any feature above the contract bound (0.98)
+  makes the check `blocked` (compared before rounding); fewer than two classes in training makes
+  it `inconclusive`. The split is still written, as evidence, and the command warns that
+  evaluation must not use it.
+- **Held-out injection methods** are reported: a method counts as held out only if it appears
+  in test and not in training or validation while training has another method. The split stage
+  reports this requirement but does not force it; assignment by method lands with the second
+  injection method.
+- The split is written to `.data/datasets/splits/<release>/<split id>.json`. Its content is
+  deterministic and the split id is a hash of it, so rerunning reuses the file and a changed
+  file is refused. It records each task's split, per-split counts (rows, runs, tasks, labels,
+  conditions, sources, injection methods), and each split's `rows_sha256`, a hash of the
+  release version and its rows' `(run_id, step_id)`: the test-split hash evaluation reports
+  record.
+- Training and evaluation read rows with `load_split(path, "train", contract, frozen_schema)`.
+  On every read it rechecks the quality gate (the release's latest committed verdict must
+  still be a pass against `frozen_schema`), then **rebuilds the split** from the release, the
+  contract, and that schema and refuses the file unless it matches exactly. An edited
+  assignment, exclusion, leakage status, or contract field is refused even if the file's id
+  was recomputed, and so is a split kept from before a later failed validation, a schema
+  change, or a contract change. There is no option to skip this.
+- The verdict is read by the gate's own rules: a committed attempt that is missing its result,
+  unreadable, malformed, or validated in the future makes it unknown, and the split stage
+  refuses rather than falling back to an older attempt.
+- It refuses a split whose leakage check did not pass. Exploration can opt in with
+  `allow_unchecked_leakage=True`, which skips only that check; its results must not be reported
+  as an evaluation.
+
 ## Column roles
 
 Only **feature** columns may be model inputs. Labels, rule output, and lineage columns are kept
@@ -321,6 +374,8 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 - Injector configuration and logs are used for labeling only.
 - All clean and contended replays of a task stay in the same split.
 - Preprocessing is fitted on the training split only.
+- The split stage runs the contract's single-feature leakage check on the training split before
+  any evaluation (see [Splits](#splits)).
 
 ## Known limitations
 
@@ -339,6 +394,8 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
   0.2–0.5 s, so 20 of 42 rows in six real runs had 0–1 samples. `telemetry_coverage` exposes
   this; faster sampling belongs to the worker.
 - `task_id` is an interim placeholder (`kind:workload:iterations`): one project at different
-  work sizes becomes several tasks, so a grouped split cannot yet guarantee unseen tasks.
+  work sizes becomes several tasks, so a grouped split cannot yet guarantee unseen tasks. The
+  recorded coding run is one task, so its whole release lands in the test split, the training
+  split is empty, and the leakage check is `inconclusive`.
 - Hardware telemetry is unavailable on macOS hosts.
 - Experiment labels are operational proxies and still need natural-overload validation.

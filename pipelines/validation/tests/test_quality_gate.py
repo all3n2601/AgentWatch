@@ -148,6 +148,27 @@ def test_valid_release_passes_and_records_its_result(release, schema, datasets):
     assert sorted(path.name for path in attempt.parent.iterdir()) == [attempt.name]  # no staging
 
 
+def test_results_carry_what_the_split_stage_reads(release, schema):
+    """pipelines/data/src/agentwatch_data/splits.py reads verdicts without importing the gate.
+
+    Keep these fields, the attempt layout, and the frozen-schema hash in step with it.
+    """
+    outcome = validate(release, schema, now=NOW)
+    result = json.loads(outcome.result_path.read_text())
+    assert {
+        "attempt",
+        "release",
+        "status",
+        "validated_at",
+        "release_parquet_sha256",
+        "release_contract_sha256",
+        "schema_sha256",
+    } <= result.keys()
+    assert outcome.result_path.parent.name == result["attempt"]
+    text = schema.read_text().replace("\r\n", "\n")
+    assert result["schema_sha256"] == hashlib.sha256(text.encode()).hexdigest()
+
+
 @pytest.mark.parametrize(
     ("column", "values", "anomaly", "as_type"),
     [
