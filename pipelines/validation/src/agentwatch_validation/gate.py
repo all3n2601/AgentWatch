@@ -16,7 +16,8 @@ legitimately shift distributions.
 Each validation is an attempt, committed as one immutable directory,
 <datasets>/validations/<release>/<attempt>/, holding result.json and the statistics it was
 computed from. A release's verdict is its latest committed attempt; earlier attempts are kept
-as evidence.
+as evidence. A committed attempt that cannot be read, or claims to come from the future, makes
+the verdict unknown rather than silently falling back to an older attempt.
 """
 
 import hashlib
@@ -31,6 +32,7 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import tensorflow_data_validation as tfdv
 from google.protobuf import text_format
@@ -60,6 +62,10 @@ DTYPES = {
 
 class GateError(RuntimeError):
     """The release or schema cannot be validated at all (not a data anomaly)."""
+
+
+class UnknownVerdict(GateError):
+    """A committed attempt is damaged or impossible, so the release's verdict is unknown."""
 
 
 @dataclass(frozen=True)
@@ -118,8 +124,28 @@ def load_release(path: Path) -> Release:
     table = pq.read_table(path / DATASET_FILE)
     if table.column_names != columns:
         raise GateError(f"{path.name}: Parquet columns do not match the column contract")
+    # TFDV checks nothing, not even dataset constraints, on zero examples.
+    if table.num_rows == 0:
+        raise GateError(f"{path.name}: {DATASET_FILE} has no rows")
     check_types(path.name, table.schema, contract)
+    check_values(path.name, table, contract)
     return Release(path, manifest, contract, to_frame(table.to_pandas(), contract))
+
+
+def check_values(release: str, table: pa.Table, contract: dict) -> None:
+    """Refuse values the contract forbids but TFDV cannot see once the frame is prepared.
+
+    pandas turns NaN into a missing value, so a malformed reading would pass as "not
+    measured"; and TFDV has no domain for "nonempty string".
+    """
+    for column in contract["columns"]:
+        name, values = column["name"], table.column(column["name"])
+        if column["dtype"] == "float64" and pc.any(pc.is_nan(values)).as_py():
+            raise GateError(f"{release}: column {name} contains NaN")
+        if column["dtype"] == "string":
+            blank = pc.equal(pc.utf8_trim_whitespace(values), "")
+            if pc.any(blank).as_py():
+                raise GateError(f"{release}: column {name} contains an empty string")
 
 
 def check_types(release: str, schema: pa.Schema, contract: dict) -> None:
@@ -179,18 +205,27 @@ def freeze_schema(release: Release) -> schema_pb2.Schema:
         feature.ClearField("domain_info")
         feature.presence.min_fraction = 0.0 if column["nullable"] else 1.0
         feature.presence.min_count = 0 if column["nullable"] else 1
+        if column["nullable"]:
+            # A fixed shape means "exactly one value in every row", so a nullable column
+            # inferred from data without nulls would reject the first legitimate null.
+            feature.ClearField("shape")
+        minimum, maximum = column["minimum"], column["maximum"]
         if column["allowed"] is not None:
             feature.string_domain.value.extend(column["allowed"])
         elif column["dtype"] == "bool":
             feature.int_domain.min, feature.int_domain.max = 0, 1
-        elif column["dtype"] == "int64" and column["minimum"] is not None:
-            feature.int_domain.min = int(column["minimum"])
-            if column["maximum"] is not None:
-                feature.int_domain.max = int(column["maximum"])
-        elif column["dtype"] == "float64" and column["minimum"] is not None:
-            feature.float_domain.min = float(column["minimum"])
-            if column["maximum"] is not None:
-                feature.float_domain.max = float(column["maximum"])
+        elif column["dtype"] == "int64" and (minimum is not None or maximum is not None):
+            if minimum is not None:
+                feature.int_domain.min = int(minimum)
+            if maximum is not None:
+                feature.int_domain.max = int(maximum)
+        elif column["dtype"] == "float64":
+            # The contract requires finite numbers; without this, +-inf passes a domain.
+            feature.float_domain.disallow_inf = True
+            if minimum is not None:
+                feature.float_domain.min = float(minimum)
+            if maximum is not None:
+                feature.float_domain.max = float(maximum)
         if column["name"] in DRIFT_COLUMNS:
             feature.drift_comparator.infinity_norm.threshold = DRIFT_L_INFINITY_THRESHOLD
     known = {column["name"] for column in release.contract["columns"]}
@@ -235,57 +270,93 @@ def classify(anomalies) -> tuple[list[dict], list[dict]]:
     return blocking, drift
 
 
-def committed_attempts(datasets: Path, release: str) -> list[tuple[dict, Path]]:
+def validated_time(result: dict) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(result["validated_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def committed_attempts(
+    datasets: Path, release: str, now: datetime | None = None
+) -> list[tuple[dict, Path]]:
     """A release's committed validation attempts, oldest first, as (result, directory).
 
-    Staging directories (hidden) and results that do not name their own attempt directory and
-    release are not attempts.
+    Staging directories are hidden and are not attempts. Every other directory was committed
+    by a rename, so one whose result is missing, unreadable, or names another attempt or
+    release is damaged evidence, and one validated after now is impossible; either raises
+    UnknownVerdict instead of letting an older attempt stand in for it.
     """
-    attempts = []
-    for directory in (datasets / VALIDATIONS_DIR / release).glob(f"*/{RESULT_FILE}"):
-        directory = directory.parent
-        if directory.name.startswith("."):
+    now = now or datetime.now(UTC)
+    attempts, damaged = [], []
+    base = datasets / VALIDATIONS_DIR / release
+    for directory in sorted(base.iterdir()) if base.is_dir() else []:
+        if directory.name.startswith(".") or not directory.is_dir():
             continue
         try:
             result = json.loads((directory / RESULT_FILE).read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            continue
+            result = None
+        moment = validated_time(result) if isinstance(result, dict) else None
         if (
-            isinstance(result, dict)
-            and result.get("attempt") == directory.name
-            and result.get("release") == release
-            and isinstance(result.get("validated_at"), str)
+            moment is None
+            or result.get("attempt") != directory.name
+            or result.get("release") != release
+            or result.get("status") not in (PASSED, FAILED)
         ):
-            attempts.append((result, directory))
-    return sorted(attempts, key=lambda item: (item[0]["validated_at"], item[0]["attempt"]))
+            damaged.append(f"{directory.name} is unreadable or malformed")
+        elif moment > now:
+            damaged.append(f"{directory.name} was validated in the future ({moment.isoformat()})")
+        else:
+            attempts.append((moment, result, directory))
+    if damaged:
+        raise UnknownVerdict(
+            f"Verdict of {release} is unknown: {'; '.join(damaged)}. Inspect the attempt; "
+            "a verdict returns once it is repaired or removed"
+        )
+    attempts.sort(key=lambda item: (item[0], item[1]["attempt"]))
+    return [(result, directory) for _, result, directory in attempts]
 
 
-def latest_result(datasets: Path, release: str) -> tuple[dict, Path] | tuple[None, None]:
+def latest_result(
+    datasets: Path, release: str, now: datetime | None = None
+) -> tuple[dict, Path] | tuple[None, None]:
     """A release's verdict: its latest committed attempt, or (None, None) if never validated."""
-    attempts = committed_attempts(datasets, release)
+    attempts = committed_attempts(datasets, release, now)
     return attempts[-1] if attempts else (None, None)
 
 
-def previous_passing(datasets: Path, current: str):
+def previous_passing(datasets: Path, current: str, schema_sha256: str, now: datetime | None = None):
     """The most recently validated release, other than current, whose verdict is a pass.
 
-    Returns its name and the exact statistics that attempt passed with. A release whose latest
-    attempt failed is not a baseline, even though its earlier passing attempts are kept.
+    Returns its name and the exact statistics that attempt passed with. Only a pass against
+    the same frozen schema counts, so drift is never measured against a release checked by
+    other rules. A release whose latest attempt failed, or whose verdict is unknown, is not a
+    baseline, even though its earlier passing attempts are kept.
     """
     candidates = []
     validations = datasets / VALIDATIONS_DIR
     for release_dir in validations.iterdir() if validations.is_dir() else []:
         if release_dir.name == current or not release_dir.is_dir():
             continue
-        result, attempt = latest_result(datasets, release_dir.name)
-        if result is None or result.get("status") != PASSED:
+        try:
+            result, attempt = latest_result(datasets, release_dir.name, now)
+        except UnknownVerdict:
+            continue
+        if (
+            result is None
+            or result.get("status") != PASSED
+            or result.get("schema_sha256") != schema_sha256
+        ):
             continue
         try:
             text = (attempt / STATISTICS_FILE).read_text(encoding="utf-8")
         except OSError:
             continue
         if sha256(text) == result.get("statistics_sha256"):
-            candidates.append((result["validated_at"], result["attempt"], result["release"], text))
+            moment = validated_time(result)
+            candidates.append((moment, result["attempt"], result["release"], text))
     if not candidates:
         return None, None
     *_, release, text = max(candidates)
@@ -296,12 +367,15 @@ def validate(release_path: Path, schema_path: Path, now: datetime | None = None)
     release = load_release(release_path)
     schema = load_schema(schema_path)
     datasets = release_path.parent
-    baseline_release, baseline_stats = previous_passing(datasets, release_path.name)
+    validated_at = now or datetime.now(UTC)
+    schema_sha256 = text_sha256(schema_path)
+    baseline_release, baseline_stats = previous_passing(
+        datasets, release_path.name, schema_sha256, validated_at
+    )
     stats = statistics(release)
     anomalies = tfdv.validate_statistics(stats, schema, previous_statistics=baseline_stats)
     blocking, drift = classify(anomalies)
     status = FAILED if blocking else PASSED
-    validated_at = now or datetime.now(UTC)
     attempt = f"{validated_at:%Y%m%dT%H%M%S%fZ}-{uuid.uuid4().hex[:8]}"
     statistics_text = text_format.MessageToString(stats)
     result = {
@@ -314,7 +388,7 @@ def validate(release_path: Path, schema_path: Path, now: datetime | None = None)
         "release_parquet_sha256": release.manifest["parquet_sha256"],
         "release_contract_sha256": release.manifest["schema_sha256"],
         "schema_file": schema_path.name,
-        "schema_sha256": text_sha256(schema_path),
+        "schema_sha256": schema_sha256,
         "schema_version": release.contract["schema_version"],
         "statistics_sha256": sha256(statistics_text),
         "baseline_release": baseline_release,
@@ -345,12 +419,25 @@ def commit_attempt(parent: Path, attempt: str, files: dict[str, str]) -> Path:
     try:
         staging.chmod(0o755)  # mkdtemp is owner-only; Airflow and DVC may run as other users
         for name, text in files.items():
-            (staging / name).write_text(text, encoding="utf-8")
+            with (staging / name).open("w", encoding="utf-8") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())  # durable before the rename makes them visible
             (staging / name).chmod(0o644)
+        fsync_directory(staging)
         os.replace(staging, parent / attempt)
+        fsync_directory(parent)  # and the rename itself survives a crash
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return parent / attempt
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def write_atomic(path: Path, text: str) -> None:
