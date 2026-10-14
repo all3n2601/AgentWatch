@@ -1,8 +1,8 @@
 # AgentWatch data pipeline plan
 
-Status: 2026-10-11. Owner: data pipeline workstream. The column-level contract is
-[the data card](data-card.md); model gates are in the proposed evaluation contract (#11,
-`docs/evaluation-contract.md` once merged). This plan says what is built, what comes
+Status: 2026-10-13. Owner: data pipeline workstream. The column-level contract is
+[the data card](data-card.md); model gates and split settings are in the proposed evaluation
+contract ([`docs/evaluation-contract.md`](evaluation-contract.md), #11). This plan says what is built, what comes
 next, and what the pipeline needs from other workstreams.
 
 ## What the pipeline does
@@ -13,6 +13,8 @@ recorded runs (local results.json + samples.jsonl, or GET /v1/runs)
   -> flatten   one row per step, resource readings per step window, run lineage
   -> label     experiment-derived labels against a frozen, fingerprinted rule file
   -> build     schema validation, content-addressed version, steps.parquet + manifest.json
+  -> gate      TFDV statistics against the frozen schema (pipelines/validation)
+  -> split     70/15/15 grouped by task_id, measured-only test, leakage check
 ```
 
 Every stage rejects untrustworthy runs individually with a reason, including runs whose rows
@@ -30,16 +32,20 @@ branch coverage, and exercised against real recorded runs and the live ingestion
 | Flatten | Step rows, telemetry windows, coverage against the declared interval | Done (#3, #12, #13) |
 | Label | `labels-v1.1`, `injection_method`, per-run rejection | Done (#5, #12, #13) |
 | 5. Build | `make dataset`: versioned Parquet release, manifest, and per-build report | Done (#14) |
-| **6. Quality gate** | `make validate-dataset`: TFDV statistics against a frozen, reviewed schema; anomalies fail, drift is reported. Isolated in `pipelines/validation` because TFDV brings TensorFlow (~1.7 GB) | This PR |
-| 7. Splits | 70/15/15 grouped by `task_id`, frozen to a split file; the contract's leakage check | Next |
+| 6. Quality gate | `make validate-dataset`: TFDV statistics against a frozen, reviewed schema; anomalies fail, drift is reported. Isolated in `pipelines/validation` because TFDV brings TensorFlow (~1.7 GB) | Done (#16) |
+| **7. Splits** | `make split-dataset`: 70/15/15 grouped by `task_id` from the evaluation contract, measured-only test split, a deterministic split file with per-split row hashes, and the contract's leakage check | This PR |
 | 8. Versioning | DVC with a GCS remote; a rebuild from the same evidence reproduces the same version | Next |
 | Hardening pass | Request batching for large API histories; sweeping staging left by killed builds; anything left from reviews | Before Airflow |
-| 9. More resources | Prometheus reader; `steps-v2` inference and retrieval features; `labels-v2` with mixed contention | Waits on B |
-| 10. Real collection | Scheduled runs over a task suite on a Linux GCP VM, where PSI and cgroup readings exist | Waits on A, B, F |
+| 9. More resources | Prometheus reader; `steps-v2` inference and retrieval features; `labels-v2` with mixed contention. Split follow-ups: force at least one injection method wholly into test, and check that mixed-contention cases reach test | Waits on B |
+| 10. Real collection | Scheduled runs over a task suite on a Linux GCP VM, where PSI and cgroup readings exist. Split follow-up: rebuild and re-split once step events carry a real `task_id`, so the test split holds unseen tasks and training is no longer empty | Waits on A, B, F |
 | 11. Airflow DAG | collect → extract → validate → build → split → version, with retries and alerts | After 6–8 |
 | 12. Reports | Quality, slice, label-sanity, and drift statistics per release | After 11 |
 | 13. Shared features | The live attribution service reuses `window_readings` and related code | With E |
 | 14. Demo | Corrupted evidence rejected live; lineage from model to dataset to raw run | Last |
+
+Split items owned elsewhere: the minimum test counts are judged by evaluation from the counts
+each split file records, and freezing a new test split after 5 promotion evaluations is the
+promotion owner's call (it means a new `SPLIT_METHOD`).
 
 ## What the pipeline needs from other workstreams
 
