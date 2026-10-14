@@ -75,7 +75,7 @@ completed CPU/coding experiment evidence rather than OTLP or arbitrary live agen
 - [ ] GPU inference, retrieval tools, agent failures, and longer multi-tool tasks validated.
   Only the fixed tool loop has run on a local laptop GPU; L4/GCP, vLLM, retrieval, failure,
   and multi-tool cases remain. The first request after creating the GPU container took
-  53–64 s for an unexplained reason.
+  53–64 s, and two first requests of later runs took 2.05–2.27 s, for unexplained reasons.
 - [ ] GPU resource samples recorded by AgentWatch itself (A04). A01 used an `nvidia-smi`
   diagnostic that is not ingested or correlated with steps.
 
@@ -210,8 +210,8 @@ These can be completed before adding an agent.
 - [ ] Run the sampler on actual Linux hosts with CPU pressure and cgroup v2 enabled.
   2026-10-13: PSI and cgroup v2 readings were available in WSL2 Ubuntu on the GPU laptop
   ([access record](gpu-measurement-access.md)); WSL2 measures its VM, so a non-WSL host remains.
-- [ ] Establish a stable CPU baseline on the GPU laptop. 2026-10-13: 4 of 9 coding experiments
-  passed the unchanged 15% variability gate (CVs 11.4–42.2%); validation is inconclusive there.
+- [ ] Establish a stable CPU baseline on the GPU laptop. 2026-10-13: 6 of 16 coding experiments
+  passed the unchanged 15% variability gate (CVs 10.9–42.2%); validation is inconclusive there.
 - [ ] Exercise supported and unavailable cgroup configurations, permissions, and malformed counters.
 - [ ] Measure achieved sampling intervals, missed samples, and short-step coverage.
 - [ ] Compare a genuinely CPU-starved task with a busy worker queue and a naturally long clean task.

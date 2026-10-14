@@ -37,3 +37,16 @@ def test_rejects_nonfinite_extra_evidence(evidence):
     data["spans"][0]["attributes"]["invalid"] = float("nan")
     with pytest.raises(ValidationError):
         RunIngest.model_validate(data)
+
+
+def test_llm_placement_evidence_is_accepted_and_preserved(evidence, agent_placement_evidence):
+    evidence["result"]["agent"] = agent_placement_evidence
+    parsed = RunIngest.model_validate(evidence)
+    assert parsed.model_dump(mode="json")["result"]["agent"] == agent_placement_evidence
+
+
+def test_nonfinite_placement_fraction_is_rejected(evidence, agent_placement_evidence):
+    agent_placement_evidence["model_placement"]["gpu_memory_fraction"] = float("inf")
+    evidence["result"]["agent"] = agent_placement_evidence
+    with pytest.raises(ValidationError):
+        RunIngest.model_validate(evidence)

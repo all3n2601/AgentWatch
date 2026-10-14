@@ -4,7 +4,11 @@ Reports achieved nvidia-smi sampling intervals and the GPU readings that fall in
 recorded agent span. Utilization is NVML's averaged reading, so it cannot resolve activity
 shorter than its averaging period; treat it as coarse evidence, not saturation.
 
+Missing, malformed, or ambiguous inputs are reported rather than summarized: samples are not
+placed against spans when the sampler's UTC offset is unknown or changed during the run.
+
 Usage: python deploy/diagnostics/summarize_gpu_run.py .data/a01-gpu-probe [...]
+Exits 1 if any directory could not be summarized at all.
 """
 
 import csv
@@ -12,25 +16,44 @@ import json
 import re
 import statistics
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from itertools import pairwise
 from pathlib import Path
 
 SAMPLE_TIME_FORMAT = "%Y/%m/%d %H:%M:%S.%f"
 MAX_EXPECTED_GAP_MS = 500
 UTC_OFFSET = re.compile(r"(?P<sign>[+-])(?P<hours>\d{2})(?P<minutes>\d{2})\b")
+# The first 2026-10-13 probes used `nvidia_smi_timestamp_zone=EDT-0400 (...)`.
+START_OFFSET_KEYS = ("nvidia_smi_timestamp_utc_offset=", "nvidia_smi_timestamp_zone=")
+END_OFFSET_KEY = "nvidia_smi_timestamp_utc_offset_end="
+SUMMARIZED_COLUMNS = (
+    "utilization.gpu [%]",
+    "memory.used [MiB]",
+    "power.draw [W]",
+    "clocks.current.sm [MHz]",
+)
 
 
-def sampler_zone(meta_path: Path) -> timezone:
-    """Return the UTC offset recorded when nvidia-smi wrote its local timestamps."""
-    # The first 2026-10-13 probes used `nvidia_smi_timestamp_zone=EDT-0400 (...)`.
-    keys = ("nvidia_smi_timestamp_utc_offset=", "nvidia_smi_timestamp_zone=")
-    for line in meta_path.read_text().splitlines():
-        if line.startswith(keys) and (match := UTC_OFFSET.search(line)):
-            sign = -1 if match["sign"] == "-" else 1
-            hours, minutes = int(match["hours"]), int(match["minutes"])
-            return timezone(sign * timedelta(hours=hours, minutes=minutes))
-    raise ValueError(f"{meta_path} does not record the nvidia-smi UTC offset")
+def parse_offset(line: str) -> timezone | None:
+    match = UTC_OFFSET.search(line)
+    if match is None:
+        return None
+    sign = -1 if match["sign"] == "-" else 1
+    return timezone(sign * timedelta(hours=int(match["hours"]), minutes=int(match["minutes"])))
+
+
+def sampler_zone(meta_path: Path) -> tuple[timezone | None, str | None]:
+    """Return the offset of nvidia-smi's local timestamps, or None and the reason it is unknown."""
+    if not meta_path.is_file():
+        return None, f"{meta_path.name} is missing"
+    lines = meta_path.read_text().splitlines()
+    start = next((parse_offset(x) for x in lines if x.startswith(START_OFFSET_KEYS)), None)
+    end = next((parse_offset(x) for x in lines if x.startswith(END_OFFSET_KEY)), None)
+    if start is None:
+        return None, "the sampler's UTC offset was not recorded"
+    if end is not None and end != start:
+        return None, f"the local UTC offset changed during the run ({start} to {end})"
+    return start, None
 
 
 def leading_number(value: str) -> float | None:
@@ -40,19 +63,64 @@ def leading_number(value: str) -> float | None:
         return None
 
 
-def read_samples(path: Path, zone: timezone) -> list[dict]:
-    with path.open() as handle:
+def read_samples(path: Path, zone: timezone | None) -> tuple[list[dict], int]:
+    """Return parsed rows and the number of malformed rows skipped."""
+    with path.open(newline="") as handle:
         reader = csv.reader(handle, skipinitialspace=True)
-        header = next(reader)
-        rows = [dict(zip(header, raw, strict=True)) for raw in reader if len(raw) == len(header)]
-    for row in rows:
-        row["observed_at"] = datetime.strptime(row["timestamp"], SAMPLE_TIME_FORMAT).replace(
-            tzinfo=zone
-        )
-    return rows
+        header = next(reader, None)
+        if header is None or "timestamp" not in header:
+            return [], 0
+        rows, malformed = [], 0
+        for raw in reader:
+            if len(raw) != len(header):
+                malformed += 1
+                continue
+            row = dict(zip(header, raw, strict=True))
+            try:
+                # Without a known offset, UTC is only a placeholder that keeps intervals exact;
+                # such samples are never placed against span times.
+                sampled = datetime.strptime(row["timestamp"], SAMPLE_TIME_FORMAT).replace(
+                    tzinfo=zone or UTC
+                )
+            except ValueError:
+                malformed += 1
+                continue
+            row["sampled"] = sampled
+            row["observed_at"] = sampled if zone else None
+            rows.append(row)
+    return rows, malformed
+
+
+def read_windows(spans_path: Path) -> tuple[list[tuple[str, datetime, datetime]], int]:
+    """Return non-root agent span windows in start order and the number of malformed spans."""
+    if not spans_path.is_file():
+        return [], 0
+    windows, malformed = [], 0
+    for line in spans_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            span = json.loads(line)
+            window = (
+                span["name"],
+                datetime.fromisoformat(span["start_time"]),
+                datetime.fromisoformat(span["end_time"]),
+            )
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            malformed += 1
+            continue
+        if window[1].tzinfo is None or window[2].tzinfo is None or window[2] < window[1]:
+            malformed += 1
+            continue
+        if window[0] != "agent.tool_loop":
+            windows.append(window)
+    windows.sort(key=lambda window: window[1])
+    return windows, malformed
 
 
 def describe(rows: list[dict], column: str) -> str:
+    if not rows or column not in rows[0]:
+        return f"{column}: not sampled"
     values = [v for v in (leading_number(r[column]) for r in rows) if v is not None]
     missing = len(rows) - len(values)
     if not values:
@@ -63,52 +131,63 @@ def describe(rows: list[dict], column: str) -> str:
     )
 
 
-def summarize(probe: Path) -> None:
-    rows = read_samples(probe / "gpu-samples.csv", sampler_zone(probe / "probe-meta.txt"))
-    print(f"== {probe.name}: {len(rows)} GPU samples")
-    if len(rows) < 2:
-        print("  not enough samples to measure intervals")
-        return
-    gaps_ms = [
-        (later["observed_at"] - earlier["observed_at"]).total_seconds() * 1000
-        for earlier, later in pairwise(rows)
-    ]
-    print(
-        f"  interval_ms median={statistics.median(gaps_ms):.0f} min={min(gaps_ms):.0f} "
-        f"max={max(gaps_ms):.0f} gaps_over_{MAX_EXPECTED_GAP_MS}ms="
-        f"{sum(gap > MAX_EXPECTED_GAP_MS for gap in gaps_ms)}"
-    )
-    spans = [
-        json.loads(line)
-        for line in (probe / "llm-demo/agent-spans.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
-    windows = [
-        (
-            span["name"],
-            datetime.fromisoformat(span["start_time"]),
-            datetime.fromisoformat(span["end_time"]),
+def summarize(probe: Path) -> bool:
+    """Print a summary; return False when the directory has no usable GPU samples."""
+    print(f"== {probe.name}")
+    samples_path = probe / "gpu-samples.csv"
+    if not samples_path.is_file():
+        print("  GPU samples unavailable: gpu-samples.csv is missing")
+        return False
+    zone, zone_problem = sampler_zone(probe / "probe-meta.txt")
+    rows, malformed_rows = read_samples(samples_path, zone)
+    print(f"  {len(rows)} GPU samples, {malformed_rows} malformed rows skipped")
+    if not rows:
+        print("  GPU samples unavailable: no parsable rows")
+        return False
+    if len(rows) >= 2:
+        gaps_ms = [
+            (later["sampled"] - earlier["sampled"]).total_seconds() * 1000
+            for earlier, later in pairwise(rows)
+        ]
+        print(
+            f"  interval_ms median={statistics.median(gaps_ms):.0f} min={min(gaps_ms):.0f} "
+            f"max={max(gaps_ms):.0f} gaps_over_{MAX_EXPECTED_GAP_MS}ms="
+            f"{sum(gap > MAX_EXPECTED_GAP_MS for gap in gaps_ms)} "
+            f"backwards_steps={sum(gap < 0 for gap in gaps_ms)}"
         )
-        for span in spans
-        if span["name"] != "agent.tool_loop"
-    ]
-    windows.sort(key=lambda window: window[1])
-    windows.insert(0, ("idle before loop", rows[0]["observed_at"], windows[0][1]))
+    else:
+        print("  interval_ms unavailable: fewer than two samples")
+    for column in SUMMARIZED_COLUMNS:
+        print(f"  whole run {describe(rows, column)}")
+    if zone is None:
+        print(f"  per-span summary unavailable: {zone_problem}")
+        return True
+    windows, malformed_spans = read_windows(probe / "llm-demo/agent-spans.jsonl")
+    if malformed_spans:
+        print(f"  {malformed_spans} malformed agent spans skipped")
+    if not windows:
+        print("  per-span summary unavailable: no valid agent spans")
+        return True
+    if rows[0]["observed_at"] < windows[0][1]:
+        windows.insert(0, ("idle before loop", rows[0]["observed_at"], windows[0][1]))
     for name, start, end in windows:
         inside = [row for row in rows if start <= row["observed_at"] <= end]
         print(f"  {name} ({(end - start).total_seconds():.2f} s, {len(inside)} samples)")
         if not inside:
             continue
-        for column in (
-            "utilization.gpu [%]",
-            "memory.used [MiB]",
-            "power.draw [W]",
-            "clocks.current.sm [MHz]",
-        ):
+        for column in SUMMARIZED_COLUMNS:
             print(f"    {describe(inside, column)}")
-        print(f"    pstates={sorted({row['pstate'] for row in inside})}")
+        print(f"    pstates={sorted({row.get('pstate', 'not sampled') for row in inside})}")
+    return True
+
+
+def main(arguments: list[str]) -> int:
+    if not arguments:
+        print(__doc__, file=sys.stderr)
+        return 2
+    results = [summarize(Path(argument)) for argument in arguments]
+    return 0 if all(results) else 1
 
 
 if __name__ == "__main__":
-    for argument in sys.argv[1:]:
-        summarize(Path(argument))
+    raise SystemExit(main(sys.argv[1:]))

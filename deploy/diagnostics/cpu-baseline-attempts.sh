@@ -5,8 +5,22 @@
 # On WSL it also records Windows power and CPU load, which the VM's PSI cannot see.
 #
 # Usage: deploy/diagnostics/cpu-baseline-attempts.sh [ATTEMPTS]   (default 5)
+# ATTEMPTS is 1-50, written without leading zeros; anything else exits 2 before any evidence
+# directory is created or any attempt is scheduled.
 set -u
 attempts="${1:-5}"
+max_attempts=50
+reject_attempts() {
+  echo "ATTEMPTS must be a whole number from 1 to $max_attempts without leading zeros, got '$attempts'" >&2
+  exit 2
+}
+# Check the shape before any arithmetic: at most two digits and no leading zero, so the
+# comparison below can never overflow the shell's integers or see octal-looking input.
+case "$attempts" in
+  [1-9] | [1-9][0-9]) ;;
+  *) reject_attempts ;;
+esac
+[ "$attempts" -le "$max_attempts" ] || reject_attempts
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 out="$repo/.data/a01-cpu-baseline-$(date -u +%Y%m%dT%H%M%SZ)"
 attempt_timeout_s=300
@@ -21,20 +35,29 @@ conditions() {
   echo "wsl_loadavg=$(cut -d' ' -f1-3 /proc/loadavg)"
   echo "wsl_cpu_pressure=$(head -1 /proc/pressure/cpu 2>/dev/null || echo unavailable)"
   if [ "$on_wsl" = yes ] && command -v powershell.exe >/dev/null; then
+    # Win32_PerfFormattedData uses invariant names; Get-Counter paths are localized.
     timeout 30 powershell.exe -NoProfile -NonInteractive -Command '
       $battery = Get-CimInstance Win32_Battery
       $status = if ($battery) { $battery.BatteryStatus } else { "no battery" }
-      $load = (Get-Counter "\Processor(_Total)\% Processor Time" -SampleInterval 1 -MaxSamples 3).CounterSamples |
-        Measure-Object CookedValue -Average
+      $readings = 1..3 | ForEach-Object {
+        (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor |
+          Where-Object { $_.Name -eq "_Total" }).PercentProcessorTime
+        Start-Sleep -Seconds 1
+      }
       "windows_battery_status=$status (2 = on AC power, 1 = discharging)"
       "windows_power_scheme=$(powercfg /getactivescheme)"
-      "windows_cpu_percent_3s_mean={0:N1}" -f $load.Average' 2>&1 | tr -d '\r'
+      "windows_cpu_percent_3s_mean={0:N1}" -f ($readings | Measure-Object -Average).Average' 2>&1 | tr -d '\r'
   else
     echo "windows_conditions=unavailable (not WSL)"
   fi
 }
 
-mkdir -p "$out"
+mkdir -p "$repo/.data"
+# mkdir without -p fails if a run started in the same second already owns this directory.
+if ! mkdir "$out" 2>/dev/null; then
+  echo "Refusing to overwrite existing evidence: $out" >&2
+  exit 2
+fi
 cd "$repo" || exit 1
 {
   echo "attempts_declared=$attempts"

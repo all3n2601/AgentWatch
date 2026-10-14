@@ -78,14 +78,20 @@ Without `AGENTWATCH_LLM_GPU=1`, `make llm-up` starts the unchanged CPU-only serv
 - Before this change the demo hard-coded "Docker CPU inference" limitations and the span attribute
   `agentwatch.resource_class=inference_cpu`. The two preserved runs below carry those incorrect
   labels; Ollama logs and `ollama ps` showed 100% GPU placement for both. New runs record placement
-  from `/api/ps` in `agent.json` under `model_placement`.
+  from `/api/ps` after each request and after the loop or a failure (see
+  [the LLM guide](llm-demo.md)). The two committed-config runs predate the per-request reading
+  and store a single `model_placement` with `observed_at_unix_ns` instead of `observed_at`.
 
 ## Recorded runs
 
 All runs used the same model and request settings. The GPU sampler targeted 250 ms; the CPU
 experiment applies its unchanged 15% baseline execution-variability gate. The final-code run
 repeated verification after the last `llm_demo.py` edits: its tool loop and placement evidence
-worked, and its coding experiment failed the variability gate. It was not rerun to obtain a pass.
+worked, and its coding experiment failed the variability gate. The two review-fix runs verified
+the per-request and failure-path placement readings. In the first, the model requested
+`run_tests` again after receiving a failed result, and the dispatcher rejected the repeat; that
+run is recorded as failed, with placement measured for both requests and after the failure.
+No run was repeated to obtain a pass.
 
 | Run | Run ID | Result | First request | Second request | GPU samples, interval | Queue clean → busy |
 |---|---|---|---|---|---|---|
@@ -93,9 +99,13 @@ worked, and its coding experiment failed the variability gate. It was not rerun 
 | Model loaded, scratch override (22:21 UTC) | `5e70a263-cdad-429c-9608-9d6c35586ef7` | **inconclusive, CV 21.6%** | 2.36 s: prompt 2.05 s/208 tok | 1.37 s: 192 tok in 1.18 s | 60, median 269 ms, max 307 ms | 0.000432 → 1.134 s |
 | Cold start, committed config (22:46 UTC) | `7afc596d-131f-4ba6-a374-4ffad0ccce01` | passed, CV 11.5% | 64.25 s: load 30.78 s, prompt 24.70 s/208 tok, eval 8.76 s/16 tok | 0.61 s: 63 tok in 0.48 s | 287, median 268 ms, max 313 ms | 0.000370 → 1.142 s |
 | Model loaded, final code (23:01 UTC) | `dd25e410-ad19-48ff-af93-461d9ae0ca6f` | **inconclusive, CV 19.3%** | 0.36 s: prompt 0.19 s/208 tok | 1.17 s: 175 tok in 1.03 s | 50, median 269 ms, max 300 ms | 0.000780 → 1.028 s |
+| Runner reload, review fixes (23:30 UTC) | coding run `ae1ea19a-1a7c-4e65-a19d-e0ca3dec8890` | **failed: repeated tool call rejected**; coding CV 25.0% | 3.60 s: load 3.25 s, prompt 0.14 s/208 tok | 0.21 s: repeated `run_tests` call | 60, median 270 ms, max 291 ms | 0.000642 → 1.005 s |
+| Model loaded, review fixes (23:31 UTC) | `ec908384-e9bc-45ad-9788-b22a3ac0d668` | **inconclusive, CV 17.3%** | 2.54 s: prompt 2.27 s/208 tok | 2.68 s: 189 tok in 2.54 s | 64, median 273 ms, max 373 ms | 0.000935 → 1.070 s |
 
-No sample gap exceeded 500 ms. During second requests, peak GPU utilization was 59–81%, with
-up to 87 W and a 2,662 MHz SM clock; memory rose from 408 to 2,221 MiB when the model loaded.
+No sample gap exceeded 500 ms. During the five second requests that produced an answer, peak
+GPU utilization was 59–81%, with up to 87 W and a 2,662 MHz SM clock; the rejected repeated call
+(0.21 s) had one sample at 31%. Memory rose from 378–408 MiB idle to 2,192–2,221 MiB with the
+model loaded, depending on the container instance.
 These runs were not published to dashboard history. The model's final summaries are not graded:
 two of them claim contended execution time increased, while the measurements show it decreased.
 
@@ -114,9 +124,14 @@ all 36 requests are kept.
   A different prompt cost 0.99 s once, then 0.15–0.16 s; the demo prompt after it took 0.15–0.19 s.
 - **Open limitation.** The 53–64 s first requests occurred only in a newly created container,
   with GPU utilization averaging under 1% and mostly low-clock pstates during that request.
-  Restarting only the model runner does not reproduce it, and the cause is unknown. The warm
-  run's 2.05 s prompt evaluation was not reproduced by any tested idle or cache condition.
-  Exclude the first request after container creation from timing comparisons until explained.
+  Restarting only the model runner does not reproduce it, and the cause is unknown. A slow
+  first request with the model already loaded occurred twice: 2.05 s and 2.27 s of prompt
+  evaluation for 208 tokens, each at the start of an agent run about 10–30 s after a previous
+  run. During both, the GPU stayed near idle: mean utilization 6.9% and 0%, SM clock
+  180–202 MHz, in P8 apart from one P2 sample. No idle or cache condition in the diagnostic reproduced it, and its cause is also
+  unknown; low-resolution utilization does not show where that time was spent.
+  Exclude first requests after container creation, and treat first requests of a new run as
+  possibly slow, in timing comparisons until explained.
 
 ## CPU baseline variability
 
@@ -130,10 +145,21 @@ WSL load average was about 0.7.
 | Execution CV | 42.2% | 12.1% | 14.2% | 22.0% | 15.8% |
 | Gate | fail | pass | pass | fail | fail |
 
-Including the four agent runs, 4 of 9 coding experiments on this machine passed the gate
-(CV 11.4–14.2% when passing, 15.8–42.2% when failing). Every failure was `stable_baseline`;
-clean/busy queue detection was consistent in all nine (clean < 0.001 s, busy 0.95–1.14 s). CPU baseline validation is **inconclusive on this
-configuration**. Windows background activity is a hypothesis, not an established cause.
+A second batch of five ran at 23:29 UTC under the same power scheme and AC power, with Windows
+CPU 9–28% before attempts (read through invariant WMI counters). It started unintentionally:
+a script check passed an empty attempt count, which selects the documented default of five.
+It is kept like any other attempt.
+
+| Attempt | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| Execution CV | 24.4% | 10.9% | 14.5% | 18.6% | 21.0% |
+| Gate | fail | pass | pass | fail | fail |
+
+Including the six agent runs, 6 of 16 coding experiments on this machine passed the gate
+(CV 10.9–14.5% when passing, 15.8–42.2% when failing). Every failure was `stable_baseline`;
+clean/busy queue detection was consistent in all sixteen (clean < 0.001 s, busy 0.95–1.27 s).
+CPU baseline validation is **inconclusive on this configuration**. Windows background activity
+is a hypothesis, not an established cause.
 
 ## Evidence locations
 
@@ -141,10 +167,13 @@ Raw evidence is kept out of Git on the GPU laptop, in `.data/` and copied to
 `C:\Users\benoy\AgentWatch-evidence\a01-2026-10-13\`:
 
 - `a01-gpu-probe/`, `a01-gpu-probe-warm/`, `a01-verify-committed-config/`,
-  `a01-verify-final-code/`: `agent.json`, agent and coding spans, CPU samples,
-  `gpu-samples.csv`, `probe-meta.txt`
+  `a01-verify-final-code/`, `a01-verify-review-fixes/`, `a01-verify-review-fixes-2/`:
+  `agent.json`, agent and coding spans, CPU samples, `gpu-samples.csv`, `probe-meta.txt`
 - `a01-first-request-cold-tools-20261013T224933Z/`, `a01-first-request-warm-state-20261013T225150Z/`
-- `a01-cpu-baseline-20261013T225613Z/`: per-attempt results and recorded conditions
+- `a01-first-request-cold-tools-20261013T233549Z/`: abort-path check with an unknown model
+  (`aborted.json` records the 404; no requests), not part of either protocol's results
+- `a01-cpu-baseline-20261013T225613Z/`, `a01-cpu-baseline-20261013T232905Z/`: per-attempt
+  results and recorded conditions
 - `session-scripts/`: the original ad-hoc probe scripts and scratch Compose override
 
 Request a copy from Benoy; prompts are the fixed demo prompts and contain no secrets.
