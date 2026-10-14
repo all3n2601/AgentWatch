@@ -86,6 +86,7 @@ def test_release_columns_are_required_when_requested(valid_row):
         ({"worker_capacity": 0}, "worker_capacity must be at least 1"),
         ({"cgroup_throttled_usec_delta": 2**64}, "outside the int64 range"),
         ({"cpu_seconds": 10**400}, r"too large for float64 \(401-digit integer\)"),
+        ({"cpu_seconds": 2**53 + 1}, "float64 cannot hold exactly"),  # Arrow would refuse it
         ({"cpu_pressure_max_avg10": 150.0}, "at most 100"),
         ({"telemetry_coverage": 1.2}, "telemetry_coverage must be at most 1"),
         ({"label_resource": "gpu"}, "label_resource must be one of"),
