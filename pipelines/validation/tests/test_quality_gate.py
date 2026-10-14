@@ -20,6 +20,7 @@ from agentwatch_validation.gate import (
     STATISTICS_FILE,
     VALIDATIONS_DIR,
     GateError,
+    UnknownVerdict,
     committed_attempts,
     freeze_schema,
     latest_result,
@@ -155,6 +156,14 @@ def test_valid_release_passes_and_records_its_result(release, schema, datasets):
         ("queue_fraction", [1.5] + [0.0] * 6, "FLOAT_TYPE_BIG_FLOAT", None),
         ("duration_seconds", [-1.0] + [0.3] * 6, "FLOAT_TYPE_SMALL_FLOAT", None),
         ("workload_iterations", [0] * 7, "INT_TYPE_SMALL_INT", None),
+        pytest.param(
+            "queue_seconds",
+            [float("inf")] + [0.0] * 6,
+            "FLOAT_TYPE_HAS_INF",
+            None,
+            # TFDV's statistics overflow on inf (numpy warns) before the domain flags it.
+            marks=pytest.mark.filterwarnings("ignore::RuntimeWarning"),
+        ),
         ("run_id", [None] + ["run"] * 6, "FEATURE_TYPE_LOW_FRACTION_PRESENT", pa.string()),
     ],
 )
@@ -164,6 +173,69 @@ def test_anomalies_fail_the_gate(release, schema, column, values, anomaly, as_ty
     assert outcome.status == FAILED
     [found] = outcome.result["anomalies"]
     assert found["feature"] == column and anomaly in found["types"]
+
+
+def test_partial_nulls_in_nullable_columns_pass_the_committed_schema(release):
+    """Coding runs declare tests_per_step and CPU runs do not; short steps have no coverage.
+
+    The frozen schema must accept a release where these are null in some rows only.
+    """
+    change_column(release, "tests_per_step", [None] + [3] * 6, pa.int64())
+    change_column(release, "telemetry_coverage", [None] + [0.5] * 6, pa.float64())
+    change_column(release, "measured_sampling_interval_seconds", [None] + [0.25] * 6, pa.float64())
+    outcome = validate(release, FROZEN, now=NOW)
+    assert outcome.status == PASSED, outcome.result["anomalies"]
+
+
+@pytest.mark.parametrize(
+    ("column", "values", "message"),
+    [
+        ("cpu_pressure_max_avg10", [float("nan")] + [None] * 6, "contains NaN"),
+        ("task_id", ["  "] * 7, "contains an empty string"),
+        ("failed_checks", [""] + [None] * 6, "contains an empty string"),
+    ],
+)
+def test_values_tfdv_cannot_see_are_refused(release, schema, column, values, message):
+    """NaN would become "missing" in pandas, and TFDV has no nonempty-string domain."""
+    change_column(release, column, values, pa.field(column, release_type(release, column)).type)
+    with pytest.raises(GateError, match=f"column {column} {message}"):
+        validate(release, schema)
+
+
+def release_type(release: Path, column: str):
+    return pq.read_table(release / "steps.parquet").schema.field(column).type
+
+
+def test_an_empty_release_is_refused(release, schema):
+    table = pq.read_table(release / "steps.parquet")
+    pq.write_table(table.slice(0, 0), release / "steps.parquet")
+    resign(release)
+    with pytest.raises(GateError, match="has no rows"):
+        validate(release, schema)
+
+
+def test_a_maximum_without_a_minimum_is_still_enforced(release):
+    loaded = load_release(release)
+    bounded = {"worker_capacity": 5, "queue_seconds": 9.5}
+    columns = [
+        dict(column, minimum=None, maximum=bounded[column["name"]])
+        if column["name"] in bounded
+        else column
+        for column in loaded.contract["columns"]
+    ]
+    contract = dict(loaded.contract, columns=columns)
+    frozen = freeze_schema(gate.Release(loaded.path, loaded.manifest, contract, loaded.frame))
+    features = {feature.name: feature for feature in frozen.feature}
+    assert features["worker_capacity"].int_domain.max == 5
+    assert not features["worker_capacity"].int_domain.HasField("min")
+    assert features["queue_seconds"].float_domain.max == 9.5
+    assert features["queue_seconds"].float_domain.disallow_inf
+
+
+def test_only_nullable_columns_lose_their_fixed_shape(schema):
+    features = {f.name: f for f in tfdv.load_schema_text(str(schema)).feature}
+    assert not features["tests_per_step"].HasField("shape")  # nullable, values in the fixture
+    assert features["run_id"].HasField("shape")  # required: exactly one value in every row
 
 
 @pytest.mark.parametrize(
@@ -228,39 +300,80 @@ def passing(release: str, attempt: str, **fields) -> dict:
         "attempt": attempt,
         "release": release,
         "status": PASSED,
-        "validated_at": "9999",
+        "validated_at": "2026-10-01T00:00:00+00:00",
         "statistics_sha256": hashlib.sha256(b"").hexdigest(),
     } | fields
 
 
-def test_baseline_ignores_failed_unreadable_and_uncommitted_attempts(datasets, release, schema):
+def write_attempt(datasets: Path, release: str, attempt: str, content) -> Path:
+    directory = datasets / VALIDATIONS_DIR / release / attempt
+    directory.mkdir(parents=True)
+    text = content if isinstance(content, str) else json.dumps(content)
+    (directory / RESULT_FILE).write_text(text)
+    return directory
+
+
+def frozen_hash(schema: Path) -> str:
+    return gate.text_sha256(schema)
+
+
+@pytest.mark.parametrize(
+    ("attempt", "content", "reason"),
+    [
+        ("a1", "{not json", "unreadable or malformed"),
+        ("a1", [1, 2], "unreadable or malformed"),
+        ("a1", passing("r", "other"), "unreadable or malformed"),  # names another attempt
+        ("a1", passing("elsewhere", "a1"), "unreadable or malformed"),  # another release
+        ("a1", passing("r", "a1", validated_at=None), "unreadable or malformed"),
+        ("a1", passing("r", "a1", validated_at="2026-10-01"), "unreadable or malformed"),  # naive
+        ("a1", passing("r", "a1", status="maybe"), "unreadable or malformed"),
+        ("a1", None, "unreadable or malformed"),  # committed directory without its result
+        ("a1", passing("r", "a1", validated_at="2027-01-01T00:00:00+00:00"), "in the future"),
+    ],
+)
+def test_damaged_or_impossible_attempts_make_the_verdict_unknown(
+    datasets, attempt, content, reason
+):
+    """A committed attempt only exists through a rename, so one that cannot be trusted must
+    not let an older attempt stand in for it."""
+    write_attempt(datasets, "r", "a0", passing("r", "a0"))
+    if content is None:
+        (datasets / VALIDATIONS_DIR / "r" / attempt).mkdir()
+    else:
+        write_attempt(datasets, "r", attempt, content)
+    with pytest.raises(UnknownVerdict, match=reason):
+        latest_result(datasets, "r", now=NOW)
+
+
+def test_staging_and_stray_files_are_not_attempts(datasets):
+    write_attempt(datasets, "r", ".attempt-x", passing("r", ".attempt-x"))  # not committed
+    (datasets / VALIDATIONS_DIR / "r" / "result.json").write_text("{}")  # not an attempt
+    assert committed_attempts(datasets, "r", now=NOW) == []
+
+
+def test_baseline_skips_failed_unknown_and_differently_checked_releases(datasets, release, schema):
     validations = datasets / VALIDATIONS_DIR
-    hidden = [
-        ("failed", "a1", passing("failed", "a1", status=FAILED)),
-        ("broken", "a1", "{not json"),
-        ("list", "a1", [1, 2]),
-        ("staged", ".attempt-x", passing("staged", ".attempt-x")),  # not committed yet
-        ("renamed", "a1", passing("renamed", "other")),  # result names another attempt
-        ("moved", "a1", passing("elsewhere", "a1")),  # result names another release
-        ("untimed", "a1", passing("untimed", "a1", validated_at=None)),
-        ("no-stats", "a1", passing("no-stats", "a1")),
-        ("tampered", "a1", passing("tampered", "a1")),  # statistics do not match the result
-    ]
-    for name, attempt, content in hidden:
-        (validations / name / attempt).mkdir(parents=True)
-        text = content if isinstance(content, str) else json.dumps(content)
-        (validations / name / attempt / RESULT_FILE).write_text(text)
+    write_attempt(datasets, "failed", "a1", passing("failed", "a1", status=FAILED))
+    write_attempt(datasets, "unknown", "a1", "{not json")
+    write_attempt(datasets, "staged", ".attempt-x", passing("staged", ".attempt-x"))
+    write_attempt(datasets, "no-stats", "a1", passing("no-stats", "a1"))
+    other = passing("other-schema", "a1", schema_sha256="0" * 64)
+    write_attempt(datasets, "other-schema", "a1", other)
+    tampered = passing("tampered", "a1", schema_sha256=frozen_hash(schema))
+    write_attempt(datasets, "tampered", "a1", tampered)  # statistics do not match the result
     (validations / "tampered" / "a1" / STATISTICS_FILE).write_text("datasets {}")
     (validations / "stray-file").write_text("")
-    assert previous_passing(datasets, release.name) == (None, None)
+    assert previous_passing(datasets, release.name, frozen_hash(schema), NOW) == (None, None)
     validate(release, schema, now=NOW)
-    assert previous_passing(datasets, release.name) == (None, None)  # never itself
-    baseline, stats = previous_passing(datasets, "another")
+    current = frozen_hash(schema)
+    assert previous_passing(datasets, release.name, current, NOW) == (None, None)  # not itself
+    baseline, stats = previous_passing(datasets, "another", current, NOW)
     assert baseline == release.name and stats.datasets[0].num_examples == 7
+    assert previous_passing(datasets, "another", "0" * 64, NOW) == (None, None)
 
 
 def test_no_validations_means_no_baseline_and_no_verdict(datasets, release):
-    assert previous_passing(datasets, release.name) == (None, None)
+    assert previous_passing(datasets, release.name, "0" * 64) == (None, None)
     assert latest_result(datasets, release.name) == (None, None)
 
 
@@ -283,7 +396,8 @@ def test_revalidation_keeps_earlier_evidence_but_its_verdict_is_the_latest(
     assert [result["status"] for result, _ in attempts] == [PASSED, FAILED]
     assert json.loads(first.result_path.read_text())["status"] == PASSED  # evidence preserved
     assert latest_result(datasets, release.name)[0]["status"] == FAILED
-    assert previous_passing(datasets, "another") == (None, None)  # no longer a baseline
+    current = frozen_hash(schema)
+    assert previous_passing(datasets, "another", current) == (None, None)  # no longer a baseline
 
 
 def test_a_failed_commit_leaves_the_previous_attempt_paired_with_its_statistics(
@@ -300,7 +414,7 @@ def test_a_failed_commit_leaves_the_previous_attempt_paired_with_its_statistics(
         validate(release, schema, now=datetime(2026, 10, 13, tzinfo=UTC))
     [(result, attempt)] = committed_attempts(datasets, release.name)
     assert sorted(path.name for path in attempt.parent.iterdir()) == [attempt.name]
-    baseline, stats = previous_passing(datasets, "another")
+    baseline, stats = previous_passing(datasets, "another", frozen_hash(schema))
     assert baseline == release.name and result["status"] == PASSED
     assert minimum(stats, "duration_seconds") >= 0  # the statistics that passed, not the new ones
 

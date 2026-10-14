@@ -27,6 +27,7 @@ LABEL_BASES = (
     "contention_below_threshold",
 )
 INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
+FLOAT64_EXACT_INTEGER = 2**53
 
 
 class Role(StrEnum):
@@ -302,6 +303,9 @@ def check_value(column: Column, value) -> str | None:
             return f"is too large for float64 ({len(str(abs(value)))}-digit integer)"
         if not finite:
             return f"must be finite, got {value!r}"
+        # Arrow refuses to store an integer in a float64 column unless it converts exactly.
+        if isinstance(value, int) and abs(value) > FLOAT64_EXACT_INTEGER:
+            return f"is an integer float64 cannot hold exactly: {brief(value)}"
     if column.minimum is not None and value < column.minimum:
         return f"must be at least {column.minimum}, got {value}"
     if column.maximum is not None and value > column.maximum:
