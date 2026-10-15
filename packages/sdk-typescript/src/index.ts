@@ -3,3 +3,5 @@ export interface HealthResponse {
   service: string;
 }
 
+export type * from "./live";
+

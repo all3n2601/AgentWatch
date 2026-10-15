@@ -1,13 +1,18 @@
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from uuid import UUID
 
 import psycopg
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from agentwatch_worker.contracts import RunIngest, TelemetryBatch
+from agentwatch_worker.live_api import router as live_router
+from agentwatch_worker.live_limits import LiveBodyLimit
 from agentwatch_worker.store import ConflictError, RunStore
 
 
@@ -22,11 +27,41 @@ async def lifespan(app):
     yield
 
 
-app = FastAPI(title="AgentWatch Ingestion API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="AgentWatch Ingestion API", version="0.3.0", lifespan=lifespan)
+app.include_router(live_router)
+app.add_middleware(LiveBodyLimit)
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request(request: Request, error: RequestValidationError):
+    if request.url.path.startswith("/v1/live/"):
+        # Validation input can contain nonfinite numbers or sensitive producer evidence.
+        # Return actionable locations/messages without reflecting the entire supplied record.
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {"loc": item["loc"], "msg": item["msg"], "type": item["type"]}
+                    for item in error.errors()
+                ]
+            },
+        )
+    return await request_validation_exception_handler(request, error)
 
 
 @app.exception_handler(psycopg.Error)
 async def unavailable_storage(request, error):
+    if request.url.path.startswith("/v1/live/"):
+        if isinstance(error, psycopg.DataError) and request.method == "POST":
+            return JSONResponse(status_code=422, content={"detail": "Invalid live database value"})
+        if not isinstance(error, (psycopg.OperationalError, psycopg.InterfaceError)):
+            # PostgreSQL exception messages can contain producer values; retain only diagnostics.
+            logging.getLogger(__name__).error(
+                "Unexpected live storage failure: type=%s sqlstate=%s",
+                type(error).__name__,
+                error.sqlstate,
+            )
+            return JSONResponse(status_code=500, content={"detail": "Internal storage failure"})
     return JSONResponse(status_code=503, content={"detail": "Database unavailable"})
 
 
