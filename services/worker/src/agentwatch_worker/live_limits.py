@@ -22,6 +22,22 @@ class LiveBodyLimit:
             await self.app(scope, receive, send)
             return
         body = bytearray()
+        for name, value in scope.get("headers", []):
+            if name.lower() == b"content-length":
+                try:
+                    length = int(value)
+                    if length < 0:
+                        raise ValueError("Negative Content-Length")
+                except ValueError:
+                    await JSONResponse({"detail": "Invalid Content-Length"}, 400)(
+                        scope, receive, send
+                    )
+                    return
+                if length > MAX_BODY_BYTES:
+                    await JSONResponse(
+                        {"detail": f"Live request exceeds {MAX_BODY_BYTES} bytes"}, 413
+                    )(scope, receive, send)
+                    return
         try:
             async with asyncio.timeout(BODY_TIMEOUT_SECONDS):
                 while True:
@@ -30,9 +46,9 @@ class LiveBodyLimit:
                         return
                     body.extend(message.get("body", b""))
                     if len(body) > MAX_BODY_BYTES:
-                        await JSONResponse({"detail": "Live request exceeds 1 MiB"}, 413)(
-                            scope, receive, send
-                        )
+                        await JSONResponse(
+                            {"detail": f"Live request exceeds {MAX_BODY_BYTES} bytes"}, 413
+                        )(scope, receive, send)
                         return
                     if not message.get("more_body", False):
                         break

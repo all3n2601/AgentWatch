@@ -131,3 +131,28 @@ def client(monkeypatch):
     finally:
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+@pytest.fixture
+def registration():
+    return {
+        "contract_version": "live-contracts-v1",
+        "request_id": str(uuid4()),
+        "task_id": "synthetic-tool-v1",
+        "configuration_digest": "a" * 64,
+        "clock_ids": ["fixture-clock"],
+        "resources": [
+            {
+                "resource_id": "fixture-worker",
+                "service_id": "fixture-service",
+                "resource_class": "cpu_sandbox",
+            }
+        ],
+    }
+
+
+@pytest.fixture
+def live(client, registration):
+    response = client.post("/v1/live/runs", json=registration)
+    assert response.status_code == 201
+    return response.json()["run_id"]

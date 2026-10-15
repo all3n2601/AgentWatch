@@ -30,7 +30,7 @@ def test_nonfinite_and_strict_producer_records():
         LiveBatch.model_validate({"records": [record]})
 
 
-@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True, False])
 def test_sdk_rejects_unbounded_timeouts(timeout):
     with pytest.raises(ValueError):
         LiveClient("http://localhost:8090", timeout)

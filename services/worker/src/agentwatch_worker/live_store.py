@@ -11,6 +11,7 @@ from agentwatch_sdk.live import (
     RunChange,
     RunCreate,
     StepEvent,
+    StepEventSnapshot,
     step_timings,
     validate_step_identity,
     validate_transition,
@@ -44,7 +45,9 @@ class LiveStore:
     @staticmethod
     def lock(conn: Connection, run_id: UUID) -> dict:
         row = conn.execute(
-            "SELECT * FROM live_runs WHERE run_id=%s FOR UPDATE", (run_id,)
+            "SELECT sequence,run_id,request_id,registration,state,revision,reason,cleanup_requested,"
+            "unfinished_steps,created_at,updated_at FROM live_runs WHERE run_id=%s FOR UPDATE",
+            (run_id,),
         ).fetchone()
         if row is None:
             raise MissingRunError("Live run not found")
@@ -65,11 +68,11 @@ class LiveStore:
             # Serialize creation retries before assigning the server-owned run UUID.
             conn.execute("SELECT pg_advisory_xact_lock(730502)")
             row = conn.execute(
-                "SELECT run_id,registration FROM live_runs WHERE request_id=%s",
-                (registration.request_id,),
+                "SELECT run_id,registration=%s AS identical FROM live_runs WHERE request_id=%s",
+                (Jsonb(payload), registration.request_id),
             ).fetchone()
             if row:
-                if row["registration"] != payload:
+                if not row["identical"]:
                     raise ConflictError("Run creation request reused with different registration")
                 return {"run_id": str(row["run_id"]), "created": False}
             run_id = uuid4()
@@ -103,14 +106,14 @@ class LiveStore:
                 raise ValueError("Sample resource class mismatch")
 
     @staticmethod
-    def steps(conn: Connection, run_id: UUID) -> dict[str, StepEvent]:
+    def steps(conn: Connection, run_id: UUID) -> dict[str, StepEventSnapshot]:
         rows = conn.execute(
             "SELECT DISTINCT ON (step_id) step_id,payload FROM live_records "
             "WHERE run_id=%s AND record_type='step_event' AND disposition='applied' "
             "ORDER BY step_id,step_revision DESC",
             (run_id,),
         ).fetchall()
-        return {r["step_id"]: StepEvent.model_validate(r["payload"]) for r in rows}
+        return {r["step_id"]: StepEventSnapshot.model_validate(r["payload"]) for r in rows}
 
     @staticmethod
     def check_parents(conn: Connection, run_id: UUID) -> None:
@@ -143,14 +146,22 @@ class LiveStore:
         ).fetchall()
         previous = None
         reference = None
+        adjacent = None
         for row in rows:
-            event = StepEvent.model_validate(row["payload"])
-            if reference is not None:
-                validate_step_identity(reference, event)
+            event = StepEventSnapshot.model_validate(row["payload"])
+            try:
+                if reference is not None:
+                    validate_step_identity(reference, event)
+                # Gaps must not hide contradictions already knowable between neighbours.
+                if adjacent is not None and event.sequence == adjacent.sequence + 1:
+                    validate_transition(adjacent, event)
+            except ValueError as error:
+                raise ConflictError(f"Step {step_id} evidence conflicts: {error}") from error
             if reference is None or event.started_tick_ns is not None:
                 reference = event
+            adjacent = event
         for row in rows:
-            event = StepEvent.model_validate(row["payload"])
+            event = StepEventSnapshot.model_validate(row["payload"])
             expected = 0 if previous is None else previous.sequence + 1
             if event.sequence != expected or row["disposition"] == "expired":
                 break
@@ -177,16 +188,20 @@ class LiveStore:
             applied_steps = self.steps(conn, run_id)
             ids = []
             touched_steps = set()
-            for record in batch.records:
-                self.validate_registration(row, record)
+            for record_index, record in enumerate(batch.records):
+                try:
+                    self.validate_registration(row, record)
+                except ValueError as error:
+                    raise ValueError(f"records[{record_index}]: {error}") from error
                 payload = record.model_dump(mode="json")
                 is_step = isinstance(record, StepEvent)
                 record_id = record.event_id if is_step else record.sample_id
                 existing = conn.execute(
-                    "SELECT payload FROM live_records WHERE record_id=%s", (record_id,)
+                    "SELECT payload=%s AS identical FROM live_records WHERE record_id=%s",
+                    (Jsonb(payload), record_id),
                 ).fetchone()
                 if existing:
-                    if existing["payload"] != payload:
+                    if not existing["identical"]:
                         raise ConflictError("Record UUID reused with different evidence")
                     ids.append(record_id)
                     continue
@@ -287,11 +302,11 @@ class LiveStore:
             row = self.lock(conn, run_id)
             self.expire(conn, run_id)
             existing = conn.execute(
-                "SELECT run_id,payload,revision FROM live_run_changes WHERE change_id=%s",
-                (change.change_id,),
+                "SELECT run_id,payload=%s AS identical,revision FROM live_run_changes WHERE change_id=%s",
+                (Jsonb(payload), change.change_id),
             ).fetchone()
             if existing:
-                if str(existing["run_id"]) != str(run_id) or existing["payload"] != payload:
+                if str(existing["run_id"]) != str(run_id) or not existing["identical"]:
                     raise ConflictError("Run change UUID reused with different content")
                 return {"run_id": str(run_id), "revision": existing["revision"], "changed": False}
             if row["revision"] != change.expected_revision:

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from uuid import UUID
@@ -50,6 +51,17 @@ async def invalid_request(request: Request, error: RequestValidationError):
 
 @app.exception_handler(psycopg.Error)
 async def unavailable_storage(request, error):
+    if request.url.path.startswith("/v1/live/"):
+        if isinstance(error, psycopg.DataError) and request.method == "POST":
+            return JSONResponse(status_code=422, content={"detail": "Invalid live database value"})
+        if not isinstance(error, (psycopg.OperationalError, psycopg.InterfaceError)):
+            # PostgreSQL exception messages can contain producer values; retain only diagnostics.
+            logging.getLogger(__name__).error(
+                "Unexpected live storage failure: type=%s sqlstate=%s",
+                type(error).__name__,
+                error.sqlstate,
+            )
+            return JSONResponse(status_code=500, content={"detail": "Internal storage failure"})
     return JSONResponse(status_code=503, content={"detail": "Database unavailable"})
 
 

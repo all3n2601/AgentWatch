@@ -33,6 +33,8 @@ models/client live in `agentwatch_sdk`; generated TypeScript types are exported 
    can become applied/expired without a new arrival. Reconnect with the selected UUID/cursor.
 5. `GET /v1/live/runs?limit=50&before=...` lists live registrations and current run states.
    History cursors decrease; record cursors increase. A missing selected live UUID is `404`.
+   Both cursor parameters are bounded by PostgreSQL's signed bigint maximum (`2**63 - 1`);
+   out-of-range cursors return `422` and the SDK rejects them before sending a request.
 
 The integration transport is polling, not SSE/WebSocket delivery. Producer instrumentation
 and the dashboard's live consumer are A02/F02 follow-ups. Poll intervals are caller choices;
@@ -58,6 +60,15 @@ missing records using original UUIDs/content. A UUID with different content, an 
 step revision, or a repeated sample key occupied by another UUID is `409`. Sample keys are
 resource/service/clock/metric/tick within the run. JSON comparison ignores object key order;
 equivalent timezone offsets normalize to UTC.
+Numeric retry comparison uses PostgreSQL JSONB equality, preserving exact retries of large
+finite floating-point readings even when JSONB renders their stored form as an integer.
+
+Individually impossible events (including unstarted revision-two terminal events) return
+`422` before storage. Every adjacent stored revision is checked even without a queued prefix;
+an arriving record that contradicts existing step identity/timing/state returns `409` and
+rolls back its whole batch. The previously accepted record remains immutable. If an older
+server already retained an impossible pending history, close that run as failed and create
+a new run; do not edit or delete the original evidence to obtain a successful lifecycle.
 
 Expiry is evaluated transactionally on reads/writes of that run. Expired records remain
 retained with a durable gap indicator. Filling earlier gaps never revives expired evidence;
@@ -68,11 +79,21 @@ start ticks are checked even on pending evidence. Completed steps cannot receive
 exact retries remain valid. Completed runs cannot receive new step events; registered late
 samples are permitted.
 
-Errors: `413` body size, `408` body timeout, `422` invalid/unsupported data or capacity bound,
-`409` identity/lifecycle conflict, `503` database unavailable or lock/statement timeout.
+Errors: `400` unparseable body/invalid Content-Length, `413` body size, `408` body timeout,
+`422` invalid/unsupported data or capacity bound, `409` identity/lifecycle conflict,
+`503` database unavailable or lock/statement timeout, and `500` unexpected internal storage
+failures. Oversized declared lengths are rejected before requesting a body/100 Continue.
+Compressed bodies are not decompressed. Large integer/deep nesting parser limits can produce
+`400`; data parsed successfully but incompatible with the request envelope produces `422`.
+NUL/unpaired-surrogate text and timestamps outside the UTC datetime range are rejected as
+`422`, without misreporting a database outage. Validation responses omit supplied input.
+`ErrorResponse.detail` is a string for semantic/HTTP errors or a list of validation issues;
+OpenAPI and TypeScript declare both forms. Record registration errors include the batch index.
 After uncertain transport outcomes retry only with retained identities/content. The Python
-client bounds responses to 8 MiB, defaults to a 10-second socket timeout, validates returned
-schemas and propagates transport/API errors without automatic retries.
+client bounds responses to 8 MiB and defaults to a 10-second **socket inactivity timeout**.
+This is not a total request deadline: a continuously delivering peer can take longer.
+Callers requiring a total deadline must enforce it in their orchestration. The client validates
+known response fields and propagates transport/API errors without automatic retries.
 
 ## Terminal states, cancellation and measurements
 
@@ -126,6 +147,14 @@ consume `RunSnapshot`, `RunPage` and `BatchResult` types after validating extern
 wire types alone cannot validate runtime measurements. Regenerate schemas/types with
 `uv run python -m agentwatch_worker.export_live_contracts`; drift is regression-tested.
 
+Producer request models remain strict and reject unknown fields/metrics. Response models
+ignore additive fields at every nested level and retain newer metric names without applying
+an older writer's metric registry; known types and availability/value semantics remain
+validated. An unfamiliar returned metric is evidence to retain, not a metric an old client
+can interpret or emit. Compatible response additions therefore do not prevent a producer
+from polling cancellation. Changed meanings, required fields or incompatible enum/type changes
+still need explicit contract/version coordination.
+
 ## Migration, recovery and verification
 
 Startup applies ordered `0002_live_lifecycle.sql` under existing migration locking and
@@ -134,6 +163,12 @@ before deployment. For application rollback, retain added tables and migration r
 the old application ignores them. Never drop history or rewrite an applied migration. A failed
 migration transaction rolls back; repair its cause and restart. Operational backup/restore
 verification remains D04, distinct from B01's populated-schema upgrade regression.
+Live queries select explicit columns so additive future table columns do not leak into the
+wire response or break an application rollback. Audit migration `0003_remove_duplicate_live_step_index.sql`
+removes only the redundant step index; the unique constraint supplies the same index ordering.
+The populated-0002 upgrade preserves evidence and retry/conflict behavior. Existing migration
+files remain unchanged. An application rollback needs no index restoration because the unique
+index remains available to both application versions.
 
 Run `AGENTWATCH_TEST_DATABASE_URL=<dedicated test database> uv run pytest` and
 `uv run ruff check .`. Live tests use isolated schemas for retries, ordering, identities,

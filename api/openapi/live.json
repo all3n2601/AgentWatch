@@ -34,20 +34,75 @@
               }
             }
           },
-          "404": {
-            "description": "Selected live run does not exist"
+          "422": {
+            "description": "Invalid request or semantic validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
-          "409": {
-            "description": "Identity, revision or lifecycle conflict; batch rolled back"
-          },
-          "413": {
-            "description": "Live body exceeds 1 MiB"
-          },
-          "408": {
-            "description": "Live body upload exceeds 10 seconds"
+          "500": {
+            "description": "Unexpected internal storage failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "503": {
-            "description": "Database unavailable or statement/lock timeout"
+            "description": "Database unavailable or statement/lock timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable body or invalid Content-Length",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Identity, revision or lifecycle conflict; transaction rolled back",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Live body exceeds 1048576 bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Live body upload exceeds 10 seconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "200": {
             "content": {
@@ -58,16 +113,6 @@
               }
             },
             "description": "OK"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
           }
         }
       },
@@ -86,6 +131,7 @@
               "anyOf": [
                 {
                   "type": "integer",
+                  "maximum": 9223372036854775807,
                   "exclusiveMinimum": 0
                 },
                 {
@@ -119,27 +165,32 @@
               }
             }
           },
-          "404": {
-            "description": "Selected live run does not exist"
-          },
-          "409": {
-            "description": "Identity, revision or lifecycle conflict; batch rolled back"
-          },
-          "413": {
-            "description": "Live body exceeds 1 MiB"
-          },
-          "408": {
-            "description": "Live body upload exceeds 10 seconds"
-          },
-          "503": {
-            "description": "Database unavailable or statement/lock timeout"
-          },
           "422": {
-            "description": "Validation Error",
+            "description": "Invalid request or semantic validation failure",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal storage failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database unavailable or statement/lock timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -171,6 +222,7 @@
             "required": false,
             "schema": {
               "type": "integer",
+              "maximum": 9223372036854775807,
               "minimum": 0,
               "default": 0,
               "title": "After"
@@ -200,27 +252,42 @@
               }
             }
           },
-          "404": {
-            "description": "Selected live run does not exist"
-          },
-          "409": {
-            "description": "Identity, revision or lifecycle conflict; batch rolled back"
-          },
-          "413": {
-            "description": "Live body exceeds 1 MiB"
-          },
-          "408": {
-            "description": "Live body upload exceeds 10 seconds"
-          },
-          "503": {
-            "description": "Database unavailable or statement/lock timeout"
-          },
           "422": {
-            "description": "Validation Error",
+            "description": "Invalid request or semantic validation failure",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal storage failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database unavailable or statement/lock timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Selected live run does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -268,27 +335,82 @@
               }
             }
           },
-          "404": {
-            "description": "Selected live run does not exist"
-          },
-          "409": {
-            "description": "Identity, revision or lifecycle conflict; batch rolled back"
-          },
-          "413": {
-            "description": "Live body exceeds 1 MiB"
-          },
-          "408": {
-            "description": "Live body upload exceeds 10 seconds"
-          },
-          "503": {
-            "description": "Database unavailable or statement/lock timeout"
-          },
           "422": {
-            "description": "Validation Error",
+            "description": "Invalid request or semantic validation failure",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal storage failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database unavailable or statement/lock timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable body or invalid Content-Length",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Identity, revision or lifecycle conflict; transaction rolled back",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Live body exceeds 1048576 bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Live body upload exceeds 10 seconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Selected live run does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -336,27 +458,82 @@
               }
             }
           },
-          "404": {
-            "description": "Selected live run does not exist"
-          },
-          "409": {
-            "description": "Identity, revision or lifecycle conflict; batch rolled back"
-          },
-          "413": {
-            "description": "Live body exceeds 1 MiB"
-          },
-          "408": {
-            "description": "Live body upload exceeds 10 seconds"
-          },
-          "503": {
-            "description": "Database unavailable or statement/lock timeout"
-          },
           "422": {
-            "description": "Validation Error",
+            "description": "Invalid request or semantic validation failure",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal storage failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database unavailable or statement/lock timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable body or invalid Content-Length",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Identity, revision or lifecycle conflict; transaction rolled back",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Live body exceeds 1048576 bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Live body upload exceeds 10 seconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Selected live run does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -393,7 +570,6 @@
             "title": "Gaps"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "run_id",
@@ -419,7 +595,6 @@
             "title": "Changed"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "run_id",
@@ -440,13 +615,35 @@
             "title": "Created"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "run_id",
           "created"
         ],
         "title": "CreateResult"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ValidationIssue"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse"
       },
       "Gap": {
         "properties": {
@@ -470,7 +667,6 @@
             "title": "Expired"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "step_id",
@@ -479,19 +675,6 @@
           "expired"
         ],
         "title": "Gap"
-      },
-      "HTTPValidationError": {
-        "properties": {
-          "detail": {
-            "items": {
-              "$ref": "#/components/schemas/ValidationError"
-            },
-            "type": "array",
-            "title": "Detail"
-          }
-        },
-        "type": "object",
-        "title": "HTTPValidationError"
       },
       "LiveBatch": {
         "properties": {
@@ -543,7 +726,6 @@
             "title": "Disposition"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "record_id",
@@ -585,6 +767,40 @@
           "resource_class"
         ],
         "title": "ResourceRegistration"
+      },
+      "ResourceRegistrationSnapshot": {
+        "properties": {
+          "resource_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Resource Id"
+          },
+          "service_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Service Id"
+          },
+          "resource_class": {
+            "type": "string",
+            "enum": [
+              "cpu_sandbox",
+              "inference",
+              "retrieval"
+            ],
+            "title": "Resource Class"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resource_id",
+          "service_id",
+          "resource_class"
+        ],
+        "title": "ResourceRegistrationSnapshot"
       },
       "ResourceSample": {
         "properties": {
@@ -729,6 +945,148 @@
         ],
         "title": "ResourceSample"
       },
+      "ResourceSampleSnapshot": {
+        "properties": {
+          "contract_version": {
+            "type": "string",
+            "const": "live-contracts-v1",
+            "title": "Contract Version"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          },
+          "task_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Task Id"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Observed At"
+          },
+          "clock_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Clock Id"
+          },
+          "record_type": {
+            "type": "string",
+            "const": "resource_sample",
+            "title": "Record Type"
+          },
+          "sample_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Sample Id"
+          },
+          "resource_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Resource Id"
+          },
+          "service_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Service Id"
+          },
+          "resource_class": {
+            "type": "string",
+            "enum": [
+              "cpu_sandbox",
+              "inference",
+              "retrieval"
+            ],
+            "title": "Resource Class"
+          },
+          "tick_ns": {
+            "type": "integer",
+            "maximum": 9007199254740991.0,
+            "minimum": 0.0,
+            "title": "Tick Ns"
+          },
+          "metric": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Metric"
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Unit"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "measured",
+              "missing",
+              "unsupported",
+              "malformed",
+              "unavailable"
+            ],
+            "title": "Availability"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "contract_version",
+          "run_id",
+          "task_id",
+          "observed_at",
+          "clock_id",
+          "record_type",
+          "sample_id",
+          "resource_id",
+          "service_id",
+          "resource_class",
+          "tick_ns",
+          "metric",
+          "unit",
+          "value",
+          "availability",
+          "reason"
+        ],
+        "title": "ResourceSampleSnapshot"
+      },
       "RunChange": {
         "properties": {
           "change_id": {
@@ -776,6 +1134,53 @@
           "reason"
         ],
         "title": "RunChange"
+      },
+      "RunChangeSnapshot": {
+        "properties": {
+          "change_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Change Id"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Revision"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "change_id",
+          "expected_revision",
+          "state",
+          "reason"
+        ],
+        "title": "RunChangeSnapshot"
       },
       "RunCreate": {
         "properties": {
@@ -855,13 +1260,68 @@
             "title": "Next Cursor"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "runs",
           "next_cursor"
         ],
         "title": "RunPage"
+      },
+      "RunRegistrationSnapshot": {
+        "properties": {
+          "contract_version": {
+            "type": "string",
+            "const": "live-contracts-v1",
+            "title": "Contract Version"
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Request Id"
+          },
+          "task_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Task Id"
+          },
+          "configuration_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Configuration Digest"
+          },
+          "clock_ids": {
+            "items": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "type": "array",
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Clock Ids"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceRegistrationSnapshot"
+            },
+            "type": "array",
+            "maxItems": 64,
+            "title": "Resources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "contract_version",
+          "request_id",
+          "task_id",
+          "configuration_digest",
+          "clock_ids",
+          "resources"
+        ],
+        "title": "RunRegistrationSnapshot"
       },
       "RunSnapshot": {
         "properties": {
@@ -871,7 +1331,7 @@
             "title": "Run Id"
           },
           "registration": {
-            "$ref": "#/components/schemas/RunCreate"
+            "$ref": "#/components/schemas/RunRegistrationSnapshot"
           },
           "state": {
             "type": "string",
@@ -979,7 +1439,6 @@
             "title": "Next Cursor"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "run_id",
@@ -1010,7 +1469,7 @@
             "title": "Run Id"
           },
           "registration": {
-            "$ref": "#/components/schemas/RunCreate"
+            "$ref": "#/components/schemas/RunRegistrationSnapshot"
           },
           "state": {
             "type": "string",
@@ -1046,7 +1505,6 @@
             "title": "Sequence"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "run_id",
@@ -1063,14 +1521,13 @@
       "SavedChange": {
         "properties": {
           "payload": {
-            "$ref": "#/components/schemas/RunChange"
+            "$ref": "#/components/schemas/RunChangeSnapshot"
           },
           "revision": {
             "type": "integer",
             "title": "Revision"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "payload",
@@ -1101,18 +1558,18 @@
           "payload": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/StepEvent"
+                "$ref": "#/components/schemas/StepEventSnapshot"
               },
               {
-                "$ref": "#/components/schemas/ResourceSample"
+                "$ref": "#/components/schemas/ResourceSampleSnapshot"
               }
             ],
             "title": "Payload",
             "discriminator": {
               "propertyName": "record_type",
               "mapping": {
-                "resource_sample": "#/components/schemas/ResourceSample",
-                "step_event": "#/components/schemas/StepEvent"
+                "resource_sample": "#/components/schemas/ResourceSampleSnapshot",
+                "step_event": "#/components/schemas/StepEventSnapshot"
               }
             }
           },
@@ -1122,7 +1579,6 @@
             "title": "Received At"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "record_id",
@@ -1362,16 +1818,243 @@
         ],
         "title": "StepEvent"
       },
+      "StepEventSnapshot": {
+        "properties": {
+          "contract_version": {
+            "type": "string",
+            "const": "live-contracts-v1",
+            "title": "Contract Version"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          },
+          "task_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Task Id"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Observed At"
+          },
+          "clock_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Clock Id"
+          },
+          "record_type": {
+            "type": "string",
+            "const": "step_event",
+            "title": "Record Type"
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Event Id"
+          },
+          "step_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Step Id"
+          },
+          "step_type": {
+            "type": "string",
+            "enum": [
+              "model_call",
+              "tool",
+              "retrieval",
+              "other"
+            ],
+            "title": "Step Type"
+          },
+          "parent_step_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Step Id"
+          },
+          "trace_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Trace Id"
+          },
+          "span_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$",
+            "title": "Span Id"
+          },
+          "resource_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource Id"
+          },
+          "service_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Id"
+          },
+          "sequence": {
+            "type": "integer",
+            "maximum": 1023.0,
+            "minimum": 0.0,
+            "title": "Sequence"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "submitted_tick_ns": {
+            "type": "integer",
+            "maximum": 9007199254740991.0,
+            "minimum": 0.0,
+            "title": "Submitted Tick Ns"
+          },
+          "started_tick_ns": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9007199254740991.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started Tick Ns"
+          },
+          "finished_tick_ns": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9007199254740991.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished Tick Ns"
+          },
+          "cpu_seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Seconds"
+          },
+          "cpu_scope": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "process",
+                  "process_and_children"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Scope"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "contract_version",
+          "run_id",
+          "task_id",
+          "observed_at",
+          "clock_id",
+          "record_type",
+          "event_id",
+          "step_id",
+          "step_type",
+          "parent_step_id",
+          "trace_id",
+          "span_id",
+          "resource_id",
+          "service_id",
+          "sequence",
+          "state",
+          "submitted_tick_ns",
+          "started_tick_ns",
+          "finished_tick_ns",
+          "cpu_seconds",
+          "cpu_scope",
+          "reason"
+        ],
+        "title": "StepEventSnapshot"
+      },
       "StepView": {
         "properties": {
           "event": {
-            "$ref": "#/components/schemas/StepEvent"
+            "$ref": "#/components/schemas/StepEventSnapshot"
           },
           "timings": {
             "$ref": "#/components/schemas/Timings"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "event",
@@ -1443,7 +2126,6 @@
             "title": "Queue Fraction"
           }
         },
-        "additionalProperties": false,
         "type": "object",
         "required": [
           "queue_seconds",
@@ -1454,7 +2136,7 @@
         ],
         "title": "Timings"
       },
-      "ValidationError": {
+      "ValidationIssue": {
         "properties": {
           "loc": {
             "items": {
@@ -1468,22 +2150,15 @@
               ]
             },
             "type": "array",
-            "title": "Location"
+            "title": "Loc"
           },
           "msg": {
             "type": "string",
-            "title": "Message"
+            "title": "Msg"
           },
           "type": {
             "type": "string",
-            "title": "Error Type"
-          },
-          "input": {
-            "title": "Input"
-          },
-          "ctx": {
-            "type": "object",
-            "title": "Context"
+            "title": "Type"
           }
         },
         "type": "object",
@@ -1492,7 +2167,7 @@
           "msg",
           "type"
         ],
-        "title": "ValidationError"
+        "title": "ValidationIssue"
       }
     }
   }

@@ -5,11 +5,27 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-Identifier = Annotated[str, Field(min_length=1, max_length=128, pattern=r"\S")]
-Reason = Annotated[str, Field(min_length=1, max_length=512, pattern=r"\S")]
+
+def postgres_text(value: str) -> str:
+    if "\x00" in value:
+        raise ValueError("Text must not contain NUL characters")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("Text must contain valid Unicode characters") from error
+    return value
+
+
+Identifier = Annotated[
+    str, Field(min_length=1, max_length=128, pattern=r"\S"), AfterValidator(postgres_text)
+]
+Reason = Annotated[
+    str, Field(min_length=1, max_length=512, pattern=r"\S"), AfterValidator(postgres_text)
+]
+MAX_CURSOR = 2**63 - 1
 Tick = Annotated[int, Field(strict=True, ge=0, le=9007199254740991)]
 Number = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 Seconds = Annotated[Number, Field(ge=0)]
@@ -36,9 +52,12 @@ class LiveModel(BaseModel):
     @field_validator("observed_at", check_fields=False)
     @classmethod
     def aware_time(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("observed_at must include a timezone")
-        return value.astimezone(UTC)
+        try:
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("observed_at must include a timezone")
+            return value.astimezone(UTC)
+        except OverflowError as error:
+            raise ValueError("observed_at is out of range after UTC normalization") from error
 
 
 class ResourceRegistration(LiveModel):
@@ -84,7 +103,7 @@ class Record(LiveModel):
     clock_id: Identifier
 
 
-class StepEvent(Record):
+class StepEventFields(Record):
     record_type: Literal["step_event"]
     event_id: UUID
     step_id: Identifier
@@ -103,6 +122,8 @@ class StepEvent(Record):
     cpu_scope: Literal["process", "process_and_children"] | None
     reason: Reason | None
 
+
+class StepEvent(StepEventFields):
     @model_validator(mode="after")
     def boundaries(self) -> Self:
         revisions = {
@@ -114,6 +135,8 @@ class StepEvent(Record):
         }
         if self.sequence not in revisions[self.state]:
             raise ValueError("Step state is incompatible with its revision")
+        if self.sequence == 2 and self.started_tick_ns is None:
+            raise ValueError("Revision two must follow running and include a start tick")
         if int(self.trace_id, 16) == 0 or int(self.span_id, 16) == 0:
             raise ValueError("Trace/span IDs must be nonzero")
         if self.parent_step_id == self.step_id:
@@ -156,7 +179,7 @@ METRICS = {
 }
 
 
-class ResourceSample(Record):
+class ResourceSampleFields(Record):
     record_type: Literal["resource_sample"]
     sample_id: UUID
     resource_id: Identifier
@@ -170,6 +193,17 @@ class ResourceSample(Record):
     reason: Reason | None
 
     @model_validator(mode="after")
+    def availability_value(self) -> Self:
+        if self.availability == "measured":
+            if self.value is None or self.reason is not None:
+                raise ValueError("Measured samples require a number and null reason")
+        elif self.value is not None or self.reason is None:
+            raise ValueError("Unavailable readings require null value and a reason")
+        return self
+
+
+class ResourceSample(ResourceSampleFields):
+    @model_validator(mode="after")
     def reading(self) -> Self:
         definition = METRICS.get(self.metric)
         if definition is None:
@@ -177,13 +211,10 @@ class ResourceSample(Record):
         resource_class, unit, minimum, maximum = definition
         if self.resource_class != resource_class or self.unit != unit:
             raise ValueError("Metric resource class/unit mismatch")
-        if self.availability == "measured":
-            if self.value is None or self.reason is not None:
-                raise ValueError("Measured samples require a number and null reason")
-            if self.value < minimum or (maximum is not None and self.value > maximum):
-                raise ValueError("Metric value is outside registered bounds")
-        elif self.value is not None or self.reason is None:
-            raise ValueError("Unavailable readings require null value and a reason")
+        if self.value is not None and (
+            self.value < minimum or (maximum is not None and self.value > maximum)
+        ):
+            raise ValueError("Metric value is outside registered bounds")
         return self
 
 
@@ -194,7 +225,7 @@ class LiveBatch(LiveModel):
     records: list[LiveRecord] = Field(min_length=1, max_length=256)
 
 
-def validate_step_identity(previous: StepEvent, event: StepEvent) -> None:
+def validate_step_identity(previous: StepEventFields, event: StepEventFields) -> None:
     identity = (
         "run_id",
         "task_id",
@@ -218,7 +249,7 @@ def validate_step_identity(previous: StepEvent, event: StepEvent) -> None:
         raise ValueError("Recorded start tick changed")
 
 
-def validate_transition(previous: StepEvent | None, event: StepEvent) -> None:
+def validate_transition(previous: StepEventFields | None, event: StepEventFields) -> None:
     if previous is None:
         if event.sequence != 0 or event.state != "queued":
             raise ValueError("A step must begin with queued revision zero")
@@ -236,7 +267,7 @@ def validate_transition(previous: StepEvent | None, event: StepEvent) -> None:
         raise ValueError("Recorded start tick changed")
 
 
-def step_timings(event: StepEvent) -> dict[str, float | None]:
+def step_timings(event: StepEventFields) -> dict[str, float | None]:
     start, finish, submit = (event.started_tick_ns, event.finished_tick_ns, event.submitted_tick_ns)
     duration = (finish - submit) / 1e9 if finish is not None else None
     queue = (start - submit) / 1e9 if start is not None else None
@@ -250,37 +281,72 @@ def step_timings(event: StepEvent) -> dict[str, float | None]:
     }
 
 
-class CreateResult(LiveModel):
+class ResponseModel(BaseModel):
+    """Validate known response fields while tolerating compatible server additions."""
+
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
+
+
+class ResourceRegistrationSnapshot(ResourceRegistration):
+    model_config = ConfigDict(extra="ignore")
+
+
+class RunRegistrationSnapshot(RunCreate):
+    model_config = ConfigDict(extra="ignore")
+    resources: list[ResourceRegistrationSnapshot] = Field(max_length=64)
+
+
+class RunChangeSnapshot(RunChange):
+    model_config = ConfigDict(extra="ignore")
+
+
+class StepEventSnapshot(StepEventFields):
+    # Pending evidence accepted by older writers must remain readable, even when a
+    # tightened writer invariant would reject it today. Applied prefixes are server-validated.
+    model_config = ConfigDict(extra="ignore")
+
+
+class ResourceSampleSnapshot(ResourceSampleFields):
+    # Readers must not reapply an older producer's closed metric registry to saved evidence.
+    model_config = ConfigDict(extra="ignore")
+
+
+SavedPayload = Annotated[
+    StepEventSnapshot | ResourceSampleSnapshot, Field(discriminator="record_type")
+]
+
+
+class CreateResult(ResponseModel):
     run_id: UUID
     created: bool
 
 
-class ChangeResult(LiveModel):
+class ChangeResult(ResponseModel):
     run_id: UUID
     revision: int
     changed: bool
 
 
-class Gap(LiveModel):
+class Gap(ResponseModel):
     step_id: Identifier
     missing_sequence: int
     first_pending_sequence: int
     expired: bool
 
 
-class RecordAcknowledgement(LiveModel):
+class RecordAcknowledgement(ResponseModel):
     record_id: UUID
     disposition: Literal["pending", "applied", "expired"]
 
 
-class BatchResult(LiveModel):
+class BatchResult(ResponseModel):
     run_id: UUID
     added: int
     acknowledgements: list[RecordAcknowledgement]
     gaps: list[Gap]
 
 
-class Timings(LiveModel):
+class Timings(ResponseModel):
     queue_seconds: Seconds | None
     execution_seconds: Seconds | None
     duration_seconds: Seconds | None
@@ -288,25 +354,25 @@ class Timings(LiveModel):
     queue_fraction: Annotated[Number, Field(ge=0, le=1)] | None
 
 
-class StepView(LiveModel):
-    event: StepEvent
+class StepView(ResponseModel):
+    event: StepEventSnapshot
     timings: Timings
 
 
 class SavedRecord(RecordAcknowledgement):
     sequence: int
-    payload: LiveRecord
+    payload: SavedPayload
     received_at: datetime
 
 
-class SavedChange(LiveModel):
-    payload: RunChange
+class SavedChange(ResponseModel):
+    payload: RunChangeSnapshot
     revision: int
 
 
-class RunSummary(LiveModel):
+class RunSummary(ResponseModel):
     run_id: UUID
-    registration: RunCreate
+    registration: RunRegistrationSnapshot
     state: State
     revision: int
     cleanup_requested: bool
@@ -327,6 +393,16 @@ class RunSnapshot(RunSummary):
     next_cursor: int | None
 
 
-class RunPage(LiveModel):
+class RunPage(ResponseModel):
     runs: list[RunSummary]
     next_cursor: int | None
+
+
+class ValidationIssue(ResponseModel):
+    loc: list[str | int]
+    msg: str
+    type: str
+
+
+class ErrorResponse(ResponseModel):
+    detail: str | list[ValidationIssue]

@@ -10,31 +10,6 @@ from agentwatch_sdk.live import RunCreate
 from agentwatch_worker.live_store import LiveStore
 
 
-@pytest.fixture
-def registration():
-    return {
-        "contract_version": "live-contracts-v1",
-        "request_id": str(uuid4()),
-        "task_id": "synthetic-tool-v1",
-        "configuration_digest": "a" * 64,
-        "clock_ids": ["fixture-clock"],
-        "resources": [
-            {
-                "resource_id": "fixture-worker",
-                "service_id": "fixture-service",
-                "resource_class": "cpu_sandbox",
-            }
-        ],
-    }
-
-
-@pytest.fixture
-def live(client, registration):
-    response = client.post("/v1/live/runs", json=registration)
-    assert response.status_code == 201
-    return response.json()["run_id"]
-
-
 def event(run_id, sequence=0, state="queued", step_id="tool-1", **changes):
     payload = {
         "contract_version": "live-contracts-v1",
@@ -330,10 +305,10 @@ def test_pending_identity_changes_are_rejected_before_prefix_application(client,
         post(
             client, live, event(live, 1, "running", clock_id="fixture-clock", started_tick_ns=11)
         ).status_code
-        == 422
+        == 409
     )
     assert snapshot(client, live)["steps"] == []
-    assert post(client, live, event(live, step_type="other")).status_code == 422
+    assert post(client, live, event(live, step_type="other")).status_code == 409
     assert len(snapshot(client, live)["records"]) == 1
 
 
@@ -387,7 +362,7 @@ def test_migration_preserves_populated_legacy_history(client, evidence, live):
     assert snapshot(client, live)["state"] == "queued"
     assert client.get(f"/v1/runs/{live}").status_code == 404
     with client.app.state.store.connect() as conn:
-        assert len(conn.execute("SELECT version FROM schema_migrations").fetchall()) == 2
+        assert len(conn.execute("SELECT version FROM schema_migrations").fetchall()) == 3
 
 
 def test_migration_upgrades_existing_schema(client, evidence):

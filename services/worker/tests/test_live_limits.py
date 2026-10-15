@@ -64,3 +64,31 @@ def test_chunked_body_is_replayed_exactly():
         )
     )
     assert received == [{"type": "http.request", "body": b'{"records":[]}', "more_body": False}]
+
+
+@pytest.mark.parametrize("length,status", [(b"1048577", 413), (b"-1", 400), (b"invalid", 400)])
+def test_content_length_rejection_does_not_request_body(length, status):
+    messages = []
+
+    async def downstream(scope, receive, send):
+        raise AssertionError("Rejected body must not reach the endpoint")
+
+    async def receive():
+        raise AssertionError("Do not request body/100 Continue for a rejected length")
+
+    async def send(message):
+        messages.append(message)
+
+    asyncio.run(
+        live_limits.LiveBodyLimit(downstream)(
+            {
+                "type": "http",
+                "path": "/v1/live/runs",
+                "method": "POST",
+                "headers": [(b"content-length", length), (b"expect", b"100-continue")],
+            },
+            receive,
+            send,
+        )
+    )
+    assert messages[0]["status"] == status

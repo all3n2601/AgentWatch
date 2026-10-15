@@ -19,15 +19,15 @@ export interface CreateResult {
   created: boolean;
 }
 
+export interface ErrorResponse {
+  detail: string | Array<ValidationIssue>;
+}
+
 export interface Gap {
   step_id: string;
   missing_sequence: number;
   first_pending_sequence: number;
   expired: boolean;
-}
-
-export interface HTTPValidationError {
-  detail?: Array<ValidationError>;
 }
 
 export interface LiveBatch {
@@ -45,7 +45,32 @@ export interface ResourceRegistration {
   resource_class: "cpu_sandbox" | "inference" | "retrieval";
 }
 
+export interface ResourceRegistrationSnapshot {
+  resource_id: string;
+  service_id: string;
+  resource_class: "cpu_sandbox" | "inference" | "retrieval";
+}
+
 export interface ResourceSample {
+  contract_version: "live-contracts-v1";
+  run_id: string;
+  task_id: string;
+  observed_at: string;
+  clock_id: string;
+  record_type: "resource_sample";
+  sample_id: string;
+  resource_id: string;
+  service_id: string;
+  resource_class: "cpu_sandbox" | "inference" | "retrieval";
+  tick_ns: number;
+  metric: string;
+  unit: string;
+  value: number | null;
+  availability: "measured" | "missing" | "unsupported" | "malformed" | "unavailable";
+  reason: string | null;
+}
+
+export interface ResourceSampleSnapshot {
   contract_version: "live-contracts-v1";
   run_id: string;
   task_id: string;
@@ -71,6 +96,13 @@ export interface RunChange {
   reason: string | null;
 }
 
+export interface RunChangeSnapshot {
+  change_id: string;
+  expected_revision: number;
+  state: "queued" | "running" | "completed" | "failed" | "cancelled";
+  reason: string | null;
+}
+
 export interface RunCreate {
   contract_version: "live-contracts-v1";
   request_id: string;
@@ -85,9 +117,18 @@ export interface RunPage {
   next_cursor: number | null;
 }
 
+export interface RunRegistrationSnapshot {
+  contract_version: "live-contracts-v1";
+  request_id: string;
+  task_id: string;
+  configuration_digest: string;
+  clock_ids: Array<string>;
+  resources: Array<ResourceRegistrationSnapshot>;
+}
+
 export interface RunSnapshot {
   run_id: string;
-  registration: RunCreate;
+  registration: RunRegistrationSnapshot;
   state: "queued" | "running" | "completed" | "failed" | "cancelled";
   revision: number;
   cleanup_requested: boolean;
@@ -107,7 +148,7 @@ export interface RunSnapshot {
 
 export interface RunSummary {
   run_id: string;
-  registration: RunCreate;
+  registration: RunRegistrationSnapshot;
   state: "queued" | "running" | "completed" | "failed" | "cancelled";
   revision: number;
   cleanup_requested: boolean;
@@ -117,7 +158,7 @@ export interface RunSummary {
 }
 
 export interface SavedChange {
-  payload: RunChange;
+  payload: RunChangeSnapshot;
   revision: number;
 }
 
@@ -125,7 +166,7 @@ export interface SavedRecord {
   record_id: string;
   disposition: "pending" | "applied" | "expired";
   sequence: number;
-  payload: StepEvent | ResourceSample;
+  payload: StepEventSnapshot | ResourceSampleSnapshot;
   received_at: string;
 }
 
@@ -154,8 +195,33 @@ export interface StepEvent {
   reason: string | null;
 }
 
+export interface StepEventSnapshot {
+  contract_version: "live-contracts-v1";
+  run_id: string;
+  task_id: string;
+  observed_at: string;
+  clock_id: string;
+  record_type: "step_event";
+  event_id: string;
+  step_id: string;
+  step_type: "model_call" | "tool" | "retrieval" | "other";
+  parent_step_id: string | null;
+  trace_id: string;
+  span_id: string;
+  resource_id: string | null;
+  service_id: string | null;
+  sequence: number;
+  state: "queued" | "running" | "completed" | "failed" | "cancelled";
+  submitted_tick_ns: number;
+  started_tick_ns: number | null;
+  finished_tick_ns: number | null;
+  cpu_seconds: number | null;
+  cpu_scope: "process" | "process_and_children" | null;
+  reason: string | null;
+}
+
 export interface StepView {
-  event: StepEvent;
+  event: StepEventSnapshot;
   timings: Timings;
 }
 
@@ -167,10 +233,8 @@ export interface Timings {
   queue_fraction: number | null;
 }
 
-export interface ValidationError {
+export interface ValidationIssue {
   loc: Array<string | number>;
   msg: string;
   type: string;
-  input?: unknown;
-  ctx?: Record<string, unknown>;
 }
