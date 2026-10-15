@@ -1,9 +1,11 @@
 # Shared live telemetry and prediction contracts
 
-Status: **proposed `live-contracts-v1`**, October 11, 2026. Board task C01, owner Allen,
-partner reviewer Akshay. This proposal needs review by all three teams before it is frozen.
-It specifies the next live-ingestion interface; no endpoint, SDK, storage migration, live
-instrumentation, or prediction serving is implemented by this document.
+Status: **accepted `live-contracts-v1`**, owner-reported three-team acceptance recorded on
+the Team Planner October 13, 2026. Board task C01, owner Allen, partner reviewer Akshay.
+The record semantics below preserve the October 11 proposal; references to proposal review
+describe that historical process. B01 implements StepEvent/ResourceSample ingestion, lifecycle,
+SDK and additive storage; see [live ingestion](live-ingestion.md) for transport and bounds.
+FeatureRow/Prediction serving and producer instrumentation remain follow-up work.
 
 The current [completed-run ingestion](ingestion-api.md) remains supported unchanged.
 The [data card](data-card.md) defines the separate, implemented `steps-v1.2` dataset.
