@@ -1,0 +1,30 @@
+name = "fix-window-count"
+revision = 1
+title = "Return every sliding window"
+instructions = """
+The test suite of this small sequence-processing project fails. Find out how many windows
+windows() must return, fix it by applying exactly one of the listed patches, and confirm that
+the tests pass.
+"""
+
+[[patches]]
+id = "include-final-window"
+description = "Iterate over len(values) - size + 1 window start positions"
+file = "windows.py"
+find = """
+    return [values[start : start + size] for start in range(len(values) - size)]
+"""
+replace = """
+    return [values[start : start + size] for start in range(len(values) - size + 1)]
+"""
+
+[[patches]]
+id = "skip-first-window"
+description = "Start iterating at position 1 and include the final window"
+file = "windows.py"
+find = """
+    return [values[start : start + size] for start in range(len(values) - size)]
+"""
+replace = """
+    return [values[start : start + size] for start in range(1, len(values) - size + 1)]
+"""

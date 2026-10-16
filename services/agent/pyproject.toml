@@ -1,0 +1,20 @@
+[project]
+name = "agentwatch-agent"
+version = "0.1.0"
+description = "Instrumented AgentWatch coding-agent runner"
+requires-python = ">=3.13,<3.15"
+dependencies = [
+  "agentwatch-sdk",
+  "agentwatch-sandbox",
+  # Reuses the worker's Ollama client and CPU telemetry readers instead of copying them.
+  "agentwatch-worker",
+]
+
+[tool.uv.sources]
+agentwatch-sdk = { workspace = true }
+agentwatch-sandbox = { workspace = true }
+agentwatch-worker = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
