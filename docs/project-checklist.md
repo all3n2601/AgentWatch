@@ -252,8 +252,13 @@ These can be completed before adding an agent.
   Completed-history polling, source status, and last-refresh time now exist; live-run streaming and
   stale-event indicators remain unfinished.
 - [ ] Display active steps, terminal failures, and incomplete telemetry without misleading totals.
-- [ ] Provide an instrumentation client for controlled test workloads.
-  B01 provides transport/models; A02 still must connect actual agent instrumentation.
+- [x] Provide an instrumentation client for controlled test workloads.
+  A02, October 16, 2026: [`services/agent`](../services/agent/README.md) records model,
+  tool and retrieval steps through the B01 SDK with background batched delivery, bounded
+  retries, per-record isolation of rejected batches and a replayable journal. Real uvicorn,
+  PostgreSQL and `LiveClient` tests in `services/agent/tests/test_live_integration.py` cover a
+  completed run, dashboard cancellation and idempotent replay. The dashboard's live consumer
+  (F02) is separate.
 
 **Exit test:** A scripted workload creates a run, reports multiple steps while executing, and
 finishes or fails. The dashboard updates automatically. Event retries, out-of-order delivery,
@@ -274,11 +279,44 @@ mock responses only validate plumbing. Missing signals and mixed contention rema
 
 ### Milestone 3 One instrumented coding agent
 
-- [ ] Integrate one Python agent and its tool dispatcher using the generalized client.
+A02 progress (2026-10-16), [ADR 0002](adr/0002-agent-runner-evidence-and-tool-safety.md): the
+runner exposes allowlisted `search_docs`, `read_file`, `apply_patch` (reviewed patches only) and
+`run_tests` tools over two fixed tasks. 118 agent/sandbox tests cover rejected calls, tool and
+model failures, limits, remote/local cancellation, cleanup, outages and replay. Local
+verification on the final code: 749 Python tests with the dedicated PostgreSQL database and no
+skips, Ruff, JavaScript lint/typecheck/13 tests/build (Node 22), Go format/vet/tests and both
+Compose configurations passed. Agent tests passed 10 consecutive runs and the live integration
+tests 15, after a test race in dashboard cancellation was fixed. Remote CI is not yet observed. Real Qwen3 1.7B runs on
+the development Mac's Docker CPU, all kept: final-code run `30d40fd4-a062-4703-a690-aecc44390060`
+**completed the task**: search, one rejected read, `read_file`, the correct patch, `run_tests`,
+a final answer, and runner verification passing 5/5 tests. Its 13 steps closed with no gaps
+and all 1,726 records were delivered; model calls took 17–68 s. Two earlier runs, on code
+before the final edits, produced correlated live runs but did not finish:
+`97fb140d-be6f-42f9-b31c-0d1ab305aabf` failed when a model request hit its 300 s socket
+timeout, and `301307b7-b975-4e2a-ab9b-ce55f0b3ec32` (after lowering `num_ctx` to 4096) hit
+the 900 s run limit. Their model calls took 38–199 s for about 22 output tokens, versus
+17–68 s in the passing run with the same configuration; the cause of this variation is unknown.
+Both failed runs searched, had one invalid read rejected, read `stats.py` and applied the
+correct patch before stopping. All records were delivered and no step was left unfinished.
+Overhead protocol `agent-overhead-v1` (30 alternating repetitions of the 55 ms fixture
+suite): median 0.0547 s instrumented vs 0.0548 s uninstrumented, with +1.4 ms runner CPU per
+repetition. The workload is shorter than the 250 ms sampling interval, so sustained sampling
+cost is not characterized.
+
+- [x] Integrate one Python agent and its tool dispatcher using the generalized client.
+  Verified by the integration tests and the real CPU runs above, including one that completed
+  the task. GPU-backed end-to-end validation remains Benoy's handoff run.
 - [ ] Propagate run/step/trace context through model calls, code execution, and retrieval.
+  Steps share run, trace and parent context inside the runner; trace context is not
+  propagated into the Ollama server or the test subprocess.
 - [ ] Freeze task inputs, model configuration, and replay state for repeatability.
+  Task inputs are pinned by content hash and the configuration digest is registered; replay
+  state and repeated clean runs are not implemented.
 - [ ] Add actual container isolation and resource limits for executed code.
-- [ ] Bound task duration and preserve failure/cancellation evidence.
+- [x] Bound task duration and preserve failure/cancellation evidence.
+  Model-call, tool-call, test and run limits are enforced (real run `301307b7…` closed at the
+  900 s limit), and cancellation ends every step with recorded cleanup. Service-confirmed
+  cleanup remains A03.
 
 **Exit test:** One agent task produces a complete trace with real model/tool/retrieval activity.
 Repeat it cleanly and with controlled contention. Verify correlation, cleanup, and measured overhead.

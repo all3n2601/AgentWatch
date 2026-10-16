@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs dataset validate-dataset split-dataset freeze-dataset-schema llm-up llm-down demo-llm record-llm infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs dataset validate-dataset split-dataset freeze-dataset-schema llm-up llm-down demo-llm record-llm agent-tasks agent-run agent-resend agent-overhead infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -78,6 +78,20 @@ demo-llm: ## Run a real local LLM tool-call loop and retain its evidence
 
 record-llm: ## Run the LLM loop and save its coding measurements in the dashboard
 	uv run --package agentwatch-worker python -m agentwatch_worker.llm_demo --publish
+
+AGENT_TASK ?= fix-mean-empty
+
+agent-tasks: ## List the instrumented agent's fixed tasks
+	uv run --package agentwatch-agent python -m agentwatch_agent tasks
+
+agent-run: ## Run one fixed task with the real model, reporting live steps (AGENT_TASK=name)
+	uv run --package agentwatch-agent python -m agentwatch_agent run --task $(AGENT_TASK)
+
+agent-resend: ## Resend a run journal after a live API outage (JOURNAL=path)
+	uv run --package agentwatch-agent python -m agentwatch_agent resend $(JOURNAL)
+
+agent-overhead: ## Measure agent instrumentation overhead (live API must be running)
+	uv run --package agentwatch-agent python -m agentwatch_agent overhead
 
 infra-up: ## Start the AgentWatch PostgreSQL service
 	docker compose -f deploy/compose/compose.yaml up -d

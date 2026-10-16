@@ -1,0 +1,133 @@
+# Instrumented coding agent (A02)
+
+`agentwatch_agent` runs one fixed coding task with a real model and reports it to the
+[live lifecycle API](../../docs/live-ingestion.md) as one correlated `live-contracts-v1` run.
+Every model call, tool call and retrieval is a step under one root step and one trace.
+Configuration, the conversation, model-server metrics and failure/cleanup details are kept in
+local evidence keyed by the same step and span IDs.
+
+## Run it
+
+```sh
+make infra-up          # PostgreSQL
+make dev-worker        # live API on :8090, in its own terminal
+make llm-up            # Ollama with qwen3:1.7b (CPU by default)
+make agent-tasks       # list tasks and their pinned identities
+make agent-run AGENT_TASK=fix-mean-empty
+```
+
+Settings come from the same variables as the LLM demo: `OLLAMA_URL`, `AGENTWATCH_LLM_MODEL`
+and `AGENTWATCH_API_URL`. `--run-timeout` bounds the whole run (default 900 s). On the GPU
+laptop, follow the WSL setup in [the GPU access notes](../../docs/gpu-measurement-access.md)
+and export `OLLAMA_URL=http://127.0.0.1:11435`. Each run writes
+`.data/agent-runs/<task>-<UTC time>-<id>/` containing:
+
+- `agent-evidence.json`: task identity, full configuration and its digest, model endpoint,
+  conversation, per-call Ollama metrics and placement, tool calls (including rejected ones),
+  runner verification, sampling coverage, delivery statistics, cancellation and cleanup.
+- `live-journal.jsonl`: every registration, record and state change sent, in order.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Task passed and all live evidence was delivered |
+| 1 | Run failed or was cancelled; its evidence was delivered |
+| 2 | Invalid usage or unknown task |
+| 3 | Live evidence incomplete: run `make agent-resend JOURNAL=<path>` when the API is back |
+| 4 | Live API unreachable or refused the registration; nothing ran |
+
+Ctrl-C or SIGTERM cancels cleanly: work stops, the workspace and test processes are removed,
+unfinished steps end as `cancelled`, and the run is closed with the signal as its reason.
+A cancellation requested through the live API is picked up within `cancel_poll_seconds` (1 s).
+
+## Tasks
+
+Tasks live in `src/agentwatch_agent/task_fixtures/`: a small project whose tests fail, Markdown
+reference documents, and two or more reviewed candidate patches that all apply cleanly. Only
+the documented behaviour (found through retrieval) makes the tests pass.
+
+`task_id` is `<name>-r<revision>`. `task_fixtures/index.toml` pins each task's content
+SHA-256; loading refuses a task whose files changed without a revision bump, so a task ID
+always covers the same inputs. Worker settings, model, limits and contention belong to the run
+configuration, not the task identity. The configuration digest registered with the run is the
+SHA-256 of canonical JSON covering task ID and content hash, model, chat options, prompt, tool
+definitions, limits, sampling and polling intervals, and runner/contract versions. Endpoint
+URLs are excluded: the same configuration can run on different hosts.
+
+## What each live step means
+
+| Step | Type | Resource | Timing | CPU |
+| --- | --- | --- | --- | --- |
+| `agent-run` | `other` | none | whole run | null |
+| `model-call-N` | `model_call` | `model-server-*` (`inference`) | runner-side request wall time | null: inference runs in the model server |
+| `tool-N-search_docs` | `retrieval` | `docs-index-*` (`retrieval`) | in-process BM25 lookup | null |
+| `tool-N-read_file`, `tool-N-apply_patch` | `tool` | `tool-host-*` (`cpu_sandbox`) | in-process | null |
+| `tool-N-run_tests`, `verify-tests` | `tool` | `tool-host-*` (`cpu_sandbox`) | test subprocess | test process and children |
+| `tool-N-rejected` | `tool` | none | never started | null |
+
+- **Correlation:** all steps share one `trace_id`, are parented to `agent-run`, and use one
+  monotonic clock domain (`agent-runner-<uuid>`) for the runner process lifetime.
+  `observed_at` is UTC wall time and is never subtracted from ticks.
+- **Queue delay** of a model call is runner-side dispatch only. Time spent waiting inside
+  Ollama is part of execution wall time, not a measured inference queue.
+- **Resource IDs** are opaque and new for every runner process. `model-server-*` identifies
+  the model endpoint as used by this run, not an Ollama process lifetime.
+- **Resource samples:** CPU PSI `some avg10` and the runner cgroup's `throttled_usec`, every
+  250 ms, for the tool host. PSI is host-wide and the counter covers the runner's whole cgroup,
+  so neither is step-exclusive. On macOS both are recorded as `unsupported`, never zero.
+  Inference, GPU and retrieval metrics wait for A04 to register them.
+- **Verification:** after the model's final answer, the runner reruns the tests itself
+  (`verify-tests`). The run completes only if they pass; the model's claims are never the
+  outcome. A wrong patch closes the run as `failed` with the root step `completed`.
+
+Model metrics (token counts and Ollama's nanosecond durations) cannot be carried by
+`StepEvent`, which rejects extra fields. They are in `agent-evidence.json` under `model_calls`,
+keyed by `step_id` and `span_id`.
+
+## Failure, cancellation and delivery
+
+- Invalid model calls (unknown tool, missing or extra arguments, values outside the task's
+  allowlists) are never executed. They are recorded as steps that go from `queued` straight
+  to `failed`, and the model receives an error so it can correct itself.
+- Model transport errors, malformed replies, an empty answer, and the model-call (8),
+  tool-call (12), test (60 s) and run (900 s) limits fail the run with a redacted live reason.
+  Full error text stays in local evidence. Reasons are stripped of paths and control
+  characters.
+- A model request cannot be interrupted, so on cancellation or timeout its thread is
+  abandoned. This is recorded as `cleanup.abandoned_model_request`; Ollama stops generating
+  within the 512-token `num_predict` bound.
+- Records are delivered in the background in batches of up to 256, with bounded retries that
+  reuse identical content. A batch the service rejects is resent record by record, so only the
+  refused records are set aside, such as a step first reported after a remote cancellation
+  closed the run. Everything is journaled, and `resend` replays a journal idempotently.
+- `cleanup_confirmed_by_service` stays null. The runner reports what it actually cleaned up,
+  but isolation and enforced cleanup belong to A03/O03.
+
+## Safety boundary
+
+Model output is untrusted. The model can only search the task documents, read files copied
+from the fixture, apply one reviewed patch per file, and run the fixture's tests in a disposable
+copy. It never supplies code or commands. The tests run in a subprocess with a scrubbed
+environment, a timeout and process-group cleanup. That is a trusted-fixture boundary, **not an
+isolation sandbox**: do not add free-form edits or commands without the A03 isolation design.
+
+## Overhead
+
+`uv run --package agentwatch-agent python -m agentwatch_agent overhead` runs protocol
+`agent-overhead-v1` (declared in `overhead.py`): 30 alternating uninstrumented and
+instrumented repetitions of a task's patched test suite, with the live API running. It reports
+wall-time medians and p90s and runner CPU per repetition, with no pass/fail threshold, in
+`.data/agent-overhead/`. The fixture suite takes about 55 ms, shorter than one sampling
+interval, so the result covers per-step instrumentation, not sustained sampling.
+
+## Tests
+
+```sh
+uv run pytest services/agent/tests services/sandbox/tests
+AGENTWATCH_TEST_DATABASE_URL=postgresql://agentwatch:agentwatch_dev@localhost:5432/agentwatch_test \
+  uv run pytest services/agent/tests/test_live_integration.py
+```
+
+Unit tests use a scripted model and an in-memory live server. Both are labeled test doubles,
+and their output is never run evidence. The integration tests serve the real worker API with
+uvicorn, on an isolated PostgreSQL schema, through the SDK `LiveClient`. Real-model runs are
+recorded under [the project checklist](../../docs/project-checklist.md).
