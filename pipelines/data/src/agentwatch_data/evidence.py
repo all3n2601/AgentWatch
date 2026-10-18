@@ -26,10 +26,12 @@ from agentwatch_data.extract import (
     RawRun,
     directory_prefix,
     read_run,
+    read_run_files,
+    run_from_bytes,
     summarize,
 )
 
-EVIDENCE_FILES = (RESULTS_FILE, SAMPLES_FILE)
+EVIDENCE_FILES = (RESULTS_FILE, SAMPLES_FILE)  # all an entry may hold
 STAGING_PREFIX = ".adding-"  # hidden, and excluded from DVC snapshots by .dvcignore
 
 
@@ -65,9 +67,14 @@ def read_entry(path: Path) -> RawRun:
 
 
 def add_run(run_dir: Path, store: Path) -> Stored:
-    """Validate run_dir and copy it into store, unless identical evidence is already there."""
+    """Validate run_dir and copy it into store, unless identical evidence is already there.
+
+    Each file is read once and the bytes that were validated are the bytes stored, so a
+    producer rewriting its output meanwhile cannot slip unchecked evidence into the store.
+    """
     try:
-        run = read_run(run_dir)
+        results, samples = read_run_files(run_dir)
+        run = run_from_bytes(run_dir, results, samples)
     except (OSError, ValueError) as error:
         raise EvidenceError(f"{run_dir} is not usable evidence: {summarize(error)}") from error
     name = entry_name(run_dir, run)
@@ -82,12 +89,21 @@ def add_run(run_dir: Path, store: Path) -> Stored:
     staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=store))
     try:
         staging.chmod(0o755)  # mkdtemp is owner-only; DVC, CI, and Airflow may run as others
-        for file in EVIDENCE_FILES:
-            if (run_dir / file).exists():
-                (staging / file).write_bytes((run_dir / file).read_bytes())
+        for file, data in ((RESULTS_FILE, results), (SAMPLES_FILE, samples)):
+            if data is not None:
+                (staging / file).write_bytes(data)
                 (staging / file).chmod(0o644)
                 fsync_file(staging / file)
         fsync_directory(staging)
+        # Read the copy back before publishing it: the store must hold what was validated.
+        staged_samples = staging / SAMPLES_FILE
+        copy = run_from_bytes(
+            target,
+            (staging / RESULTS_FILE).read_bytes(),
+            staged_samples.read_bytes() if staged_samples.exists() else None,
+        )
+        if not same_evidence(copy, run):
+            raise EvidenceError(f"The copy of {name} does not match the validated evidence")
         try:
             os.replace(staging, target)
         except OSError:

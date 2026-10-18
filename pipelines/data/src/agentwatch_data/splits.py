@@ -497,8 +497,12 @@ def read_split_file(path: Path) -> dict:
     """
     split = read_object(path, "Split")
     content = {key: value for key, value in split.items() if key != "split_id"}
+    try:
+        expected = f"{SPLIT_METHOD}+{canonical_sha256(content)[:12]}"
+    except ValueError as error:  # json accepts NaN and Infinity, which canonical JSON refuses
+        raise SplitError(f"Split {path.name} holds a non-finite number") from error
     if (
-        split.get("split_id") != f"{SPLIT_METHOD}+{canonical_sha256(content)[:12]}"
+        split.get("split_id") != expected
         or path.stem != split["split_id"]
         or path.parent.name != split.get("release")
     ):

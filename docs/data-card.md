@@ -274,21 +274,33 @@ split files) are versioned with [DVC](https://dvc.org). Git holds two small poin
 make version-dataset   # verify both stores, then snapshot them; commit the data/*.dvc changes
 make push-dataset      # upload the snapshot to the DVC remote
 make pull-dataset      # download what this commit versions (TARGET=data/datasets/<release> for one)
-make dataset-status    # what is not yet versioned, and what is not yet uploaded
+make dataset-status    # what is not yet versioned, and (with a remote) what is not yet uploaded
 ```
 
 - **DVC runs in its own project**, `pipelines/versioning` (DVC 3.67.1 with GCS support, about
   120 packages, its own `uv.lock`, CPython 3.13 and 3.14), so the shared workspace and
   `make bootstrap` are unchanged. The committed `.dvc/config` turns off DVC's usage analytics
   and update checks and holds no remote.
-- **Nothing damaged is versioned.** `make version-dataset` first runs
-  `python -m agentwatch_data.integrity`, which refuses to continue unless every evidence entry
-  is valid and stored under its own name, every release matches its manifest and name, every
-  build report and committed quality-gate attempt is readable, and every split file hashes to
-  its id and belongs to an existing release.
-- **Nothing half-written is versioned.** `.dvcignore` excludes the hidden staging names every
-  command writes before renaming its output into place (`.building-*`, `.adding-*`,
-  `.attempt-*`, `.*.tmp`).
+- **Nothing damaged or unreproducible is versioned.** `make version-dataset` first runs
+  `python -m agentwatch_data.integrity`, which lists every problem and refuses to continue
+  unless:
+  - every evidence entry is a valid run under its own `<kind>-<run_id>` name, holding only
+    `results.json` and `samples.jsonl`, and no run ID appears twice;
+  - every release matches its manifest and name (a superseded older format is checked against
+    what that format recorded), and every run it contains has its exact evidence (run ID and
+    raw-evidence hash) in the evidence store, so it can be rebuilt from versioned evidence;
+  - every build report is readable and names a release that exists;
+  - every quality-gate attempt is readable and holds exactly `result.json` and the
+    `statistics.pbtxt` whose hash its result recorded;
+  - every split file hashes to its id and belongs to an existing release.
+- **The stores are append-only.** Before snapshotting, `make version-dataset` asks DVC
+  (`dvc data status --granular`) which already-versioned files were deleted or modified since
+  the last snapshot or commit, and refuses if any were. A failed quality-gate verdict, a
+  release, or evidence therefore cannot quietly disappear from the next version.
+- **Nothing half-written or hidden is versioned.** `.dvcignore` excludes the hidden staging
+  names every command writes before renaming its output into place (`.building-*`,
+  `.adding-*`, `.attempt-*`, `.*.tmp`) and every other hidden entry inside the stores, such as
+  macOS `.DS_Store` files; the dataset build skips hidden directories too.
 - **Snapshots are incremental and history stays retrievable.** Every store file is
   immutable and new releases add new directories, so a new version uploads only new files, and
   checking out an older commit and pulling restores the stores exactly as they were then.
@@ -302,6 +314,25 @@ make dataset-status    # what is not yet versioned, and what is not yet uploaded
   data/datasets/splits/<release>"` (the release folder alone has no gate verdict or split). A
   single file can also be read at any git revision without pulling:
   `dvc.api.read("data/datasets/<release>/steps.parquet", rev="<commit>", mode="rb")`.
+
+**Working with others.** Each pointer file is one checksum for a whole store, so two people
+versioning different additions from the same commit change the same line. Because the stores
+are append-only, the right merge is always the union, and DVC's merge driver computes it
+(`.gitattributes` assigns it to `data/*.dvc`). Once per clone, run `make
+dataset-merge-driver`. Then, to bring `main` into a branch that also versioned data:
+
+```sh
+git fetch origin
+make fetch-dataset           # the driver reads both versions' listings from the DVC cache
+git merge origin/main        # data/*.dvc merge into the union, without a conflict
+make pull-dataset            # check out the other side's additions
+make version-dataset         # confirms the merge lost nothing (append-only check)
+```
+
+GitHub's merge button does not run custom merge drivers, so a pull request whose pointer files
+conflict with `main` is merged locally this way and pushed. `make pull-dataset` also refuses to
+overwrite evidence or releases you added but have not versioned: version (or move) them first,
+and never answer with DVC's suggested `--force`, which deletes them.
 
 **Remotes.** No remote is committed until a shared one exists. For local work, add one that
 stays out of git: `uv run --project pipelines/versioning dvc remote add --local -d storage

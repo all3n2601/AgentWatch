@@ -189,17 +189,15 @@ def nesting_depth(value) -> int:
     return deepest
 
 
-def read_jsonl(path: Path) -> list[dict]:
+def parse_jsonl(text: str, name: str) -> list[dict]:
     rows = []
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
         try:
             rows.append(parse_json(line))
         except ValueError as error:
-            raise ValueError(
-                f"{path.name} line {number}: {getattr(error, 'msg', error)}"
-            ) from error
+            raise ValueError(f"{name} line {number}: {getattr(error, 'msg', error)}") from error
     return rows
 
 
@@ -288,6 +286,8 @@ def run_directories(data_dir: Path, extraction: Extraction) -> list[Path]:
     """
     found = []
     for root, directories, files in os.walk(data_dir):  # does not follow directory links
+        # Hidden directories hold staging or tool state, never evidence; DVC excludes them too.
+        directories[:] = sorted(name for name in directories if not name.startswith("."))
         for name in directories:
             linked = Path(root) / name
             if linked.is_symlink() and (linked / RESULTS_FILE).exists():
@@ -298,24 +298,45 @@ def run_directories(data_dir: Path, extraction: Extraction) -> list[Path]:
     return sorted(found)
 
 
+def require_kind(run_dir: Path) -> str:
+    kind = kind_for_directory(run_dir.name)
+    if kind is None:
+        prefixes = ", ".join(f"{prefix}-*" for prefix in KIND_BY_DIRECTORY_PREFIX)
+        raise UnusableRunDirectory(f"Unknown experiment kind; name it {prefixes}")
+    return kind
+
+
 def read_run(run_dir: Path) -> RawRun:
     """Read and validate one local run directory; ValueError or OSError says why it is unusable.
 
     The directory name gives the experiment kind (cpu-*, coding-*, llm-*), so the same rules
     apply wherever a run is read: building a dataset or curating evidence.
     """
-    kind = kind_for_directory(run_dir.name)
-    if kind is None:
-        prefixes = ", ".join(f"{prefix}-*" for prefix in KIND_BY_DIRECTORY_PREFIX)
-        raise UnusableRunDirectory(f"Unknown experiment kind; name it {prefixes}")
+    return run_from_bytes(run_dir, *read_run_files(run_dir))
+
+
+def read_run_files(run_dir: Path) -> tuple[bytes, bytes | None]:
+    """A run directory's results.json bytes and samples.jsonl bytes (None when absent)."""
+    require_kind(run_dir)
     results_path, samples_path = run_dir / RESULTS_FILE, run_dir / SAMPLES_FILE
     if results_path.is_symlink() or samples_path.is_symlink():
         # A link can point anywhere, so the evidence would not be the directory's own.
         raise UnusableRunDirectory("Evidence files must not be symbolic links")
-    result = parse_json(results_path.read_text(encoding="utf-8"))
-    samples = read_jsonl(samples_path) if samples_path.exists() else []
-    status = None if samples_path.exists() else TELEMETRY_MISSING
-    run = validate(result, samples, kind, origin=str(run_dir), telemetry_status=status)
+    results = results_path.read_bytes()
+    samples = samples_path.read_bytes() if samples_path.exists() else None
+    return results, samples
+
+
+def run_from_bytes(run_dir: Path, results: bytes, samples: bytes | None) -> RawRun:
+    """Validate a run from the exact bytes read, so a caller can store exactly what it checked.
+
+    run_dir supplies the kind (from its name) and the origin; its files are not read again.
+    """
+    kind = require_kind(run_dir)
+    result = parse_json(results.decode("utf-8"))
+    rows = [] if samples is None else parse_jsonl(samples.decode("utf-8"), SAMPLES_FILE)
+    status = TELEMETRY_MISSING if samples is None else None
+    run = validate(result, rows, kind, origin=str(run_dir), telemetry_status=status)
     if directory_prefix(run_dir.name) in AGENT_DIRECTORY_PREFIXES and not isinstance(
         run.result.get("agent"), dict
     ):

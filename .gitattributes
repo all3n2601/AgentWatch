@@ -1,0 +1,3 @@
+# The DVC stores are append-only, so concurrent versions merge as the union of their files.
+# Enable the driver once per clone with `make dataset-merge-driver` (see docs/data-card.md).
+data/*.dvc merge=dvc

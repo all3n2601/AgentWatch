@@ -170,3 +170,37 @@ def test_module_runs_as_a_command(tmp_path, store, monkeypatch):
     with pytest.raises(SystemExit) as exited:
         runpy.run_module("agentwatch_data.evidence", run_name="__main__")
     assert exited.value.code == 0
+
+
+def test_the_bytes_validated_are_the_bytes_stored(tmp_path, store, monkeypatch):
+    """A demo rewriting its output while the run is added cannot slip unchecked bytes in."""
+    run_dir = golden_copy(tmp_path)
+    validated = {name: (run_dir / name).read_bytes() for name in ("results.json", "samples.jsonl")}
+    real = evidence_module.run_from_bytes
+    calls = []
+
+    def rewrite_after_validation(directory, results, samples):
+        run = real(directory, results, samples)
+        if not calls:  # the producer overwrites its files right after they were checked
+            (run_dir / "samples.jsonl").write_text(json.dumps(SAMPLE) + "\n")
+        calls.append(directory)
+        return run
+
+    monkeypatch.setattr(evidence_module, "run_from_bytes", rewrite_after_validation)
+    stored = add_run(run_dir, store)
+    assert files_of(store / stored.name) == validated
+    assert len(calls) == 2  # the evidence, then the staged copy read back before publishing
+
+
+def test_a_copy_that_does_not_match_is_never_published(tmp_path, store, monkeypatch):
+    real = evidence_module.fsync_file
+
+    def corrupt(path):
+        if path.name == "samples.jsonl":
+            path.write_text("")  # the copy on disk differs from what was validated
+        real(path)
+
+    monkeypatch.setattr(evidence_module, "fsync_file", corrupt)
+    with pytest.raises(EvidenceError, match="does not match the validated evidence"):
+        add_run(golden_copy(tmp_path), store)
+    assert list(store.iterdir()) == []
