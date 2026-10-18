@@ -1,5 +1,8 @@
 # Persistent runs and ingestion
 
+For incremental lifecycle events before completion, see [live ingestion](live-ingestion.md).
+Its UUID-specific API is additive; the completed-run endpoints below retain their behavior.
+
 Start Docker, run `make infra-up`, then run `make dev-worker` in a terminal. Start the dashboard
 with `make dev-web` in another terminal. The API binds to localhost on port 8090, with generated
 OpenAPI documentation at `http://127.0.0.1:8090/docs`.
