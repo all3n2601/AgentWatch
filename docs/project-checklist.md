@@ -269,9 +269,10 @@ These can be completed before adding an agent.
   and zero-duration runs from `apps/web/fixtures/step-event-replays.ts`. Verification: 48 web
   tests in `apps/web/tests/` (adapter, status helpers, each scenario, replay gating), lint,
   typecheck and build pass; a production build ignores `?replay=`. Headless Chrome screenshots
-  were checked at 360, 375, 640 (200% zoom width), 768 and 1440 px with no page-level overflow;
-  keyboard navigation and real browser zoom were not tested. Real live runs are not displayed
-  until F02 connects the B01 read API, so this stays open.
+  were checked at 360, 375, 640 (200% zoom width), 768 and 1440 px with no page-level overflow.
+  Manual browser checks: keyboard navigation (focus visible; replay scenarios open with Enter)
+  and 200% browser zoom. Real live runs are not displayed until F02 connects the B01 read API,
+  so this stays open.
 - [ ] Provide an instrumentation client for controlled test workloads.
   B01 provides transport/models; A02 still must connect actual agent instrumentation.
 
