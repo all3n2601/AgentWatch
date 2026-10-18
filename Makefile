@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs dataset validate-dataset split-dataset freeze-dataset-schema llm-up llm-down demo-llm record-llm infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset freeze-dataset-schema version-dataset push-dataset pull-dataset dataset-status llm-up llm-down demo-llm record-llm infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -38,10 +38,17 @@ import-runs: ## Import existing local experiment results, spans, and samples
 	uv run --package agentwatch-worker python -m agentwatch_worker.publish --output .data/coding-demo --kind coding
 	uv run --package agentwatch-worker python -m agentwatch_worker.publish --output .data/cpu-demo --kind cpu
 
-DATASET_SOURCES ?= local:.data
-DATASET_OUTPUT ?= .data/datasets
+# Curated evidence and dataset releases are DVC-tracked under data/; .data/ stays scratch output.
+DATASET_EVIDENCE ?= data/evidence
+DATASET_SOURCES ?= local:$(DATASET_EVIDENCE)
+DATASET_OUTPUT ?= data/datasets
+DVC = uv run --project pipelines/versioning --frozen dvc
 
-dataset: ## Build a versioned step dataset release (DATASET_SOURCES="local:.data api:http://127.0.0.1:8090")
+add-evidence: ## Validate recorded runs and copy them into the versioned evidence store (RUN=".data/coding-demo ...")
+	$(if $(RUN),,$(error Set RUN to one or more recorded run directories, for example RUN=.data/coding-demo))
+	uv run --package agentwatch-data python -m agentwatch_data.evidence --store $(DATASET_EVIDENCE) $(RUN)
+
+dataset: ## Build a versioned step dataset release from the evidence store (DATASET_SOURCES="local:data/evidence api:http://127.0.0.1:8090")
 	uv run --package agentwatch-data python -m agentwatch_data.build $(foreach source,$(DATASET_SOURCES),--source $(source)) --output $(DATASET_OUTPUT)
 
 VALIDATION_SCHEMA ?= pipelines/validation/schema/steps.pbtxt
@@ -57,6 +64,20 @@ split-dataset: ## Freeze train/validation/test splits of the newest release (ref
 
 freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest release; review the diff in a PR
 	release=$$($(LATEST_RELEASE)) && uv run --project pipelines/validation python -m agentwatch_validation freeze-schema --release "$$release" --schema $(VALIDATION_SCHEMA)
+
+version-dataset: ## Verify the evidence and dataset stores, then snapshot both with DVC; commit the updated data/*.dvc files
+	uv run --package agentwatch-data python -m agentwatch_data.integrity --evidence $(DATASET_EVIDENCE) --datasets $(DATASET_OUTPUT)
+	$(DVC) add $(DATASET_EVIDENCE) $(DATASET_OUTPUT)
+
+push-dataset: ## Upload versioned evidence and datasets to the DVC remote (configure one first; see docs/data-card.md)
+	$(DVC) push
+
+pull-dataset: ## Download the evidence and datasets versioned at this commit (TARGET="<paths>" for part of it; see docs/data-card.md)
+	$(DVC) pull $(TARGET)
+
+dataset-status: ## Show changes not yet versioned, and versioned data not yet uploaded
+	$(DVC) status
+	$(DVC) status --cloud
 
 # Make variables rather than shell defaults: Windows make may run recipes through cmd.exe.
 AGENTWATCH_LLM_MODEL ?= qwen3:1.7b

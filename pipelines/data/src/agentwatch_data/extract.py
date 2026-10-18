@@ -63,6 +63,10 @@ class ExtractionError(RuntimeError):
     """A source could not be read reliably; the extraction must not be used."""
 
 
+class UnusableRunDirectory(ValueError):
+    """A run directory that cannot hold trustworthy evidence, whatever its contents."""
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
     """Bounded retries with exponential backoff, for transient network failures only."""
@@ -294,32 +298,39 @@ def run_directories(data_dir: Path, extraction: Extraction) -> list[Path]:
     return sorted(found)
 
 
+def read_run(run_dir: Path) -> RawRun:
+    """Read and validate one local run directory; ValueError or OSError says why it is unusable.
+
+    The directory name gives the experiment kind (cpu-*, coding-*, llm-*), so the same rules
+    apply wherever a run is read: building a dataset or curating evidence.
+    """
+    kind = kind_for_directory(run_dir.name)
+    if kind is None:
+        prefixes = ", ".join(f"{prefix}-*" for prefix in KIND_BY_DIRECTORY_PREFIX)
+        raise UnusableRunDirectory(f"Unknown experiment kind; name it {prefixes}")
+    results_path, samples_path = run_dir / RESULTS_FILE, run_dir / SAMPLES_FILE
+    if results_path.is_symlink() or samples_path.is_symlink():
+        # A link can point anywhere, so the evidence would not be the directory's own.
+        raise UnusableRunDirectory("Evidence files must not be symbolic links")
+    result = parse_json(results_path.read_text(encoding="utf-8"))
+    samples = read_jsonl(samples_path) if samples_path.exists() else []
+    status = None if samples_path.exists() else TELEMETRY_MISSING
+    run = validate(result, samples, kind, origin=str(run_dir), telemetry_status=status)
+    if directory_prefix(run_dir.name) in AGENT_DIRECTORY_PREFIXES and not isinstance(
+        run.result.get("agent"), dict
+    ):
+        raise ValueError("An llm-* run has no agent evidence; the LLM loop did not finish")
+    return run
+
+
 def extract_local(data_dir: Path) -> Extraction:
     """Read every run directory (one containing results.json) anywhere under data_dir."""
     if not data_dir.is_dir():
         raise ExtractionError(f"Local evidence directory {data_dir} does not exist")
     extraction = Extraction()
     for run_dir in run_directories(data_dir, extraction):
-        results_path = run_dir / RESULTS_FILE
-        kind = kind_for_directory(run_dir.name)
-        if kind is None:
-            prefixes = ", ".join(f"{prefix}-*" for prefix in KIND_BY_DIRECTORY_PREFIX)
-            reject(extraction, str(run_dir), f"Unknown experiment kind; name it {prefixes}")
-            continue
-        samples_path = run_dir / SAMPLES_FILE
-        if results_path.is_symlink() or samples_path.is_symlink():
-            # A link can point anywhere, so the evidence would not be the directory's own.
-            reject(extraction, str(run_dir), "Evidence files must not be symbolic links")
-            continue
         try:
-            result = parse_json(results_path.read_text(encoding="utf-8"))
-            samples = read_jsonl(samples_path) if samples_path.exists() else []
-            status = None if samples_path.exists() else TELEMETRY_MISSING
-            run = validate(result, samples, kind, origin=str(run_dir), telemetry_status=status)
-            if directory_prefix(run_dir.name) in AGENT_DIRECTORY_PREFIXES and not isinstance(
-                run.result.get("agent"), dict
-            ):
-                raise ValueError("An llm-* run has no agent evidence; the LLM loop did not finish")
+            run = read_run(run_dir)
         except (OSError, ValueError) as error:  # pydantic ValidationError is a ValueError
             reject(extraction, str(run_dir), summarize(error))
             continue
@@ -531,6 +542,8 @@ def finish(extraction: Extraction, source: str) -> Extraction:
 
 
 def summarize(error: Exception) -> str:
+    if isinstance(error, UnusableRunDirectory):
+        return str(error)
     if isinstance(error, ValidationError):
         first = error.errors()[0]
         location = ".".join(str(part) for part in first["loc"]) or "run"

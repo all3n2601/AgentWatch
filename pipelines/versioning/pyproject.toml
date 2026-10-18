@@ -1,0 +1,15 @@
+[project]
+name = "agentwatch-versioning"
+version = "0.1.0"
+description = "AgentWatch dataset versioning: DVC for the evidence and dataset stores, with GCS support"
+# DVC with its GCS plugin is about 120 packages, so it stays out of the shared workspace.
+requires-python = ">=3.13,<3.15"
+dependencies = [
+  "dvc[gs]==3.67.1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9"]
+
+[tool.uv]
+package = false  # a tool environment for DVC and its tests; it ships no Python package

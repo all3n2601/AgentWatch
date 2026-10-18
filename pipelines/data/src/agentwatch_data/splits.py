@@ -1,6 +1,6 @@
 """Freeze the train, validation, and test splits of a dataset release and check them for leakage.
 
-    python -m agentwatch_data.splits --release .data/datasets/<version>
+    python -m agentwatch_data.splits --release data/datasets/<version>
 
 Only a release whose latest quality-gate verdict is a pass, for exactly the files it holds now
 and the reviewed frozen schema, can be split. The fractions, group key, test sources, and
@@ -181,19 +181,26 @@ def read_object(path: Path, what: str) -> dict:
     return value
 
 
-def load_release(path: Path) -> tuple[dict, list[dict]]:
-    """A release's manifest and rows, after verifying its files against the manifest."""
+def verify_release(path: Path) -> dict:
+    """A release's manifest, after verifying its files and name against it."""
     if not (path / DATASET_FILE).is_file():
         raise SplitError(f"{path} is not a dataset release")
     manifest = read_object(path / MANIFEST_FILE, "Manifest")
     intact = (
         manifest.get("release_format") == RELEASE_FORMAT
+        and manifest.get("dataset_version") == path.name
         and manifest.get("parquet_sha256") == file_sha256(path / DATASET_FILE)
         and (path / SCHEMA_FILE).is_file()
         and manifest.get("schema_sha256") == file_sha256(path / SCHEMA_FILE)
     )
     if not intact:
         raise SplitError(f"Release {path.name} does not match its manifest; rebuild it")
+    return manifest
+
+
+def load_release(path: Path) -> tuple[dict, list[dict]]:
+    """A release's manifest and rows, after verifying its files against the manifest."""
+    manifest = verify_release(path)
     return manifest, pq.read_table(path / DATASET_FILE).to_pylist()
 
 
@@ -482,6 +489,23 @@ def write_atomic(path: Path, text: str) -> None:
         staged.unlink(missing_ok=True)
 
 
+def read_split_file(path: Path) -> dict:
+    """A split file whose id is the hash of its content and matches its name and folder.
+
+    This proves the file is whole and in place, not that it is the right split: load_split
+    also rebuilds it from the release and contract.
+    """
+    split = read_object(path, "Split")
+    content = {key: value for key, value in split.items() if key != "split_id"}
+    if (
+        split.get("split_id") != f"{SPLIT_METHOD}+{canonical_sha256(content)[:12]}"
+        or path.stem != split["split_id"]
+        or path.parent.name != split.get("release")
+    ):
+        raise SplitError(f"Split {path.name} does not match its content or location")
+    return split
+
+
 def load_split(
     path: Path,
     name: str,
@@ -502,9 +526,7 @@ def load_split(
     """
     if name not in SPLITS:
         raise SplitError(f"Unknown split {name!r}; expected one of {list(SPLITS)}")
-    split = read_object(path, "Split")
-    if path.stem != split.get("split_id") or path.parent.name != split.get("release"):
-        raise SplitError(f"Split {path.name} does not match its content or location")
+    split = read_split_file(path)
     contract = load_contract(contract_path)
     release = path.parents[2] / path.parent.name
     manifest, rows = load_release(release)

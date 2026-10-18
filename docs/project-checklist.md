@@ -319,7 +319,10 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
 - [ ] Choose whether the regression target is observed queue time or estimated excess latency.
 - [ ] Generate clean, isolated-contention, and mixed-contention replays over fixed tasks.
 - [ ] Store versioned Parquet datasets with GCS/DVC or an explicitly chosen equivalent.
-  Versioned Parquet releases are built locally; GCS/DVC storage is not yet set up.
+  DVC versioning is in place (2026-10-18): `make add-evidence` curates runs into an immutable
+  evidence store, `make version-dataset` verifies and snapshots the evidence and dataset stores,
+  and `pipelines/versioning/tests` shows a fresh clone rebuilding a versioned release byte for
+  byte through a local remote. Open until the GCS remote exists (needs F's bucket).
 - [x] Validate data with TFDV or an explicitly chosen equivalent (2026-10-12): `make
   validate-dataset` checks a release with TFDV 1.21 against the frozen schema in
   `pipelines/validation/schema/steps.pbtxt`; Parquet types that differ from the release's contract

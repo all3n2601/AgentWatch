@@ -1,6 +1,6 @@
 """Build a versioned step dataset release from recorded evidence.
 
-    python -m agentwatch_data.build --source local:.data --output .data/datasets
+    python -m agentwatch_data.build --source local:data/evidence --output data/datasets
 
 A release is an immutable directory named by its dataset version, holding steps.parquet,
 schema.json (the column contract), and manifest.json, which describe only the dataset content.
@@ -498,7 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="local:<directory> or api:<url>; repeat to combine sources",
     )
-    parser.add_argument("--output", type=Path, default=Path(".data/datasets"))
+    parser.add_argument("--output", type=Path, default=Path("data/datasets"))
     parser.add_argument("--rules", type=Path, help="label rules (default: packaged labels.toml)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")

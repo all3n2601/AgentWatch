@@ -325,7 +325,8 @@ def test_a_changed_split_file_is_refused(release):
     split = json.loads(result.path.read_text())
     split["groups"] = {task: "train" for task in split["groups"]}
     result.path.write_text(json.dumps(split))
-    with pytest.raises(SplitError, match="is not what .* produce"):
+    # Not re-signed, so its id no longer hashes its content: refused before any rebuild.
+    with pytest.raises(SplitError, match="does not match its content or location"):
         rows_of(result.path, "train")
     with pytest.raises(SplitError, match="Existing split .* does not match its content"):
         split_of(release)
