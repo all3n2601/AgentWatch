@@ -14,8 +14,6 @@ import {
 } from "../lib/live-status";
 import { readStepEvents } from "../lib/step-events";
 
-const NOW_MS = Date.parse("2026-10-14T12:10:00Z");
-
 function scenario(id: string) {
   const replay = findReplayScenario(id);
   assert.ok(replay, `missing scenario ${id}`);
@@ -25,8 +23,7 @@ function scenario(id: string) {
     view,
     totals: stepTotals(view, replay.run),
     freshness: feedFreshness({
-      lastReceivedAtMs: NOW_MS - replay.receivedAgoMs,
-      nowMs: NOW_MS,
+      ageMs: replay.receivedAgoMs,
       outcome: runOutcome(replay.run),
     }),
   };

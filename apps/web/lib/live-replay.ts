@@ -12,8 +12,8 @@ export type LiveReplay = {
   title: string;
   description: string;
   run: RunStatus;
-  /** Browser-clock time the scripted records count as received. */
-  receivedAtMs: number;
+  /** Scripted age of the latest record when the browser receives the page. */
+  receivedAgoMs: number;
   view: LiveRunView;
 };
 
@@ -22,26 +22,22 @@ export type LivePageData = {
   /** Requested scenario id, kept so an unknown id can be reported. */
   requestedReplay: string | null;
   scenarios: { id: string; title: string }[];
-  renderedAtMs: number;
 };
 
 /**
  * Builds the live page's data. Until the F02 live consumer exists the only
  * source is a development replay, which callers must disable in production.
+ * It carries no server wall-clock time: the browser anchors receipt itself.
  */
 export function liveReplayData(
   requested: string | undefined,
-  {
-    replayEnabled,
-    nowMs = Date.now(),
-  }: { replayEnabled: boolean; nowMs?: number },
+  { replayEnabled }: { replayEnabled: boolean },
 ): LivePageData {
   if (!replayEnabled)
     return {
       replay: null,
       requestedReplay: null,
       scenarios: [],
-      renderedAtMs: nowMs,
     };
   const scenario = findReplayScenario(requested);
   return {
@@ -51,12 +47,11 @@ export function liveReplayData(
           title: scenario.title,
           description: scenario.description,
           run: scenario.run,
-          receivedAtMs: nowMs - scenario.receivedAgoMs,
+          receivedAgoMs: scenario.receivedAgoMs,
           view: readStepEvents(SYNTHETIC_RUN_ID, scenario.records),
         }
       : null,
     requestedReplay: requested ?? null,
     scenarios: replayScenarios.map(({ id, title }) => ({ id, title })),
-    renderedAtMs: nowMs,
   };
 }

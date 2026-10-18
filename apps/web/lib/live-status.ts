@@ -34,17 +34,46 @@ export function runOutcome(run: RunStatus): RunOutcome {
 }
 
 /**
- * Uses browser receipt times on both sides: producer `observed_at` is a
- * different clock and cannot measure how long the feed has been quiet.
+ * A record receipt anchored to one browser's monotonic clock: the record's age
+ * when the anchor was taken. Server and producer wall clocks never enter it, so
+ * clock offsets between machines cannot distort feed age.
  */
+export type FeedReceipt = { ageAtAnchorMs: number; anchorMonotonicMs: number };
+
+/** Age of the latest received record at a later reading of the same clock. */
+export function receiptAgeMs(
+  receipt: FeedReceipt | null,
+  nowMonotonicMs: number,
+): number | null {
+  if (!receipt) return null;
+  return (
+    receipt.ageAtAnchorMs +
+    Math.max(0, nowMonotonicMs - receipt.anchorMonotonicMs)
+  );
+}
+
+/** Wall time of receipt on the viewer's clock, derived from the same age. */
+export const receivedAtWallMs = (ageMs: number, browserWallNowMs: number) =>
+  browserWallNowMs - ageMs;
+
+const SECOND_MS = 1_000;
+const MINUTE_MS = 60 * SECOND_MS;
+const HOUR_MS = 60 * MINUTE_MS;
+const JUST_NOW_MS = 5 * SECOND_MS;
+
+export function formatReceiptAge(ageMs: number) {
+  if (ageMs < JUST_NOW_MS) return "Just now";
+  if (ageMs < MINUTE_MS) return `${Math.floor(ageMs / SECOND_MS)} s ago`;
+  if (ageMs < HOUR_MS) return `${Math.floor(ageMs / MINUTE_MS)} min ago`;
+  return `${Math.floor(ageMs / HOUR_MS)} h ago`;
+}
+
 export function feedFreshness({
-  lastReceivedAtMs,
-  nowMs,
+  ageMs,
   outcome,
   staleAfterMs = LIVE_FEED_STALE_AFTER_MS,
 }: {
-  lastReceivedAtMs: number | null;
-  nowMs: number;
+  ageMs: number | null;
   outcome: RunOutcome;
   staleAfterMs?: number;
 }): FeedFreshness {
@@ -54,8 +83,8 @@ export function feedFreshness({
     outcome === "cancelled"
   )
     return "closed";
-  if (lastReceivedAtMs === null) return "never";
-  return nowMs - lastReceivedAtMs > staleAfterMs ? "stale" : "fresh";
+  if (ageMs === null) return "never";
+  return ageMs > staleAfterMs ? "stale" : "fresh";
 }
 
 export type TimingTotal = {

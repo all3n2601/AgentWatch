@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   CircleAlert,
@@ -21,6 +21,9 @@ import {
   activeSteps,
   failedSteps,
   feedFreshness,
+  formatReceiptAge,
+  receiptAgeMs,
+  receivedAtWallMs,
   runOutcome,
   stepTotals,
   type CpuTotal,
@@ -360,30 +363,58 @@ function StepRow({ step }: { step: LiveStep }) {
   );
 }
 
-function ReplayView({
-  replay,
-  renderedAtMs,
-}: {
-  replay: LiveReplay;
-  renderedAtMs: number;
-}) {
-  // Starts from the server render time so hydration matches, then ticks so an
-  // open run turns stale when no new records arrive.
-  const [nowMs, setNowMs] = useState(renderedAtMs);
-  const outcome = runOutcome(replay.run);
-  const freshness = feedFreshness({
-    lastReceivedAtMs: replay.receivedAtMs,
-    nowMs,
-    outcome,
-  });
+type BrowserClock = {
+  anchorMonotonicMs: number;
+  nowMonotonicMs: number;
+  nowWallMs: number;
+};
+
+/**
+ * Reads only the browser's clocks, after mount. The anchor is the browser's
+ * monotonic time when the replay was received (hydration), so feed age never
+ * compares server and browser clocks. Returns null during server render and
+ * hydration, keeping the first client render identical to the server's.
+ */
+function useBrowserClock(ticking: boolean) {
+  const anchorRef = useRef<number | null>(null);
+  const [clock, setClock] = useState<BrowserClock | null>(null);
   useEffect(() => {
-    if (freshness === "closed") return;
-    const timer = setInterval(
-      () => setNowMs(Date.now()),
-      FRESHNESS_CHECK_INTERVAL_MS,
-    );
-    return () => clearInterval(timer);
-  }, [freshness]);
+    const read = () => {
+      const nowMonotonicMs = performance.now();
+      anchorRef.current ??= nowMonotonicMs;
+      setClock({
+        anchorMonotonicMs: anchorRef.current,
+        nowMonotonicMs,
+        nowWallMs: Date.now(),
+      });
+    };
+    const first = setTimeout(read, 0);
+    const timer = ticking
+      ? setInterval(read, FRESHNESS_CHECK_INTERVAL_MS)
+      : undefined;
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
+  }, [ticking]);
+  return clock;
+}
+
+function ReplayView({ replay }: { replay: LiveReplay }) {
+  const outcome = runOutcome(replay.run);
+  // Only an open run can turn stale, so a closed run needs no ticking.
+  const clock = useBrowserClock(outcome === "active" || outcome === "unknown");
+  // Before the browser clock is read, the age is the scripted age at receipt.
+  const ageMs = clock
+    ? receiptAgeMs(
+        {
+          ageAtAnchorMs: replay.receivedAgoMs,
+          anchorMonotonicMs: clock.anchorMonotonicMs,
+        },
+        clock.nowMonotonicMs,
+      )!
+    : replay.receivedAgoMs;
+  const freshness = feedFreshness({ ageMs, outcome });
   const { view, run } = replay;
   const active = activeSteps(view);
   const failed = failedSteps(view);
@@ -411,15 +442,28 @@ function ReplayView({
         <StatusTile
           label="Last record received"
           detail={
-            view.lastObservedAt ? (
-              <>
-                Latest producer observation{" "}
-                <Timestamp iso={view.lastObservedAt} />
-              </>
-            ) : undefined
+            <>
+              {clock && (
+                <>
+                  At{" "}
+                  <Timestamp
+                    iso={new Date(
+                      receivedAtWallMs(ageMs, clock.nowWallMs),
+                    ).toISOString()}
+                  />{" "}
+                  on this device&apos;s clock.{" "}
+                </>
+              )}
+              {view.lastObservedAt && (
+                <>
+                  Latest producer observation{" "}
+                  <Timestamp iso={view.lastObservedAt} />
+                </>
+              )}
+            </>
           }
         >
-          <Timestamp iso={new Date(replay.receivedAtMs).toISOString()} />
+          {formatReceiptAge(ageMs)}
         </StatusTile>
         <StatusTile
           label="Steps"
@@ -478,7 +522,7 @@ export function LiveRun({ data }: { data: LivePageData }) {
       <div className="space-y-6">
         <ReplayBanner replay={data.replay} />
         <ScenarioPicker scenarios={data.scenarios} current={data.replay.id} />
-        <ReplayView replay={data.replay} renderedAtMs={data.renderedAtMs} />
+        <ReplayView replay={data.replay} />
       </div>
     );
   return (

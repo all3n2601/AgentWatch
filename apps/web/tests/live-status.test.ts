@@ -8,7 +8,9 @@ import {
   activeSteps,
   failedSteps,
   feedFreshness,
+  formatReceiptAge,
   LIVE_FEED_STALE_AFTER_MS,
+  receiptAgeMs,
   runOutcome,
   stepTotals,
 } from "../lib/live-status";
@@ -80,35 +82,36 @@ test("run outcome comes from the reported run state, not step states", () => {
 });
 
 test("feed freshness separates never-received, fresh, stale and closed", () => {
-  const now = 1_000_000;
+  assert.equal(feedFreshness({ ageMs: null, outcome: "active" }), "never");
   assert.equal(
-    feedFreshness({ lastReceivedAtMs: null, nowMs: now, outcome: "active" }),
-    "never",
-  );
-  assert.equal(
-    feedFreshness({
-      lastReceivedAtMs: now - LIVE_FEED_STALE_AFTER_MS,
-      nowMs: now,
-      outcome: "active",
-    }),
+    feedFreshness({ ageMs: LIVE_FEED_STALE_AFTER_MS, outcome: "active" }),
     "fresh",
   );
   assert.equal(
-    feedFreshness({
-      lastReceivedAtMs: now - LIVE_FEED_STALE_AFTER_MS - 1,
-      nowMs: now,
-      outcome: "unknown",
-    }),
+    feedFreshness({ ageMs: LIVE_FEED_STALE_AFTER_MS + 1, outcome: "unknown" }),
     "stale",
   );
   assert.equal(
-    feedFreshness({
-      lastReceivedAtMs: now - 10 * LIVE_FEED_STALE_AFTER_MS,
-      nowMs: now,
-      outcome: "failed",
-    }),
+    feedFreshness({ ageMs: 10 * LIVE_FEED_STALE_AFTER_MS, outcome: "failed" }),
     "closed",
   );
+});
+
+test("receipt age advances only with the browser's monotonic clock", () => {
+  const receipt = { ageAtAnchorMs: 2_000, anchorMonotonicMs: 50_000 };
+  assert.equal(receiptAgeMs(null, 60_000), null);
+  assert.equal(receiptAgeMs(receipt, 50_000), 2_000);
+  assert.equal(receiptAgeMs(receipt, 57_500), 9_500);
+  // A monotonic reading before the anchor never makes the record younger.
+  assert.equal(receiptAgeMs(receipt, 49_000), 2_000);
+});
+
+test("receipt age is shown as coarse relative text", () => {
+  assert.equal(formatReceiptAge(0), "Just now");
+  assert.equal(formatReceiptAge(4_999), "Just now");
+  assert.equal(formatReceiptAge(42_000), "42 s ago");
+  assert.equal(formatReceiptAge(120_000), "2 min ago");
+  assert.equal(formatReceiptAge(2 * 3_600_000 + 1), "2 h ago");
 });
 
 test("totals are final only for a closed run with every step terminal", () => {
