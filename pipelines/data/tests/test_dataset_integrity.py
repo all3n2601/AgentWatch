@@ -4,6 +4,8 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from agentwatch_data.build import Source, build
 from agentwatch_data.evidence import add_run
@@ -175,22 +177,39 @@ def test_a_renamed_release_is_reported_once(stores):
     ]
 
 
-def format_1(release: Path) -> None:
-    """Turn a release into the superseded format: no schema.json, no format field."""
+def format_1(release: Path) -> Path:
+    """A genuine superseded release beside release: what the builder wrote before schema.json.
+
+    Its version came from the rows alone, and its manifest had no format or contract hash.
+    """
     manifest = json.loads((release / "manifest.json").read_text())
+    name = f"{manifest['schema_version']}+{manifest['rows_sha256'][:12]}"
+    old = release.parent / name
+    old.mkdir()
+    table = pq.read_table(release / "steps.parquet")
+    index = table.column_names.index("dataset_version")
+    versions = pa.array([name] * table.num_rows, pa.string())
+    pq.write_table(
+        table.set_column(index, table.schema.field(index), versions), old / "steps.parquet"
+    )
     del manifest["release_format"], manifest["schema_sha256"]
-    (release / "manifest.json").write_text(json.dumps(manifest))
-    (release / "schema.json").unlink()
+    manifest |= {"dataset_version": name, "parquet_sha256": sha256(old / "steps.parquet")}
+    (old / "manifest.json").write_text(json.dumps(manifest))
+    return old
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_superseded_releases_are_accepted_by_their_own_format(stores):
     evidence, datasets, release = stores
-    format_1(release)
+    old = format_1(release)
     report = verify(evidence, datasets)
-    assert report.problems == [] and (report.releases, report.superseded) == (0, 1)
-    (release / "steps.parquet").write_bytes(b"tampered")
+    assert report.problems == [] and (report.releases, report.superseded) == (1, 1)
+    (old / "steps.parquet").write_bytes(b"tampered")
     assert problems(evidence, datasets) == [
-        f"datasets/{release.name}: Release {release.name} does not match its manifest (no format)"
+        f"datasets/{old.name}: Release {old.name} does not match its manifest (no format)"
     ]
 
 
@@ -391,3 +410,171 @@ def test_module_runs_as_a_command(stores, monkeypatch):
     with pytest.raises(SystemExit) as exited:
         runpy.run_module("agentwatch_data.integrity", run_name="__main__")
     assert exited.value.code == 0
+
+
+# Releases must be exactly what their content produces (review of #28)
+
+
+def rewrite_column(release: Path, column: str, change) -> None:
+    """Edit one column of steps.parquet, keeping its Arrow type."""
+    table = pq.read_table(release / "steps.parquet")
+    index = table.column_names.index(column)
+    values = [change(value) for value in table.column(column).to_pylist()]
+    array = pa.array(values, type=table.schema.field(index).type)
+    pq.write_table(
+        table.set_column(index, table.schema.field(index), array), release / "steps.parquet"
+    )
+
+
+def resign(release: Path, **fields) -> None:
+    """Update the manifest so every file hash matches again, plus any fields given."""
+    manifest = json.loads((release / "manifest.json").read_text())
+    manifest["parquet_sha256"] = sha256(release / "steps.parquet")
+    if (release / "schema.json").exists():
+        manifest["schema_sha256"] = sha256(release / "schema.json")
+    (release / "manifest.json").write_text(json.dumps(manifest | fields))
+
+
+def test_edited_rows_with_a_resigned_manifest_are_refused(stores):
+    """The review's reproduction: change queue_seconds, update only parquet_sha256."""
+    evidence, datasets, release = stores
+    rewrite_column(release, "queue_seconds", lambda value: value + 1.0)
+    resign(release)
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(f"datasets/{release.name}: its content produces steps-v1.2+")
+    assert problem.endswith("not its name; it was changed after it was built")
+
+
+def test_edited_rows_with_a_resigned_row_digest_are_refused_too(stores):
+    from agentwatch_data.build import rows_digest
+
+    evidence, datasets, release = stores
+    rewrite_column(release, "queue_seconds", lambda value: value + 1.0)
+    rows = pq.read_table(release / "steps.parquet").to_pylist()
+    digest = rows_digest([{k: v for k, v in row.items() if k != "dataset_version"} for row in rows])
+    resign(release, rows_sha256=digest)  # every hash consistent; only the name is old
+    assert "not its name" in problems(evidence, datasets)[0]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"rows": 99},
+        {"label_resource": {"cpu_sandbox": 7}},
+        {"telemetry_status": {}},
+        {"rows_sha256": "0" * 64},
+        {"unexpected": 1},
+    ],
+)
+def test_manifest_summaries_must_match_the_rows(stores, fields):
+    evidence, datasets, release = stores
+    resign(release, **fields)
+    [problem] = problems(evidence, datasets)
+    assert (
+        problem
+        == f"datasets/{release.name}: manifest fields {sorted(fields)} do not match its rows"
+    )
+
+
+def test_the_builder_version_is_not_content(stores):
+    evidence, datasets, release = stores
+    resign(release, builder_version="9.9.9")  # recorded by the builder, not derived from rows
+    assert problems(evidence, datasets) == []
+
+
+@pytest.mark.parametrize("column", ["dataset_version", "label_version", "schema_version"])
+def test_rows_must_carry_the_manifest_versions(stores, column):
+    evidence, datasets, release = stores
+    first = []
+
+    def relabel(value):
+        first.append(value)
+        return "other" if len(first) == 1 else value
+
+    rewrite_column(release, column, relabel)
+    resign(release)
+    [problem] = problems(evidence, datasets)
+    assert f"rows do not all carry the manifest's {column}" in problem
+
+
+def test_an_edited_contract_changes_the_identity(stores):
+    evidence, datasets, release = stores
+    contract = json.loads((release / "schema.json").read_text())
+    contract["columns"][0]["description"] = "edited"
+    (release / "schema.json").write_text(json.dumps(contract))
+    resign(release)
+    assert "not its name" in problems(evidence, datasets)[0]
+
+
+def test_an_edited_superseded_release_is_refused(stores):
+    evidence, datasets, release = stores
+    old = format_1(release)
+    rewrite_column(old, "queue_seconds", lambda value: value + 1.0)
+    resign(old)
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(f"datasets/{old.name}: its content produces")
+
+
+def test_identity_is_recomputed_for_rows_with_saved_times(tmp_path, monkeypatch):
+    """API runs carry a recorded_at timestamp, which round-trips through Parquet."""
+    from agentwatch_data import build as build_module
+    from agentwatch_data.extract import Extraction, validate
+    from agentwatch_data.integrity import identity_problem
+
+    saved = datetime(2026, 10, 5, 12, 30, tzinfo=UTC)
+    runs = [validate(make_result(), [], "cpu", saved, origin="api") for _ in range(2)]
+    monkeypatch.setattr(build_module, "extract", lambda source: Extraction(runs=list(runs)))
+    release = build([Source("api", "http://api")], tmp_path / "datasets", now=NOW).release
+    manifest = json.loads((release / "manifest.json").read_text())
+    assert identity_problem(release, manifest, current=True) is None
+
+
+# A release holds exactly its declared files (review of #28)
+
+
+def test_a_release_holding_extra_files_is_refused(stores):
+    evidence, datasets, release = stores
+    (release / "notes.txt").write_text("not part of the release")
+    assert problems(evidence, datasets) == [
+        (
+            f"datasets/{release.name}: holds ['manifest.json', 'notes.txt', 'schema.json', "
+            "'steps.parquet'], not ['manifest.json', 'schema.json', 'steps.parquet']"
+        )
+    ]
+
+
+def test_a_release_missing_a_file_or_holding_links_or_folders_is_refused(stores, tmp_path):
+    evidence, datasets, release = stores
+    (release / "nested").mkdir()
+    assert "holds ['manifest.json', 'nested'" in problems(evidence, datasets)[0]
+    (release / "nested").rmdir()
+    elsewhere = tmp_path / "steps.parquet"
+    (release / "steps.parquet").rename(elsewhere)
+    (release / "steps.parquet").symlink_to(elsewhere)
+    assert (
+        "holds ['manifest.json', 'schema.json', 'steps.parquet'], not"
+        in problems(evidence, datasets)[0]
+    )
+    (release / "steps.parquet").unlink()
+    elsewhere.rename(release / "steps.parquet")
+    (release / "schema.json").unlink()
+    assert "holds ['manifest.json', 'steps.parquet'], not" in problems(evidence, datasets)[0]
+
+
+def test_hidden_files_in_a_release_are_skipped(stores):
+    evidence, datasets, release = stores
+    (release / ".DS_Store").write_text("Finder state")
+    report = verify(evidence, datasets)
+    assert report.problems == [] and report.hidden == 1
+
+
+def test_a_superseded_release_holds_no_contract(stores):
+    evidence, datasets, release = stores
+    old = format_1(release)
+    (old / "schema.json").write_text("{}")
+    assert problems(evidence, datasets) == [
+        (
+            f"datasets/{old.name}: holds ['manifest.json', 'schema.json', 'steps.parquet'], "
+            "not ['manifest.json', 'steps.parquet']"
+        )
+    ]

@@ -187,15 +187,46 @@ def rows_digest(rows: list[dict]) -> str:
     return canonical_sha256(serializable)
 
 
-def release_digest(rows_sha256: str) -> str:
+def release_digest(rows_sha256: str, release_contract: dict | None = None) -> str:
     """Identify a whole release: its rows, the column contract it ships, and its format.
 
     Releases are never rewritten, so anything a release must contain is part of its identity;
-    otherwise an older release with the same rows would be reused without it.
+    otherwise an older release with the same rows would be reused without it. A release
+    checked later passes the contract it shipped, which may predate the current one.
     """
+    shipped = contract() if release_contract is None else release_contract
     return canonical_sha256(
-        {"release_format": RELEASE_FORMAT, "contract": contract(), "rows_sha256": rows_sha256}
+        {"release_format": RELEASE_FORMAT, "contract": shipped, "rows_sha256": rows_sha256}
     )
+
+
+def release_manifest(
+    rows: list[dict],
+    version: str,
+    digest: str,
+    label_version: str,
+    parquet_sha256: str,
+    schema_sha256: str,
+    schema_version: str = SCHEMA_VERSION,
+) -> dict:
+    """A release's manifest: content-derived fields only, so its rows determine it."""
+    return {
+        "release_format": RELEASE_FORMAT,
+        "dataset_version": version,
+        "schema_version": schema_version,
+        "label_version": label_version,
+        "builder_version": __version__,
+        "rows": len(rows),
+        "runs": len({row["run_id"] for row in rows}),
+        "tasks": len({row["task_id"] for row in rows}),
+        "rows_sha256": digest,
+        "parquet_sha256": parquet_sha256,
+        "schema_sha256": schema_sha256,
+        "label_resource": counts(rows, "label_resource"),
+        "label_basis": counts(rows, "label_basis"),
+        "condition": counts(rows, "condition"),
+        "telemetry_status": counts(rows, "telemetry_status"),
+    }
 
 
 def contract_text() -> str:
@@ -377,23 +408,14 @@ def write_release(
         dataset = staging / DATASET_FILE
         pq.write_table(pa.Table.from_pylist(rows, schema=ARROW_SCHEMA), dataset, **PARQUET_OPTIONS)
         (staging / SCHEMA_FILE).write_text(contract_text(), encoding="utf-8")
-        manifest = {
-            "release_format": RELEASE_FORMAT,
-            "dataset_version": version,
-            "schema_version": SCHEMA_VERSION,
-            "label_version": label_version,
-            "builder_version": __version__,
-            "rows": len(rows),
-            "runs": len({row["run_id"] for row in rows}),
-            "tasks": len({row["task_id"] for row in rows}),
-            "rows_sha256": digest,
-            "parquet_sha256": file_sha256(dataset),
-            "schema_sha256": file_sha256(staging / SCHEMA_FILE),
-            "label_resource": counts(rows, "label_resource"),
-            "label_basis": counts(rows, "label_basis"),
-            "condition": counts(rows, "condition"),
-            "telemetry_status": counts(rows, "telemetry_status"),
-        }
+        manifest = release_manifest(
+            rows,
+            version,
+            digest,
+            label_version,
+            file_sha256(dataset),
+            file_sha256(staging / SCHEMA_FILE),
+        )
         (staging / MANIFEST_FILE).write_text(json_text(manifest), encoding="utf-8")
         # Durable before the rename publishes it: after a crash a release is whole or absent.
         for name in (DATASET_FILE, SCHEMA_FILE, MANIFEST_FILE):

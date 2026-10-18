@@ -286,9 +286,14 @@ make dataset-status    # what is not yet versioned, and (with a remote) what is 
   unless:
   - every evidence entry is a valid run under its own `<kind>-<run_id>` name, holding only
     `results.json` and `samples.jsonl`, and no run ID appears twice;
-  - every release matches its manifest and name (a superseded older format is checked against
-    what that format recorded), and every run it contains has its exact evidence (run ID and
-    raw-evidence hash) in the evidence store, so it can be rebuilt from versioned evidence;
+  - every release is exactly what its content produces: it holds only the files its format
+    declares (`steps.parquet`, `schema.json`, `manifest.json`; format 1 had no `schema.json`),
+    its files match the manifest's hashes, and the row digest, the content-addressed name
+    (recomputed from the rows and the contract the release ships), every row's version
+    columns, and every content-derived manifest field are recomputed and must match. A release
+    edited together with its manifest is therefore refused, not just one whose hashes differ;
+  - every run a release contains has its exact evidence (run ID and raw-evidence hash) in the
+    evidence store, so it can be rebuilt from versioned evidence;
   - every build report is readable and names a release that exists;
   - every quality-gate attempt is readable and holds exactly `result.json` and the
     `statistics.pbtxt` whose hash its result recorded;

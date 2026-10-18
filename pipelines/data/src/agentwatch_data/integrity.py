@@ -37,7 +37,11 @@ from agentwatch_data.build import (
     DATASET_FILE,
     MANIFEST_FILE,
     RELEASE_NAME,
+    SCHEMA_FILE,
     file_sha256,
+    release_digest,
+    release_manifest,
+    rows_digest,
 )
 from agentwatch_data.evidence import EVIDENCE_FILES, EvidenceError, entry_name, read_entry
 from agentwatch_data.splits import (
@@ -52,6 +56,10 @@ from agentwatch_data.splits import (
 )
 
 STATISTICS_FILE = "statistics.pbtxt"  # written beside result.json by the quality gate
+RELEASE_FILES = {DATASET_FILE, SCHEMA_FILE, MANIFEST_FILE}
+SUPERSEDED_RELEASE_FILES = {DATASET_FILE, MANIFEST_FILE}  # format 1, before schema.json
+# Recorded by the builder that wrote a release, not derived from its rows.
+NOT_CONTENT_DERIVED = {"builder_version"}
 ATTEMPT_FILES = {RESULT_FILE, STATISTICS_FILE}
 
 
@@ -111,33 +119,81 @@ def check_evidence(store: Path, report: Report) -> None:
 
 
 def check_release(path: Path, report: Report) -> bool:
-    """Whether the release is intact, by the format it declares."""
+    """Whether the release is exactly what its rows produce, by the format it declares.
+
+    Matching file hashes only prove the manifest describes the files; a release edited along
+    with its manifest would still pass that. So the identity is recomputed from the content,
+    as the build computes it: the row digest, the content-addressed name (from the rows and
+    the column contract the release ships), and every content-derived manifest field.
+    """
+    label = f"datasets/{path.name}"
     try:
         manifest = read_object(path / MANIFEST_FILE, "Manifest")
     except SplitError as error:
-        report.problems.append(f"datasets/{path.name}: {error}")
+        report.problems.append(f"{label}: {error}")
         return False
-    if "release_format" in manifest:
-        try:
+    current = "release_format" in manifest
+    expected_files = RELEASE_FILES if current else SUPERSEDED_RELEASE_FILES
+    entries = visible(path, report)
+    names = {entry.name for entry in entries}
+    if names != expected_files or any(e.is_symlink() or not e.is_file() for e in entries):
+        report.problems.append(f"{label}: holds {sorted(names)}, not {sorted(expected_files)}")
+        return False
+    try:
+        if current:
             verify_release(path)
-        except SplitError as error:
-            report.problems.append(f"datasets/{path.name}: {error}")
-            return False
-        report.releases += 1
-        return True
-    # Superseded format 1: no schema.json yet, but the name and Parquet hash still bind it.
-    intact = (
-        manifest.get("dataset_version") == path.name
-        and (path / DATASET_FILE).is_file()
-        and manifest.get("parquet_sha256") == file_sha256(path / DATASET_FILE)
-    )
-    if not intact:
-        report.problems.append(
-            f"datasets/{path.name}: Release {path.name} does not match its manifest (no format)"
-        )
+        elif manifest.get("parquet_sha256") != file_sha256(path / DATASET_FILE):
+            raise SplitError(f"Release {path.name} does not match its manifest (no format)")
+        problem = identity_problem(path, manifest, current)
+    except SplitError as error:
+        problem = str(error)
+    if problem:
+        report.problems.append(f"{label}: {problem}")
         return False
-    report.superseded += 1
+    if current:
+        report.releases += 1
+    else:
+        report.superseded += 1
     return True
+
+
+def identity_problem(path: Path, manifest: dict, current: bool) -> str | None:
+    """Why the release's content does not produce its name and manifest, or None."""
+    rows = pq.read_table(path / DATASET_FILE).to_pylist()
+    for column, declared in (
+        ("dataset_version", path.name),
+        ("label_version", manifest.get("label_version")),
+        ("schema_version", manifest.get("schema_version")),
+    ):
+        if {row.get(column) for row in rows} != {declared}:
+            return f"rows do not all carry the manifest's {column} {declared!r}"
+    digest = rows_digest([{k: v for k, v in row.items() if k != "dataset_version"} for row in rows])
+    if current:
+        shipped = read_object(path / SCHEMA_FILE, "Column contract")
+        name = f"{manifest['schema_version']}+{release_digest(digest, shipped)[:12]}"
+    else:
+        name = f"{manifest['schema_version']}+{digest[:12]}"
+    if name != path.name:
+        return f"its content produces {name}, not its name; it was changed after it was built"
+    expected = release_manifest(
+        rows,
+        name,
+        digest,
+        manifest["label_version"],
+        manifest.get("parquet_sha256"),
+        manifest.get("schema_sha256"),
+        manifest["schema_version"],
+    )
+    if not current:
+        del expected["release_format"], expected["schema_sha256"]
+    differing = sorted(
+        key
+        for key in (expected.keys() | manifest.keys()) - NOT_CONTENT_DERIVED
+        if expected.get(key) != manifest.get(key)
+    )
+    if differing:
+        return f"manifest fields {differing} do not match its rows"
+    return None
 
 
 def check_reproducible(path: Path, report: Report) -> None:
