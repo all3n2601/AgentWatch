@@ -251,7 +251,27 @@ These can be completed before adding an agent.
 - [ ] Add automatic dashboard updates, connection status, last-update time, and stale-data indicators.
   Completed-history polling, source status, and last-refresh time now exist; live-run streaming and
   stale-event indicators remain unfinished.
+  F01, October 18, 2026 (branch `feature/live-run-view`): the header shows the actual history
+  source and last load time on all viewports. The `/live` view shows feed freshness (receiving,
+  stale, closed, no records) and last-record age from the browser's monotonic clock only, so
+  server/browser clock offsets cannot distort it (`apps/web/tests/live-replay.test.ts` covers
+  ±60 s). Its only data source is a synthetic development replay; F02 must poll the B01 live
+  read API before automatic live updates exist. Keep this open until then.
 - [ ] Display active steps, terminal failures, and incomplete telemetry without misleading totals.
+  F01, October 18, 2026: `/live` renders StepEvent records through one adapter
+  (`apps/web/lib/step-events.ts`) that applies each step's contiguous revision prefix and
+  reports gaps. It shows run state, active steps (state and start time only, no computed
+  elapsed time), failed/cancelled steps with reasons, and step totals labeled final only when
+  the run is closed, every step is terminal and no revision or record is missing; otherwise
+  sums are labeled partial. CPU time is totalled only when fully measured in one scope.
+  Development replay (`?replay=<scenario>`, non-production builds only, labeled synthetic)
+  scripts active, completed, failed, cancelled-before-start, out-of-order, stale, missing-CPU
+  and zero-duration runs from `apps/web/fixtures/step-event-replays.ts`. Verification: 48 web
+  tests in `apps/web/tests/` (adapter, status helpers, each scenario, replay gating), lint,
+  typecheck and build pass; a production build ignores `?replay=`. Headless Chrome screenshots
+  were checked at 360, 375, 640 (200% zoom width), 768 and 1440 px with no page-level overflow;
+  keyboard navigation and real browser zoom were not tested. Real live runs are not displayed
+  until F02 connects the B01 read API, so this stays open.
 - [ ] Provide an instrumentation client for controlled test workloads.
   B01 provides transport/models; A02 still must connect actual agent instrumentation.
 
