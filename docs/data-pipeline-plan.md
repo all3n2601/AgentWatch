@@ -33,8 +33,8 @@ branch coverage, and exercised against real recorded runs and the live ingestion
 | Label | `labels-v1.1`, `injection_method`, per-run rejection | Done (#5, #12, #13) |
 | 5. Build | `make dataset`: versioned Parquet release, manifest, and per-build report | Done (#14) |
 | 6. Quality gate | `make validate-dataset`: TFDV statistics against a frozen, reviewed schema; anomalies fail, drift is reported. Isolated in `pipelines/validation` because TFDV brings TensorFlow (~1.7 GB) | Done (#16) |
-| **7. Splits** | `make split-dataset`: 70/15/15 grouped by `task_id` from the evaluation contract, measured-only test split, a deterministic split file with per-split row hashes, and the contract's leakage check | This PR |
-| 8. Versioning | DVC with a GCS remote; a rebuild from the same evidence reproduces the same version | Next |
+| 7. Splits | `make split-dataset`: 70/15/15 grouped by `task_id` from the evaluation contract, measured-only test split, a deterministic split file with per-split row hashes, and the contract's leakage check | Done (#17) |
+| 8. Versioning | DVC with a GCS remote; a rebuild from the same evidence reproduces the same version. #28 builds the evidence store, the integrity check, and DVC snapshots; the shared GCS remote and committed `.dvc` files remain | In review (#28) |
 | Hardening pass | Request batching for large API histories; sweeping staging left by killed builds; anything left from reviews | Before Airflow |
 | 9. More resources | Prometheus reader; `steps-v2` inference and retrieval features; `labels-v2` with mixed contention. Split follow-ups: force at least one injection method wholly into test, and check that mixed-contention cases reach test | Waits on B |
 | 10. Real collection | Scheduled runs over a task suite on a Linux GCP VM, where PSI and cgroup readings exist. Split follow-up: rebuild and re-split once step events carry a real `task_id`, so the test split holds unseen tasks and training is no longer empty | Waits on A, B, F |
@@ -70,7 +70,8 @@ one to the pipeline and plans what is missing; the roadmap steps above own the w
 
 | Criterion | How the pipeline meets it | Status |
 |---|---|---|
-| Data acquisition, reproducible environment | Extraction from the evidence store and the ingestion API; every dependency pinned in a `uv.lock` (root, `pipelines/validation`, `pipelines/versioning`) | Done (#2, #10, #13, #21) |
+| Data acquisition | Extraction from local recorded runs and the ingestion API, with strict validation and per-run rejection | Done (#2, #10, #13, #21) |
+| Reproducible environment | Dependencies pinned in `uv.lock` for the shared workspace and the quality gate (`pipelines/validation`); the versioning environment (`pipelines/versioning`) and the curated evidence store come with #28 | Done for the pipeline and gate (#14, #16); versioning in review (#28) |
 | Preprocessing and feature engineering, modular | One module per stage: extract, flatten (step windows, coverage, queue fraction), label, schema validation, build | Done |
 | Unit tests (edge cases, missing values, anomalies) | pytest at 100% line and branch coverage, including failure paths, two audits' regressions, Python 3.13 and 3.14 | Done |
 | Schema and statistics generation, validated over time | TFDV quality gate against a frozen, reviewed schema; statistics kept per attempt; drift against the previous passing release | Done (#16, #20) |
