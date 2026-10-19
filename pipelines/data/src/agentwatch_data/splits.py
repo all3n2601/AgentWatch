@@ -201,7 +201,8 @@ def load_release(path: Path) -> tuple[dict, list[dict]]:
     manifest = verify_release(path)
     try:
         return manifest, pq.read_table(path / DATASET_FILE).to_pylist()
-    except (pa.ArrowException, OSError, ValueError) as error:  # hash-consistent but not Parquet
+    # Hash-consistent but not Parquet, or a timestamp beyond what Python can represent.
+    except (pa.ArrowException, OSError, ValueError, OverflowError) as error:
         raise SplitError(f"Release {path.name}: {DATASET_FILE} is not readable Parquet") from error
 
 

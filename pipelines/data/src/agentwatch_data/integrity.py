@@ -9,11 +9,13 @@ versioned evidence. Refused, with every problem listed:
 - an evidence entry that is not a valid run stored under its own <kind prefix>-<run_id> name,
   holds anything besides results.json and samples.jsonl, or repeats another entry's run ID;
 - a release that does not match its manifest and name (a superseded older release format is
-  checked against what that format recorded), or that uses a run whose exact evidence is not
-  in the evidence store;
+  checked against what that format recorded), whose rows break the frozen column contract of
+  its schema version, or that uses a run whose exact evidence is not in the evidence store;
 - a build report that is unreadable or names a release that does not exist;
 - a quality-gate attempt that is damaged (an unknown verdict), whose statistics do not match
   the hash its result recorded, or that holds unexpected files;
+- anything stored as a symbolic link, or as a folder where a file belongs (or the reverse): a
+  version must hold the content itself, not a pointer to files outside the stores;
 - a split file that does not hash to its id, sit beside the release it names, or refer to a
   release that exists;
 - with --dvc-status, any file DVC already versioned that was deleted or modified: both stores
@@ -39,12 +41,14 @@ from agentwatch_data.build import (
     MANIFEST_FILE,
     RELEASE_NAME,
     SCHEMA_FILE,
+    arrow_schema,
     release_digest,
     release_manifest,
     rows_digest,
 )
 from agentwatch_data.evidence import EVIDENCE_FILES, EvidenceError, entry_name, read_entry
 from agentwatch_data.files import file_sha256
+from agentwatch_data.schema import Column, SchemaError, columns_from, validate_rows
 from agentwatch_data.splits import (
     RESULT_FILE,
     SPLITS_DIR,
@@ -62,6 +66,13 @@ SUPERSEDED_RELEASE_FILES = {DATASET_FILE, MANIFEST_FILE}  # format 1, before sch
 # Recorded by the builder that wrote a release, not derived from its rows.
 NOT_CONTENT_DERIVED = {"builder_version"}
 ATTEMPT_FILES = {RESULT_FILE, STATISTICS_FILE}
+# Every column contract a release was ever built under, by schema version, exactly as the
+# builder shipped it. A schema change freezes the new contract beside the old ones, so the
+# releases of every version stay verifiable (test_dataset_schema enforces this).
+CONTRACTS = {
+    path.stem: path.read_text(encoding="utf-8")
+    for path in (Path(__file__).parent / "contracts").glob("*.json")
+}
 
 
 @dataclass
@@ -75,6 +86,15 @@ class Report:
     splits: int = 0
     hidden: int = 0
     evidence: dict[str, str] = field(default_factory=dict)  # run_id -> source_sha256
+
+
+def is_file(path: Path) -> bool:
+    """A regular file, not a link to one: a version must hold the content, not a pointer."""
+    return path.is_file() and not path.is_symlink()
+
+
+def is_directory(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
 
 
 def visible(directory: Path, report: Report) -> list[Path]:
@@ -92,13 +112,13 @@ def check_evidence(store: Path, report: Report) -> None:
     stored_as: dict[str, str] = {}
     for path in visible(store, report):
         label = f"evidence/{path.name}"
-        if not path.is_dir() or path.is_symlink():
+        if not is_directory(path):
             report.problems.append(f"{label}: not a run directory")
             continue
         extra = sorted(
             child.name
             for child in visible(path, report)
-            if child.name not in EVIDENCE_FILES or child.is_symlink() or not child.is_file()
+            if child.name not in EVIDENCE_FILES or not is_file(child)
         )
         if extra:
             report.problems.append(f"{label}: holds more than run evidence: {extra}")
@@ -123,7 +143,8 @@ def check_release(path: Path, report: Report) -> list[dict] | None:
     """The release's rows if it is exactly what they produce, by the format it declares.
 
     Matching file hashes only prove the manifest describes the files; a release edited along
-    with its manifest would still pass that. So the identity is recomputed from the content,
+    with its manifest would still pass that. So the rows are first held to the frozen column
+    contract of their schema version, and then the identity is recomputed from the content,
     as the build computes it: the row digest, the content-addressed name (from the rows and
     the column contract the release ships), and every content-derived manifest field.
     """
@@ -137,7 +158,7 @@ def check_release(path: Path, report: Report) -> list[dict] | None:
     expected_files = RELEASE_FILES if current else SUPERSEDED_RELEASE_FILES
     entries = visible(path, report)
     names = {entry.name for entry in entries}
-    if names != expected_files or any(e.is_symlink() or not e.is_file() for e in entries):
+    if names != expected_files or not all(is_file(entry) for entry in entries):
         report.problems.append(f"{label}: holds {sorted(names)}, not {sorted(expected_files)}")
         return None
     try:
@@ -145,7 +166,8 @@ def check_release(path: Path, report: Report) -> list[dict] | None:
             verify_release(path)
         elif manifest.get("parquet_sha256") != file_sha256(path / DATASET_FILE):
             raise SplitError(f"Release {path.name} does not match its manifest (no format)")
-        rows = read_rows(path)  # once: the identity and the evidence checks share them
+        # Read once: the identity and the evidence checks share the rows.
+        rows = read_rows(path, release_columns(path, manifest, current))
         problem = identity_problem(path, manifest, current, rows)
     except SplitError as error:
         problem = str(error)
@@ -159,16 +181,45 @@ def check_release(path: Path, report: Report) -> list[dict] | None:
     return rows
 
 
-def read_rows(path: Path) -> list[dict]:
-    """The release's rows; a file whose hash matches but is not readable Parquet is refused."""
+def release_columns(path: Path, manifest: dict, current: bool) -> tuple[Column, ...]:
+    """The column contract the release's rows must satisfy: the one of its schema version.
+
+    A current release must ship exactly that contract; a superseded one shipped none.
+    """
+    version = manifest.get("schema_version")
+    frozen = CONTRACTS.get(version) if isinstance(version, str) else None
+    if frozen is None:
+        raise SplitError(f"schema version {version!r} has no frozen column contract")
+    if current and (path / SCHEMA_FILE).read_bytes() != frozen.encode():
+        raise SplitError(f"{SCHEMA_FILE} is not the frozen {version} column contract")
+    return columns_from(json.loads(frozen))
+
+
+def read_rows(path: Path, columns: tuple[Column, ...]) -> list[dict]:
+    """The release's rows, refused unless they have exactly the contract's columns and values.
+
+    Hash-consistent bytes are not necessarily a release's rows: they may not be Parquet, may
+    lack a column the checks rely on, or may hold values the contract forbids.
+    """
     try:
-        return pq.read_table(path / DATASET_FILE).to_pylist()
-    except (pa.ArrowException, OSError, ValueError) as error:
+        table = pq.read_table(path / DATASET_FILE)
+        rows = table.to_pylist()
+    except (pa.ArrowException, OSError, ValueError, OverflowError) as error:
         raise SplitError(f"{DATASET_FILE} is not readable Parquet: {error}") from error
+    if not table.schema.equals(arrow_schema(columns), check_metadata=False):
+        raise SplitError(f"{DATASET_FILE} does not have its contract's columns and types")
+    try:
+        validate_rows(rows, frozenset(column.name for column in columns), columns)
+    except SchemaError as error:
+        raise SplitError(f"rows break their column contract: {error}") from error
+    return rows
 
 
 def identity_problem(path: Path, manifest: dict, current: bool, rows: list[dict]) -> str | None:
-    """Why the release's content does not produce its name and manifest, or None."""
+    """Why the release's content does not produce its name and manifest, or None.
+
+    rows must already satisfy the release's column contract (read_rows checks it).
+    """
     for column, declared in (
         ("dataset_version", path.name),
         ("label_version", manifest.get("label_version")),
@@ -176,30 +227,23 @@ def identity_problem(path: Path, manifest: dict, current: bool, rows: list[dict]
     ):
         if {row.get(column) for row in rows} != {declared}:
             return f"rows do not all carry the manifest's {column} {declared!r}"
-    try:
-        digest = rows_digest(
-            [{k: v for k, v in row.items() if k != "dataset_version"} for row in rows]
-        )
-        if current:
-            shipped = read_object(path / SCHEMA_FILE, "Column contract")
-            name = f"{manifest['schema_version']}+{release_digest(digest, shipped)[:12]}"
-        else:
-            name = f"{manifest['schema_version']}+{digest[:12]}"
-        if name != path.name:
-            return f"its content produces {name}, not its name; it was changed after it was built"
-        expected = release_manifest(
-            rows,
-            name,
-            digest,
-            manifest["label_version"],
-            manifest.get("parquet_sha256"),
-            manifest.get("schema_sha256"),
-            manifest["schema_version"],
-        )
-    except (KeyError, AttributeError, TypeError, ValueError) as error:
-        # Readable Parquet whose columns or values are not a release's: missing a column,
-        # a timestamp that is not a datetime, or a number canonical JSON cannot hold.
-        return f"rows are not a release's rows ({type(error).__name__}: {error})"
+    digest = rows_digest([{k: v for k, v in row.items() if k != "dataset_version"} for row in rows])
+    if current:
+        shipped = read_object(path / SCHEMA_FILE, "Column contract")
+        name = f"{manifest['schema_version']}+{release_digest(digest, shipped)[:12]}"
+    else:
+        name = f"{manifest['schema_version']}+{digest[:12]}"
+    if name != path.name:
+        return f"its content produces {name}, not its name; it was changed after it was built"
+    expected = release_manifest(
+        rows,
+        name,
+        digest,
+        manifest["label_version"],
+        manifest.get("parquet_sha256"),
+        manifest.get("schema_sha256"),
+        manifest["schema_version"],
+    )
     if not current:
         del expected["release_format"], expected["schema_sha256"]
     differing = sorted(
@@ -241,9 +285,9 @@ def check_datasets(store: Path, report: Report) -> None:
     # itself, rather than again as "missing" by its reports, gate attempts, and splits.
     releases = set()
     for path in visible(store, report):
-        if path.name in (BUILDS_DIR, VALIDATIONS_DIR, SPLITS_DIR) and path.is_dir():
+        if path.name in (BUILDS_DIR, VALIDATIONS_DIR, SPLITS_DIR) and is_directory(path):
             continue
-        if not RELEASE_NAME.fullmatch(path.name) or path.is_symlink() or not path.is_dir():
+        if not RELEASE_NAME.fullmatch(path.name) or not is_directory(path):
             report.problems.append(f"datasets/{path.name}: unexpected entry")
             continue
         releases.add(path.name)
@@ -256,10 +300,10 @@ def check_datasets(store: Path, report: Report) -> None:
 
 
 def check_reports(builds: Path, releases: set[str], report: Report) -> None:
-    for path in visible(builds, report) if builds.is_dir() else []:
+    for path in visible(builds, report) if is_directory(builds) else []:
         label = f"datasets/{BUILDS_DIR}/{path.name}"
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            value = json.loads(path.read_text(encoding="utf-8")) if is_file(path) else None
         except (OSError, ValueError):
             value = None
         if path.suffix != ".json" or not isinstance(value, dict):
@@ -274,9 +318,9 @@ def check_reports(builds: Path, releases: set[str], report: Report) -> None:
 
 def check_validations(store: Path, releases: set[str], report: Report) -> None:
     validations = store / VALIDATIONS_DIR
-    for folder in visible(validations, report) if validations.is_dir() else []:
+    for folder in visible(validations, report) if is_directory(validations) else []:
         label = f"datasets/{VALIDATIONS_DIR}/{folder.name}"
-        if folder.name not in releases or not folder.is_dir():
+        if folder.name not in releases or not is_directory(folder):
             report.problems.append(f"{label}: no such release")
             continue
         try:
@@ -289,16 +333,21 @@ def check_validations(store: Path, releases: set[str], report: Report) -> None:
 
 
 def check_attempt(attempt: Path, label: str, report: Report) -> None:
-    if not attempt.is_dir():
+    if not is_directory(attempt):
         report.problems.append(f"{label}: not a gate attempt")
         return
-    names = {child.name for child in visible(attempt, report)}
-    if names != ATTEMPT_FILES:
+    entries = visible(attempt, report)
+    names = {entry.name for entry in entries}
+    if names != ATTEMPT_FILES or not all(is_file(entry) for entry in entries):
         report.problems.append(f"{label}: holds {sorted(names)}, not {sorted(ATTEMPT_FILES)}")
         return
-    result = json.loads((attempt / RESULT_FILE).read_text(encoding="utf-8"))  # checked readable
-    # The gate hashes the statistics text it wrote; the drift baseline relies on it.
-    text = (attempt / STATISTICS_FILE).read_text(encoding="utf-8")
+    try:
+        result = json.loads((attempt / RESULT_FILE).read_text(encoding="utf-8"))
+        # The gate hashes the statistics text it wrote; the drift baseline relies on it.
+        text = (attempt / STATISTICS_FILE).read_text(encoding="utf-8")
+    except (OSError, ValueError) as error:
+        report.problems.append(f"{label}: unreadable: {error}")
+        return
     if hashlib.sha256(text.encode()).hexdigest() != result.get("statistics_sha256"):
         report.problems.append(f"{label}: statistics do not match the hash their result recorded")
         return
@@ -306,11 +355,16 @@ def check_attempt(attempt: Path, label: str, report: Report) -> None:
 
 
 def check_splits(splits: Path, releases: set[str], report: Report) -> None:
-    for folder in visible(splits, report) if splits.is_dir() else []:
-        if folder.name not in releases or not folder.is_dir():
+    for folder in visible(splits, report) if is_directory(splits) else []:
+        if folder.name not in releases or not is_directory(folder):
             report.problems.append(f"datasets/{SPLITS_DIR}/{folder.name}: no such release")
             continue
         for path in visible(folder, report):
+            if not is_file(path):
+                report.problems.append(
+                    f"datasets/{SPLITS_DIR}/{folder.name}/{path.name}: not a file"
+                )
+                continue
             try:
                 read_split_file(path)
             except SplitError as error:

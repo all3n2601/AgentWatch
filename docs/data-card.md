@@ -295,15 +295,24 @@ make dataset-status    # what is not yet versioned, and (with a remote) what is 
     (recomputed from the rows and the contract the release ships), every row's version
     columns, and every content-derived manifest field are recomputed and must match. A release
     edited together with its manifest is therefore refused, not just one whose hashes differ;
+  - every release's rows satisfy the frozen column contract of their schema version
+    (`pipelines/data/src/agentwatch_data/contracts/<schema version>.json`, byte for byte what
+    the builder ships), checked before anything reads them: exactly the contract's columns and
+    Arrow types, and every value valid. A release must ship exactly that contract (format 1
+    shipped none and is held to its version's), and a schema version with no frozen contract is
+    refused. A `steps.parquet` that matches its hash but is not readable Parquet, lacks or
+    retypes a column, or holds a value the contract forbids is refused rather than crashing
+    the check. A schema change freezes the new contract beside the old ones (a test enforces
+    it), so releases of every version stay verifiable;
   - every row of a release names exactly the evidence stored for its run (run ID and
     raw-evidence hash, checked row by row, so one run's rows cannot name different evidence),
-    so it can be rebuilt from versioned evidence; a `steps.parquet` that matches its hash but
-    is not readable Parquet, or lacks a release column, is refused rather than crashing the
-    check;
+    so it can be rebuilt from versioned evidence;
   - every build report is readable and names a release that exists;
   - every quality-gate attempt is readable and holds exactly `result.json` and the
     `statistics.pbtxt` whose hash its result recorded;
-  - every split file hashes to its id and belongs to an existing release.
+  - every split file hashes to its id and belongs to an existing release;
+  - nothing in either store is a symbolic link, or a folder where a file belongs (or the
+    reverse): a version must hold the content itself, not a pointer to files outside it.
 - **The stores are append-only.** Before snapshotting, `make version-dataset` asks DVC
   (`dvc data status --granular`) which already-versioned files were deleted or modified since
   the last snapshot or commit, and refuses if any were. A failed quality-gate verdict, a

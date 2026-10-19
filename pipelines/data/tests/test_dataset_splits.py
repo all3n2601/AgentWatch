@@ -724,6 +724,20 @@ def test_hash_consistent_bytes_that_are_not_parquet_are_refused(release):
         load_release(release)
 
 
+def test_timestamps_python_cannot_represent_are_refused(release):
+    import pyarrow as pa
+    from agentwatch_data.splits import load_release
+
+    table = pq.read_table(release / DATASET_FILE)
+    index = table.column_names.index("recorded_at")
+    field = table.schema.field(index)
+    far = pa.array([2**62] * table.num_rows, pa.int64()).cast(field.type)
+    pq.write_table(table.set_column(index, field, far), release / DATASET_FILE)
+    resign(release)
+    with pytest.raises(SplitError, match="steps.parquet is not readable Parquet"):
+        load_release(release)
+
+
 # Verdict selection shared with the quality gate
 
 

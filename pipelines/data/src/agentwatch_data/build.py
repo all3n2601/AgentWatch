@@ -54,7 +54,14 @@ from agentwatch_data.extract import (
 from agentwatch_data.files import file_sha256, fsync_directory, fsync_file, json_text
 from agentwatch_data.flatten import flatten_runs
 from agentwatch_data.labels import LabelingError, label_rows, load_config
-from agentwatch_data.schema import COLUMNS, SCHEMA_VERSION, SchemaError, contract, validate_rows
+from agentwatch_data.schema import (
+    COLUMNS,
+    SCHEMA_VERSION,
+    Column,
+    SchemaError,
+    contract,
+    validate_rows,
+)
 
 logger = logging.getLogger("agentwatch_data.build")
 
@@ -71,9 +78,15 @@ ARROW_TYPES = {
     "bool": pa.bool_(),
     "timestamp[us, tz=UTC]": pa.timestamp("us", tz="UTC"),
 }
-ARROW_SCHEMA = pa.schema(
-    [pa.field(column.name, ARROW_TYPES[column.dtype], column.nullable) for column in COLUMNS]
-)
+
+
+def arrow_schema(columns: tuple[Column, ...]) -> pa.Schema:
+    return pa.schema(
+        [pa.field(column.name, ARROW_TYPES[column.dtype], column.nullable) for column in columns]
+    )
+
+
+ARROW_SCHEMA = arrow_schema(COLUMNS)
 ALL_COLUMNS = frozenset(column.name for column in COLUMNS)
 # Written explicitly rather than left to pyarrow's defaults, so the bytes of a release depend
 # only on its rows, this code, and the locked pyarrow version.

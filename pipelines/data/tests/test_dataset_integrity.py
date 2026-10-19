@@ -497,13 +497,24 @@ def test_rows_must_carry_the_manifest_versions(stores, column):
     assert f"rows do not all carry the manifest's {column}" in problem
 
 
-def test_an_edited_contract_changes_the_identity(stores):
+def test_an_edited_contract_is_refused(stores):
     evidence, datasets, release = stores
     contract = json.loads((release / "schema.json").read_text())
     contract["columns"][0]["description"] = "edited"
     (release / "schema.json").write_text(json.dumps(contract))
     resign(release)
-    assert "not its name" in problems(evidence, datasets)[0]
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: schema.json is not the frozen steps-v1.2 column contract"
+    ]
+
+
+def test_a_reformatted_contract_is_refused_too(stores):
+    """Same JSON, other bytes: a rebuild would not reproduce the release byte for byte."""
+    evidence, datasets, release = stores
+    contract = json.loads((release / "schema.json").read_text())
+    (release / "schema.json").write_text(json.dumps(contract))
+    resign(release)
+    assert "schema.json is not the frozen steps-v1.2" in problems(evidence, datasets)[0]
 
 
 def test_an_edited_superseded_release_is_refused(stores):
@@ -519,14 +530,14 @@ def test_identity_is_recomputed_for_rows_with_saved_times(tmp_path, monkeypatch)
     """API runs carry a recorded_at timestamp, which round-trips through Parquet."""
     from agentwatch_data import build as build_module
     from agentwatch_data.extract import Extraction, validate
-    from agentwatch_data.integrity import identity_problem, read_rows
+    from agentwatch_data.integrity import identity_problem, read_rows, release_columns
 
     saved = datetime(2026, 10, 5, 12, 30, tzinfo=UTC)
     runs = [validate(make_result(), [], "cpu", saved, origin="api") for _ in range(2)]
     monkeypatch.setattr(build_module, "extract", lambda source: Extraction(runs=list(runs)))
     release = build([Source("api", "http://api")], tmp_path / "datasets", now=NOW).release
     manifest = json.loads((release / "manifest.json").read_text())
-    rows = read_rows(release)
+    rows = read_rows(release, release_columns(release, manifest, True))
     assert identity_problem(release, manifest, True, rows) is None
 
 
@@ -627,5 +638,183 @@ def test_readable_parquet_missing_a_release_column_is_refused(stores):
     resign(release)
     [problem] = problems(evidence, datasets)
     assert problem == (
-        f"datasets/{release.name}: rows are not a release's rows (KeyError: 'recorded_at')"
+        f"datasets/{release.name}: steps.parquet does not have its contract's columns and types"
     )
+
+
+# Rows are held to their version's frozen contract, and stores hold only real files
+# (re-review of #28 at 0a12934)
+
+
+def forge(datasets: Path, table: pa.Table, label_version: str) -> Path:
+    """Write table as a release whose name, file hashes, digest, and manifest all agree.
+
+    Unlike consistent_release_from, the table keeps whatever columns and types it has.
+    """
+    from agentwatch_data.build import contract_text, release_digest, release_manifest, rows_digest
+
+    rows = [{k: v for k, v in row.items() if k != "dataset_version"} for row in table.to_pylist()]
+    digest = rows_digest(rows)
+    version = f"steps-v1.2+{release_digest(digest)[:12]}"
+    release = datasets / version
+    release.mkdir()
+    index = table.column_names.index("dataset_version")
+    versions = pa.array([version] * table.num_rows, pa.string())
+    table = table.set_column(index, table.schema.field(index), versions)
+    pq.write_table(table, release / "steps.parquet")
+    (release / "schema.json").write_text(contract_text())
+    manifest = release_manifest(
+        [row | {"dataset_version": version} for row in rows],
+        version,
+        digest,
+        label_version,
+        sha256(release / "steps.parquet"),
+        sha256(release / "schema.json"),
+    )
+    (release / "manifest.json").write_text(json.dumps(manifest))
+    return release
+
+
+def test_a_consistent_release_without_evidence_hashes_is_refused(stores):
+    """The review's reproduction: source_sha256 removed and every hash and name re-derived."""
+    evidence, datasets, release = stores
+    table = pq.read_table(release / "steps.parquet").drop(["source_sha256"])
+    label_version = json.loads((release / "manifest.json").read_text())["label_version"]
+    forged = forge(datasets, table, label_version)
+    assert problems(evidence, datasets) == [
+        f"datasets/{forged.name}: steps.parquet does not have its contract's columns and types"
+    ]
+
+
+def test_a_consistent_release_with_a_retyped_column_is_refused(stores):
+    evidence, datasets, release = stores
+    table = pq.read_table(release / "steps.parquet")
+    index = table.column_names.index("queue_seconds")
+    as_text = table.column(index).cast(pa.string())
+    table = table.set_column(index, "queue_seconds", as_text)
+    label_version = json.loads((release / "manifest.json").read_text())["label_version"]
+    forged = forge(datasets, table, label_version)
+    assert "does not have its contract's columns and types" in problems(evidence, datasets)[0]
+    assert forged.name in problems(evidence, datasets)[0]
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "message"),
+    [
+        ("source_sha256", "", "source_sha256 must be a nonempty string"),
+        ("queue_seconds", -1.0, "queue_seconds must be at least 0"),
+        ("label_resource", "disk", "label_resource must be one of"),
+    ],
+)
+def test_a_consistent_release_breaking_the_contract_is_refused(stores, column, value, message):
+    evidence, datasets, release = stores
+    table = pq.read_table(release / "steps.parquet")
+    index = table.column_names.index(column)
+    field = table.schema.field(index)
+    values = pa.array([value] * table.num_rows, field.type)
+    table = table.set_column(index, field, values)
+    label_version = json.loads((release / "manifest.json").read_text())["label_version"]
+    forged = forge(datasets, table, label_version)
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(f"datasets/{forged.name}: rows break their column contract: Row 0")
+    assert message in problem
+
+
+def test_timestamps_python_cannot_represent_are_refused(stores):
+    evidence, datasets, release = stores
+    table = pq.read_table(release / "steps.parquet")
+    index = table.column_names.index("recorded_at")
+    field = table.schema.field(index)
+    far = pa.array([2**62] * table.num_rows, pa.int64()).cast(field.type)
+    pq.write_table(table.set_column(index, field, far), release / "steps.parquet")
+    resign(release)
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(f"datasets/{release.name}: steps.parquet is not readable Parquet")
+
+
+@pytest.mark.parametrize("version", ["steps-v9.9", None, ["steps-v1.2"]])
+def test_a_release_of_an_unknown_schema_version_is_refused(stores, version):
+    evidence, datasets, release = stores
+    resign(release, schema_version=version)
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: schema version {version!r} has no frozen column contract"
+    ]
+
+
+def test_a_superseded_release_is_held_to_its_versions_contract(stores):
+    evidence, datasets, release = stores
+    old = format_1(release)
+    rewrite_column(old, "queue_seconds", lambda value: -1.0)
+    resign(old)
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(f"datasets/{old.name}: rows break their column contract")
+
+
+def test_gate_attempt_files_must_be_real_files(stores, tmp_path):
+    """The review's reproduction: both files linked to correctly hashed files outside."""
+    evidence, datasets, release = stores
+    linked = write_attempt(datasets, release.name, "a1")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    for name in ("result.json", "statistics.pbtxt"):
+        (linked / name).rename(outside / name)
+        (linked / name).symlink_to(outside / name)
+    folder = write_attempt(datasets, release.name, "a2")
+    (folder / "statistics.pbtxt").unlink()
+    (folder / "statistics.pbtxt").mkdir()
+    label = f"datasets/validations/{release.name}"
+    expected = "holds ['result.json', 'statistics.pbtxt'], not ['result.json', 'statistics.pbtxt']"
+    assert problems(evidence, datasets) == [f"{label}/a1: {expected}", f"{label}/a2: {expected}"]
+
+
+def test_a_linked_gate_attempt_is_refused(stores, tmp_path):
+    evidence, datasets, release = stores
+    real = write_attempt(datasets, release.name, "a1")
+    real.rename(tmp_path / "a1")
+    real.symlink_to(tmp_path / "a1")
+    assert problems(evidence, datasets) == [
+        f"datasets/validations/{release.name}/a1: not a gate attempt"
+    ]
+
+
+def test_unreadable_gate_statistics_are_reported(stores):
+    evidence, datasets, release = stores
+    attempt = write_attempt(datasets, release.name, "a1")
+    (attempt / "statistics.pbtxt").write_bytes(b"\xff\xfe not utf-8")
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(f"datasets/validations/{release.name}/a1: unreadable: ")
+
+
+def test_linked_splits_reports_and_store_folders_are_refused(stores, tmp_path):
+    evidence, datasets, release = stores
+    split = write_split(datasets, release.name, {"rows": 1})
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    split.rename(outside / split.name)
+    split.symlink_to(outside / split.name)
+    [report] = sorted((datasets / "builds").iterdir())
+    report.rename(outside / report.name)
+    report.symlink_to(outside / report.name)
+    assert problems(evidence, datasets) == [
+        f"datasets/builds/{report.name}: unreadable build report",
+        f"datasets/splits/{release.name}/{split.name}: not a file",
+    ]
+    report.unlink()
+    (datasets / "splits").rename(outside / "splits")
+    (datasets / "splits").symlink_to(outside / "splits")
+    assert problems(evidence, datasets) == ["datasets/splits: unexpected entry"]
+
+
+def test_a_linked_store_folder_of_a_release_is_refused(stores, tmp_path):
+    evidence, datasets, release = stores
+    write_split(datasets, release.name, {"rows": 1})
+    folder = datasets / "splits" / release.name
+    folder.rename(tmp_path / "linked")
+    folder.symlink_to(tmp_path / "linked")
+    validations = write_attempt(datasets, release.name, "a1").parent
+    validations.rename(tmp_path / "validations")
+    validations.symlink_to(tmp_path / "validations")
+    assert problems(evidence, datasets) == [
+        f"datasets/validations/{release.name}: no such release",
+        f"datasets/splits/{release.name}: no such release",
+    ]
