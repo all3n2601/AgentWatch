@@ -292,8 +292,11 @@ make dataset-status    # what is not yet versioned, and (with a remote) what is 
     (recomputed from the rows and the contract the release ships), every row's version
     columns, and every content-derived manifest field are recomputed and must match. A release
     edited together with its manifest is therefore refused, not just one whose hashes differ;
-  - every run a release contains has its exact evidence (run ID and raw-evidence hash) in the
-    evidence store, so it can be rebuilt from versioned evidence;
+  - every row of a release names exactly the evidence stored for its run (run ID and
+    raw-evidence hash, checked row by row, so one run's rows cannot name different evidence),
+    so it can be rebuilt from versioned evidence; a `steps.parquet` that matches its hash but
+    is not readable Parquet, or lacks a release column, is refused rather than crashing the
+    check;
   - every build report is readable and names a release that exists;
   - every quality-gate attempt is readable and holds exactly `result.json` and the
     `statistics.pbtxt` whose hash its result recorded;

@@ -30,6 +30,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from agentwatch_data.build import (
@@ -118,8 +119,8 @@ def check_evidence(store: Path, report: Report) -> None:
         report.runs += 1
 
 
-def check_release(path: Path, report: Report) -> bool:
-    """Whether the release is exactly what its rows produce, by the format it declares.
+def check_release(path: Path, report: Report) -> list[dict] | None:
+    """The release's rows if it is exactly what they produce, by the format it declares.
 
     Matching file hashes only prove the manifest describes the files; a release edited along
     with its manifest would still pass that. So the identity is recomputed from the content,
@@ -131,35 +132,43 @@ def check_release(path: Path, report: Report) -> bool:
         manifest = read_object(path / MANIFEST_FILE, "Manifest")
     except SplitError as error:
         report.problems.append(f"{label}: {error}")
-        return False
+        return None
     current = "release_format" in manifest
     expected_files = RELEASE_FILES if current else SUPERSEDED_RELEASE_FILES
     entries = visible(path, report)
     names = {entry.name for entry in entries}
     if names != expected_files or any(e.is_symlink() or not e.is_file() for e in entries):
         report.problems.append(f"{label}: holds {sorted(names)}, not {sorted(expected_files)}")
-        return False
+        return None
     try:
         if current:
             verify_release(path)
         elif manifest.get("parquet_sha256") != file_sha256(path / DATASET_FILE):
             raise SplitError(f"Release {path.name} does not match its manifest (no format)")
-        problem = identity_problem(path, manifest, current)
+        rows = read_rows(path)  # once: the identity and the evidence checks share them
+        problem = identity_problem(path, manifest, current, rows)
     except SplitError as error:
         problem = str(error)
     if problem:
         report.problems.append(f"{label}: {problem}")
-        return False
+        return None
     if current:
         report.releases += 1
     else:
         report.superseded += 1
-    return True
+    return rows
 
 
-def identity_problem(path: Path, manifest: dict, current: bool) -> str | None:
+def read_rows(path: Path) -> list[dict]:
+    """The release's rows; a file whose hash matches but is not readable Parquet is refused."""
+    try:
+        return pq.read_table(path / DATASET_FILE).to_pylist()
+    except (pa.ArrowException, OSError, ValueError) as error:
+        raise SplitError(f"{DATASET_FILE} is not readable Parquet: {error}") from error
+
+
+def identity_problem(path: Path, manifest: dict, current: bool, rows: list[dict]) -> str | None:
     """Why the release's content does not produce its name and manifest, or None."""
-    rows = pq.read_table(path / DATASET_FILE).to_pylist()
     for column, declared in (
         ("dataset_version", path.name),
         ("label_version", manifest.get("label_version")),
@@ -167,23 +176,30 @@ def identity_problem(path: Path, manifest: dict, current: bool) -> str | None:
     ):
         if {row.get(column) for row in rows} != {declared}:
             return f"rows do not all carry the manifest's {column} {declared!r}"
-    digest = rows_digest([{k: v for k, v in row.items() if k != "dataset_version"} for row in rows])
-    if current:
-        shipped = read_object(path / SCHEMA_FILE, "Column contract")
-        name = f"{manifest['schema_version']}+{release_digest(digest, shipped)[:12]}"
-    else:
-        name = f"{manifest['schema_version']}+{digest[:12]}"
-    if name != path.name:
-        return f"its content produces {name}, not its name; it was changed after it was built"
-    expected = release_manifest(
-        rows,
-        name,
-        digest,
-        manifest["label_version"],
-        manifest.get("parquet_sha256"),
-        manifest.get("schema_sha256"),
-        manifest["schema_version"],
-    )
+    try:
+        digest = rows_digest(
+            [{k: v for k, v in row.items() if k != "dataset_version"} for row in rows]
+        )
+        if current:
+            shipped = read_object(path / SCHEMA_FILE, "Column contract")
+            name = f"{manifest['schema_version']}+{release_digest(digest, shipped)[:12]}"
+        else:
+            name = f"{manifest['schema_version']}+{digest[:12]}"
+        if name != path.name:
+            return f"its content produces {name}, not its name; it was changed after it was built"
+        expected = release_manifest(
+            rows,
+            name,
+            digest,
+            manifest["label_version"],
+            manifest.get("parquet_sha256"),
+            manifest.get("schema_sha256"),
+            manifest["schema_version"],
+        )
+    except (KeyError, AttributeError, TypeError, ValueError) as error:
+        # Readable Parquet whose columns or values are not a release's: missing a column,
+        # a timestamp that is not a datetime, or a number canonical JSON cannot hold.
+        return f"rows are not a release's rows ({type(error).__name__}: {error})"
     if not current:
         del expected["release_format"], expected["schema_sha256"]
     differing = sorted(
@@ -196,17 +212,23 @@ def identity_problem(path: Path, manifest: dict, current: bool) -> str | None:
     return None
 
 
-def check_reproducible(path: Path, report: Report) -> None:
-    """Every run in the release must have its exact evidence in the evidence store."""
-    table = pq.read_table(path / DATASET_FILE, columns=["run_id", "source_sha256"])
-    runs = dict(
-        zip(
-            table.column("run_id").to_pylist(),
-            table.column("source_sha256").to_pylist(),
-            strict=True,
+def check_reproducible(path: Path, rows: list[dict], report: Report) -> None:
+    """Every row's run must have exactly the evidence the row names in the evidence store.
+
+    Checked row by row: one run's rows must all name the same evidence hash, so a row
+    attributed to a different source artifact cannot hide behind its run's other rows.
+    """
+    digests: dict[str, set] = {}
+    for row in rows:
+        digests.setdefault(row["run_id"], set()).add(row["source_sha256"])
+    mixed = sorted(run for run, found in digests.items() if len(found) > 1)
+    if mixed:
+        report.problems.append(
+            f"datasets/{path.name}: rows of one run name different evidence hashes "
+            f"(runs {mixed[:3]}{'...' if len(mixed) > 3 else ''})"
         )
-    )
-    missing = sorted(run for run, digest in runs.items() if report.evidence.get(run) != digest)
+        return
+    missing = sorted(run for run, [digest] in digests.items() if report.evidence.get(run) != digest)
     if missing:
         report.problems.append(
             f"datasets/{path.name}: built from evidence that is not in the evidence store "
@@ -225,8 +247,9 @@ def check_datasets(store: Path, report: Report) -> None:
             report.problems.append(f"datasets/{path.name}: unexpected entry")
             continue
         releases.add(path.name)
-        if check_release(path, report):
-            check_reproducible(path, report)
+        rows = check_release(path, report)
+        if rows is not None:
+            check_reproducible(path, rows, report)
     check_reports(store / BUILDS_DIR, releases, report)
     check_validations(store, releases, report)
     check_splits(store / SPLITS_DIR, releases, report)

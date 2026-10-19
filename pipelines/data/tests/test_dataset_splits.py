@@ -711,3 +711,12 @@ def test_module_runs_as_a_command(release, monkeypatch):
     with pytest.raises(SystemExit) as exited:
         runpy.run_module("agentwatch_data.splits", run_name="__main__")
     assert exited.value.code == 0
+
+
+def test_hash_consistent_bytes_that_are_not_parquet_are_refused(release):
+    from agentwatch_data.splits import load_release
+
+    (release / DATASET_FILE).write_bytes(b"not parquet at all")
+    resign(release)
+    with pytest.raises(SplitError, match="steps.parquet is not readable Parquet"):
+        load_release(release)

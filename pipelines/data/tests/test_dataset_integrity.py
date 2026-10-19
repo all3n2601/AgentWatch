@@ -519,14 +519,15 @@ def test_identity_is_recomputed_for_rows_with_saved_times(tmp_path, monkeypatch)
     """API runs carry a recorded_at timestamp, which round-trips through Parquet."""
     from agentwatch_data import build as build_module
     from agentwatch_data.extract import Extraction, validate
-    from agentwatch_data.integrity import identity_problem
+    from agentwatch_data.integrity import identity_problem, read_rows
 
     saved = datetime(2026, 10, 5, 12, 30, tzinfo=UTC)
     runs = [validate(make_result(), [], "cpu", saved, origin="api") for _ in range(2)]
     monkeypatch.setattr(build_module, "extract", lambda source: Extraction(runs=list(runs)))
     release = build([Source("api", "http://api")], tmp_path / "datasets", now=NOW).release
     manifest = json.loads((release / "manifest.json").read_text())
-    assert identity_problem(release, manifest, current=True) is None
+    rows = read_rows(release)
+    assert identity_problem(release, manifest, True, rows) is None
 
 
 # A release holds exactly its declared files (review of #28)
@@ -578,3 +579,53 @@ def test_a_superseded_release_holds_no_contract(stores):
             "not ['manifest.json', 'steps.parquet']"
         )
     ]
+
+
+# Every row names its exact evidence, and malformed files are refused (re-review of #28)
+
+
+def consistent_release_from(rows: list[dict], datasets: Path, label_version: str) -> Path:
+    """Write rows as a release whose name, hashes, and manifest all agree with them."""
+    from agentwatch_data.build import release_digest, rows_digest, write_release
+
+    labeled = [{k: v for k, v in row.items() if k != "dataset_version"} for row in rows]
+    digest = rows_digest(labeled)
+    version = f"steps-v1.2+{release_digest(digest)[:12]}"
+    final = [row | {"dataset_version": version} for row in labeled]
+    write_release(datasets / version, final, version, digest, label_version)
+    return datasets / version
+
+
+def test_a_row_naming_different_evidence_is_refused_even_when_consistent(stores):
+    """The review's reproduction: one row's source_sha256 changed, everything re-derived."""
+    evidence, datasets, release = stores
+    rows = pq.read_table(release / "steps.parquet").to_pylist()
+    rows[0]["source_sha256"] = "0" * 64  # attributed to a source artifact that is not stored
+    manifest = json.loads((release / "manifest.json").read_text())
+    forged = consistent_release_from(rows, datasets, manifest["label_version"])
+    run_id = rows[0]["run_id"]
+    assert problems(evidence, datasets) == [
+        (
+            f"datasets/{forged.name}: rows of one run name different evidence hashes "
+            f"(runs ['{run_id}'])"
+        )
+    ]
+
+
+def test_hash_consistent_bytes_that_are_not_parquet_are_refused(stores):
+    evidence, datasets, release = stores
+    (release / "steps.parquet").write_bytes(b"not parquet at all")
+    resign(release)
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(f"datasets/{release.name}: steps.parquet is not readable Parquet")
+
+
+def test_readable_parquet_missing_a_release_column_is_refused(stores):
+    evidence, datasets, release = stores
+    table = pq.read_table(release / "steps.parquet")
+    pq.write_table(table.drop(["recorded_at"]), release / "steps.parquet")
+    resign(release)
+    [problem] = problems(evidence, datasets)
+    assert problem == (
+        f"datasets/{release.name}: rows are not a release's rows (KeyError: 'recorded_at')"
+    )

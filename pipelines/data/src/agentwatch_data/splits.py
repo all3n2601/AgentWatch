@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from agentwatch_data.build import (
@@ -201,7 +202,10 @@ def verify_release(path: Path) -> dict:
 def load_release(path: Path) -> tuple[dict, list[dict]]:
     """A release's manifest and rows, after verifying its files against the manifest."""
     manifest = verify_release(path)
-    return manifest, pq.read_table(path / DATASET_FILE).to_pylist()
+    try:
+        return manifest, pq.read_table(path / DATASET_FILE).to_pylist()
+    except (pa.ArrowException, OSError, ValueError) as error:  # hash-consistent but not Parquet
+        raise SplitError(f"Release {path.name}: {DATASET_FILE} is not readable Parquet") from error
 
 
 def text_sha256(path: Path) -> str:
