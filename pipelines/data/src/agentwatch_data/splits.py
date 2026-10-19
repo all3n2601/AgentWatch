@@ -28,12 +28,9 @@ import argparse
 import hashlib
 import json
 import math
-import os
 import re
 import sys
-import tempfile
 import tomllib
-from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,19 +43,19 @@ from agentwatch_data.build import (
     MANIFEST_FILE,
     RELEASE_FORMAT,
     SCHEMA_FILE,
-    file_sha256,
-    json_text,
+    counts,
 )
 from agentwatch_data.extract import canonical_sha256
-from agentwatch_data.schema import COLUMNS, RESOURCE_CLASSES, SOURCES, Role
+from agentwatch_data.files import file_sha256, json_text, write_atomic
+from agentwatch_data.labels import NO_INJECTION
+from agentwatch_data.schema import RESOURCE_CLASSES, SOURCES, feature_columns
 
 SPLIT_METHOD = "split-v1"  # hashed with each group key; a new value redraws every split
 SPLITS = ("train", "validation", "test")
 SPLITS_DIR, VALIDATIONS_DIR, RESULT_FILE = "splits", "validations", "result.json"
-FEATURES = tuple(column.name for column in COLUMNS if column.role == Role.FEATURE)
+FEATURES = tuple(feature_columns())  # the schema decides what may be a model input
 # Grouping must keep a task's baselines and replays together, so only task-level keys qualify.
 GROUP_KEYS = ("task_id",)
-NO_INJECTION = "none"
 VERSION = re.compile(r"(?P<name>[a-z]+)-v(?P<major>\d+)\.(?P<minor>\d+)")
 PASSED, BLOCKED, INCONCLUSIVE = "passed", "blocked", "inconclusive"
 
@@ -231,7 +228,9 @@ def latest_verdict(release: Path, now: datetime | None = None) -> dict | None:
     The gate commits each attempt as validations/<release>/<attempt>/result.json through a
     rename; staging directories are hidden. A committed attempt that is missing its result,
     unreadable, malformed, or validated in the future makes the verdict unknown, so an older
-    attempt can never stand in for it. Keep this in step with committed_attempts in gate.py.
+    attempt can never stand in for it. The gate's own reader (committed_attempts in gate.py)
+    runs in another environment; both suites run pipelines/validation/tests/verdict_cases.json,
+    so the two cannot drift apart.
     """
     now = now or datetime.now(UTC)
     attempts, damaged = [], []
@@ -332,17 +331,14 @@ def rows_sha256(dataset_version: str, rows: list[dict]) -> str:
 
 
 def summary(rows: list[dict], group_key: str) -> dict:
-    def counts(column: str) -> dict:
-        return dict(sorted(Counter(str(row[column]) for row in rows).items()))
-
     return {
         "rows": len(rows),
         "runs": len({row["run_id"] for row in rows}),
         "groups": len({row[group_key] for row in rows}),
-        "label_resource": counts("label_resource"),
-        "condition": counts("condition"),
-        "source": counts("source"),
-        "injection_method": counts("injection_method"),
+        "label_resource": counts(rows, "label_resource"),
+        "condition": counts(rows, "condition"),
+        "source": counts(rows, "source"),
+        "injection_method": counts(rows, "injection_method"),
     }
 
 
@@ -477,20 +473,6 @@ def make_split(release: Path, contract_path: Path, frozen_schema: Path) -> Split
         return SplitResult(path, split, reused=True)
     write_atomic(path, text)
     return SplitResult(path, split, reused=False)
-
-
-def write_atomic(path: Path, text: str) -> None:
-    """Write text so readers never see a partial file; readable by other users."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    staged = Path(name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
-        staged.chmod(0o644)
-        os.replace(staged, path)
-    finally:
-        staged.unlink(missing_ok=True)
 
 
 def read_split_file(path: Path) -> dict:

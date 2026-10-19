@@ -19,7 +19,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from agentwatch_data.build import fsync_directory, fsync_file
 from agentwatch_data.extract import (
     RESULTS_FILE,
     SAMPLES_FILE,
@@ -30,6 +29,7 @@ from agentwatch_data.extract import (
     run_from_bytes,
     summarize,
 )
+from agentwatch_data.files import fsync_directory, fsync_file
 
 EVIDENCE_FILES = (RESULTS_FILE, SAMPLES_FILE)  # all an entry may hold
 STAGING_PREFIX = ".adding-"  # hidden, and excluded from DVC snapshots by .dvcignore

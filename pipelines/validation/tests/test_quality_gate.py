@@ -624,3 +624,36 @@ def test_module_runs_as_a_command(release, schema, monkeypatch):
     with pytest.raises(SystemExit) as exited:
         runpy.run_module("agentwatch_validation", run_name="__main__")
     assert exited.value.code == 0
+
+
+# Verdict selection shared with the split stage
+
+
+VERDICT_CASES = json.loads((HERE / "verdict_cases.json").read_text())
+
+
+def lay_out_attempts(datasets: Path, release: str, attempts: list[dict]) -> None:
+    base = datasets / VALIDATIONS_DIR / release
+    base.mkdir(parents=True, exist_ok=True)
+    for attempt in attempts:
+        content = attempt["result"]
+        if attempt.get("file"):
+            (base / attempt["name"]).write_text(content)
+            continue
+        (base / attempt["name"]).mkdir()
+        if content is not None:
+            text = content if isinstance(content, str) else json.dumps(content)
+            (base / attempt["name"] / RESULT_FILE).write_text(text)
+
+
+@pytest.mark.parametrize("case", VERDICT_CASES["cases"], ids=lambda case: case["name"])
+def test_verdict_selection_matches_the_shared_cases(tmp_path, case):
+    """pipelines/data's splits.latest_verdict runs the same cases; the two must agree."""
+    release, now = VERDICT_CASES["release"], datetime.fromisoformat(VERDICT_CASES["now"])
+    lay_out_attempts(tmp_path, release, case["attempts"])
+    try:
+        result, _ = latest_result(tmp_path, release, now)
+        found = None if result is None else {k: result[k] for k in ("attempt", "status")}
+    except UnknownVerdict:
+        found = "unknown"
+    assert found == case["verdict"]

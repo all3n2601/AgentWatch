@@ -259,7 +259,10 @@ release (`pipelines/data/src/agentwatch_data/splits.py`).
   change, or a contract change. There is no option to skip this.
 - The verdict is read by the gate's own rules: a committed attempt that is missing its result,
   unreadable, malformed, or validated in the future makes it unknown, and the split stage
-  refuses rather than falling back to an older attempt.
+  refuses rather than falling back to an older attempt. The gate and the split stage run in
+  separate environments, so each has its own reader; one shared table of cases
+  (`pipelines/validation/tests/verdict_cases.json`) runs in both test suites, so they cannot
+  disagree about a verdict.
 - It refuses a split whose leakage check did not pass. Exploration can opt in with
   `allow_unchecked_leakage=True`, which skips only that check; its results must not be reported
   as an evaluation.

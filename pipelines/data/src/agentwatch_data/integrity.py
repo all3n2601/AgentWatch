@@ -39,12 +39,12 @@ from agentwatch_data.build import (
     MANIFEST_FILE,
     RELEASE_NAME,
     SCHEMA_FILE,
-    file_sha256,
     release_digest,
     release_manifest,
     rows_digest,
 )
 from agentwatch_data.evidence import EVIDENCE_FILES, EvidenceError, entry_name, read_entry
+from agentwatch_data.files import file_sha256
 from agentwatch_data.splits import (
     RESULT_FILE,
     SPLITS_DIR,

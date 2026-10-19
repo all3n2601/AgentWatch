@@ -51,6 +51,7 @@ from agentwatch_data.extract import (
     extract_api,
     extract_local,
 )
+from agentwatch_data.files import file_sha256, fsync_directory, fsync_file, json_text
 from agentwatch_data.flatten import flatten_runs
 from agentwatch_data.labels import LabelingError, label_rows, load_config
 from agentwatch_data.schema import COLUMNS, SCHEMA_VERSION, SchemaError, contract, validate_rows
@@ -233,14 +234,6 @@ def contract_text() -> str:
     return json_text(contract())
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def rejection_records(stage: str, rejections: list[Rejection], redact: Redactor) -> list[dict]:
     return [
         {"stage": stage, "origin": redact(item.origin), "reason": redact(item.reason)}
@@ -376,19 +369,6 @@ def validate_runs(rows: list[dict], origins: dict[str, str]) -> tuple[list[dict]
     return valid, rejections
 
 
-def fsync_file(path: Path) -> None:
-    with path.open("rb") as stream:
-        os.fsync(stream.fileno())
-
-
-def fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def write_release(
     release: Path, rows: list[dict], version: str, digest: str, label_version: str
 ) -> bool:
@@ -506,10 +486,6 @@ def verify_existing(release: Path, digest: str) -> bool:
         raise BuildError(f"Existing release {release.name} does not match its manifest")
     logger.info("Release %s already exists and is intact", release.name)
     return True
-
-
-def json_text(value) -> str:
-    return json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:

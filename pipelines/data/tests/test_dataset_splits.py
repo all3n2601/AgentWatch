@@ -463,7 +463,9 @@ def test_a_failed_write_leaves_nothing(release, monkeypatch):
     def fail(source, target):
         raise OSError("disk full")
 
-    monkeypatch.setattr(splits_module.os, "replace", fail)
+    from agentwatch_data import files
+
+    monkeypatch.setattr(files.os, "replace", fail)  # split files use the shared writer
     with pytest.raises(OSError, match="disk full"):
         split_of(release)
     assert list((release.parent / "splits" / release.name).iterdir()) == []
@@ -720,3 +722,36 @@ def test_hash_consistent_bytes_that_are_not_parquet_are_refused(release):
     resign(release)
     with pytest.raises(SplitError, match="steps.parquet is not readable Parquet"):
         load_release(release)
+
+
+# Verdict selection shared with the quality gate
+
+
+VERDICT_CASES = json.loads(
+    (Path(__file__).resolve().parents[2] / "validation/tests/verdict_cases.json").read_text()
+)
+
+
+@pytest.mark.parametrize("case", VERDICT_CASES["cases"], ids=lambda case: case["name"])
+def test_verdict_selection_matches_the_shared_cases(tmp_path, case):
+    """The gate's own reader (gate.latest_result) runs the same cases; the two must agree."""
+    from agentwatch_data.splits import latest_verdict
+
+    release, now = VERDICT_CASES["release"], datetime.fromisoformat(VERDICT_CASES["now"])
+    base = tmp_path / "validations" / release
+    base.mkdir(parents=True)
+    for attempt in case["attempts"]:
+        content = attempt["result"]
+        if attempt.get("file"):
+            (base / attempt["name"]).write_text(content)
+            continue
+        (base / attempt["name"]).mkdir()
+        if content is not None:
+            text = content if isinstance(content, str) else json.dumps(content)
+            (base / attempt["name"] / "result.json").write_text(text)
+    try:
+        result = latest_verdict(tmp_path / release, now)
+        found = None if result is None else {k: result[k] for k in ("attempt", "status")}
+    except SplitError:
+        found = "unknown"
+    assert found == case["verdict"]

@@ -17,7 +17,9 @@ Each validation is an attempt, committed as one immutable directory,
 <datasets>/validations/<release>/<attempt>/, holding result.json and the statistics it was
 computed from. A release's verdict is its latest committed attempt; earlier attempts are kept
 as evidence. A committed attempt that cannot be read, or claims to come from the future, makes
-the verdict unknown rather than silently falling back to an older attempt.
+the verdict unknown rather than silently falling back to an older attempt. The split stage
+reads verdicts with its own implementation of these rules; both test suites run
+tests/verdict_cases.json, so the two readers cannot drift apart.
 """
 
 import hashlib
