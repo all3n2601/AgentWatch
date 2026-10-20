@@ -68,7 +68,7 @@ freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest rele
 DVC_STATUS = .dvc/tmp/version-dataset-status.json
 
 version-dataset: ## Verify the stores (intact, reproducible, append-only), then snapshot both with DVC; commit the updated data/*.dvc files
-	mkdir -p .dvc/tmp && $(DVC) data status --granular --json > $(DVC_STATUS)
+	mkdir -p .dvc/tmp && $(DVC) data status --granular --unchanged --json > $(DVC_STATUS)
 	uv run --package agentwatch-data python -m agentwatch_data.integrity --evidence $(DATASET_EVIDENCE) --datasets $(DATASET_OUTPUT) --dvc-status $(DVC_STATUS)
 	$(DVC) add $(DATASET_EVIDENCE) $(DATASET_OUTPUT)
 

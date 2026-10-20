@@ -1,7 +1,7 @@
 """Verify the evidence store and dataset store before they are versioned.
 
     python -m agentwatch_data.integrity --evidence data/evidence --datasets data/datasets \\
-        [--dvc-status <output of dvc data status --granular --json>]
+        [--dvc-status <output of dvc data status --granular --unchanged --json>]
 
 A version should never record damage, and every versioned release must be rebuildable from
 versioned evidence. Refused, with every problem listed:
@@ -11,6 +11,10 @@ versioned evidence. Refused, with every problem listed:
 - a release that does not match its manifest and name (a superseded older release format is
   checked against what that format recorded), whose rows break the frozen column contract of
   its schema version, or that uses a run whose exact evidence is not in the evidence store;
+- a release not yet versioned that is not exactly what its stored evidence builds: its runs
+  are rebuilt under the current label rules and must reproduce its rows (and, for the current
+  format, its Parquet bytes). A versioned release was rebuilt when it was versioned, and the
+  append-only check keeps it unchanged, so a later rule or code change never blocks versioning;
 - a build report that is unreadable or names a release that does not exist;
 - a quality-gate attempt that is damaged (an unknown verdict), whose statistics do not match
   the hash its result recorded, or that holds unexpected files;
@@ -42,12 +46,16 @@ from agentwatch_data.build import (
     RELEASE_NAME,
     SCHEMA_FILE,
     arrow_schema,
+    derive_rows,
+    parquet_bytes,
     release_digest,
     release_manifest,
     rows_digest,
 )
 from agentwatch_data.evidence import EVIDENCE_FILES, EvidenceError, entry_name, read_entry
+from agentwatch_data.extract import RawRun
 from agentwatch_data.files import file_sha256
+from agentwatch_data.labels import LabelConfig, load_config
 from agentwatch_data.schema import Column, SchemaError, columns_from, validate_rows
 from agentwatch_data.splits import (
     RESULT_FILE,
@@ -85,7 +93,18 @@ class Report:
     attempts: int = 0
     splits: int = 0
     hidden: int = 0
-    evidence: dict[str, str] = field(default_factory=dict)  # run_id -> source_sha256
+    evidence: dict[str, RawRun] = field(default_factory=dict)  # by run ID
+    rebuilt: int = 0  # releases rebuilt from evidence (the rest were already versioned)
+
+
+@dataclass(frozen=True)
+class Release:
+    """A release whose files, contract, and identity checked out."""
+
+    rows: list[dict]
+    manifest: dict
+    columns: tuple[Column, ...]
+    current: bool  # False for a superseded format
 
 
 def is_file(path: Path) -> bool:
@@ -135,12 +154,12 @@ def check_evidence(store: Path, report: Report) -> None:
             report.problems.append(f"{label}: run {run.run_id} is also {stored_as[run.run_id]}")
             continue
         stored_as[run.run_id] = path.name
-        report.evidence[run.run_id] = run.source_sha256
+        report.evidence[run.run_id] = run
         report.runs += 1
 
 
-def check_release(path: Path, report: Report) -> list[dict] | None:
-    """The release's rows if it is exactly what they produce, by the format it declares.
+def check_release(path: Path, report: Report) -> Release | None:
+    """The release, if it is exactly what its rows produce, by the format it declares.
 
     Matching file hashes only prove the manifest describes the files; a release edited along
     with its manifest would still pass that. So the rows are first held to the frozen column
@@ -167,7 +186,8 @@ def check_release(path: Path, report: Report) -> list[dict] | None:
         elif manifest.get("parquet_sha256") != file_sha256(path / DATASET_FILE):
             raise SplitError(f"Release {path.name} does not match its manifest (no format)")
         # Read once: the identity and the evidence checks share the rows.
-        rows = read_rows(path, release_columns(path, manifest, current))
+        columns = release_columns(path, manifest, current)
+        rows = read_rows(path, columns)
         problem = identity_problem(path, manifest, current, rows)
     except SplitError as error:
         problem = str(error)
@@ -178,7 +198,7 @@ def check_release(path: Path, report: Report) -> list[dict] | None:
         report.releases += 1
     else:
         report.superseded += 1
-    return rows
+    return Release(rows, manifest, columns, current)
 
 
 def release_columns(path: Path, manifest: dict, current: bool) -> tuple[Column, ...]:
@@ -256,14 +276,17 @@ def identity_problem(path: Path, manifest: dict, current: bool, rows: list[dict]
     return None
 
 
-def check_reproducible(path: Path, rows: list[dict], report: Report) -> None:
-    """Every row's run must have exactly the evidence the row names in the evidence store.
+def check_reproducible(
+    path: Path, release: Release, report: Report, rules: LabelConfig | None
+) -> None:
+    """Every row's run must have exactly the evidence the row names in the evidence store,
+    and, unless rules is None (already versioned), the release must be what it builds.
 
     Checked row by row: one run's rows must all name the same evidence hash, so a row
     attributed to a different source artifact cannot hide behind its run's other rows.
     """
     digests: dict[str, set] = {}
-    for row in rows:
+    for row in release.rows:
         digests.setdefault(row["run_id"], set()).add(row["source_sha256"])
     mixed = sorted(run for run, found in digests.items() if len(found) > 1)
     if mixed:
@@ -272,18 +295,57 @@ def check_reproducible(path: Path, rows: list[dict], report: Report) -> None:
             f"(runs {mixed[:3]}{'...' if len(mixed) > 3 else ''})"
         )
         return
-    missing = sorted(run for run, [digest] in digests.items() if report.evidence.get(run) != digest)
+    stored = {run: entry.source_sha256 for run, entry in report.evidence.items()}
+    missing = sorted(run for run, [digest] in digests.items() if stored.get(run) != digest)
     if missing:
         report.problems.append(
             f"datasets/{path.name}: built from evidence that is not in the evidence store "
             f"(runs {missing[:3]}{'...' if len(missing) > 3 else ''}), so it cannot be rebuilt"
         )
+        return
+    if rules is None:
+        return
+    report.rebuilt += 1
+    problem = rebuild_problem(path, release, [report.evidence[run] for run in digests], rules)
+    if problem:
+        report.problems.append(f"datasets/{path.name}: {problem}")
 
 
-def check_datasets(store: Path, report: Report) -> None:
+def rebuild_problem(
+    path: Path, release: Release, runs: list[RawRun], rules: LabelConfig
+) -> str | None:
+    """Why building runs (its stored evidence) would not reproduce the release, or None.
+
+    Agreeing hashes only prove the release names its evidence; this proves the rows were
+    derived from it, so an edited value, a dropped row, or a re-encoded file is refused.
+    """
+    labeled = release.rows[0]["label_version"]  # nonempty and uniform: identity checked
+    if labeled != rules.label_version:
+        return (
+            f"it was labeled under {labeled}, but this pipeline labels under "
+            f"{rules.label_version}, so it cannot be rebuilt from its evidence; build it again"
+        )
+    rows, stage_rejections = derive_rows(runs, rules)
+    refused = [
+        f"{stage}: {item.reason}" for stage, items in stage_rejections.items() for item in items
+    ]
+    if refused:
+        return f"its evidence no longer builds ({refused[0]})"
+    if rows_digest(rows) != release.manifest["rows_sha256"]:
+        return "its rows are not what its stored evidence builds; it was edited or built elsewhere"
+    if release.current:
+        final = [row | {"dataset_version": path.name} for row in rows]
+        encoded = parquet_bytes(final, arrow_schema(release.columns))
+        if hashlib.sha256(encoded).hexdigest() != release.manifest["parquet_sha256"]:
+            return f"its {DATASET_FILE} is not the bytes its rows build"
+    return None
+
+
+def check_datasets(store: Path, report: Report, versioned: set[Path]) -> None:
     # Release directories present, intact or not: a damaged release is reported once, by
     # itself, rather than again as "missing" by its reports, gate attempts, and splits.
     releases = set()
+    rules = load_config()
     for path in visible(store, report):
         if path.name in (BUILDS_DIR, VALIDATIONS_DIR, SPLITS_DIR) and is_directory(path):
             continue
@@ -291,9 +353,10 @@ def check_datasets(store: Path, report: Report) -> None:
             report.problems.append(f"datasets/{path.name}: unexpected entry")
             continue
         releases.add(path.name)
-        rows = check_release(path, report)
-        if rows is not None:
-            check_reproducible(path, rows, report)
+        release = check_release(path, report)
+        if release is not None:
+            files = {(path / name).resolve() for name in (DATASET_FILE, MANIFEST_FILE)}
+            check_reproducible(path, release, report, None if files <= versioned else rules)
     check_reports(store / BUILDS_DIR, releases, report)
     check_validations(store, releases, report)
     check_splits(store / SPLITS_DIR, releases, report)
@@ -392,6 +455,14 @@ def check_append_only(status: dict, stores: list[Path], report: Report) -> None:
                 )
 
 
+def versioned_files(status: dict | None) -> set[Path]:
+    """Files DVC reports unchanged since the committed version (needs --unchanged)."""
+    entries = (status or {}).get("unchanged")
+    if not isinstance(entries, list):
+        return set()
+    return {Path(entry).resolve() for entry in entries if isinstance(entry, str)}
+
+
 def verify(evidence: Path, datasets: Path, dvc_status: dict | None = None) -> Report:
     report = Report()
     for store, name in ((evidence, "evidence"), (datasets, "datasets")):
@@ -399,7 +470,7 @@ def verify(evidence: Path, datasets: Path, dvc_status: dict | None = None) -> Re
             report.problems.append(f"{name} store {store} does not exist")
     if not report.problems:
         check_evidence(evidence, report)
-        check_datasets(datasets, report)
+        check_datasets(datasets, report, versioned_files(dvc_status))
     if dvc_status is not None:
         check_append_only(dvc_status, [evidence, datasets], report)
     return report
@@ -410,7 +481,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence", type=Path, default=Path("data/evidence"))
     parser.add_argument("--datasets", type=Path, default=Path("data/datasets"))
     parser.add_argument(
-        "--dvc-status", type=Path, help="JSON from `dvc data status --granular --json`"
+        "--dvc-status",
+        type=Path,
+        help="JSON from `dvc data status --granular --unchanged --json`",
     )
     args = parser.parse_args(argv)
     status = None
@@ -432,7 +505,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"verified: {report.runs} runs, {report.releases} releases"
         f" (+{report.superseded} superseded), {report.reports} build reports,"
-        f" {report.attempts} gate attempts, {report.splits} splits"
+        f" {report.attempts} gate attempts, {report.splits} splits;"
+        f" {report.rebuilt} releases rebuilt from evidence"
         f" ({report.hidden} hidden entries excluded)"
     )
     return 0

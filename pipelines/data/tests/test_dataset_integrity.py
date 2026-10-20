@@ -360,7 +360,7 @@ def test_cli_exits_zero_with_a_summary(stores, capsys):
     assert main(["--evidence", str(evidence), "--datasets", str(datasets)]) == 0
     assert capsys.readouterr().out == (
         "verified: 1 runs, 1 releases (+0 superseded), 1 build reports, 0 gate attempts, "
-        "0 splits (0 hidden entries excluded)\n"
+        "0 splits; 1 releases rebuilt from evidence (0 hidden entries excluded)\n"
     )
 
 
@@ -818,3 +818,118 @@ def test_a_linked_store_folder_of_a_release_is_refused(stores, tmp_path):
         f"datasets/validations/{release.name}: no such release",
         f"datasets/splits/{release.name}: no such release",
     ]
+
+
+# Releases not yet versioned must be what their stored evidence builds (re-review at 6d46efa)
+
+
+def unchanged(release: Path) -> dict:
+    """DVC status reporting release as versioned and unchanged (--unchanged)."""
+    return {"unchanged": [str(release / "steps.parquet"), str(release / "manifest.json")]}
+
+
+def edited_copy(release: Path, datasets: Path, edit) -> Path:
+    """A release of edited rows, with every hash, digest, and name re-derived to agree."""
+    rows = pq.read_table(release / "steps.parquet").to_pylist()
+    manifest = json.loads((release / "manifest.json").read_text())
+    return consistent_release_from(edit(rows), datasets, manifest["label_version"])
+
+
+def test_a_consistent_release_with_edited_values_is_refused(stores):
+    """The review's reproduction: one queue_seconds moved by 0.125, authentic evidence hash."""
+    evidence, datasets, release = stores
+
+    def nudge(rows):
+        rows[0]["queue_seconds"] += 0.125
+        return rows
+
+    forged = edited_copy(release, datasets, nudge)
+    report = verify(evidence, datasets)
+    assert report.problems == [
+        (
+            f"datasets/{forged.name}: its rows are not what its stored evidence builds; "
+            "it was edited or built elsewhere"
+        )
+    ]
+    assert report.rebuilt == 2
+
+
+def test_a_consistent_release_missing_a_row_is_refused(stores):
+    evidence, datasets, release = stores
+    forged = edited_copy(release, datasets, lambda rows: rows[1:])
+    assert problems(evidence, datasets) == [
+        (
+            f"datasets/{forged.name}: its rows are not what its stored evidence builds; "
+            "it was edited or built elsewhere"
+        )
+    ]
+
+
+def test_a_re_encoded_release_is_refused(stores):
+    """Same rows, other Parquet bytes: not what a rebuild writes."""
+    evidence, datasets, release = stores
+    table = pq.read_table(release / "steps.parquet")
+    pq.write_table(table, release / "steps.parquet", compression="none")
+    resign(release)
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: its steps.parquet is not the bytes its rows build"
+    ]
+    assert problems(evidence, datasets, unchanged(release)) == []
+
+
+def test_superseded_releases_are_rebuilt_by_their_rows(stores):
+    evidence, datasets, release = stores
+    old = format_1(release)
+    pq.write_table(pq.read_table(old / "steps.parquet"), old / "steps.parquet", compression="none")
+    resign(old)  # format 1 recorded no encoding, so only its rows must rebuild
+    report = verify(evidence, datasets)
+    assert report.problems == [] and report.rebuilt == 2
+
+
+def test_releases_of_other_label_rules_must_already_be_versioned(stores, monkeypatch):
+    import dataclasses
+
+    from agentwatch_data import integrity
+
+    evidence, datasets, release = stores
+    retuned = dataclasses.replace(integrity.load_config(), version="labels-v9")
+    monkeypatch.setattr(integrity, "load_config", lambda: retuned)
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(f"datasets/{release.name}: it was labeled under labels-v1.1+")
+    assert problem.endswith(
+        f"but this pipeline labels under {retuned.label_version}, so it cannot be rebuilt "
+        "from its evidence; build it again"
+    )
+    report = verify(evidence, datasets, unchanged(release))
+    assert report.problems == [] and report.rebuilt == 0
+
+
+def test_evidence_that_no_longer_builds_is_reported(stores, monkeypatch):
+    from agentwatch_data import integrity
+    from agentwatch_data.extract import Rejection
+
+    evidence, datasets, release = stores
+    rejection = Rejection("run x", "baseline missing")
+    monkeypatch.setattr(integrity, "derive_rows", lambda runs, rules: ([], {"label": [rejection]}))
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: its evidence no longer builds (label: baseline missing)"
+    ]
+
+
+@pytest.mark.parametrize("listed", [None, "steps.parquet", [1, None]])
+def test_a_malformed_unchanged_list_versions_nothing(stores, listed):
+    evidence, datasets, _ = stores
+    report = verify(evidence, datasets, {"unchanged": listed})
+    assert report.problems == [] and report.rebuilt == 1
+
+
+def test_entries_that_are_not_paths_are_ignored(stores):
+    evidence, datasets, release = stores
+    status = {"unchanged": [1, None, *unchanged(release)["unchanged"]]}
+    assert verify(evidence, datasets, status).rebuilt == 0
+
+
+def test_a_partly_versioned_release_is_rebuilt(stores):
+    evidence, datasets, release = stores
+    status = {"unchanged": [str(release / "manifest.json")]}
+    assert verify(evidence, datasets, status).rebuilt == 1

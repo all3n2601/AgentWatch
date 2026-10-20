@@ -307,6 +307,16 @@ make dataset-status    # what is not yet versioned, and (with a remote) what is 
   - every row of a release names exactly the evidence stored for its run (run ID and
     raw-evidence hash, checked row by row, so one run's rows cannot name different evidence),
     so it can be rebuilt from versioned evidence;
+  - every release not yet versioned **is** what its stored evidence builds: its runs are
+    rebuilt from the evidence store under the current label rules, through the same code the
+    build uses, and must reproduce its rows exactly (and, for the current format, its Parquet
+    bytes). Agreeing hashes alone only prove a release names its evidence; this refuses an
+    edited value, a dropped row, a re-encoded file, or a release built from other sources (an
+    API build records save times the store does not hold). A release built under other label
+    rules is refused until it is built again. Releases DVC reports unchanged since the committed
+    version (`dvc data status --unchanged`) were rebuilt when they were versioned and the
+    append-only check keeps them identical, so they are not rebuilt again, and changing the
+    rules or the code later never blocks versioning;
   - every build report is readable and names a release that exists;
   - every quality-gate attempt is readable and holds exactly `result.json` and the
     `statistics.pbtxt` whose hash its result recorded;

@@ -108,14 +108,15 @@ def remote(tmp_path) -> Path:
     return tmp_path / "remote"
 
 
-def snapshot(repo: Path) -> None:
-    """What make version-dataset does."""
+def snapshot(repo: Path) -> str:
+    """What make version-dataset does; returns the integrity check's summary."""
     status = repo / ".dvc/tmp/version-dataset-status.json"
     status.parent.mkdir(parents=True, exist_ok=True)
-    status.write_text(dvc(repo, "data", "status", "--granular", "--json"))
+    status.write_text(dvc(repo, "data", "status", "--granular", "--unchanged", "--json"))
     stores = ["--evidence", "data/evidence", "--datasets", "data/datasets"]
-    data(repo, "integrity", *stores, "--dvc-status", str(status))
+    summary = data(repo, "integrity", *stores, "--dvc-status", str(status))
     dvc(repo, "add", "data/evidence", "data/datasets")
+    return summary
 
 
 def version(repo: Path, remote: Path, message: str) -> str:
@@ -202,6 +203,8 @@ def test_every_committed_version_stays_retrievable(repo, remote, tmp_path):
     write_run(tmp_path / "recorded" / "cpu-run", result)
     data(repo, "evidence", "--store", "data/evidence", str(tmp_path / "recorded" / "cpu-run"))
     second_release = build(repo, "data/datasets")
+    # Only the new release is rebuilt from evidence; DVC reports the first one unchanged.
+    assert "; 1 releases rebuilt from evidence" in snapshot(repo)
     version(repo, remote, "second")
     assert second_release != first_release
 

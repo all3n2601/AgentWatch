@@ -45,6 +45,7 @@ from agentwatch_data import __version__
 from agentwatch_data.extract import (
     Extraction,
     ExtractionError,
+    RawRun,
     Rejection,
     canonical_sha256,
     combine,
@@ -53,7 +54,7 @@ from agentwatch_data.extract import (
 )
 from agentwatch_data.files import file_sha256, fsync_directory, fsync_file, json_text
 from agentwatch_data.flatten import flatten_runs
-from agentwatch_data.labels import LabelingError, label_rows, load_config
+from agentwatch_data.labels import LabelConfig, LabelingError, label_rows, load_config
 from agentwatch_data.schema import (
     COLUMNS,
     SCHEMA_VERSION,
@@ -288,20 +289,13 @@ def build(
             }
         )
     merged = combine(*extractions)
-    rows, flatten_rejections = flatten_runs(merged.runs)
-    labeled, label_rejections = label_rows(rows, config)
-    origins = {run.run_id: run.origin for run in merged.runs}
-    labeled, schema_rejections = validate_runs(labeled, origins)
-    rejections = (
-        rejection_records("extract", merged.rejections, redact)
-        + rejection_records("flatten", flatten_rejections, redact)
-        + rejection_records("label", label_rejections, redact)
-        + rejection_records("schema", schema_rejections, redact)
-    )
+    labeled, stage_rejections = derive_rows(merged.runs, config)
+    rejections = rejection_records("extract", merged.rejections, redact)
+    for stage, items in stage_rejections.items():
+        rejections += rejection_records(stage, items, redact)
     if not labeled:
         raise BuildError(f"No usable rows: every run was rejected ({len(rejections)} rejections)")
 
-    labeled.sort(key=step_order)
     digest = rows_digest(labeled)
     version = f"{SCHEMA_VERSION}+{release_digest(digest)[:12]}"
     final = [row | {"dataset_version": version} for row in labeled]
@@ -361,6 +355,33 @@ def build(
     return BuildResult(release, report_path, reused)
 
 
+def derive_rows(
+    runs: list[RawRun], config: LabelConfig
+) -> tuple[list[dict], dict[str, list[Rejection]]]:
+    """The rows runs produce under config, in release order, with each stage's rejections.
+
+    The one derivation of release rows from evidence: the build uses it, and integrity uses
+    it to prove a release is what its stored evidence builds.
+    """
+    rows, flatten_rejections = flatten_runs(runs)
+    labeled, label_rejections = label_rows(rows, config)
+    origins = {run.run_id: run.origin for run in runs}
+    labeled, schema_rejections = validate_runs(labeled, origins)
+    labeled.sort(key=step_order)
+    return labeled, {
+        "flatten": flatten_rejections,
+        "label": label_rejections,
+        "schema": schema_rejections,
+    }
+
+
+def parquet_bytes(rows: list[dict], schema: pa.Schema = ARROW_SCHEMA) -> bytes:
+    """steps.parquet for rows, exactly as a release stores it."""
+    buffer = pa.BufferOutputStream()
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), buffer, **PARQUET_OPTIONS)
+    return buffer.getvalue().to_pybytes()
+
+
 def validate_runs(rows: list[dict], origins: dict[str, str]) -> tuple[list[dict], list[Rejection]]:
     """Check each run's rows against the schema; a run that fails is rejected, not fatal.
 
@@ -399,7 +420,7 @@ def write_release(
         # (DVC, Airflow workers, training jobs) that may run as other users.
         staging.chmod(0o755)
         dataset = staging / DATASET_FILE
-        pq.write_table(pa.Table.from_pylist(rows, schema=ARROW_SCHEMA), dataset, **PARQUET_OPTIONS)
+        dataset.write_bytes(parquet_bytes(rows))
         (staging / SCHEMA_FILE).write_text(contract_text(), encoding="utf-8")
         manifest = release_manifest(
             rows,
