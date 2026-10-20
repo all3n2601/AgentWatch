@@ -151,3 +151,17 @@ def test_sections_split_on_headings_and_keep_preamble():
 def test_empty_index_is_rejected(tmp_path):
     with pytest.raises(ValueError):
         DocumentIndex.from_directory(tmp_path)
+
+
+def test_interruption_before_a_request_reports_that_nothing_was_started():
+    from agentwatch_agent.errors import RunFailure
+    from agentwatch_agent.model import wait_interruptibly
+
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(RunCancelled) as cancelled:
+        wait_interruptibly(dict, cancel=cancel, deadline_monotonic=time.monotonic() + 9)
+    assert cancelled.value.request_started is False
+    with pytest.raises(RunFailure) as expired:
+        wait_interruptibly(dict, cancel=threading.Event(), deadline_monotonic=time.monotonic() - 1)
+    assert expired.value.request_started is False

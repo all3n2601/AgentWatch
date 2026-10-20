@@ -816,7 +816,7 @@ export function Dashboard({
                 title="No recorded evidence in this view"
                 detail={
                   page === "agents"
-                    ? "No saved run has agent evidence. New agent runs (make agent-run) report to the live API."
+                    ? "No run in this time range has saved agent evidence. Choose a wider range; new agent runs (make agent-run) report to the live API instead."
                     : "Record an experiment and refresh, or choose a wider time range."
                 }
               />

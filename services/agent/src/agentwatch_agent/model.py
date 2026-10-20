@@ -103,10 +103,14 @@ def wait_interruptibly[Result](
         except BaseException as error:  # noqa: BLE001
             outcome["error"] = error
 
-    if cancel.is_set():
-        raise RunCancelled(f"Cancelled before waiting for {activity}")
-    if time.monotonic() >= deadline_monotonic:
-        raise RunFailure(f"Run time limit reached before waiting for {activity}")
+    if cancel.is_set() or time.monotonic() >= deadline_monotonic:
+        interrupted = (
+            RunCancelled(f"Cancelled before waiting for {activity}")
+            if cancel.is_set()
+            else RunFailure(f"Run time limit reached before waiting for {activity}")
+        )
+        interrupted.request_started = False
+        raise interrupted
     thread = threading.Thread(target=target, name="interruptible-request", daemon=True)
     thread.start()
     while thread.is_alive():

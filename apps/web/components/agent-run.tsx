@@ -127,11 +127,9 @@ export function AgentRun({
         <p className="max-w-md text-sm text-muted-foreground">
           This run has no valid saved agent evidence. Saved Qwen3 runs from the
           earlier tool-calling demo show their model requests and conversation
-          here. New agent runs report to the live API instead.
+          here. New agent runs report to the live API and do not appear in this
+          view.
         </p>
-        <code className="rounded border bg-muted/30 px-3 py-2 text-xs">
-          make agent-run
-        </code>
       </Card>
     );
   const totalWall = sum(agent.inference.map((call) => call.wall_seconds));

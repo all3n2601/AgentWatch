@@ -97,7 +97,9 @@ def run_project_tests(
             deadline = started + timeout_seconds
             while True:
                 try:
-                    process.wait(timeout=poll_seconds)
+                    # Never wait past the deadline: a suite that exits after it has timed out,
+                    # however close to the deadline it finishes.
+                    process.wait(timeout=max(min(poll_seconds, deadline - time.monotonic()), 0))
                     break
                 except subprocess.TimeoutExpired:
                     if cancel is not None and cancel.is_set():

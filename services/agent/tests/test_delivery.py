@@ -9,6 +9,8 @@ from agent_test_doubles import http_error
 from agentwatch_agent import cli
 from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.delivery import (
+    COMPLETION_REFUSED,
+    UNCLOSED_FAILED,
     Journal,
     LiveDelivery,
     LiveRejectedError,
@@ -187,7 +189,8 @@ def test_journal_replay_is_idempotent_and_recovers_an_outage(server, setup):
     first = replay_journal(journal.path, server, NO_SLEEP)
     assert first.run_id == session.run_id
     assert first.records_sent == 3 and first.changes_applied == 1
-    assert first.complete and first.final_state == "running"
+    # No closure was journaled, so the run is still open: reported, not counted as done.
+    assert (first.outcome, first.final_state) == ("unclosed", "running")
     assert server.runs[session.run_id].steps["tool-1"].state == "completed"
     second = replay_journal(journal.path, server, NO_SLEEP)
     assert second.records_sent == 3
@@ -307,7 +310,7 @@ def test_replay_isolates_a_refused_record_instead_of_dropping_its_batch(server, 
     assert not report.complete
 
 
-def test_replay_reports_a_completion_the_service_still_refuses(server, setup):
+def test_replay_closes_a_permanently_refused_completion_as_failed(server, setup):
     session, delivery, recorder, journal = setup
     session.change_state("running", None)
     step = recorder.submit("tool-1", "tool", parent=None, resource=RESOURCE)
@@ -316,9 +319,13 @@ def test_replay_reports_a_completion_the_service_still_refuses(server, setup):
     session.defer_change("completed", None)
     journal.close()
     report = replay_journal(journal.path, server, NO_SLEEP)
-    assert (report.expected_state, report.final_state) == ("completed", "running")
-    assert report.unresolved_changes[0]["state"] == "completed"
-    assert not report.complete
+    # Every record was sent, so retrying cannot help: the run is closed as failed, truthfully.
+    assert (report.completion_refused, report.final_state, report.outcome) == (
+        True,
+        "failed",
+        "refused",
+    )
+    assert server.runs[session.run_id].reason == COMPLETION_REFUSED
 
 
 def test_replay_retries_a_stale_revision_closure_once(server, setup):
@@ -353,7 +360,7 @@ def test_replay_accepts_a_run_closed_by_another_actor(server, setup):
     )
 
 
-def test_resend_command_exits_nonzero_when_the_run_stays_open(server, setup, monkeypatch):
+def test_resend_exits_five_when_completion_is_permanently_refused(server, setup, monkeypatch):
     session, delivery, recorder, journal = setup
     session.change_state("running", None)
     recorder.start(recorder.submit("tool-1", "tool", parent=None, resource=RESOURCE))
@@ -361,4 +368,178 @@ def test_resend_command_exits_nonzero_when_the_run_stays_open(server, setup, mon
     session.defer_change("completed", None)
     journal.close()
     monkeypatch.setattr(cli, "LiveClient", lambda *_args: server)
+    assert cli.main(["resend", str(journal.path)]) == cli.EXIT_RECORDS_REFUSED
+
+
+def test_flush_is_not_complete_while_records_overflowed(server, tmp_path):
+    journal = Journal(tmp_path / "j.jsonl")
+    session = RunSession.open(server, registration(), journal, NO_SLEEP)
+    delivery = LiveDelivery(server, session.run_id, journal, retry=NO_SLEEP, max_pending=2)
+    recorder = StepRecorder(
+        run_id=session.run_id,
+        task_id="fix-mean-empty-r1",
+        trace_id=new_trace_id(),
+        clock=CLOCK,
+        emit=delivery.emit,
+    )
+    complete_step(recorder)
+    assert delivery.flush() is False, "queue drained but one record exists only in the journal"
+
+
+def test_resend_exits_five_for_records_refused_during_the_run(server, setup, monkeypatch):
+    session, delivery, recorder, journal = setup
+    session.change_state("running", None)
+    complete_step(unregistered_clock_recorder(recorder, delivery), "tool-1")
+    delivery.flush()
+    session.change_state("failed", "x")
+    journal.close()
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args: server)
+    assert cli.main(["resend", str(journal.path)]) == cli.EXIT_RECORDS_REFUSED
+
+
+# Third review round (pre-merge audit) -----------------------------------------------------
+
+
+def test_resend_while_the_api_is_down_exits_three_without_a_traceback(
+    server, setup, monkeypatch, capsys
+):
+    _, _, _, journal = setup
+    journal.close()
+    server.down = True
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args: server)
     assert cli.main(["resend", str(journal.path)]) == cli.EXIT_INCOMPLETE_DELIVERY
+    assert "unreachable" in capsys.readouterr().err
+
+
+def test_resend_of_an_unusable_journal_is_a_usage_error(tmp_path, server, monkeypatch):
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args: server)
+    assert cli.main(["resend", str(tmp_path / "missing.jsonl")]) == cli.EXIT_USAGE
+    (tmp_path / "bad.jsonl").write_text("{not json\n{}\n")
+    assert cli.main(["resend", str(tmp_path / "bad.jsonl")]) == cli.EXIT_USAGE
+
+
+def test_never_registered_journal_is_refused_without_creating_a_run(server, tmp_path):
+    journal = Journal(tmp_path / "j.jsonl")
+    journal.write("registration", registration())  # registration refused: nothing else
+    journal.close()
+    with pytest.raises(ValueError, match="never registered"):
+        replay_journal(journal.path, server, NO_SLEEP)
+    assert server.runs == {}
+
+
+def test_unconfirmed_registration_is_closed_by_resend(server, tmp_path):
+    journal = Journal(tmp_path / "j.jsonl")
+    request = registration()
+    server.create_run(request)  # the service recorded it; the runner never saw the answer
+    server.failures = [URLError("timed out")] * 3
+    with pytest.raises(URLError):
+        RunSession.open(server, request, journal, NO_SLEEP)
+    journal.close()
+    run = server.only_run()
+    assert run.state == "queued"
+    report = replay_journal(journal.path, server, NO_SLEEP)
+    assert (report.outcome, run.state, report.run_created_by_replay) == ("settled", "failed", False)
+    assert run.reason == "Runner could not confirm registration; no task work ran"
+
+
+def test_journal_without_a_closure_is_unclosed_until_explicitly_failed(server, setup, monkeypatch):
+    session, delivery, recorder, journal = setup
+    session.change_state("running", None)
+    complete_step(recorder)
+    delivery.flush()
+    journal.close()  # the runner stopped here, e.g. SIGKILL
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args: server)
+    assert cli.main(["resend", str(journal.path)]) == cli.EXIT_RUN_UNCLOSED
+    assert server.runs[session.run_id].state == "running"
+    assert cli.main(["resend", "--fail-unclosed", str(journal.path)]) == cli.EXIT_PASSED
+    run = server.runs[session.run_id]
+    assert (run.state, run.reason) == ("failed", UNCLOSED_FAILED)
+    assert cli.main(["resend", str(journal.path)]) == cli.EXIT_PASSED  # idempotent after
+
+
+def test_remote_closure_is_journaled_even_if_the_refresh_fails(server, setup):
+    session, _, _, journal = setup
+    session.change_state("running", None)
+    server.cancel(session.run_id, "Stopped by reviewer")
+    server.unavailable_calls = {"get_run"}
+    with pytest.raises(URLError):
+        session.adopt_remote_closure("cancelled", "Stopped by reviewer")
+    server.unavailable_calls = set()
+    journal.close()
+    report = replay_journal(journal.path, server, NO_SLEEP)
+    assert (report.outcome, report.expected_state) == ("settled", "cancelled")
+
+
+def test_after_an_overflow_later_records_stay_journal_only_to_keep_order(server, tmp_path):
+    journal = Journal(tmp_path / "j.jsonl")
+    session = RunSession.open(server, registration(), journal, NO_SLEEP)
+    delivery = LiveDelivery(server, session.run_id, journal, retry=NO_SLEEP, max_pending=2)
+    recorder = StepRecorder(
+        run_id=session.run_id,
+        task_id="fix-mean-empty-r1",
+        trace_id=new_trace_id(),
+        clock=CLOCK,
+        emit=delivery.emit,
+    )
+    step = recorder.submit("tool-1", "tool", parent=None, resource=RESOURCE)
+    recorder.start(step)
+    recorder.complete(step)  # third record overflows the 2-record queue
+    assert not delivery.flush()  # queue drained, but revision 2 is journal-only
+    other = recorder.submit("tool-2", "tool", parent=None, resource=RESOURCE)
+    assert delivery.stats().pending == 0, "a later record was queued ahead of an overflowed one"
+    assert other.state == "queued"
+    assert server.runs[session.run_id].steps["tool-1"].sequence == 1
+
+
+def test_journal_reopened_after_an_interrupted_write_starts_a_new_line(tmp_path):
+    path = tmp_path / "j.jsonl"
+    path.write_text('{"kind": "registration", "payload": {}}\n{"kind": "rec')
+    journal = Journal(path)
+    journal.write("rejected", {"status": 409, "detail": "x"}, record_ids=[])
+    journal.close()
+    lines = path.read_text().splitlines()
+    assert lines[1] == '{"kind": "rec'
+    assert json.loads(lines[2])["kind"] == "repaired_interrupted_line"
+    assert json.loads(lines[3])["kind"] == "rejected"
+
+
+# Final review (round-three changes) -------------------------------------------------------
+
+
+def test_resend_twice_after_a_refused_completion_keeps_reporting_it(server, setup, monkeypatch):
+    session, delivery, recorder, journal = setup
+    session.change_state("running", None)
+    recorder.start(recorder.submit("tool-1", "tool", parent=None, resource=RESOURCE))
+    assert delivery.flush()
+    session.defer_change("completed", None)
+    journal.close()
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args: server)
+    assert cli.main(["resend", str(journal.path)]) == cli.EXIT_RECORDS_REFUSED
+    second = replay_journal(journal.path, server, NO_SLEEP)
+    assert (second.outcome, second.completion_refused, second.changes_superseded) == (
+        "refused",
+        True,
+        0,
+    )
+    assert cli.main(["resend", str(journal.path)]) == cli.EXIT_RECORDS_REFUSED
+
+
+def test_truncated_journal_stays_replayable_after_replay_appends(server, setup, monkeypatch):
+    session, delivery, recorder, journal = setup
+    session.change_state("running", None)
+    complete_step(recorder)
+    delivery.flush()
+    journal.close()
+    with journal.path.open("a") as stream:
+        stream.write('{"kind": "rec')  # the runner was killed mid-write
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args: server)
+    assert cli.main(["resend", "--fail-unclosed", str(journal.path)]) == cli.EXIT_PASSED
+    assert cli.main(["resend", str(journal.path)]) == cli.EXIT_PASSED
+    assert cli.main(["resend", str(journal.path)]) == cli.EXIT_PASSED
+
+
+def test_damaged_lines_without_a_repair_marker_are_still_rejected(tmp_path, server):
+    path = tmp_path / "j.jsonl"
+    path.write_text('{"kind": "registration", "payload": {}}\n{"kind": "rec\n{"kind": "x"}\n')
+    with pytest.raises(ValueError, match="line 2"):
+        replay_journal(path, server, NO_SLEEP)

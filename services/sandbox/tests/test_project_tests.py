@@ -110,3 +110,14 @@ def test_invalid_timeouts_are_rejected(tmp_path, timeout):
 def test_missing_project_is_rejected(tmp_path):
     with pytest.raises(FileNotFoundError):
         run_project_tests(tmp_path / "absent", timeout_seconds=1)
+
+
+def test_timeout_is_enforced_even_when_shorter_than_the_poll_interval(tmp_path):
+    """Regression: the deadline was checked only after a full poll, so a suite finishing
+    after its timeout but within one poll interval was reported as passed."""
+    project = write_project(
+        tmp_path / "project", "    def test_brief(self):\n        import time; time.sleep(0.3)\n"
+    )
+    result = run_project_tests(project, timeout_seconds=0.1, poll_seconds=5)
+    assert result.outcome == "timed_out"
+    assert result.wall_seconds < 2

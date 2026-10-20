@@ -18,7 +18,6 @@ import json
 import platform
 import resource
 import statistics
-import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -33,14 +32,18 @@ from agentwatch_agent.config import (
     RUNNER_VERSION,
 )
 from agentwatch_agent.delivery import (
+    COMPLETION_REFUSED,
+    TRANSIENT_ERRORS,
     Journal,
     LiveDelivery,
     LiveTransport,
     PeriodicFlusher,
     RetryPolicy,
+    is_retryable,
 )
+from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.resources import CpuResourceSampler
-from agentwatch_agent.session import RunSession
+from agentwatch_agent.session import TERMINAL_RUN_STATES, CancellationState, RunSession
 from agentwatch_agent.steps import Step, StepRecorder, new_trace_id
 from agentwatch_agent.tasks import Task
 from agentwatch_agent.workspace import Workspace
@@ -56,6 +59,9 @@ PROTOCOL = {
     "threshold": None,
 }
 FLUSH_INTERVAL_SECONDS = 0.5
+OVERHEAD_SERVICE_ID = "agentwatch-agent-overhead"
+# Reported live state when completion was refused and the run was closed as failed instead.
+COMPLETION_REFUSED_STATE = "failed_completion_refused"
 TEST_TIMEOUT_SECONDS = 60
 CONDITIONS = ("uninstrumented", "instrumented")
 
@@ -87,25 +93,81 @@ def merged_availability(summaries: list[dict]) -> dict[str, dict[str, int]]:
     return merged
 
 
-def _close_failed(
+class OverheadCancelled(Exception):
+    """The operator cancelled the measurement (SIGINT/SIGTERM)."""
+
+
+class OverheadFailed(Exception):
+    """The measurement did not finish. `closure` says how its live run was left:
+
+    "closed" (failed or cancelled and delivered), or "deferred" (journaled for `resend`).
+    The original error is the exception's __cause__.
+    """
+
+    def __init__(self, message: str, closure: str, journal: Path, refused: int = 0):
+        super().__init__(message)
+        self.closure = closure
+        self.journal = journal
+        # Records the service refused permanently before the measurement stopped.
+        self.refused = refused
+
+
+def _close_completed(delivery: LiveDelivery, session: RunSession) -> str:
+    """Complete the run, or defer the closure for `resend` while evidence is undelivered.
+
+    Transient delivery failures make `flush()` return False; anything else raises and fails
+    the measurement, which then defers its closure in `_close_unfinished`.
+    """
+    if not delivery.flush():
+        session.defer_change("completed", None)
+        return "completed_locally_undelivered"
+    try:
+        state = session.change_state("completed", None)
+    except TRANSIENT_ERRORS as error:
+        if not is_retryable(error):
+            raise
+        # The change is journaled, so `resend` delivers it; the measurement itself is kept.
+        return "completed_locally_undelivered"
+    if state in TERMINAL_RUN_STATES:
+        return state
+    # Everything was delivered, so the refusal is permanent (refused or expired evidence).
+    if session.change_state("failed", COMPLETION_REFUSED) in TERMINAL_RUN_STATES:
+        return COMPLETION_REFUSED_STATE
+    return "completed_locally_undelivered"
+
+
+def _close_unfinished(
     recorder: StepRecorder,
     open_step: Step | None,
     delivery: LiveDelivery,
     session: RunSession,
+    state: str,
+    reason: str,
     cause: BaseException,
-) -> None:
-    """Best effort: fail the open step and the run without hiding the original error."""
-    reason = f"Overhead measurement failed ({type(cause).__name__})"
-    try:
-        if open_step is not None and not open_step.terminal:
-            recorder.fail(open_step, reason)
-        if delivery.flush():
-            session.change_state("failed", reason)
+) -> str:
+    """End the open step and the run as `state`; return "closed" or "deferred"."""
+    if open_step is not None and not open_step.terminal:
+        if state == "cancelled":
+            recorder.cancel(open_step, reason)
         else:
-            session.defer_change("failed", reason)
-    # The caller re-raises `cause`; the closure failure is attached to it rather than lost.
-    except Exception as closure_error:  # noqa: BLE001
-        cause.add_note(f"The live run could not be closed as failed: {closure_error!r}")
+            recorder.fail(open_step, reason)
+    try:
+        delivered = delivery.flush()
+    # Already failing: defer the closure rather than send it early, and keep this error on
+    # the measurement's own error instead of discarding it.
+    except Exception as flush_error:  # noqa: BLE001
+        cause.add_note(f"Delivery failed while closing the run: {flush_error!r}")
+        delivered = False
+    if not delivered:
+        session.defer_change(state, reason)
+        return "deferred"
+    try:
+        result = session.change_state(state, reason)
+    except TRANSIENT_ERRORS as error:
+        if not is_retryable(error):
+            raise
+        return "deferred"  # journaled by change_state before it was sent
+    return "closed" if result in TERMINAL_RUN_STATES else "deferred"
 
 
 def protocol_digest(task: Task, sampling_interval_seconds: float) -> str:
@@ -132,6 +194,7 @@ def measure_overhead(
     warmup: int = PROTOCOL["warmup_repetitions"],
     sampling_interval_seconds: float = DEFAULT_SAMPLING_INTERVAL_SECONDS,
     proc: Path = Path("/proc"),
+    cancel: CancellationState | None = None,
 ) -> dict:
     if repetitions < 1 or warmup < 0:
         raise ValueError("repetitions must be positive and warmup nonnegative")
@@ -145,24 +208,34 @@ def measure_overhead(
     clock = MonotonicClock()
     host = ResourceRegistration(
         resource_id=f"tool-host-{uuid4().hex[:12]}",
-        service_id="agentwatch-agent-runner",
+        # A distinct service lets consumers exclude overhead runs without runner internals.
+        service_id=OVERHEAD_SERVICE_ID,
         resource_class="cpu_sandbox",
     )
-    journal = Journal(output_dir / "overhead-journal.jsonl")
+    journal_path = output_dir / "overhead-journal.jsonl"
+    journal = Journal(journal_path)
     retry = RetryPolicy()
-    session = RunSession.open(
-        transport,
-        RunCreate(
-            contract_version=CONTRACT_VERSION,
-            request_id=uuid4(),
-            task_id=task_id,
-            configuration_digest=protocol_digest(task, sampling_interval_seconds),
-            clock_ids=[clock.clock_id],
-            resources=[host],
-        ),
-        journal,
-        retry,
-    )
+    cancel = cancel or CancellationState()
+    try:
+        session = RunSession.open(
+            transport,
+            RunCreate(
+                contract_version=CONTRACT_VERSION,
+                request_id=uuid4(),
+                task_id=task_id,
+                configuration_digest=protocol_digest(task, sampling_interval_seconds),
+                clock_ids=[clock.clock_id],
+                resources=[host],
+            ),
+            journal,
+            retry,
+        )
+    except Exception as error:
+        journal.close()
+        unconfirmed = is_retryable(error)
+        raise RunNotStarted(
+            f"{type(error).__name__}: {error}", "registration", closure_journaled=unconfirmed
+        ) from error
     delivery = LiveDelivery(transport, session.run_id, journal, retry=retry)
     recorder = StepRecorder(
         run_id=session.run_id,
@@ -171,7 +244,6 @@ def measure_overhead(
         clock=clock,
         emit=delivery.emit,
     )
-    never_cancel = threading.Event()
     walls: dict[str, list[float]] = {condition: [] for condition in CONDITIONS}
     runner_cpu: dict[str, float] = dict.fromkeys(CONDITIONS, 0.0)
     sampling: list[dict] = []
@@ -180,8 +252,10 @@ def measure_overhead(
 
     def workload() -> float:
         result = run_project_tests(
-            workspace.root, timeout_seconds=TEST_TIMEOUT_SECONDS, cancel=never_cancel
+            workspace.root, timeout_seconds=TEST_TIMEOUT_SECONDS, cancel=cancel.event
         )
+        if result.outcome == "cancelled" or cancel.event.is_set():
+            raise OverheadCancelled(cancel.request.reason if cancel.request else "Cancelled")
         if result.outcome != "passed":
             raise RuntimeError(f"Overhead workload did not pass: {result.outcome}")
         return result.wall_seconds
@@ -224,12 +298,25 @@ def measure_overhead(
             wall = instrumented(index) if condition == "instrumented" else workload()
             runner_cpu[condition] += _process_cpu_seconds() - cpu_before
             walls[condition].append(wall)
-        delivery.flush()
-        final_state = session.change_state("completed", None)
+        final_state = _close_completed(delivery, session)
     except BaseException as error:
-        # Close the live run as failed so it is not left running, then re-raise the cause.
-        _close_failed(recorder, open_step, delivery, session, error)
-        raise
+        # Close the live run so it is not left running, then report how it was left.
+        # KeyboardInterrupt counts as cancellation for callers without signal handlers.
+        if isinstance(error, (OverheadCancelled, KeyboardInterrupt)):
+            state, reason = "cancelled", str(error) or "Cancelled by the operator"
+        else:
+            state, reason = "failed", f"Overhead measurement failed ({type(error).__name__})"
+        try:
+            closure = _close_unfinished(
+                recorder, open_step, delivery, session, state, reason, error
+            )
+        # The measurement's own error stays the cause; the closure failure is attached.
+        except Exception as closure_error:  # noqa: BLE001
+            error.add_note(f"The live run could not be closed: {closure_error!r}")
+            closure = "deferred"
+        raise OverheadFailed(
+            reason, closure, journal_path, refused=delivery.stats().rejected
+        ) from error
     finally:
         workspace_removed = workspace.remove() if workspace is not None else True
         journal.close()
@@ -248,7 +335,15 @@ def measure_overhead(
         "flush_interval_seconds": FLUSH_INTERVAL_SECONDS,
         "live_run_id": str(session.run_id),
         "live_run_state": final_state,
-        "delivery": {"delivered": stats.delivered, "complete": stats.complete},
+        "delivery": {
+            "delivered": stats.delivered,
+            "complete": stats.complete and final_state in TERMINAL_RUN_STATES,
+            # Only an undelivered closure needs `resend`; a refused completion was closed.
+            "resend_needed": final_state.endswith("_locally_undelivered"),
+            "refused": stats.rejected,
+            "completion_refused": final_state == COMPLETION_REFUSED_STATE,
+        },
+        "journal": str(output_dir / "overhead-journal.jsonl"),
         "sampling": {
             "rounds": sum(s["sample_rounds"] for s in sampling),
             "max_observed_interval_seconds": max(gaps) if gaps else None,

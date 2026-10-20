@@ -75,3 +75,15 @@ def test_pre_runner_probes_still_read_demo_spans(tmp_path):
     )
     windows, malformed, source = summarize_gpu_run.find_windows(tmp_path)
     assert (source, malformed, [name for name, *_ in windows]) == ("agent spans", 0, ["llm.chat"])
+
+
+def test_gpu_probe_preflight_uses_an_endpoint_the_api_serves():
+    """Regression: the probe once checked /health, which does not exist (PR #27)."""
+    import re
+
+    from agentwatch_worker.app import app
+
+    script = (SCRIPT.parent / "gpu-sampled-llm-run.sh").read_text()
+    paths = set(re.findall(r'"\$api_url(/[\w/]+)"', script))
+    served = {getattr(route, "path", None) for route in app.routes}
+    assert paths and paths <= served, f"{paths - served} are not served by the worker API"

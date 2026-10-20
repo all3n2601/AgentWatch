@@ -30,9 +30,15 @@ class Workspace:
 
     @classmethod
     def create(cls, task: Task, parent: Path | None = None) -> "Workspace":
-        root = Path(tempfile.mkdtemp(prefix="agentwatch-agent-", dir=parent)) / "project"
-        shutil.copytree(task.project_dir, root, ignore=shutil.ignore_patterns("__pycache__"))
-        return cls(task, root)
+        container = Path(tempfile.mkdtemp(prefix="agentwatch-agent-", dir=parent))
+        root = container / "project"
+        try:
+            shutil.copytree(task.project_dir, root, ignore=shutil.ignore_patterns("__pycache__"))
+            return cls(task, root)
+        except BaseException:
+            # A failed copy must not leave a temporary directory behind.
+            shutil.rmtree(container, ignore_errors=True)
+            raise
 
     def read(self, relative: str) -> str:
         if relative not in self.files:

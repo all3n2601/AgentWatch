@@ -83,3 +83,125 @@ def test_overlong_run_timeout_is_a_usage_error_that_creates_nothing(tmp_path, ca
     assert code == 2
     assert "sample budget" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
+
+
+def test_refused_records_exit_five_and_recoverable_gaps_exit_three(tmp_path, capsys):
+    journal = tmp_path / "live-journal.jsonl"
+    assert cli.delivery_exit(True, 2, journal) == cli.EXIT_INCOMPLETE_DELIVERY
+    assert "resend" in capsys.readouterr().err
+    assert cli.delivery_exit(False, 2, journal) == cli.EXIT_RECORDS_REFUSED
+    assert "resending identical content cannot change that" in capsys.readouterr().err
+    assert cli.delivery_exit(False, 0, journal) is None
+
+
+def test_local_setup_failure_message_does_not_blame_the_api(tmp_path, capsys, monkeypatch):
+    from agentwatch_agent.workspace import Workspace
+
+    monkeypatch.setattr(Workspace, "create", staticmethod(lambda _task: 1 / 0))
+    code = cli.main(["run", "--task", "fix-mean-empty", "--output-dir", str(tmp_path)])
+    error = capsys.readouterr().err
+    assert code == cli.EXIT_LIVE_UNAVAILABLE
+    assert "local setup failed before contacting the live API" in error
+    assert "make dev-worker" not in error
+
+
+def test_overhead_command_exits_five_when_completion_is_refused(tmp_path, monkeypatch):
+    from agent_test_doubles import FakeLiveServer
+
+    server = FakeLiveServer()
+    server.refuse_completion = True
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args: server)
+    original = cli.measure_overhead
+    monkeypatch.setattr(
+        cli,
+        "measure_overhead",
+        lambda *args, **kwargs: original(
+            *args, **kwargs, repetitions=1, warmup=0, proc=tmp_path / "no-procfs"
+        ),
+    )
+    assert cli.main(["overhead", "--output-dir", str(tmp_path)]) == cli.EXIT_RECORDS_REFUSED
+
+
+def overhead_with(server, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args: server)
+    original = cli.measure_overhead
+    monkeypatch.setattr(
+        cli,
+        "measure_overhead",
+        lambda *args, **kwargs: original(
+            *args, **kwargs, repetitions=1, warmup=0, proc=tmp_path / "no-procfs"
+        ),
+    )
+    return lambda *extra: cli.main(["overhead", "--output-dir", str(tmp_path), *extra])
+
+
+def test_overhead_exit_codes_follow_the_documented_contract(tmp_path, monkeypatch):
+    from agent_test_doubles import FakeLiveServer
+
+    server = FakeLiveServer()
+    overhead = overhead_with(server, tmp_path, monkeypatch)
+    assert overhead("--patch", "rewrite-everything") == cli.EXIT_USAGE
+    assert server.runs == {}
+    server.down = True
+    assert overhead() == cli.EXIT_LIVE_UNAVAILABLE
+    server.down = False
+    assert overhead() == cli.EXIT_PASSED
+
+
+def test_overhead_failure_reports_whether_its_closure_was_delivered(tmp_path, monkeypatch):
+    from agent_test_doubles import FakeLiveServer
+    from agentwatch_agent import overhead as overhead_module
+
+    real = overhead_module.run_project_tests
+    calls = {"count": 0}
+
+    def crash_in_instrumented_repetition(*args, **kwargs):
+        # Repetition 0 is uninstrumented; crashing in repetition 1 leaves step records queued.
+        calls["count"] += 1
+        if calls["count"] % 2 == 0:
+            raise RuntimeError("workload crashed")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(overhead_module, "run_project_tests", crash_in_instrumented_repetition)
+    server = FakeLiveServer()
+    overhead = overhead_with(server, tmp_path, monkeypatch)
+    assert overhead() == cli.EXIT_FAILED  # failed, and its records and closure were delivered
+    server.unavailable_calls = {"ingest"}
+    assert overhead() == cli.EXIT_INCOMPLETE_DELIVERY  # records undelivered: closure deferred
+
+
+def test_unwritable_output_directory_exits_four(tmp_path, capsys):
+    blocker = tmp_path / "file"
+    blocker.write_text("")
+    code = cli.main(["run", "--task", "fix-mean-empty", "--output-dir", str(blocker / "x")])
+    assert code == cli.EXIT_LIVE_UNAVAILABLE
+    assert "cannot write run evidence" in capsys.readouterr().err
+
+
+def test_overhead_failure_with_refused_records_exits_five(tmp_path, monkeypatch):
+    from agent_test_doubles import FakeLiveServer, http_error
+    from agentwatch_agent import overhead as overhead_module
+
+    real = overhead_module.run_project_tests
+    calls = {"count": 0}
+
+    def crash_in_instrumented_repetition(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] % 2 == 0:
+            raise RuntimeError("workload crashed")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(overhead_module, "run_project_tests", crash_in_instrumented_repetition)
+    server = FakeLiveServer()
+    original_ingest = server.ingest
+
+    def refuse_one_step(run_id, batch):
+        # Content-based, like a real refusal: every record of this step is refused, so the
+        # per-record resend cannot get them accepted either.
+        if any(getattr(record, "step_id", None) == "overhead-1" for record in batch.records):
+            raise http_error(422, "refused")
+        return original_ingest(run_id, batch)
+
+    server.ingest = refuse_one_step
+    overhead = overhead_with(server, tmp_path, monkeypatch)
+    assert overhead() == cli.EXIT_RECORDS_REFUSED

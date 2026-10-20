@@ -30,6 +30,7 @@ from agentwatch_agent.config import (
     validate_sample_budget,
 )
 from agentwatch_agent.delivery import (
+    COMPLETION_REFUSED,
     TRANSIENT_ERRORS,
     Journal,
     LiveDelivery,
@@ -96,6 +97,12 @@ class RunOutcome:
     delivery_complete: bool
     evidence_path: Path
     journal_path: Path
+    # Recoverable by `resend` (pending, overflowed or an undelivered closure).
+    resend_needed: bool = False
+    # Refused by the service: identical content can never be accepted, so not resendable.
+    records_refused: int = 0
+    # The service refused completion although everything was delivered; closed as failed.
+    completion_refused: bool = False
 
 
 @dataclass(frozen=True)
@@ -184,9 +191,17 @@ class AgentRunner:
 
     def run(self) -> RunOutcome:
         """Register, execute and close one live run; evidence is written on every path."""
-        self.output_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = self.output_dir / EVIDENCE_FILE
         journal_path = self.output_dir / JOURNAL_FILE
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            journal = Journal(journal_path)
+        except OSError as error:
+            # No evidence can be written here, so the error itself is the whole report.
+            raise RunNotStarted(
+                f"cannot write run evidence to {self.output_dir}: {type(error).__name__}: {error}",
+                "setup",
+            ) from error
         self.evidence = {
             "status": "starting",
             "task": {
@@ -201,9 +216,9 @@ class AgentRunner:
             "tool_calls": [],
             "limitations": list(LIMITATIONS),
         }
-        with ExitStack() as owned:
-            journal = owned.enter_context(closing(Journal(journal_path)))
+        with closing(journal):
             workspace: Workspace | None = None
+            stage = "setup"  # becomes "registration" once the live API is contacted
             try:
                 workspace = Workspace.create(self.task)
                 dispatcher = ToolDispatcher(
@@ -228,16 +243,22 @@ class AgentRunner:
                     clock_ids=[self.clock.clock_id],
                     resources=list(resources.values()),
                 )
+                stage = "registration"
                 session = RunSession.open(self.transport, registration, journal, self.retry)
             # Nothing ran: keep the attempt's evidence, leave no workspace, and re-raise.
             except Exception as error:
+                described = f"{type(error).__name__}: {error}"
+                # A transient registration failure has an unknown outcome; RunSession.open
+                # then journaled a closure, so `resend` closes the run if it exists.
+                unconfirmed = stage == "registration" and is_retryable(error)
                 self.evidence |= {
                     "status": "not_started",
-                    "error": f"Run setup or registration failed: {type(error).__name__}: {error}",
+                    "error": f"Run {stage} failed: {described}",
+                    "registration_outcome": "unknown" if unconfirmed else None,
                     "cleanup": {"workspace_removed": workspace.remove() if workspace else True},
                 }
                 write_json_atomic(evidence_path, self.evidence)
-                raise RunNotStarted(f"{type(error).__name__}: {error}") from error
+                raise RunNotStarted(described, stage, closure_journaled=unconfirmed) from error
             return self._run_registered(
                 session, journal, workspace, dispatcher, resources, evidence_path, journal_path
             )
@@ -264,12 +285,11 @@ class AgentRunner:
         )
         state, reason, task_passed = "failed", None, False
         errors: list[BaseException] = []
-        flusher: PeriodicFlusher | None = None
+        self._background = ()
         sampler: CpuResourceSampler | None = None
         watcher: CancellationWatcher | None = None
         background = ExitStack()
         try:
-            root = steps.submit("agent-run", "other", parent=None, resource=None)
             flusher = background.enter_context(
                 PeriodicFlusher(delivery, self.flush_interval_seconds)
             )
@@ -290,15 +310,30 @@ class AgentRunner:
             )
             self._background = (flusher, sampler, watcher)
             deadline = time.monotonic() + self.limits.run_timeout_seconds
-            if session.change_state("running", None) != "running":
+            try:
+                started_state = session.change_state("running", None)
+            except TRANSIENT_ERRORS as error:
+                if not is_retryable(error):
+                    raise
+                # Recoverable: the closure is deferred and `resend` replays both changes.
+                raise RunFailure(
+                    "Live API unavailable when starting the run",
+                    f"{type(error).__name__}: {error}",
+                ) from error
+            if started_state != "running":
                 raise RunCancelled(session.reason or f"Run was {session.state} before it started")
+            # Submitted only now, so the root's queue delay is not runner start-up overhead.
+            root = steps.submit("agent-run", "other", parent=None, resource=None)
             steps.start(root)
             task_passed = self._execute(_RunContext(steps, root, resources, dispatcher, deadline))
             state = "completed" if task_passed else "failed"
             reason = None if task_passed else VERIFICATION_FAILED
         except RunCancelled as cancelled:
             request = self.cancellation.request
-            state, reason = "cancelled", request.reason if request else cancelled.reason
+            reason = request.reason if request else cancelled.reason
+            # Another actor may have *failed* the run; its steps then end as failed, too.
+            remote_failure = request is not None and request.state == "failed"
+            state = "failed" if remote_failure else "cancelled"
         except RunFailure as failure:
             state, reason = "failed", failure.reason
             self.evidence["failure_detail"] = failure.detail
@@ -308,13 +343,14 @@ class AgentRunner:
             state, reason = "failed", f"Runner error ({type(error).__name__})"
             self.evidence["failure_detail"] = f"{type(error).__name__}: {error}"
         finally:
+            # A background thread that died after the last checkpoint still decides the run.
+            state, reason = self._absorb_background_errors(errors, state, reason)
+            # End steps before stopping threads and removing the workspace, so their finish
+            # ticks do not include shutdown or cleanup time.
+            self._attempt(errors, lambda: self._end_unfinished(steps, state, reason))
             self._attempt(errors, background.close)
-            errors.extend(
-                component.error
-                for component in (flusher, sampler, watcher)
-                if component is not None and component.error is not None
-            )
-            final_state = self._finish(session, steps, delivery, workspace, state, reason, errors)
+            state, reason = self._absorb_background_errors(errors, state, reason)
+            final_state, reason = self._finish(session, delivery, workspace, state, reason, errors)
             self._record_outcome(
                 final_state, reason, task_passed, delivery, sampler, steps, watcher
             )
@@ -329,7 +365,40 @@ class AgentRunner:
             delivery_complete=self.evidence["delivery"]["complete"],
             evidence_path=evidence_path,
             journal_path=journal_path,
+            resend_needed=self.evidence["delivery"]["resend_needed"],
+            records_refused=self.evidence["delivery"]["rejected"],
+            completion_refused=self.evidence.get("completion_refused", False),
         )
+
+    def _absorb_background_errors(
+        self, errors: list[BaseException], state: str, reason: str | None
+    ) -> tuple[str, str | None]:
+        """Record new flusher/sampler/watcher errors; a run cannot complete after one."""
+        recorded = self.evidence.setdefault("background_errors", [])
+        new = []
+        for component in self._background:
+            error = component.error
+            if error is None:
+                continue
+            described = f"{type(component).__name__}: {type(error).__name__}: {error}"[:500]
+            if described not in recorded:
+                recorded.append(described)
+            if error not in errors:
+                errors.append(error)
+                new.append(error)
+        if not new:
+            return state, reason
+        if state == "completed":
+            return "failed", f"Runner error ({type(new[0]).__name__})"
+        return state, reason
+
+    @staticmethod
+    def _end_unfinished(steps: StepRecorder, state: str, reason: str | None) -> None:
+        for step in steps.unfinished():
+            if state == "cancelled":
+                steps.cancel(step, reason or "Run cancelled")
+            else:
+                steps.fail(step, reason or "Run failed")
 
     def _configuration(self) -> RunConfiguration:
         return RunConfiguration(
@@ -364,13 +433,13 @@ class AgentRunner:
     def _finish(
         self,
         session: RunSession,
-        steps: StepRecorder,
         delivery: LiveDelivery,
         workspace: Workspace,
         state: str,
         reason: str | None,
         errors: list[BaseException],
-    ) -> str:
+    ) -> tuple[str, str | None]:
+        """Remove the workspace, deliver what is queued, and close (or defer) the run."""
         self.evidence["cleanup"] = {
             "workspace_removed": self._attempt(errors, workspace.remove, False),
             "test_process_groups": "killed by run_project_tests on every exit path",
@@ -378,23 +447,14 @@ class AgentRunner:
                 call.get("abandoned_request") for call in self.evidence["model_calls"]
             ),
         }
-
-        def end_unfinished_steps() -> None:
-            for step in steps.unfinished():
-                if state == "cancelled":
-                    steps.cancel(step, reason or "Run cancelled")
-                else:
-                    steps.fail(step, reason or "Run failed")
-
-        self._attempt(errors, end_unfinished_steps)
         delivered = self._attempt(errors, delivery.flush, False)
-        final_state = self._attempt(
+        closed = self._attempt(
             errors, lambda: self._close_run(session, state, reason, bool(delivered))
         )
-        if final_state is None:
+        if closed is None:
             self.evidence["run_state_delivered"] = False
-            return f"{state}_locally_undelivered"
-        return final_state
+            return f"{state}_locally_undelivered", reason
+        return closed
 
     def _record_outcome(
         self,
@@ -416,6 +476,10 @@ class AgentRunner:
             "resource_sampling": sampler.summary() if sampler is not None else None,
             "delivery": {
                 "complete": stats.complete and self.evidence.get("run_state_delivered", True),
+                # Something `resend` can still deliver: queued, overflowed or the closure.
+                "resend_needed": stats.pending > 0
+                or stats.not_queued_overflow > 0
+                or not self.evidence.get("run_state_delivered", True),
                 "emitted": stats.emitted,
                 "delivered": stats.delivered,
                 "pending": stats.pending,
@@ -461,37 +525,44 @@ class AgentRunner:
 
     def _close_run(
         self, session: RunSession, state: str, reason: str | None, delivered: bool
-    ) -> str:
+    ) -> tuple[str, str | None]:
         """Close the live run, or defer the closure until its evidence can be delivered.
 
-        A failed or cancelled closure makes the service refuse steps it has not yet seen, so
-        while records are still queued the closure is only journaled: `resend` replays the
-        outstanding records first and then this closure, in order.
+        Returns the resulting state and the reason actually recorded. A failed or cancelled
+        closure makes the service refuse steps it has not yet seen, so while any record is
+        undelivered the closure is only journaled: `resend` replays the records first and then
+        this closure, in order.
         """
         request = self.cancellation.request
         try:
             if request is not None and request.source == "live_api":
-                # Already closed remotely; adopt the server's state instead of a new change.
-                session.refresh()
-                return session.state
+                # Closed remotely; adopt that state instead of sending a new change.
+                adopted = session.adopt_remote_closure(request.state or state, request.reason)
+                return adopted, request.reason
             if not delivered:
                 session.defer_change(state, reason)
                 self.evidence["run_state_delivered"] = False
                 self.evidence["run_state_error"] = "Closure deferred until records are resent"
-                return f"{state}_locally_undelivered"
+                return f"{state}_locally_undelivered", reason
             result = session.change_state(state, reason)
-            if result not in TERMINAL_RUN_STATES:
-                # The service refused completion because some step evidence never arrived.
-                self.evidence["run_state_delivered"] = False
-                self.evidence["run_state_error"] = "Closure refused until evidence is resent"
-                return f"{state}_locally_undelivered"
-            return result
+            if result in TERMINAL_RUN_STATES:
+                return result, reason
+            if state == "completed":
+                # Every record was delivered, so the refusal is permanent: refused or expired
+                # step evidence. Resending cannot help; close the run as failed, truthfully.
+                self.evidence["completion_refused"] = True
+                result = session.change_state("failed", COMPLETION_REFUSED)
+                if result in TERMINAL_RUN_STATES:
+                    return result, COMPLETION_REFUSED
+            self.evidence["run_state_delivered"] = False
+            self.evidence["run_state_error"] = "Closure refused by the live API"
+            return f"{state}_locally_undelivered", reason
         except TRANSIENT_ERRORS as error:
             if not is_retryable(error):
                 raise
             self.evidence["run_state_delivered"] = False
             self.evidence["run_state_error"] = f"{type(error).__name__}: {error}"[:500]
-            return f"{state}_locally_undelivered"
+            return f"{state}_locally_undelivered", reason
 
     def _cancellation_evidence(self, watcher: CancellationWatcher | None) -> dict:
         request = self.cancellation.request
@@ -507,16 +578,22 @@ class AgentRunner:
 
     # Agent loop ------------------------------------------------------------------------------
 
-    def _checkpoint(self, deadline: float) -> None:
+    def _raise_background_errors(self) -> None:
         for component in self._background:
             if component.error is not None:
                 raise component.error
+
+    def _checkpoint(self, deadline: float) -> None:
+        self._raise_background_errors()
         if self.cancellation.event.is_set():
             request = self.cancellation.request
             raise RunCancelled(request.reason if request else "Cancellation requested")
         if time.monotonic() >= deadline:
-            limit = self.limits.run_timeout_seconds
-            raise RunFailure(f"Run exceeded its {limit:g} s time limit")
+            raise RunFailure(self._run_limit_reason())
+
+    def _run_limit_reason(self) -> str:
+        # One wording wherever the deadline is hit: reasons feed dataset labels and slices.
+        return f"Run exceeded its {self.limits.run_timeout_seconds:g} s time limit"
 
     def _execute(self, context: _RunContext) -> bool:
         messages = [
@@ -546,10 +623,13 @@ class AgentRunner:
                 tool_calls += 1
                 messages.append(self._tool_step(context, call, tool_calls))
         passed = self._verify(context)
+        # A background thread that died during verification must not let the run complete.
+        self._raise_background_errors()
         if passed:
             context.steps.complete(context.root)
         else:
-            # The root step carries the run's outcome, so it fails with the run's reason.
+            # The root step carries the verification outcome, so it fails with that reason. A
+            # runner error after the root completed is reported on the run and in evidence.
             context.steps.fail(context.root, VERIFICATION_FAILED)
         return passed
 
@@ -573,6 +653,7 @@ class AgentRunner:
         }
         steps.start(step)
         started = time.monotonic()
+        failure: RunFailure | None = None
         try:
             response = wait_interruptibly(
                 lambda: self.model.chat(payload),
@@ -580,26 +661,27 @@ class AgentRunner:
                 deadline_monotonic=context.deadline_monotonic,
             )
             reply = parse_reply(response)
-        except RunCancelled:
-            record["abandoned_request"] = True
+        except RunCancelled as cancelled:
+            record["abandoned_request"] = cancelled.request_started
             raise
-        except RunFailure as failure:
-            record["abandoned_request"] = True
-            steps.fail(step, failure.reason)
-            raise
+        except RunFailure as interrupted:
+            # Only the run deadline interrupts the wait with a RunFailure.
+            record["abandoned_request"] = interrupted.request_started
+            failure = RunFailure(self._run_limit_reason(), interrupted.reason)
         except ModelResponseError as error:
-            steps.fail(step, "Model server returned a malformed chat response")
-            record["model_placement"] = self._observe_placement(context.deadline_monotonic)
-            raise RunFailure("Model server returned a malformed chat response", str(error))
+            failure = RunFailure("Model server returned a malformed chat response", str(error))
         except MODEL_REQUEST_ERRORS as error:
-            reason = f"Model request failed ({type(error).__name__})"
             record["error"] = f"{type(error).__name__}: {error}"[:MAX_EVIDENCE_TEXT]
-            steps.fail(step, reason)
-            # Where the model was when its request failed helps diagnose the failure.
-            record["model_placement"] = self._observe_placement(context.deadline_monotonic)
-            raise RunFailure(reason, record["error"]) from error
+            failure = RunFailure(f"Model request failed ({type(error).__name__})", record["error"])
         finally:
+            # Measured before any placement read, so it covers only the model request.
             record["request_wall_seconds"] = time.monotonic() - started
+        if failure is not None:
+            steps.fail(step, failure.reason)
+            if failure.reason != self._run_limit_reason():
+                # Where the model was when its request failed helps diagnose the failure.
+                record["model_placement"] = self._observe_placement(context.deadline_monotonic)
+            raise failure
         steps.complete(step)
         record["metrics"] = reply.metrics
         record["requested_tool_calls"] = len(reply.calls)
@@ -660,6 +742,11 @@ class AgentRunner:
                 deadline_monotonic=context.deadline_monotonic,
             )
         except ToolFailed as failed:
+            if time.monotonic() >= context.deadline_monotonic:
+                # The tool was cut short by the run limit, not by its own failure.
+                steps.fail(step, self._run_limit_reason())
+                record |= {"status": "failed", "reason": self._run_limit_reason()}
+                raise RunFailure(self._run_limit_reason(), str(failed)) from failed
             steps.fail(step, f"{prepared.name} failed: {failed}")
             record |= {"status": "failed", "reason": str(failed), "evidence": failed.evidence}
             return tool_message(prepared.name, {"error": str(failed)})
@@ -680,9 +767,18 @@ class AgentRunner:
                 cancel=self.cancellation.event, deadline_monotonic=context.deadline_monotonic
             )
         except ToolFailed as failed:
-            steps.fail(step, f"Runner verification failed: {failed}")
-            self.evidence["verification"] = {"step_id": step.step_id, "error": str(failed)}
-            return False
+            # The tests did not finish (timeout or no run time left): that is not a test
+            # failure, so the run fails for the actual reason instead of VERIFICATION_FAILED.
+            if time.monotonic() >= context.deadline_monotonic:
+                reason = self._run_limit_reason()
+            else:
+                reason = f"Runner verification could not complete: {failed}"
+            steps.fail(step, reason)
+            self.evidence["verification"] = {
+                "step_id": step.step_id,
+                "error": str(failed),
+            } | failed.evidence
+            raise RunFailure(reason, str(failed)) from failed
         steps.complete(step, cpu_seconds=outcome.cpu_seconds, cpu_scope=outcome.cpu_scope)
         self.evidence["verification"] = {"step_id": step.step_id} | outcome.evidence
         return outcome.evidence["outcome"] == "passed"

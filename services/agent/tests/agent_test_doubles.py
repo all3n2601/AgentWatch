@@ -54,6 +54,7 @@ class FakeLiveServer:
         self.failures: list[BaseException] = []  # raised by the next calls, in order
         self.down = False
         self.unavailable_calls: set[str] = set()  # e.g. {"ingest"}: only those calls fail
+        self.refuse_completion = False  # answer completion with 409 as for unfinished steps
         self.cancel_after_events: int | None = None
         self.calls: list[str] = []
 
@@ -135,7 +136,7 @@ class FakeLiveServer:
             if change.state not in allowed.get(run.state, set()):
                 raise http_error(409, "Invalid run transition")
             unfinished = [s for s, e in run.steps.items() if e.state not in TERMINAL]
-            if change.state == "completed" and unfinished:
+            if change.state == "completed" and (unfinished or self.refuse_completion):
                 raise http_error(409, "Cannot complete a run with unfinished steps")
             self._close(run, change.state, change.reason)
             run.changes[change.change_id] = run.revision
@@ -198,6 +199,7 @@ class ScriptedModel:
         self.block_on = block_on
         self.blocked = threading.Event()  # set once the blocking request is in progress
         self.placement_block: threading.Event | None = None
+        self.placement_delay_seconds = 0.0
         self.placement_started = threading.Event()
 
     def chat(self, payload):
@@ -216,6 +218,9 @@ class ScriptedModel:
         if self.placement_block is not None:
             self.placement_started.set()
             self.placement_block.wait(30)
+        if self.placement_delay_seconds:
+            # A slow but successful /api/ps read; must never count as model request time.
+            threading.Event().wait(self.placement_delay_seconds)
         return {"source": "test double", "status": "unavailable", "reason": "not a model server"}
 
 

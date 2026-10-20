@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from agentwatch_sdk.live import MAX_CURSOR, RunChange, RunCreate, RunSnapshot
 
 from agentwatch_agent.delivery import (
+    TRANSIENT_ERRORS,
     Journal,
     LiveRejectedError,
     LiveTransport,
@@ -16,6 +17,7 @@ from agentwatch_agent.delivery import (
 from agentwatch_agent.redaction import redact_reason
 
 TERMINAL_RUN_STATES = {"completed", "failed", "cancelled"}
+REGISTRATION_UNCONFIRMED = "Runner could not confirm registration; no task work ran"
 
 
 class RunSession:
@@ -52,7 +54,22 @@ class RunSession:
         # The same request_id is resent on every attempt: an uncertain first attempt that did
         # create the run returns the same run UUID instead of creating a duplicate.
         journal.write("registration", registration)
-        created = retry.call(lambda: transport.create_run(registration))
+        try:
+            created = retry.call(lambda: transport.create_run(registration))
+        except TRANSIENT_ERRORS as error:
+            if not is_retryable(error):
+                raise
+            # The service may have recorded the run before the response was lost. Journal a
+            # closure so `resend`, whose exact-retry registration resolves that run, closes it
+            # instead of leaving it queued forever. Revision 0 is the queued state.
+            closure = RunChange(
+                change_id=uuid4(),
+                expected_revision=0,
+                state="failed",
+                reason=REGISTRATION_UNCONFIRMED,
+            )
+            journal.write("run_change", closure, deferred=True)
+            raise
         journal.write("run_created", {"run_id": str(created.run_id), "created": created.created})
         return cls(transport, created.run_id, journal, retry)
 
@@ -86,6 +103,16 @@ class RunSession:
             return self.state
         return self.state
 
+    def adopt_remote_closure(self, observed_state: str, observed_reason: str | None) -> str:
+        """Adopt a closure another actor made, journaling it first so `resend` knows the target.
+
+        The journal entry uses the state the watcher observed, so a refresh that then fails
+        transiently still leaves a journal that `resend` can settle.
+        """
+        self.journal.write("remote_closure", {"state": observed_state, "reason": observed_reason})
+        self.refresh()
+        return self.state
+
     def defer_change(self, state: str, reason: str | None) -> None:
         """Journal a transition without sending it, for `resend` to apply after the records."""
         self.journal.write("run_change", self._change(state, reason), deferred=True)
@@ -114,6 +141,8 @@ class RunSession:
 class CancellationRequest:
     source: str
     reason: str
+    # The run state the live API reported, for requests observed there.
+    state: str | None = None
 
 
 class CancellationState:
@@ -126,10 +155,10 @@ class CancellationState:
         self._lock = threading.RLock()
         self._signalled = False
 
-    def cancel(self, source: str, reason: str) -> None:
+    def cancel(self, source: str, reason: str, state: str | None = None) -> None:
         with self._lock:
             if self.request is None:
-                self.request = CancellationRequest(source, reason)
+                self.request = CancellationRequest(source, reason, state)
         self.event.set()
 
     def cancel_from_signal(self, source: str, reason: str) -> None:
@@ -179,7 +208,7 @@ class CancellationWatcher:
                 continue
             if snapshot.cleanup_requested or snapshot.state in {"failed", "cancelled"}:
                 reason = snapshot.reason or f"Run was {snapshot.state} through the live API"
-                self.state.cancel("live_api", reason)
+                self.state.cancel("live_api", reason, snapshot.state)
 
     def __enter__(self):
         self._thread.start()

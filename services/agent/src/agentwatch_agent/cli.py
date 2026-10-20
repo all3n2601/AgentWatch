@@ -1,14 +1,19 @@
-"""Command line: `run` a task, list `tasks`, or `resend` a run's journal.
+"""Command line: `run` a task, list `tasks`, measure `overhead`, or `resend` a run's journal.
 
-Exit codes:
-  0  task passed and all live evidence was delivered
-  1  run failed or was cancelled; its evidence was delivered
-  2  invalid command-line usage
-  3  live evidence is incomplete: resend the journal once the API is reachable
-  4  the live API did not register the run (unreachable or refused), so nothing ran
+Exit codes (all commands):
+  0  success: the task passed (run), or all evidence was delivered and the run is closed
+  1  the run failed or was cancelled; its evidence was delivered
+  2  invalid usage: bad arguments, unknown task or patch, or an unusable journal
+  3  live evidence is incomplete: run `resend` once the live API is reachable
+  4  nothing ran: local setup failed, or the live API did not register the run
+  5  the live API permanently refused some evidence; it stays in the journal and the
+     evidence file, and resending identical content cannot change that
+  6  resend only: the run is still open and its journal has no closure; if the runner that
+     wrote it is gone, rerun with --fail-unclosed to close the run as failed
 """
 
 import argparse
+import http.client
 import os
 import signal
 import sys
@@ -20,14 +25,18 @@ from agentwatch_sdk import LiveClient
 from agentwatch_worker.ollama import ollama_base_url
 
 from agentwatch_agent.config import DEFAULT_MODEL, RunLimits
-from agentwatch_agent.delivery import replay_journal
+from agentwatch_agent.delivery import LiveRejectedError, is_retryable, replay_journal
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.model import OllamaChatModel
-from agentwatch_agent.overhead import measure_overhead
+from agentwatch_agent.overhead import OverheadFailed, measure_overhead
 from agentwatch_agent.runner import AgentRunner, default_output_dir, write_json_atomic
+from agentwatch_agent.session import CancellationState
 from agentwatch_agent.tasks import TaskDefinitionError, load_task, task_names
 
 EXIT_PASSED, EXIT_FAILED, EXIT_INCOMPLETE_DELIVERY, EXIT_LIVE_UNAVAILABLE = 0, 1, 3, 4
+EXIT_RECORDS_REFUSED = 5
+EXIT_RUN_UNCLOSED = 6
+EXIT_USAGE = 2
 DEFAULT_API_URL = "http://127.0.0.1:8090"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 LIVE_TIMEOUT_SECONDS = 10
@@ -90,6 +99,11 @@ def parser() -> argparse.ArgumentParser:
     resend.add_argument(
         "--api-url", type=http_url, default=os.environ.get("AGENTWATCH_API_URL", DEFAULT_API_URL)
     )
+    resend.add_argument(
+        "--fail-unclosed",
+        action="store_true",
+        help="Close a run whose journal has no closure as failed (only if its runner is gone)",
+    )
     return root
 
 
@@ -121,13 +135,7 @@ def run_command(args: argparse.Namespace) -> int:
     try:
         outcome = runner.run()
     except RunNotStarted as error:
-        print(
-            f"error: the live API at {args.api_url} did not register the run ({error}); "
-            "nothing ran. Start it with `make dev-worker` and check the evidence file in "
-            f"{runner.output_dir}.",
-            file=sys.stderr,
-        )
-        return EXIT_LIVE_UNAVAILABLE
+        return not_started_exit(error, args.api_url, runner.output_dir / "live-journal.jsonl")
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
@@ -136,15 +144,53 @@ def run_command(args: argparse.Namespace) -> int:
         + (f" ({outcome.reason})" if outcome.reason else "")
     )
     print(f"Evidence: {outcome.evidence_path}")
-    if not outcome.delivery_complete:
+    code = delivery_exit(
+        outcome.resend_needed,
+        outcome.records_refused,
+        outcome.journal_path,
+        completion_refused=outcome.completion_refused,
+    )
+    if code is not None:
+        return code
+    return EXIT_PASSED if outcome.state == "completed" and outcome.task_passed else EXIT_FAILED
+
+
+def not_started_exit(error: RunNotStarted, api_url: str, journal: Path) -> int:
+    if error.stage != "registration":
+        cause = f"local setup failed before contacting the live API ({error})."
+    elif error.closure_journaled:
+        cause = (
+            f"the live API at {api_url} did not confirm the registration ({error}). If it "
+            "recorded the run, close it once the API is reachable with:\n"
+            f"  uv run --package agentwatch-agent python -m agentwatch_agent resend {journal}"
+        )
+    else:
+        cause = f"the live API at {api_url} refused the registration ({error})."
+    print(f"error: nothing ran: {cause}", file=sys.stderr)
+    return EXIT_LIVE_UNAVAILABLE
+
+
+def delivery_exit(
+    resend_needed: bool, records_refused: int, journal: Path, *, completion_refused: bool = False
+) -> int | None:
+    """Exit code for incomplete live evidence, or None when all of it was delivered."""
+    if resend_needed:
         print(
-            f"Live evidence is incomplete. Resend it with:\n"
-            f"  uv run --package agentwatch-agent python -m agentwatch_agent resend "
-            f"{outcome.journal_path}",
+            "Live evidence is incomplete. Resend it once the API is reachable with:\n"
+            f"  uv run --package agentwatch-agent python -m agentwatch_agent resend {journal}",
             file=sys.stderr,
         )
         return EXIT_INCOMPLETE_DELIVERY
-    return EXIT_PASSED if outcome.state == "completed" and outcome.task_passed else EXIT_FAILED
+    if records_refused or completion_refused:
+        refused = f"{records_refused} records" if records_refused else "completion"
+        print(
+            f"The live API permanently refused {refused}, so the run was closed with "
+            f"incomplete evidence. Everything is kept in {journal} and the evidence file; "
+            "resending identical content cannot change that.",
+            file=sys.stderr,
+        )
+        return EXIT_RECORDS_REFUSED
+    return None
 
 
 def tasks_command() -> int:
@@ -159,11 +205,40 @@ def overhead_command(args: argparse.Namespace) -> int:
         task = load_task(args.task)
     except TaskDefinitionError as error:
         print(f"error: {error}", file=sys.stderr)
-        return 2
+        return EXIT_USAGE
+    if task.patch(args.patch) is None:
+        ids = ", ".join(patch.patch_id for patch in task.patches)
+        print(
+            f"error: task {task.name} has no patch {args.patch!r}; use one of: {ids}",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
     output_dir = default_output_dir(args.output_dir, task)
-    report = measure_overhead(
-        task, args.patch, LiveClient(args.api_url, LIVE_TIMEOUT_SECONDS), output_dir
-    )
+    cancel = CancellationState()
+
+    def handle_signal(number: int, _frame: FrameType | None) -> None:
+        # Lock-free and print-free, as for `run`; the measurement stops at its next check.
+        name = signal.Signals(number).name
+        cancel.cancel_from_signal("signal", f"Cancelled by operator signal {name}")
+
+    previous = {sig: signal.signal(sig, handle_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        report = measure_overhead(
+            task,
+            args.patch,
+            LiveClient(args.api_url, LIVE_TIMEOUT_SECONDS),
+            output_dir,
+            cancel=cancel,
+        )
+    except RunNotStarted as error:
+        return not_started_exit(error, args.api_url, output_dir / "overhead-journal.jsonl")
+    except OverheadFailed as error:
+        print(f"error: {error} ({error.__cause__!r}); no measurement was recorded", file=sys.stderr)
+        code = delivery_exit(error.closure == "deferred", error.refused, error.journal)
+        return EXIT_FAILED if code is None else code
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
     path = output_dir / "overhead.json"
     write_json_atomic(path, report)
     walls = report["workload_wall_seconds"]
@@ -172,24 +247,56 @@ def overhead_command(args: argparse.Namespace) -> int:
         f"{walls['instrumented']['median']:.4f} s instrumented "
         f"({report['median_difference_fraction']:+.1%}); evidence: {path}"
     )
-    return EXIT_PASSED
+    delivery = report["delivery"]
+    code = delivery_exit(
+        delivery["resend_needed"],
+        delivery["refused"],
+        Path(report["journal"]),
+        completion_refused=delivery["completion_refused"],
+    )
+    return EXIT_PASSED if code is None else code
 
 
 def resend_command(args: argparse.Namespace) -> int:
-    report = replay_journal(args.journal, LiveClient(args.api_url, LIVE_TIMEOUT_SECONDS))
+    try:
+        report = replay_journal(
+            args.journal,
+            LiveClient(args.api_url, LIVE_TIMEOUT_SECONDS),
+            fail_unclosed=args.fail_unclosed,
+        )
+    except LiveRejectedError as error:
+        print(f"error: the live API refused the replay: {error}", file=sys.stderr)
+        return EXIT_RECORDS_REFUSED
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        if is_retryable(error):
+            print(
+                f"error: the live API at {args.api_url} is unreachable ({error}); nothing is "
+                "lost. Resend again once it is reachable.",
+                file=sys.stderr,
+            )
+            return EXIT_INCOMPLETE_DELIVERY
+        print(f"error: cannot resend {args.journal}: {error}", file=sys.stderr)
+        return EXIT_USAGE
     print(
         f"Run {report.run_id}: resent {report.records_sent} records and applied "
         f"{report.changes_applied} state changes; skipped {report.records_skipped_rejected} "
-        f"previously rejected records. Run state: {report.final_state} "
+        f"previously refused records. Run state: {report.final_state} "
         f"(journaled: {report.expected_state})."
     )
-    if report.truncated_final_line:
-        print("note: ignored an interrupted final journal line", file=sys.stderr)
-    if report.changes_superseded:
-        print("note: the run was closed by another actor before its journaled closure")
+    notes = {
+        "truncated_final_line": "ignored an interrupted final journal line",
+        "changes_superseded": "the run was closed by another actor before its journaled closure",
+        "run_created_by_replay": "the live API had not recorded this run; resend registered "
+        "and closed it",
+        "completion_refused": "the live API refused completion, so the run was closed as failed",
+        "closed_unclosed_run": "the run had no journaled closure and was closed as failed",
+    }
+    for field_name, note in notes.items():
+        if getattr(report, field_name):
+            print(f"note: {note}", file=sys.stderr)
     for rejection in report.rejections:
         print(
-            f"rejected record {rejection['record_id']} ({rejection['status']}): "
+            f"refused record {rejection['record_id']} ({rejection['status']}): "
             f"{rejection['detail']}",
             file=sys.stderr,
         )
@@ -199,7 +306,20 @@ def resend_command(args: argparse.Namespace) -> int:
             f"{unresolved['detail']}",
             file=sys.stderr,
         )
-    return EXIT_PASSED if report.complete else EXIT_INCOMPLETE_DELIVERY
+    if report.outcome == "unclosed":
+        print(
+            "The run is still open and its journal has no closure (the runner may still be "
+            "running, or it stopped abruptly). If it is gone, rerun with --fail-unclosed.",
+            file=sys.stderr,
+        )
+        return EXIT_RUN_UNCLOSED
+    if report.outcome == "retry":
+        return EXIT_INCOMPLETE_DELIVERY
+    if report.outcome == "refused":
+        if report.refused_records:
+            delivery_exit(False, report.refused_records, args.journal)
+        return EXIT_RECORDS_REFUSED
+    return EXIT_PASSED
 
 
 def main(argv: list[str] | None = None) -> int:

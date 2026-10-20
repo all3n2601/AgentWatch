@@ -322,9 +322,60 @@ configurations passed. Real run `51b868fb-f838-4712-bf3e-cd1198d6000d` on this c
 the task (verification 5/5, 13 steps, no gaps, placement measured on all 6 model calls). The
 two changed dashboard empty-state messages were not checked in a browser.
 
+GPU end-to-end validation (2026-10-20, reported by Benoy, who holds the evidence files): run
+`63f8e154-e503-480c-845e-9c52ca612577` at commit `2dd827c` on an RTX 5070 Laptop GPU (8,151 MiB)
+through Docker Desktop and WSL2, Ollama 0.35.1 with the GPU override, `qwen3:1.7b` (Q4_K_M,
+context 4,096). It completed with verification 5/5, 13 steps, no unfinished steps, and 94 of 94
+records delivered. Placement was measured on all 6 model calls with 100% of the model in VRAM.
+This run predates the second and third review rounds below; their changes affect failure,
+outage and replay paths, not the success path it exercised.
+The first call took 4.89 s (4.29 s model load in a fresh container) and the others 0.19–0.54 s.
+CPU PSI and the cgroup counter were measured in all 28 sampling rounds (median 0.250 s, max
+0.253 s). One run was made; it was not repeated. This is a laptop GPU, not L4/GCP evidence.
+
+Second review round (2026-10-20): the GPU probe's preflight uses `/readyz`; failed model calls
+no longer time the placement read; overflowed records and refused completions defer the
+closure; a dashboard closure is journaled so `resend` settles; an API outage at the start of a
+run is recoverable (exit 3); a verification timeout is reported as such; local setup failures
+are not attributed to the live API; refused records exit 5; and overhead runs use their own
+`agentwatch-agent-overhead` service. 13 regression tests fail on `2dd827c` and pass now; a 14th,
+for the overhead exit code, was written later and is counted in the third round.
+
+Third round (pre-merge audit, 2026-10-20), from three independent reviews of every module:
+`resend` maps outages to exit 3 and unusable journals to exit 2 instead of tracebacks; never
+registered journals are refused, and an unconfirmed registration journals a closure so
+`resend` closes the run; a journal without a closure exits 6, and `--fail-unclosed` closes it;
+a completion refused after full delivery closes the run as failed (exit 5); after a queue
+overflow, records stay journal-only so revisions arrive in order; an interrupted journal line
+no longer swallows later entries; a remote closure is journaled before its refresh. In the
+runner, steps end before shutdown and cleanup; a background-thread failure fails the run and
+is listed in `background_errors`; the run limit has one wording, including for a tool cut
+short by it; workspace copy failures leave no temporary directory; an unwritable output
+directory is a setup failure; a remotely failed run fails its steps; the root step's queue
+delay excludes runner start-up; and an abandoned request is recorded only if one was sent.
+`overhead` validates its patch, maps registration failures to exit 4, cancels cleanly on
+SIGINT/SIGTERM, keeps the measurement on a transient completion failure, and no longer
+swallows closing-flush errors. `run_project_tests` now enforces timeouts shorter than its poll
+interval (a suite finishing after its deadline was reported as passed). 27 regression tests
+fail on the pre-round code, on behavior rather than imports, and pass now.
+
+A fresh review of the third round's own changes found five more defects, now fixed: `resend`
+after a refused completion stays at exit 5 on every rerun; an interrupted journal line stays
+replayable after replay appends (it is marked when the journal is reopened); a background
+error during shutdown fails the run; an adopted remote closure records the remote reason; and
+`overhead` reports refused records with exit 5. Each has a regression test that fails when its
+fix is undone (checked by reverting each fix in a scratch copy).
+
+Verification on the final code (2026-10-20): 809 Python tests with the dedicated PostgreSQL
+database and no skips, agent and sandbox tests in 5 consecutive runs, Ruff, JavaScript
+lint/typecheck/13 tests/build, Go, and both Compose configurations. Real Qwen3 CPU run
+`592ef981-f125-40e6-843a-5c2d8988765d` on the third-round code completed the task
+(verification passed, 13 steps, no gaps, no cleanup or background errors, root-step queue delay
+0.0002 s); the five final fixes do not touch the success path it exercised.
+
 - [x] Integrate one Python agent and its tool dispatcher using the generalized client.
-  Verified by the integration tests and the real CPU runs above, including one that completed
-  the task. GPU-backed end-to-end validation remains Benoy's handoff run.
+  Verified by the integration tests, the real CPU runs above, and Benoy's GPU run
+  `63f8e154-e503-480c-845e-9c52ca612577`, each of which completed the task.
 - [ ] Propagate run/step/trace context through model calls, code execution, and retrieval.
   Steps share run, trace and parent context inside the runner; trace context is not
   propagated into the Ollama server or the test subprocess.

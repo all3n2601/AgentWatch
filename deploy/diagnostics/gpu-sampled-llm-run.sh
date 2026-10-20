@@ -19,8 +19,8 @@ task="${AGENT_TASK:-fix-mean-empty}"
 fields=timestamp,index,name,pstate,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw,temperature.gpu,clocks.sm,clocks_event_reasons.active
 
 : "${OLLAMA_URL:?Set OLLAMA_URL to the Docker Ollama endpoint, e.g. http://127.0.0.1:11435}"
-if ! curl -fsS --max-time 5 "$api_url/health" >/dev/null; then
-  echo "The live API is not reachable at $api_url; start the worker API first." >&2
+if ! curl -fsS --max-time 5 "$api_url/readyz" >/dev/null; then
+  echo "The live API at $api_url is not ready (GET /readyz failed); start the worker API and PostgreSQL first." >&2
   exit 2
 fi
 if [ -e "$out" ]; then

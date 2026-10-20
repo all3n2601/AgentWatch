@@ -25,7 +25,11 @@ Delivery is background, batched and idempotent, with an append-only journal for 
 an outage. A rejected batch is resent record by record, both live and on replay, so a closure
 race loses only the refused records. A run is closed only once its records are delivered:
 otherwise the closure is journaled, and `resend` sends it after the records, then compares
-the run's actual state with the journaled closure.
+the run's actual state with the journaled closure. Recoverable gaps (exit 3) are kept apart
+from evidence the service refuses permanently (exit 5): a completion refused after full
+delivery is closed as failed with that reason rather than retried forever. A journal without
+a closure is reported (exit 6) and closed as failed only on the operator's explicit request,
+because only the operator knows whether its runner is gone.
 
 Consequences: live consumers see correlated lifecycle and timing without model metrics, which
 stay local until a contract version adds them. The tasks are small reviewed fixtures, not

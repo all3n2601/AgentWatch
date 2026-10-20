@@ -10,7 +10,7 @@ import pytest
 from agent_test_doubles import SOLVE_MEAN, ScriptedModel, chat_response
 from agentwatch_agent import runner as runner_module
 from agentwatch_agent.config import RunLimits
-from agentwatch_agent.delivery import RetryPolicy, replay_journal
+from agentwatch_agent.delivery import COMPLETION_REFUSED, RetryPolicy, replay_journal
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.runner import AgentRunner
 from agentwatch_agent.workspace import Workspace
@@ -258,7 +258,8 @@ def test_run_time_limit_abandons_a_slow_model(mean_task, server, tmp_path):
     finally:
         model.block.set()
     assert outcome.state == "failed"
-    assert server.only_run().reason == "Run time limit reached while waiting for a model response"
+    # One wording for the run limit wherever it is hit (reasons feed dataset labels).
+    assert server.only_run().reason == "Run exceeded its 0.3 s time limit"
 
 
 def test_api_outage_keeps_a_replayable_journal(mean_task, server, tmp_path):
@@ -361,7 +362,8 @@ def test_setup_failure_after_registration_closes_the_run(mean_task, server, tmp_
         make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
     run = server.only_run()
     assert (run.state, run.reason) == ("failed", "Runner error (RuntimeError)")
-    assert step_states(server) == {"agent-run": "failed"}
+    # The root step is submitted only when the run starts, so none exists yet.
+    assert step_states(server) == {}
     saved = json.loads((tmp_path / "run/agent-evidence.json").read_text())
     assert saved["cleanup"]["workspace_removed"] is True
     assert saved["resource_sampling"] is None
@@ -448,3 +450,259 @@ def test_failed_model_request_still_records_placement(mean_task, server, tmp_pat
         "status": "unavailable",
         "reason": "not a model server",
     }
+
+
+# Second review round (PR #27, 2dd827c) ----------------------------------------------------
+
+
+def test_failed_request_time_excludes_the_placement_read(mean_task, server, tmp_path):
+    model = ScriptedModel([URLError("refused")])
+    model.placement_delay_seconds = 0.5
+    outcome = make_runner(mean_task, server, model, tmp_path).run()
+    call = evidence(outcome)["model_calls"][0]
+    assert call["model_placement"]["status"] == "unavailable"  # the read did happen
+    assert call["request_wall_seconds"] < 0.4, "placement read was timed as the model request"
+
+
+def test_overflowed_records_defer_the_closure(mean_task, server, tmp_path, monkeypatch):
+    original = runner_module.LiveDelivery
+
+    def small_queue(*args, **kwargs):
+        return original(*args, **kwargs, max_pending=3)
+
+    monkeypatch.setattr(runner_module, "LiveDelivery", small_queue)
+    server.unavailable_calls = {"ingest"}
+    model = ScriptedModel([URLError("model server down")])
+    outcome = make_runner(mean_task, server, model, tmp_path).run()
+    assert server.only_run().state == "running", "closure sent before overflowed records"
+    assert (outcome.state, outcome.resend_needed) == ("failed_locally_undelivered", True)
+    assert evidence(outcome)["delivery"]["not_queued_overflow"] > 0
+    server.unavailable_calls = set()
+    report = replay_journal(outcome.journal_path, server, NO_SLEEP)
+    assert (report.complete, server.only_run().state) == (True, "failed")
+
+
+def test_dashboard_cancellation_with_pending_records_settles_on_resend(mean_task, server, tmp_path):
+    model = ScriptedModel(SOLVE_MEAN, block=threading.Event(), block_on=2)
+    runner = make_runner(mean_task, server, model, tmp_path)
+
+    def cancel_during_outage():
+        server.unavailable_calls = {"ingest"}
+        server.cancel(next(iter(server.runs)), "Stopped by reviewer")
+
+    outcome = run_until_blocked(
+        runner, model, cancel_during_outage, delivered_step="model-call-1", server=server
+    )
+    assert (outcome.state, outcome.resend_needed) == ("cancelled", True)
+    kinds = [entry["kind"] for entry in journal_entries(outcome)]
+    assert "remote_closure" in kinds
+    server.unavailable_calls = set()
+    report = replay_journal(outcome.journal_path, server, NO_SLEEP)
+    assert (report.outcome, report.expected_state, report.final_state) == (
+        "settled",
+        "cancelled",
+        "cancelled",
+    )
+
+
+def test_api_outage_when_starting_is_a_recoverable_failure(mean_task, server, tmp_path):
+    server.unavailable_calls = {"change_state"}
+    outcome = make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
+    assert server.only_run().state == "queued"
+    assert (outcome.state, outcome.resend_needed) == ("failed_locally_undelivered", True)
+    assert outcome.reason == "Live API unavailable when starting the run"
+    server.unavailable_calls = set()
+    report = replay_journal(outcome.journal_path, server, NO_SLEEP)
+    assert (report.complete, server.only_run().state) == (True, "failed")
+
+
+def test_verification_timeout_is_not_reported_as_failed_tests(mean_task, server, tmp_path):
+    runner = make_runner(
+        mean_task,
+        server,
+        ScriptedModel(SOLVE_MEAN),
+        tmp_path,
+        limits=RunLimits(test_timeout_seconds=0.001),
+    )
+    outcome = runner.run()
+    run = server.only_run()
+    expected = "Runner verification could not complete: The test suite exceeded its 0.001 s timeout"
+    assert (outcome.state, run.reason) == ("failed", expected)
+    assert run.steps["agent-run"].reason == expected
+    assert run.steps["verify-tests"].state == "failed"
+    assert evidence(outcome)["verification"]["outcome"] == "timed_out"
+
+
+def test_local_setup_failure_is_not_blamed_on_the_live_api(
+    mean_task, server, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Workspace, "create", staticmethod(lambda _task: 1 / 0))
+    with pytest.raises(RunNotStarted) as error:
+        make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
+    assert error.value.stage == "setup"
+    server.down = True
+    monkeypatch.undo()
+    with pytest.raises(RunNotStarted) as error:
+        make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path / "second").run()
+    assert error.value.stage == "registration"
+
+
+# Third review round (pre-merge audit) -----------------------------------------------------
+
+
+def test_steps_end_before_background_shutdown_and_cleanup(mean_task, server, tmp_path, monkeypatch):
+    original = runner_module.PeriodicFlusher
+    stopped_at = {}
+
+    class SlowStopFlusher(original):
+        def __exit__(self, *exc):
+            stopped_at["tick"] = runner.clock.tick()
+            threading.Event().wait(0.3)  # e.g. a flush still retrying against a slow API
+            return super().__exit__(*exc)
+
+    monkeypatch.setattr(runner_module, "PeriodicFlusher", SlowStopFlusher)
+    model = ScriptedModel(SOLVE_MEAN, block=threading.Event(), block_on=2)
+    runner = make_runner(mean_task, server, model, tmp_path)
+    run_until_blocked(
+        runner,
+        model,
+        lambda: runner.request_cancel("signal", "Cancelled by operator signal SIGINT"),
+    )
+    for step_id in ("model-call-2", "agent-run"):
+        event = server.only_run().steps[step_id]
+        assert event.finished_tick_ns <= stopped_at["tick"], f"{step_id} timed the shutdown"
+
+
+def test_background_error_during_verification_fails_the_run(
+    mean_task, server, tmp_path, monkeypatch
+):
+    original_verify = AgentRunner._verify
+
+    def verify_then_sampler_dies(self, context):
+        passed = original_verify(self, context)
+        self._background[1].error = RuntimeError("sampler died")
+        return passed
+
+    monkeypatch.setattr(AgentRunner, "_verify", verify_then_sampler_dies)
+    with pytest.raises(RuntimeError, match="sampler died"):
+        make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
+    run = server.only_run()
+    assert (run.state, run.reason) == ("failed", "Runner error (RuntimeError)")
+    assert run.steps["agent-run"].state == "failed"
+    saved = json.loads((tmp_path / "run/agent-evidence.json").read_text())
+    assert saved["status"] == "failed"
+    assert any("sampler died" in entry for entry in saved["background_errors"])
+
+
+def test_a_tool_cut_short_by_the_run_limit_carries_the_run_limit_reason(
+    mean_task, server, tmp_path, monkeypatch
+):
+    from agentwatch_agent import tools as tools_module
+    from agentwatch_sandbox.project_tests import ProjectTestResult
+
+    def slow_tests(_root, *, timeout_seconds, cancel):
+        threading.Event().wait(timeout_seconds)
+        return ProjectTestResult("timed_out", None, None, "", timeout_seconds, 0.0)
+
+    monkeypatch.setattr(tools_module, "run_project_tests", slow_tests)
+    model = ScriptedModel([chat_response(tool_calls=[("run_tests", {})])])
+    outcome = make_runner(
+        mean_task, server, model, tmp_path, limits=RunLimits(run_timeout_seconds=1)
+    ).run()
+    run = server.only_run()
+    expected = "Run exceeded its 1 s time limit"
+    assert (outcome.state, run.reason) == ("failed", expected)
+    assert run.steps["tool-1-run_tests"].reason == expected
+
+
+def test_failed_workspace_copy_leaves_no_temporary_directory(
+    mean_task, server, tmp_path, monkeypatch
+):
+    import shutil
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+
+    def broken_copy(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copytree", broken_copy)
+    with pytest.raises(RunNotStarted, match="disk full"):
+        make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path / "out").run()
+    assert list((tmp_path / "tmp").iterdir()) == []
+
+
+def test_unwritable_output_directory_is_a_setup_failure(mean_task, server, tmp_path):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("")
+    with pytest.raises(RunNotStarted) as error:
+        make_runner(
+            mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path, output_dir=blocker / "run"
+        ).run()
+    assert error.value.stage == "setup"
+    assert server.runs == {}
+
+
+def test_a_run_failed_remotely_fails_its_steps_too(mean_task, server, tmp_path):
+    model = ScriptedModel(SOLVE_MEAN, block=threading.Event(), block_on=2)
+    runner = make_runner(mean_task, server, model, tmp_path)
+
+    def fail_remotely():
+        run = next(iter(server.runs.values()))
+        with server.lock:
+            server._close(run, "failed", "Failed by an operator")
+
+    outcome = run_until_blocked(
+        runner, model, fail_remotely, delivered_step="model-call-2", server=server
+    )
+    assert outcome.state == "failed"
+    assert {step_states(server)[s] for s in ("model-call-2", "agent-run")} == {"failed"}
+
+
+def test_refused_completion_after_full_delivery_closes_the_run_as_failed(
+    mean_task, server, tmp_path
+):
+    server.refuse_completion = True
+    outcome = make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
+    run = server.only_run()
+    assert (run.state, run.reason) == ("failed", COMPLETION_REFUSED)
+    assert (outcome.completion_refused, outcome.resend_needed) == (True, False)
+
+
+# Final review (round-three changes) -------------------------------------------------------
+
+
+def test_background_error_during_shutdown_fails_the_run(mean_task, server, tmp_path, monkeypatch):
+    original = runner_module.CpuResourceSampler
+
+    class FailsOnStop(original):
+        def __exit__(self, *exc):
+            result = super().__exit__(*exc)
+            self.error = RuntimeError("last sample failed")
+            return result
+
+    monkeypatch.setattr(runner_module, "CpuResourceSampler", FailsOnStop)
+    with pytest.raises(RuntimeError, match="last sample failed"):
+        make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
+    run = server.only_run()
+    assert (run.state, run.reason) == ("failed", "Runner error (RuntimeError)")
+    saved = json.loads((tmp_path / "run/agent-evidence.json").read_text())
+    assert (saved["status"], saved["task_passed"]) == ("failed", True)
+
+
+def test_adopted_remote_closure_reports_the_remote_reason(mean_task, server, tmp_path, monkeypatch):
+    # The dashboard cancels after verification, while the run is about to complete locally
+    # with no reason of its own; the adopted closure must carry the dashboard's reason.
+    original_verify = AgentRunner._verify
+
+    def verify_then_dashboard_cancels(self, context):
+        passed = original_verify(self, context)
+        server.cancel(next(iter(server.runs)), "Stopped by reviewer")
+        self.cancellation.cancel("live_api", "Stopped by reviewer", "cancelled")
+        return passed
+
+    monkeypatch.setattr(AgentRunner, "_verify", verify_then_dashboard_cancels)
+    outcome = make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
+    assert (outcome.state, outcome.reason) == ("cancelled", "Stopped by reviewer")
+    assert evidence(outcome)["reason"] == "Stopped by reviewer"

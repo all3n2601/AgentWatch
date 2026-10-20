@@ -27,13 +27,17 @@ and export `OLLAMA_URL=http://127.0.0.1:11435`. Each run writes
   runner verification, sampling coverage, delivery statistics, cancellation and cleanup.
 - `live-journal.jsonl`: every registration, record and state change sent, in order.
 
+The same exit codes apply to `run`, `overhead` and `resend`:
+
 | Exit code | Meaning |
 | --- | --- |
-| 0 | Task passed and all live evidence was delivered |
-| 1 | Run failed or was cancelled; its evidence was delivered |
-| 2 | Invalid usage or unknown task |
+| 0 | Success: the task passed (`run`), or all evidence was delivered and the run is closed |
+| 1 | The run failed or was cancelled; its evidence was delivered |
+| 2 | Invalid usage: bad arguments, an unknown task or patch, or an unusable journal |
 | 3 | Live evidence incomplete: run `make agent-resend JOURNAL=<path>` when the API is back |
-| 4 | Live API unreachable or refused the registration; nothing ran |
+| 4 | Nothing ran: local setup failed, or the live API did not register the run |
+| 5 | The live API permanently refused some evidence; it stays in the journal and evidence file |
+| 6 | `resend` only: the run is open and its journal has no closure (see below) |
 
 Ctrl-C or SIGTERM cancels cleanly: work stops, the workspace and test processes are removed,
 unfinished steps end as `cancelled`, and the run is closed with the signal as its reason.
@@ -57,7 +61,7 @@ URLs are excluded: the same configuration can run on different hosts.
 
 | Step | Type | Resource | Timing | CPU |
 | --- | --- | --- | --- | --- |
-| `agent-run` | `other` | none | whole run | null |
+| `agent-run` | `other` | none | from the run's start (after registration and start-up) to its end | null |
 | `model-call-N` | `model_call` | `model-server-*` (`inference`) | runner-side request wall time | null: inference runs in the model server |
 | `tool-N-search_docs` | `retrieval` | `docs-index-*` (`retrieval`) | in-process BM25 lookup | null |
 | `tool-N-read_file`, `tool-N-apply_patch` | `tool` | `tool-host-*` (`cpu_sandbox`) | in-process | null |
@@ -75,9 +79,14 @@ URLs are excluded: the same configuration can run on different hosts.
   250 ms, for the tool host. PSI is host-wide and the counter covers the runner's whole cgroup,
   so neither is step-exclusive. On macOS both are recorded as `unsupported`, never zero.
   Inference, GPU and retrieval metrics wait for A04 to register them.
+- **`task_passed`** in the evidence reports only the runner's verification. A run can still be
+  `failed` with `task_passed: true` when a runner error (listed in `background_errors` or
+  `cleanup_errors`) happened after verification; the run's state and reason say which.
 - **Verification:** after the model's final answer, the runner reruns the tests itself
   (`verify-tests`). The run completes only if they pass; the model's claims are never the
-  outcome. A wrong patch closes the run as `failed` with the root step `completed`.
+  outcome. A wrong patch closes the run as `failed`, and the root step fails with the same
+  reason. If the tests cannot finish (a timeout, or the run limit), the run fails with that
+  cause instead, never as a test failure.
 
 Model metrics (token counts and Ollama's nanosecond durations) cannot be carried by
 `StepEvent`, which rejects extra fields. They are in `agent-evidence.json` under `model_calls`,
@@ -89,9 +98,11 @@ keyed by `step_id` and `span_id`.
   allowlists) are never executed. They are recorded as steps that go from `queued` straight
   to `failed`, and the model receives an error so it can correct itself.
 - Model transport errors, malformed replies, an empty answer, and the model-call (8),
-  tool-call (12), test (60 s) and run (900 s) limits fail the run with a redacted live reason.
-  Full error text stays in local evidence. Reasons are stripped of paths and control
-  characters.
+  tool-call (12) and run (900 s) limits fail the run with a redacted live reason. The test
+  limit (60 s) fails the run only during the runner's own `verify-tests`; a model-requested
+  `run_tests` that times out is returned to the model as a tool error. The run limit always
+  has one wording, `Run exceeded its <N> s time limit`, wherever it is hit. Full error text
+  stays in local evidence. Reasons are stripped of paths and control characters.
 - A model request, and the optional `/api/ps` placement reading after it, cannot be
   interrupted, so on cancellation or timeout its thread is abandoned. An abandoned model
   request is recorded as `cleanup.abandoned_model_request`, and Ollama stops generating
@@ -103,14 +114,38 @@ keyed by `step_id` and `span_id`.
   closed the run. Everything is journaled, and `resend` replays a journal idempotently.
 - A run is closed only after its records are delivered. If delivery is still failing at the
   end, the closure is journaled but not sent (sending it would make the service refuse the
-  undelivered steps), and the run reports `<state>_locally_undelivered`. `resend` replays the
-  records, then the closure. It retries once if the run's revision moved, and exits 3 unless
-  the run ends in the journaled state or another actor (such as the dashboard) closed it.
-- Every cleanup action (stopping threads, removing the workspace, ending steps, delivering,
-  closing the run) runs even if an earlier one fails. Failures are listed in
-  `cleanup_errors`, and the first error is re-raised after evidence is written.
-- Ctrl-C and SIGTERM are handled without printing or blocking: a repeated signal is ignored
-  rather than waiting on a lock the first one holds.
+  undelivered steps), and the run reports `<state>_locally_undelivered` with exit 3. Once the
+  bounded in-memory queue overflows during a long outage, every later record also stays
+  journal-only, so step revisions always reach the service in order.
+- `resend` replays the records, then the closure, with their original identities. It retries
+  a closure once if the run's revision moved. A closure adopted from another actor (such as a
+  dashboard cancellation) is journaled before anything else, as `remote_closure`, so `resend`
+  can settle the run even if the runner lost contact while adopting it.
+- If the service refuses completion although every record was delivered, its refusal is
+  permanent (refused or expired step evidence), so the run is closed as `failed` with the
+  reason `Completion refused by the live API: ...` and exit 5, both live and on `resend`.
+- Records the service refused are permanent too: it rejects identical content again, so both
+  `run` and `resend` report them with exit 5, not exit 3.
+- If registration times out, the run's outcome on the service is unknown. Nothing runs
+  (exit 4), and a `failed` closure is journaled: `resend` then resolves the registration by
+  its original request ID and closes the run if the service recorded it. A journal from a
+  registration the service refused is not replayable (`resend` exits 2).
+- A journal with no closure (the runner was killed, or is still running) makes `resend` exit
+  6 without changing the run. Once you know the runner is gone, `resend --fail-unclosed`
+  closes the run as `failed`.
+- A live API outage when the run moves to `running` fails the run with the recoverable reason
+  `Live API unavailable when starting the run`; it exits 3 if the closure could not be
+  delivered either, or 1 if the API recovered in time to receive it.
+- Steps still open at the end are closed first, before background threads stop and the
+  workspace is removed, so their timings never include that shutdown. Every cleanup action
+  then runs even if an earlier one fails: failures are listed in `cleanup_errors`, and a
+  background thread (flusher, sampler or watcher) that fails is listed in
+  `background_errors` and fails the run. The first error is re-raised after the evidence is
+  written.
+- A run failed (rather than cancelled) by another actor ends its open steps as `failed` too.
+- Ctrl-C and SIGTERM are handled without printing or blocking, for `run` and `overhead`: a
+  repeated signal is ignored rather than waiting on a lock the first one holds. `overhead`
+  closes its run as `cancelled` and exits 1, or 3 if the closure could not be delivered.
 - `cleanup_confirmed_by_service` stays null. The runner reports what it actually cleaned up,
   but isolation and enforced cleanup belong to A03/O03.
 
@@ -125,13 +160,17 @@ isolation sandbox**: do not add free-form edits or commands without the A03 isol
 ## Overhead
 
 `uv run --package agentwatch-agent python -m agentwatch_agent overhead` runs protocol
-`agent-overhead-v1` (declared in `overhead.py`): 30 alternating uninstrumented and
-instrumented repetitions of a task's patched test suite, with the live API running. It reports
+`agent-overhead-v1` (declared in `overhead.py`): after 3 discarded warm-ups, 30 repetitions
+per condition of a task's patched test suite, alternating uninstrumented and instrumented
+(60 measured), with the live API running. It reports
 wall-time medians and p90s and runner CPU per repetition, with no pass/fail threshold, in
 `.data/agent-overhead/`. The fixture suite takes about 55 ms, shorter than one sampling
 interval, so the result covers per-step instrumentation, not sustained sampling. Overhead
-runs keep the task's own `task_id` (dataset splits group by it); they are identified by the
-`agent-overhead-v1` configuration digest and must be excluded from training datasets.
+runs keep the task's own `task_id` (dataset splits group by it) and must be excluded from
+training datasets. They are recognizable without runner internals: their single registered
+resource uses `service_id` `agentwatch-agent-overhead`, there is no `agent-run` root step, and
+their steps are named `overhead-<n>`. Their configuration digest also covers the
+`agent-overhead-v1` protocol.
 
 ## Tests
 

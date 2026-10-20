@@ -15,7 +15,7 @@ from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 from urllib.error import HTTPError, URLError
 from uuid import UUID, uuid4
 
@@ -117,6 +117,15 @@ class RetryPolicy:
         raise AssertionError("unreachable")
 
 
+REPAIRED_LINE_MARKER = "repaired_interrupted_line"
+
+
+def _ends_with_newline(path: Path) -> bool:
+    with path.open("rb") as stream:
+        stream.seek(-1, 2)
+        return stream.read(1) == b"\n"
+
+
 class Journal:
     """Append-only JSONL of everything the runner sends, flushed line by line."""
 
@@ -124,7 +133,15 @@ class Journal:
         self.path = path
         self._lock = threading.Lock()
         path.parent.mkdir(parents=True, exist_ok=True)
+        # An interrupted earlier write can leave a partial last line; start on a new line so
+        # appended entries never merge into it.
+        needs_newline = path.exists() and path.stat().st_size > 0 and not _ends_with_newline(path)
         self._stream = path.open("a", encoding="utf-8")
+        if needs_newline:
+            # The marker tells later reads that the damaged line before it was an interrupted
+            # write, not corruption, so the journal stays replayable after more appends.
+            self._stream.write("\n" + json.dumps({"kind": REPAIRED_LINE_MARKER}) + "\n")
+            self._stream.flush()
 
     def write(self, kind: str, payload: BaseModel | dict, **extra) -> None:
         body = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
@@ -183,14 +200,21 @@ class LiveDelivery:
         self.journal.write("record", record)
         with self._queue_lock:
             self._stats.emitted += 1
-            if len(self._pending) >= self._max_pending:
+            if self._stats.not_queued_overflow or len(self._pending) >= self._max_pending:
                 # Memory stays bounded during a long outage; the journal still has the record.
+                # After the first overflow every later record stays journal-only too: sending
+                # a later step revision live while an earlier one exists only in the journal
+                # would leave the step pending and then expired on the service.
                 self._stats.not_queued_overflow += 1
                 return
             self._pending.append(record)
 
     def flush(self) -> bool:
-        """Send queued records in order. Return True when nothing remains queued.
+        """Send queued records in order. Return True only when every emitted record was sent.
+
+        Records that overflowed the bounded queue exist only in the journal, so a flush that
+        empties the queue still returns False while any overflowed: closing the run then would
+        make the service refuse their steps when `resend` replays them later.
 
         Stops at the first batch that still fails after bounded transient retries, keeping it
         and everything after it queued for the next flush. Batches are atomic, so a rejected
@@ -202,8 +226,9 @@ class LiveDelivery:
             while True:
                 with self._queue_lock:
                     batch = self._pending[:MAX_BATCH_RECORDS]
+                    overflowed = self._stats.not_queued_overflow
                 if not batch:
-                    return True
+                    return overflowed == 0
                 try:
                     ingest_isolating(
                         self.transport,
@@ -329,31 +354,56 @@ class PeriodicFlusher:
         self._thread.join(timeout=30)
 
 
+ReplayOutcome = Literal["settled", "retry", "refused", "unclosed"]
+
+
 @dataclass
 class ReplayReport:
     run_id: UUID | None = None
+    run_created_by_replay: bool = False
     records_sent: int = 0
     records_skipped_rejected: int = 0
     rejections: list[dict] = field(default_factory=list)
     changes_applied: int = 0
     changes_superseded: int = 0
     unresolved_changes: list[dict] = field(default_factory=list)
+    completion_refused: bool = False
+    closed_unclosed_run: bool = False
     expected_state: str | None = None
     final_state: str | None = None
+    closed_remotely: bool = False
     truncated_final_line: bool = False
 
     @property
+    def refused_records(self) -> int:
+        """Records the service refuses permanently: identical content cannot be accepted."""
+        return len(self.rejections) + self.records_skipped_rejected
+
+    @property
+    def outcome(self) -> ReplayOutcome:
+        """What the operator should do next.
+
+        settled: the run is closed as journaled (or by another actor) with all evidence.
+        refused: the run is closed, but the service permanently refused some evidence.
+        unclosed: the run is still open and the journal has no closure to send.
+        retry: the run is still open although a closure was journaled; resend again later.
+        """
+        if self.final_state not in _TERMINAL:
+            return "retry" if self.expected_state in _TERMINAL else "unclosed"
+        if self.refused_records or self.unresolved_changes or self.completion_refused:
+            return "refused"
+        return "settled"
+
+    @property
     def complete(self) -> bool:
-        """True when every record landed and the run is in the journaled (or a later) state."""
-        run_settled = (
-            self.expected_state is None
-            or self.final_state == self.expected_state
-            or (self.final_state in _TERMINAL and self.changes_superseded > 0)
-        )
-        return not self.rejections and not self.unresolved_changes and run_settled
+        return self.outcome == "settled"
 
 
 _TERMINAL = {"completed", "failed", "cancelled"}
+COMPLETION_REFUSED = (
+    "Completion refused by the live API: some step evidence was refused or is missing"
+)
+UNCLOSED_FAILED = "Runner stopped before closing the run; closed by resend --fail-unclosed"
 
 
 def _journal_entries(path: Path, report: ReplayReport) -> list[dict]:
@@ -363,14 +413,36 @@ def _journal_entries(path: Path, report: ReplayReport) -> list[dict]:
         if not line.strip():
             continue
         try:
-            entries.append(json.loads(line))
+            entry = json.loads(line)
         except json.JSONDecodeError:
-            # Only an interrupted final write is tolerated; damage elsewhere is not guessed at.
-            if number == len(lines):
+            # Only an interrupted write is tolerated: the final line, or a line the journal
+            # marked as repaired when it was reopened. Damage elsewhere is not guessed at.
+            following = next((later for later in lines[number:] if later.strip()), None)
+            repaired = following is not None and _is_repair_marker(following)
+            if number == len(lines) or repaired:
                 report.truncated_final_line = True
                 continue
             raise ValueError(f"Journal line {number} is not valid JSON") from None
+        if entry.get("kind") != REPAIRED_LINE_MARKER:
+            entries.append(entry)
     return entries
+
+
+def _is_repair_marker(line: str) -> bool:
+    try:
+        return json.loads(line).get("kind") == REPAIRED_LINE_MARKER
+    except (json.JSONDecodeError, AttributeError):
+        return False
+
+
+def _snapshot(transport, run_id, retry, sleep):
+    return retry.call(lambda: transport.get_run(run_id, after=MAX_CURSOR, limit=1), sleep)
+
+
+def _send_change(transport, run_id, change, retry, sleep, journal, report) -> None:
+    journal.write("run_change", change, replayed=True)
+    retry.call(lambda: transport.change_state(run_id, change), sleep)
+    report.changes_applied += 1
 
 
 def _replay_change(
@@ -391,11 +463,18 @@ def _replay_change(
         except LiveRejectedError as error:
             if error.status != 409:
                 raise
-            snapshot = retry.call(
-                lambda: transport.get_run(run_id, after=MAX_CURSOR, limit=1), sleep
-            )
+            snapshot = _snapshot(transport, run_id, retry, sleep)
             if snapshot.state == change.state:
                 report.changes_applied += 1  # Applied earlier under another identity.
+                return
+            if (
+                change.state == "completed"
+                and snapshot.state == "failed"
+                and snapshot.reason == COMPLETION_REFUSED
+            ):
+                # An earlier run or replay already closed it for a refused completion.
+                report.completion_refused = True
+                report.expected_state = "failed"
                 return
             if snapshot.state in _TERMINAL:
                 report.changes_superseded += 1  # Another actor, e.g. the dashboard, closed it.
@@ -410,6 +489,19 @@ def _replay_change(
                 )
                 journal.write("run_change", change, replayed=True)
                 continue
+            if change.state == "completed":
+                # Every record has been sent, so the refusal is permanent (refused or expired
+                # step evidence). Retrying cannot help: close the run as failed, truthfully.
+                report.completion_refused = True
+                report.expected_state = "failed"
+                failed = RunChange(
+                    change_id=uuid4(),
+                    expected_revision=snapshot.revision,
+                    state="failed",
+                    reason=COMPLETION_REFUSED,
+                )
+                _send_change(transport, run_id, failed, retry, sleep, journal, report)
+                return
             report.unresolved_changes.append(
                 {"state": change.state, "status": error.status, "detail": error.detail[:500]}
             )
@@ -421,18 +513,33 @@ def replay_journal(
     transport: LiveTransport,
     retry: RetryPolicy | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    *,
+    fail_unclosed: bool = False,
 ) -> ReplayReport:
     """Resend a run journal with its original identities; already-saved evidence is a no-op.
 
     Records are resent like live delivery, isolating refused records instead of dropping
     their batch. Records the service already refused during the run are skipped. Afterwards
-    the run's actual state is compared with the last journaled change, so a closure the
-    service still refuses is reported rather than counted as done. Transient failures
-    propagate after bounded retries; replay is idempotent, so it can simply be run again.
+    the run's actual state is compared with the journal (see `ReplayReport.outcome`).
+
+    A journal with a registration but no confirmed run is replayed only if it also journaled a
+    closure (an unconfirmed registration): the exact-retry registration then resolves the run,
+    if the service recorded it, and closes it. `fail_unclosed` closes a run whose journal has
+    no closure as failed; use it only when the runner that wrote the journal is gone.
+
+    Transient failures propagate after bounded retries; replay is idempotent, so it can
+    simply be run again. An unusable journal raises ValueError.
     """
     retry = retry or RetryPolicy()
     report = ReplayReport()
     entries = _journal_entries(path, report)
+    kinds = {entry.get("kind") for entry in entries}
+    if "registration" not in kinds:
+        raise ValueError("The journal has no run registration; nothing to resend")
+    if "run_created" not in kinds and "run_change" not in kinds:
+        raise ValueError(
+            "The run was never registered and no closure was journaled; nothing to resend"
+        )
     rejected_ids = {
         record_id
         for entry in entries
@@ -473,9 +580,9 @@ def replay_journal(
             kind, payload = entry.get("kind"), entry.get("payload")
             if kind == "registration":
                 registration = RunCreate.model_validate(payload)
-                report.run_id = retry.call(
-                    lambda r=registration: transport.create_run(r), sleep
-                ).run_id
+                created = retry.call(lambda r=registration: transport.create_run(r), sleep)
+                report.run_id = created.run_id
+                report.run_created_by_replay = created.created
             elif kind == "run_created":
                 if report.run_id is None or str(report.run_id) != payload.get("run_id"):
                     raise ValueError("Journal registration does not resolve to its recorded run")
@@ -492,12 +599,28 @@ def replay_journal(
                 change = RunChange.model_validate(payload)
                 report.expected_state = change.state
                 _replay_change(transport, report.run_id, change, retry, sleep, journal, report)
+            elif kind == "remote_closure":
+                # Another actor (e.g. the dashboard) closed the run; that state is the target.
+                report.expected_state = payload.get("state")
+                report.closed_remotely = True
             elif kind != "rejected":
                 raise ValueError(f"Unknown journal entry kind {kind!r}")
         send_pending()
-    if report.run_id is not None:
-        snapshot = retry.call(
-            lambda: transport.get_run(report.run_id, after=MAX_CURSOR, limit=1), sleep
-        )
-        report.final_state = snapshot.state
+        snapshot = _snapshot(transport, report.run_id, retry, sleep)
+        if (
+            fail_unclosed
+            and snapshot.state not in _TERMINAL
+            and report.expected_state not in _TERMINAL
+        ):
+            closure = RunChange(
+                change_id=uuid4(),
+                expected_revision=snapshot.revision,
+                state="failed",
+                reason=UNCLOSED_FAILED,
+            )
+            _send_change(transport, report.run_id, closure, retry, sleep, journal, report)
+            report.expected_state = "failed"
+            report.closed_unclosed_run = True
+            snapshot = _snapshot(transport, report.run_id, retry, sleep)
+    report.final_state = snapshot.state
     return report
