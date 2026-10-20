@@ -255,8 +255,11 @@ These can be completed before adding an agent.
   source and last load time on all viewports. The `/live` view shows feed freshness (receiving,
   stale, closed, no records) and last-record age from the browser's monotonic clock only, so
   server/browser clock offsets cannot distort it (`apps/web/tests/live-replay.test.ts` covers
-  ±60 s). Its only data source is a synthetic development replay; F02 must poll the B01 live
-  read API before automatic live updates exist. Keep this open until then.
+  ±60 s). Review follow-up, October 20, 2026: the age keeps advancing after a run closes, while
+  freshness stays closed; the `no-records` replay demonstrates the no-records state with a null
+  receipt; the freshness status is a polite live region so the stale transition is announced.
+  Its only data source is a synthetic development replay; F02 must poll the B01 live read API
+  before automatic live updates exist. Keep this open until then.
 - [ ] Display active steps, terminal failures, and incomplete telemetry without misleading totals.
   F01, October 18, 2026: `/live` renders StepEvent records through one adapter
   (`apps/web/lib/step-events.ts`) that applies each step's contiguous revision prefix and
@@ -265,13 +268,14 @@ These can be completed before adding an agent.
   the run is closed, every step is terminal and no revision or record is missing; otherwise
   sums are labeled partial. CPU time is totalled only when fully measured in one scope.
   Development replay (`?replay=<scenario>`, non-production builds only, labeled synthetic)
-  scripts active, completed, failed, cancelled-before-start, out-of-order, stale, missing-CPU
-  and zero-duration runs from `apps/web/fixtures/step-event-replays.ts`. Verification: 48 web
-  tests in `apps/web/tests/` (adapter, status helpers, each scenario, replay gating), lint,
+  scripts active, completed, failed, cancelled-before-start, out-of-order, no-records, stale,
+  missing-CPU and zero-duration runs from `apps/web/fixtures/step-event-replays.ts`.
+  Verification: 52 web tests in `apps/web/tests/` (adapter, status helpers, each scenario,
+  replay gating, browser-clock receipt age), lint,
   typecheck and build pass; a production build ignores `?replay=`. Headless Chrome screenshots
   were checked at 360, 375, 640 (200% zoom width), 768 and 1440 px with no page-level overflow.
-  Manual browser checks: keyboard navigation (focus visible; replay scenarios open with Enter)
-  and 200% browser zoom. Real live runs are not displayed until F02 connects the B01 read API,
+  Manual browser checks at commit `a355f8d`: keyboard navigation (focus visible; replay
+  scenarios open with Enter) and 200% browser zoom. Real live runs are not displayed until F02 connects the B01 read API,
   so this stays open.
 - [ ] Provide an instrumentation client for controlled test workloads.
   B01 provides transport/models; A02 still must connect actual agent instrumentation.
