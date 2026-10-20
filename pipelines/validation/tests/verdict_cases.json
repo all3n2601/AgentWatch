@@ -1,0 +1,358 @@
+{
+  "description": "Gate verdict selection, shared by pipelines/validation (gate.latest_result) and pipelines/data (splits.latest_verdict). Each reader is implemented in its own environment; both suites run these cases so the rules cannot drift apart. 'now' is the reading time; an attempt is {name, result}: result is a JSON object, raw text, or null for a committed directory without result.json; file=true makes it a stray file, not a directory; nesting=n makes result.json n nested JSON arrays, deeper than the JSON decoder allows.",
+  "release": "steps-v1.2+aaaaaaaaaaaa",
+  "now": "2026-10-18T12:00:00+00:00",
+  "cases": [
+    {
+      "name": "never validated",
+      "attempts": [],
+      "verdict": null
+    },
+    {
+      "name": "one pass",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        }
+      ],
+      "verdict": {
+        "attempt": "a1",
+        "status": "passed"
+      }
+    },
+    {
+      "name": "a later failure wins",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        },
+        {
+          "name": "a2",
+          "result": {
+            "attempt": "a2",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "failed",
+            "validated_at": "2026-10-18T11:00:00+00:00"
+          }
+        }
+      ],
+      "verdict": {
+        "attempt": "a2",
+        "status": "failed"
+      }
+    },
+    {
+      "name": "time decides, not the directory name",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "failed",
+            "validated_at": "2026-10-18T11:00:00+00:00"
+          }
+        },
+        {
+          "name": "a2",
+          "result": {
+            "attempt": "a2",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T09:00:00+00:00"
+          }
+        }
+      ],
+      "verdict": {
+        "attempt": "a1",
+        "status": "failed"
+      }
+    },
+    {
+      "name": "an equal time falls back to the attempt name",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "failed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        },
+        {
+          "name": "a2",
+          "result": {
+            "attempt": "a2",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        }
+      ],
+      "verdict": {
+        "attempt": "a2",
+        "status": "passed"
+      }
+    },
+    {
+      "name": "offsets compare as instants",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:30:00+00:00"
+          }
+        },
+        {
+          "name": "a2",
+          "result": {
+            "attempt": "a2",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "failed",
+            "validated_at": "2026-10-18T06:00:00-05:00"
+          }
+        }
+      ],
+      "verdict": {
+        "attempt": "a2",
+        "status": "failed"
+      }
+    },
+    {
+      "name": "hidden staging is ignored",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        },
+        {
+          "name": ".attempt-x",
+          "result": {
+            "attempt": ".attempt-x",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "failed",
+            "validated_at": "2026-10-18T11:00:00+00:00"
+          }
+        }
+      ],
+      "verdict": {
+        "attempt": "a1",
+        "status": "passed"
+      }
+    },
+    {
+      "name": "a stray file is not an attempt",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        },
+        {
+          "name": "notes.txt",
+          "result": "not an attempt",
+          "file": true
+        }
+      ],
+      "verdict": {
+        "attempt": "a1",
+        "status": "passed"
+      }
+    },
+    {
+      "name": "an unreadable result is unknown",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        },
+        {
+          "name": "a2",
+          "result": "{damaged"
+        }
+      ],
+      "verdict": "unknown"
+    },
+    {
+      "name": "a committed directory without its result is unknown",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        },
+        {
+          "name": "a2",
+          "result": null
+        }
+      ],
+      "verdict": "unknown"
+    },
+    {
+      "name": "a result that is not an object is unknown",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": [
+            1,
+            2
+          ]
+        }
+      ],
+      "verdict": "unknown"
+    },
+    {
+      "name": "naming another attempt is unknown",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "other",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        }
+      ],
+      "verdict": "unknown"
+    },
+    {
+      "name": "naming another release is unknown",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+bbbbbbbbbbbb",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        }
+      ],
+      "verdict": "unknown"
+    },
+    {
+      "name": "a time without an offset is unknown",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00"
+          }
+        }
+      ],
+      "verdict": "unknown"
+    },
+    {
+      "name": "an unparseable time is unknown",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "yesterday"
+          }
+        }
+      ],
+      "verdict": "unknown"
+    },
+    {
+      "name": "an unknown status is unknown",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "maybe",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        }
+      ],
+      "verdict": "unknown"
+    },
+    {
+      "name": "a verdict from the future is unknown",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        },
+        {
+          "name": "a2",
+          "result": {
+            "attempt": "a2",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2027-01-01T00:00:00+00:00"
+          }
+        }
+      ],
+      "verdict": "unknown"
+    },
+    {
+      "name": "a result nested past the JSON decoder's limit is damaged",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        },
+        {
+          "name": "a2",
+          "result": null,
+          "nesting": 100000
+        }
+      ],
+      "verdict": "unknown"
+    }
+  ]
+}

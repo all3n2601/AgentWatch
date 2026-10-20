@@ -1,0 +1,15 @@
+# Never version half-written files or tool state. Each pipeline command stages its output under
+# a hidden name and renames it into place when complete, so staging left by a running or killed
+# command is excluded from DVC snapshots:
+#   .building-*  dataset release being written (agentwatch_data.build)
+#   .adding-*    evidence entry being copied (agentwatch_data.evidence)
+#   .attempt-*   quality-gate attempt being committed (agentwatch_validation.gate)
+#   .*.tmp       build report, split file, or schema being written
+.building-*
+.adding-*
+.attempt-*
+.*.tmp
+# Nothing hidden inside the stores is evidence or a release (for example macOS .DS_Store);
+# the dataset build and the integrity check skip hidden entries too.
+/data/evidence/**/.*
+/data/datasets/**/.*

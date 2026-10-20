@@ -1,6 +1,6 @@
 """Freeze the train, validation, and test splits of a dataset release and check them for leakage.
 
-    python -m agentwatch_data.splits --release .data/datasets/<version>
+    python -m agentwatch_data.splits --release data/datasets/<version>
 
 Only a release whose latest quality-gate verdict is a pass, for exactly the files it holds now
 and the reviewed frozen schema, can be split. The fractions, group key, test sources, and
@@ -28,16 +28,14 @@ import argparse
 import hashlib
 import json
 import math
-import os
 import re
 import sys
-import tempfile
 import tomllib
-from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from agentwatch_data.build import (
@@ -45,19 +43,19 @@ from agentwatch_data.build import (
     MANIFEST_FILE,
     RELEASE_FORMAT,
     SCHEMA_FILE,
-    file_sha256,
-    json_text,
+    counts,
 )
 from agentwatch_data.extract import canonical_sha256
-from agentwatch_data.schema import COLUMNS, RESOURCE_CLASSES, SOURCES, Role
+from agentwatch_data.files import file_sha256, json_text, write_atomic
+from agentwatch_data.labels import NO_INJECTION
+from agentwatch_data.schema import RESOURCE_CLASSES, SOURCES, feature_columns
 
 SPLIT_METHOD = "split-v1"  # hashed with each group key; a new value redraws every split
 SPLITS = ("train", "validation", "test")
 SPLITS_DIR, VALIDATIONS_DIR, RESULT_FILE = "splits", "validations", "result.json"
-FEATURES = tuple(column.name for column in COLUMNS if column.role == Role.FEATURE)
+FEATURES = tuple(feature_columns())  # the schema decides what may be a model input
 # Grouping must keep a task's baselines and replays together, so only task-level keys qualify.
 GROUP_KEYS = ("task_id",)
-NO_INJECTION = "none"
 VERSION = re.compile(r"(?P<name>[a-z]+)-v(?P<major>\d+)\.(?P<minor>\d+)")
 PASSED, BLOCKED, INCONCLUSIVE = "passed", "blocked", "inconclusive"
 
@@ -174,27 +172,38 @@ def check_compatibility(contract: Contract, manifest: dict) -> None:
 def read_object(path: Path, what: str) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        raise SplitError(f"{what} {path.name} is unreadable: {error}") from error
+    except (OSError, ValueError, RecursionError) as error:  # RecursionError: deep nesting
+        raise SplitError(f"{what} {path.name} is unreadable: {type(error).__name__}") from error
     if not isinstance(value, dict):
         raise SplitError(f"{what} {path.name} is not a JSON object")
     return value
 
 
-def load_release(path: Path) -> tuple[dict, list[dict]]:
-    """A release's manifest and rows, after verifying its files against the manifest."""
+def verify_release(path: Path) -> dict:
+    """A release's manifest, after verifying its files and name against it."""
     if not (path / DATASET_FILE).is_file():
         raise SplitError(f"{path} is not a dataset release")
     manifest = read_object(path / MANIFEST_FILE, "Manifest")
     intact = (
         manifest.get("release_format") == RELEASE_FORMAT
+        and manifest.get("dataset_version") == path.name
         and manifest.get("parquet_sha256") == file_sha256(path / DATASET_FILE)
         and (path / SCHEMA_FILE).is_file()
         and manifest.get("schema_sha256") == file_sha256(path / SCHEMA_FILE)
     )
     if not intact:
         raise SplitError(f"Release {path.name} does not match its manifest; rebuild it")
-    return manifest, pq.read_table(path / DATASET_FILE).to_pylist()
+    return manifest
+
+
+def load_release(path: Path) -> tuple[dict, list[dict]]:
+    """A release's manifest and rows, after verifying its files against the manifest."""
+    manifest = verify_release(path)
+    try:
+        return manifest, pq.read_table(path / DATASET_FILE).to_pylist()
+    # Hash-consistent but not Parquet, or a timestamp beyond what Python can represent.
+    except (pa.ArrowException, OSError, ValueError, OverflowError) as error:
+        raise SplitError(f"Release {path.name}: {DATASET_FILE} is not readable Parquet") from error
 
 
 def text_sha256(path: Path) -> str:
@@ -220,7 +229,9 @@ def latest_verdict(release: Path, now: datetime | None = None) -> dict | None:
     The gate commits each attempt as validations/<release>/<attempt>/result.json through a
     rename; staging directories are hidden. A committed attempt that is missing its result,
     unreadable, malformed, or validated in the future makes the verdict unknown, so an older
-    attempt can never stand in for it. Keep this in step with committed_attempts in gate.py.
+    attempt can never stand in for it. The gate's own reader (committed_attempts in gate.py)
+    runs in another environment; both suites run pipelines/validation/tests/verdict_cases.json,
+    so the two cannot drift apart.
     """
     now = now or datetime.now(UTC)
     attempts, damaged = [], []
@@ -230,7 +241,7 @@ def latest_verdict(release: Path, now: datetime | None = None) -> dict | None:
             continue
         try:
             result = json.loads((directory / RESULT_FILE).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):  # RecursionError: deep nesting
             result = None
         moment = validated_time(result) if isinstance(result, dict) else None
         if (
@@ -321,17 +332,14 @@ def rows_sha256(dataset_version: str, rows: list[dict]) -> str:
 
 
 def summary(rows: list[dict], group_key: str) -> dict:
-    def counts(column: str) -> dict:
-        return dict(sorted(Counter(str(row[column]) for row in rows).items()))
-
     return {
         "rows": len(rows),
         "runs": len({row["run_id"] for row in rows}),
         "groups": len({row[group_key] for row in rows}),
-        "label_resource": counts("label_resource"),
-        "condition": counts("condition"),
-        "source": counts("source"),
-        "injection_method": counts("injection_method"),
+        "label_resource": counts(rows, "label_resource"),
+        "condition": counts(rows, "condition"),
+        "source": counts(rows, "source"),
+        "injection_method": counts(rows, "injection_method"),
     }
 
 
@@ -468,18 +476,25 @@ def make_split(release: Path, contract_path: Path, frozen_schema: Path) -> Split
     return SplitResult(path, split, reused=False)
 
 
-def write_atomic(path: Path, text: str) -> None:
-    """Write text so readers never see a partial file; readable by other users."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    staged = Path(name)
+def read_split_file(path: Path) -> dict:
+    """A split file whose id is the hash of its content and matches its name and folder.
+
+    This proves the file is whole and in place, not that it is the right split: load_split
+    also rebuilds it from the release and contract.
+    """
+    split = read_object(path, "Split")
+    content = {key: value for key, value in split.items() if key != "split_id"}
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
-        staged.chmod(0o644)
-        os.replace(staged, path)
-    finally:
-        staged.unlink(missing_ok=True)
+        expected = f"{SPLIT_METHOD}+{canonical_sha256(content)[:12]}"
+    except ValueError as error:  # json accepts NaN and Infinity, which canonical JSON refuses
+        raise SplitError(f"Split {path.name} holds a non-finite number") from error
+    if (
+        split.get("split_id") != expected
+        or path.stem != split["split_id"]
+        or path.parent.name != split.get("release")
+    ):
+        raise SplitError(f"Split {path.name} does not match its content or location")
+    return split
 
 
 def load_split(
@@ -502,9 +517,7 @@ def load_split(
     """
     if name not in SPLITS:
         raise SplitError(f"Unknown split {name!r}; expected one of {list(SPLITS)}")
-    split = read_object(path, "Split")
-    if path.stem != split.get("split_id") or path.parent.name != split.get("release"):
-        raise SplitError(f"Split {path.name} does not match its content or location")
+    split = read_split_file(path)
     contract = load_contract(contract_path)
     release = path.parents[2] / path.parent.name
     manifest, rows = load_release(release)

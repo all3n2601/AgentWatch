@@ -1,6 +1,6 @@
 """Build a versioned step dataset release from recorded evidence.
 
-    python -m agentwatch_data.build --source local:.data --output .data/datasets
+    python -m agentwatch_data.build --source local:data/evidence --output data/datasets
 
 A release is an immutable directory named by its dataset version, holding steps.parquet,
 schema.json (the column contract), and manifest.json, which describe only the dataset content.
@@ -45,15 +45,24 @@ from agentwatch_data import __version__
 from agentwatch_data.extract import (
     Extraction,
     ExtractionError,
+    RawRun,
     Rejection,
     canonical_sha256,
     combine,
     extract_api,
     extract_local,
 )
+from agentwatch_data.files import file_sha256, fsync_directory, fsync_file, json_text
 from agentwatch_data.flatten import flatten_runs
-from agentwatch_data.labels import LabelingError, label_rows, load_config
-from agentwatch_data.schema import COLUMNS, SCHEMA_VERSION, SchemaError, contract, validate_rows
+from agentwatch_data.labels import LabelConfig, LabelingError, label_rows, load_config
+from agentwatch_data.schema import (
+    COLUMNS,
+    SCHEMA_VERSION,
+    Column,
+    SchemaError,
+    contract,
+    validate_rows,
+)
 
 logger = logging.getLogger("agentwatch_data.build")
 
@@ -70,9 +79,15 @@ ARROW_TYPES = {
     "bool": pa.bool_(),
     "timestamp[us, tz=UTC]": pa.timestamp("us", tz="UTC"),
 }
-ARROW_SCHEMA = pa.schema(
-    [pa.field(column.name, ARROW_TYPES[column.dtype], column.nullable) for column in COLUMNS]
-)
+
+
+def arrow_schema(columns: tuple[Column, ...]) -> pa.Schema:
+    return pa.schema(
+        [pa.field(column.name, ARROW_TYPES[column.dtype], column.nullable) for column in columns]
+    )
+
+
+ARROW_SCHEMA = arrow_schema(COLUMNS)
 ALL_COLUMNS = frozenset(column.name for column in COLUMNS)
 # Written explicitly rather than left to pyarrow's defaults, so the bytes of a release depend
 # only on its rows, this code, and the locked pyarrow version.
@@ -187,27 +202,50 @@ def rows_digest(rows: list[dict]) -> str:
     return canonical_sha256(serializable)
 
 
-def release_digest(rows_sha256: str) -> str:
+def release_digest(rows_sha256: str, release_contract: dict | None = None) -> str:
     """Identify a whole release: its rows, the column contract it ships, and its format.
 
     Releases are never rewritten, so anything a release must contain is part of its identity;
-    otherwise an older release with the same rows would be reused without it.
+    otherwise an older release with the same rows would be reused without it. A release
+    checked later passes the contract it shipped, which may predate the current one.
     """
+    shipped = contract() if release_contract is None else release_contract
     return canonical_sha256(
-        {"release_format": RELEASE_FORMAT, "contract": contract(), "rows_sha256": rows_sha256}
+        {"release_format": RELEASE_FORMAT, "contract": shipped, "rows_sha256": rows_sha256}
     )
+
+
+def release_manifest(
+    rows: list[dict],
+    version: str,
+    digest: str,
+    label_version: str,
+    parquet_sha256: str,
+    schema_sha256: str,
+    schema_version: str = SCHEMA_VERSION,
+) -> dict:
+    """A release's manifest: content-derived fields only, so its rows determine it."""
+    return {
+        "release_format": RELEASE_FORMAT,
+        "dataset_version": version,
+        "schema_version": schema_version,
+        "label_version": label_version,
+        "builder_version": __version__,
+        "rows": len(rows),
+        "runs": len({row["run_id"] for row in rows}),
+        "tasks": len({row["task_id"] for row in rows}),
+        "rows_sha256": digest,
+        "parquet_sha256": parquet_sha256,
+        "schema_sha256": schema_sha256,
+        "label_resource": counts(rows, "label_resource"),
+        "label_basis": counts(rows, "label_basis"),
+        "condition": counts(rows, "condition"),
+        "telemetry_status": counts(rows, "telemetry_status"),
+    }
 
 
 def contract_text() -> str:
     return json_text(contract())
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def rejection_records(stage: str, rejections: list[Rejection], redact: Redactor) -> list[dict]:
@@ -251,20 +289,13 @@ def build(
             }
         )
     merged = combine(*extractions)
-    rows, flatten_rejections = flatten_runs(merged.runs)
-    labeled, label_rejections = label_rows(rows, config)
-    origins = {run.run_id: run.origin for run in merged.runs}
-    labeled, schema_rejections = validate_runs(labeled, origins)
-    rejections = (
-        rejection_records("extract", merged.rejections, redact)
-        + rejection_records("flatten", flatten_rejections, redact)
-        + rejection_records("label", label_rejections, redact)
-        + rejection_records("schema", schema_rejections, redact)
-    )
+    labeled, stage_rejections = derive_rows(merged.runs, config)
+    rejections = rejection_records("extract", merged.rejections, redact)
+    for stage, items in stage_rejections.items():
+        rejections += rejection_records(stage, items, redact)
     if not labeled:
         raise BuildError(f"No usable rows: every run was rejected ({len(rejections)} rejections)")
 
-    labeled.sort(key=step_order)
     digest = rows_digest(labeled)
     version = f"{SCHEMA_VERSION}+{release_digest(digest)[:12]}"
     final = [row | {"dataset_version": version} for row in labeled]
@@ -324,6 +355,33 @@ def build(
     return BuildResult(release, report_path, reused)
 
 
+def derive_rows(
+    runs: list[RawRun], config: LabelConfig
+) -> tuple[list[dict], dict[str, list[Rejection]]]:
+    """The rows runs produce under config, in release order, with each stage's rejections.
+
+    The one derivation of release rows from evidence: the build uses it, and integrity uses
+    it to prove a release is what its stored evidence builds.
+    """
+    rows, flatten_rejections = flatten_runs(runs)
+    labeled, label_rejections = label_rows(rows, config)
+    origins = {run.run_id: run.origin for run in runs}
+    labeled, schema_rejections = validate_runs(labeled, origins)
+    labeled.sort(key=step_order)
+    return labeled, {
+        "flatten": flatten_rejections,
+        "label": label_rejections,
+        "schema": schema_rejections,
+    }
+
+
+def parquet_bytes(rows: list[dict], schema: pa.Schema = ARROW_SCHEMA) -> bytes:
+    """steps.parquet for rows, exactly as a release stores it."""
+    buffer = pa.BufferOutputStream()
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), buffer, **PARQUET_OPTIONS)
+    return buffer.getvalue().to_pybytes()
+
+
 def validate_runs(rows: list[dict], origins: dict[str, str]) -> tuple[list[dict], list[Rejection]]:
     """Check each run's rows against the schema; a run that fails is rejected, not fatal.
 
@@ -345,19 +403,6 @@ def validate_runs(rows: list[dict], origins: dict[str, str]) -> tuple[list[dict]
     return valid, rejections
 
 
-def fsync_file(path: Path) -> None:
-    with path.open("rb") as stream:
-        os.fsync(stream.fileno())
-
-
-def fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def write_release(
     release: Path, rows: list[dict], version: str, digest: str, label_version: str
 ) -> bool:
@@ -375,25 +420,16 @@ def write_release(
         # (DVC, Airflow workers, training jobs) that may run as other users.
         staging.chmod(0o755)
         dataset = staging / DATASET_FILE
-        pq.write_table(pa.Table.from_pylist(rows, schema=ARROW_SCHEMA), dataset, **PARQUET_OPTIONS)
+        dataset.write_bytes(parquet_bytes(rows))
         (staging / SCHEMA_FILE).write_text(contract_text(), encoding="utf-8")
-        manifest = {
-            "release_format": RELEASE_FORMAT,
-            "dataset_version": version,
-            "schema_version": SCHEMA_VERSION,
-            "label_version": label_version,
-            "builder_version": __version__,
-            "rows": len(rows),
-            "runs": len({row["run_id"] for row in rows}),
-            "tasks": len({row["task_id"] for row in rows}),
-            "rows_sha256": digest,
-            "parquet_sha256": file_sha256(dataset),
-            "schema_sha256": file_sha256(staging / SCHEMA_FILE),
-            "label_resource": counts(rows, "label_resource"),
-            "label_basis": counts(rows, "label_basis"),
-            "condition": counts(rows, "condition"),
-            "telemetry_status": counts(rows, "telemetry_status"),
-        }
+        manifest = release_manifest(
+            rows,
+            version,
+            digest,
+            label_version,
+            file_sha256(dataset),
+            file_sha256(staging / SCHEMA_FILE),
+        )
         (staging / MANIFEST_FILE).write_text(json_text(manifest), encoding="utf-8")
         # Durable before the rename publishes it: after a crash a release is whole or absent.
         for name in (DATASET_FILE, SCHEMA_FILE, MANIFEST_FILE):
@@ -486,10 +522,6 @@ def verify_existing(release: Path, digest: str) -> bool:
     return True
 
 
-def json_text(value) -> str:
-    return json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
@@ -498,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="local:<directory> or api:<url>; repeat to combine sources",
     )
-    parser.add_argument("--output", type=Path, default=Path(".data/datasets"))
+    parser.add_argument("--output", type=Path, default=Path("data/datasets"))
     parser.add_argument("--rules", type=Path, help="label rules (default: packaged labels.toml)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")

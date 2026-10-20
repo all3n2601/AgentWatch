@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs dataset validate-dataset split-dataset freeze-dataset-schema llm-up llm-down agent-tasks agent-run agent-resend agent-overhead infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver llm-up llm-down agent-tasks agent-run agent-resend agent-overhead infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -38,14 +38,25 @@ import-runs: ## Import existing local experiment results, spans, and samples
 	uv run --package agentwatch-worker python -m agentwatch_worker.publish --output .data/coding-demo --kind coding
 	uv run --package agentwatch-worker python -m agentwatch_worker.publish --output .data/cpu-demo --kind cpu
 
-DATASET_SOURCES ?= local:.data
-DATASET_OUTPUT ?= .data/datasets
+# Curated evidence and dataset releases are DVC-tracked under data/; .data/ stays scratch output.
+DATASET_EVIDENCE ?= data/evidence
+DATASET_SOURCES ?= local:$(DATASET_EVIDENCE)
+DATASET_OUTPUT ?= data/datasets
+# Tools resolve from this checkout, so the dataset targets also work with make -f from another
+# directory (the versioning tests run them in throwaway repositories).
+AGENTWATCH_ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+DATA = uv run --project "$(AGENTWATCH_ROOT)" --package agentwatch-data python -m agentwatch_data
+DVC = uv run --project "$(AGENTWATCH_ROOT)/pipelines/versioning" --frozen dvc
 
-dataset: ## Build a versioned step dataset release (DATASET_SOURCES="local:.data api:http://127.0.0.1:8090")
-	uv run --package agentwatch-data python -m agentwatch_data.build $(foreach source,$(DATASET_SOURCES),--source $(source)) --output $(DATASET_OUTPUT)
+add-evidence: ## Validate recorded runs and copy them into the versioned evidence store (RUN=".data/coding-demo ...")
+	$(if $(RUN),,$(error Set RUN to one or more recorded run directories, for example RUN=.data/coding-demo))
+	$(DATA).evidence --store $(DATASET_EVIDENCE) $(RUN)
+
+dataset: ## Build a versioned step dataset release from the evidence store (DATASET_SOURCES="local:data/evidence api:http://127.0.0.1:8090")
+	$(DATA).build $(foreach source,$(DATASET_SOURCES),--source $(source)) --output $(DATASET_OUTPUT)
 
 VALIDATION_SCHEMA ?= pipelines/validation/schema/steps.pbtxt
-LATEST_RELEASE = uv run --package agentwatch-data python -m agentwatch_data.releases --output $(DATASET_OUTPUT)
+LATEST_RELEASE = $(DATA).releases --output $(DATASET_OUTPUT)
 
 validate-dataset: ## Check the newest published release with the TFDV quality gate (Python 3.13; exits 1 on anomalies)
 	release=$$($(LATEST_RELEASE)) && uv run --project pipelines/validation python -m agentwatch_validation validate --release "$$release" --schema $(VALIDATION_SCHEMA)
@@ -53,10 +64,39 @@ validate-dataset: ## Check the newest published release with the TFDV quality ga
 EVALUATION_CONTRACT ?= pipelines/model/evaluation-contract.toml
 
 split-dataset: ## Freeze train/validation/test splits of the newest release (refused unless its latest gate verdict passed), with the leakage check
-	release=$$($(LATEST_RELEASE)) && uv run --package agentwatch-data python -m agentwatch_data.splits --release "$$release" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA)
+	release=$$($(LATEST_RELEASE)) && $(DATA).splits --release "$$release" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA)
 
 freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest release; review the diff in a PR
 	release=$$($(LATEST_RELEASE)) && uv run --project pipelines/validation python -m agentwatch_validation freeze-schema --release "$$release" --schema $(VALIDATION_SCHEMA)
+
+DVC_STATUS = .dvc/tmp/version-dataset-status.json
+
+version-dataset: ## Verify the stores (intact, reproducible, append-only), then snapshot both with DVC; commit the updated data/*.dvc files
+	mkdir -p .dvc/tmp && $(DVC) data status --granular --unchanged --json > $(DVC_STATUS)
+	$(DATA).integrity --evidence $(DATASET_EVIDENCE) --datasets $(DATASET_OUTPUT) --dvc-status $(DVC_STATUS)
+	$(DVC) add $(DATASET_EVIDENCE) $(DATASET_OUTPUT)
+
+retire-release: ## Remove a release that was never versioned, with its reports, gate attempts, and splits (RELEASE=<name>; refused if DVC holds any of it)
+	$(if $(RELEASE),,$(error Set RELEASE to the release to remove, for example RELEASE=steps-v1.2+0123456789ab))
+	mkdir -p .dvc/tmp && $(DVC) data status --granular --unchanged --json > $(DVC_STATUS)
+	$(DATA).retire --datasets $(DATASET_OUTPUT) --dvc-status $(DVC_STATUS) $(RELEASE)
+
+push-dataset: ## Upload versioned evidence and datasets to the DVC remote (configure one first; see docs/data-card.md)
+	$(DVC) push
+
+pull-dataset: ## Download the evidence and datasets versioned at this commit (TARGET="<paths>" for part of it; see docs/data-card.md)
+	$(DVC) pull $(TARGET)
+
+fetch-dataset: ## Fetch every committed version's data into the DVC cache (before merging branches that both versioned data)
+	$(DVC) fetch --all-commits
+
+dataset-merge-driver: ## Once per clone: let git merge concurrent data/*.dvc versions as the union of their files
+	git config merge.dvc.name "DVC merge driver for the append-only data stores"
+	git config merge.dvc.driver "$(DVC) git-hook merge-driver --ancestor %O --our %A --their %B"
+
+dataset-status: ## Show changes not yet versioned, and (with a remote configured) versioned data not yet uploaded
+	$(DVC) status
+	@if $(DVC) remote default >/dev/null 2>&1; then $(DVC) status --cloud; else echo "No DVC remote configured, so uploads are not checked; see docs/data-card.md"; fi
 
 # Make variables rather than shell defaults: Windows make may run recipes through cmd.exe.
 AGENTWATCH_LLM_MODEL ?= qwen3:1.7b

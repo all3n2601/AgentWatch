@@ -10,6 +10,7 @@ from agentwatch_data.schema import (
     RELEASE_COLUMNS,
     SCHEMA_VERSION,
     TELEMETRY_STATUSES,
+    Column,
     Role,
     SchemaError,
     contract,
@@ -162,4 +163,22 @@ def test_validation_fixture_carries_the_current_contract():
     shipped = json.loads((fixture / "schema.json").read_text(encoding="utf-8"))
     assert shipped == contract(), (
         "Rebuild pipelines/validation/tests/fixtures from the golden run after a schema change"
+    )
+
+
+def test_the_current_contract_is_frozen_for_integrity_checks():
+    """Integrity holds every release to the contract of its schema version, read from
+    agentwatch_data/contracts. Changing the contract means bumping SCHEMA_VERSION and
+    freezing the new contract beside the old ones, which must never change."""
+    from agentwatch_data.build import contract_text
+    from agentwatch_data.integrity import CONTRACTS
+    from agentwatch_data.schema import columns_from
+
+    assert CONTRACTS.get(SCHEMA_VERSION) == contract_text(), (
+        f"Freeze the new contract as agentwatch_data/contracts/{SCHEMA_VERSION}.json and keep "
+        "the old ones; changing a column without a new schema version is not allowed"
+    )
+    assert columns_from(contract()) == tuple(
+        Column(c.name, c.dtype, c.role, "", c.nullable, c.allowed, c.minimum, c.maximum)
+        for c in COLUMNS
     )

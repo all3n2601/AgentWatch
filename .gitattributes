@@ -1,3 +1,6 @@
+# The DVC stores are append-only, so concurrent versions merge as the union of their files.
+# Enable the driver once per clone with `make dataset-merge-driver` (see docs/data-card.md).
+data/*.dvc merge=dvc
 # Task fixtures are hashed byte for byte to pin task identity, and their patches match exact
 # text, so they must check out with LF line endings on every platform (including
 # core.autocrlf=true on Windows).

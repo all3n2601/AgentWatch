@@ -1,7 +1,9 @@
 # AgentWatch step dataset — data card
 
-Status: draft schema `steps-v1.2`, labels `labels-v1.1`. Releases are built locally from recorded
-runs (`make dataset`), gated (`make validate-dataset`), and split (`make split-dataset`). Column
+Status: draft schema `steps-v1.2`, labels `labels-v1.1`. Recorded runs are curated into a
+versioned evidence store (`make add-evidence`); releases are built from it (`make dataset`),
+gated (`make validate-dataset`), split (`make split-dataset`), and versioned with DVC
+(`make version-dataset`). Column
 definitions live in `pipelines/data/src/agentwatch_data/schema.py`; a test fails if this card
 misses a column. `validate_rows()` enforces every column's type, nullability, allowed values,
 and bounds, and a golden test runs a real recorded run through every stage against it.
@@ -87,16 +89,37 @@ schema validation, which checks each run's rows on its own. Only invalid label r
 unreadable source, no usable rows, or a defect in the builder itself stop a build, so one bad
 run can never block every later build.
 
+### Evidence store
+
+Releases are built from `data/evidence/`, a curated store of recorded runs, rather than from
+scratch output. `.data/` remains where demos and diagnostics write; a run becomes dataset
+evidence only when it is added deliberately:
+
+```sh
+make add-evidence RUN=.data/coding-demo       # one or more recorded run directories
+```
+
+`python -m agentwatch_data.evidence` (`pipelines/data/src/agentwatch_data/evidence.py`)
+validates each run with the same rules as extraction (`read_run`) and copies its
+`results.json` and `samples.jsonl` byte for byte into `data/evidence/<kind prefix>-<run_id>/`.
+An entry is never changed: adding the same evidence again does nothing (even if the JSON was
+reformatted), and different evidence under a stored run ID, or the same run ID under another
+kind, is refused. A missing samples file and an empty one are different evidence. Re-running a
+demo, which overwrites its output directory, therefore cannot change versioned evidence. Copies
+are staged under a hidden `.adding-*` name and renamed into place.
+
 ## Releases
 
-Build a release with `make dataset`; set `DATASET_SOURCES` to combine sources, for example
-`make dataset DATASET_SOURCES="local:.data api:http://127.0.0.1:8090"`. The command runs
+Build a release with `make dataset`, which reads the evidence store; set `DATASET_SOURCES` to
+combine sources, for example
+`make dataset DATASET_SOURCES="local:data/evidence api:http://127.0.0.1:8090"`. Only a release
+built from the evidence store alone can be rebuilt from its versioned evidence. The command runs
 `python -m agentwatch_data.build` (`pipelines/data/src/agentwatch_data/build.py`), prints the
 release directory, and exits 1 with a reason when the build fails.
 
-A release is an immutable directory under `.data/datasets/` named by its `dataset_version`.
+A release is an immutable directory under `data/datasets/` named by its `dataset_version`.
 Every successful build, whether it creates a release or reuses one, also writes its own report
-under `.data/datasets/builds/`:
+under `data/datasets/builds/`:
 
 | File | Contents |
 |---|---|
@@ -127,7 +150,8 @@ successful build verifies and publishes.
 - Releases are never rewritten, so a release in an older format is never upgraded in place. A
   format 1 release (from before `schema.json` existed) stays as it was, and the next build
   publishes a new format 2 release of the same rows beside it, which becomes the newest
-  published release.
+  published release. If the old release was never versioned and the current pipeline cannot
+  rebuild it, `make retire-release` removes it before the store is versioned (see Versioning).
 - Building a version that already exists verifies its format and the hashes of its rows,
   Parquet file, and contract instead of rewriting it; a mismatch fails the build.
 - A build writes everything into a staging directory, fsyncs it, and renames it into place only
@@ -173,7 +197,7 @@ fails, so Airflow and scripts can stop on it.
   release; a category share moving by more than 0.25 (L-infinity, a proposed threshold) is
   listed as drift. New contention or tasks legitimately shift these distributions.
 - Each run of the gate is an **attempt**, committed as one immutable directory,
-  `.data/datasets/validations/<release>/<attempt>/`, holding `result.json` and the TFDV
+  `data/datasets/validations/<release>/<attempt>/`, holding `result.json` and the TFDV
   statistics it was computed from. The files are written to private staging and the directory
   is renamed into place, so a result is never paired with another attempt's statistics, and
   concurrent attempts never share files. `result.json` records the status, anomalies, drift,
@@ -223,7 +247,7 @@ release (`pipelines/data/src/agentwatch_data/splits.py`).
   in test and not in training or validation while training has another method. The split stage
   reports this requirement but does not force it; assignment by method lands with the second
   injection method.
-- The split is written to `.data/datasets/splits/<release>/<split id>.json`. Its content is
+- The split is written to `data/datasets/splits/<release>/<split id>.json`. Its content is
   deterministic and the split id is a hash of it, so rerunning reuses the file and a changed
   file is refused. It records each task's split, per-split counts (rows, runs, tasks, labels,
   conditions, sources, injection methods), and each split's `rows_sha256`, a hash of the
@@ -238,10 +262,126 @@ release (`pipelines/data/src/agentwatch_data/splits.py`).
   change, or a contract change. There is no option to skip this.
 - The verdict is read by the gate's own rules: a committed attempt that is missing its result,
   unreadable, malformed, or validated in the future makes it unknown, and the split stage
-  refuses rather than falling back to an older attempt.
+  refuses rather than falling back to an older attempt. The gate and the split stage run in
+  separate environments, so each has its own reader; one shared table of cases
+  (`pipelines/validation/tests/verdict_cases.json`) runs in both test suites, so they cannot
+  disagree about a verdict.
 - It refuses a split whose leakage check did not pass. Exploration can opt in with
   `allow_unchecked_leakage=True`, which skips only that check; its results must not be reported
   as an evaluation.
+
+## Versioning
+
+The evidence store and the dataset store (releases, build reports, quality-gate attempts, and
+split files) are versioned with [DVC](https://dvc.org). Git holds two small pointer files,
+`data/evidence.dvc` and `data/datasets.dvc`; DVC keeps the files in its cache and a remote.
+
+```sh
+make version-dataset   # verify both stores, then snapshot them; commit the data/*.dvc changes
+make push-dataset      # upload the snapshot to the DVC remote
+make pull-dataset      # download what this commit versions (TARGET=data/datasets/<release> for one)
+make dataset-status    # what is not yet versioned, and (with a remote) what is not yet uploaded
+make retire-release RELEASE=<release>  # remove a never-versioned release the pipeline can no longer build
+```
+
+- **DVC runs in its own project**, `pipelines/versioning` (DVC 3.67.1 with GCS support, about
+  120 packages, its own `uv.lock`, CPython 3.13 and 3.14), so the shared workspace and
+  `make bootstrap` are unchanged. The committed `.dvc/config` turns off DVC's usage analytics
+  and update checks and holds no remote. CI runs the data and versioning tests on both
+  versions, and the versioning tests drive the Makefile's own dataset targets, so a broken
+  target fails CI.
+- **Nothing damaged or unreproducible is versioned.** `make version-dataset` first runs
+  `python -m agentwatch_data.integrity`, which lists every problem and refuses to continue
+  unless:
+  - every evidence entry is a valid run under its own `<kind>-<run_id>` name, holding only
+    `results.json` and `samples.jsonl`, and no run ID appears twice;
+  - every release is exactly what its content produces: it holds only the files its format
+    declares (`steps.parquet`, `schema.json`, `manifest.json`; format 1 had no `schema.json`),
+    its files match the manifest's hashes, and the row digest, the content-addressed name
+    (recomputed from the rows and the contract the release ships), every row's version
+    columns, and every content-derived manifest field are recomputed and must match. A release
+    edited together with its manifest is therefore refused, not just one whose hashes differ;
+  - every release's rows satisfy the frozen column contract of their schema version
+    (`pipelines/data/src/agentwatch_data/contracts/<schema version>.json`, byte for byte what
+    the builder ships), checked before anything reads them: exactly the contract's columns and
+    Arrow types, and every value valid. A release must ship exactly that contract (format 1
+    shipped none and is held to its version's), and a schema version with no frozen contract is
+    refused. A `steps.parquet` that matches its hash but is not readable Parquet, lacks or
+    retypes a column, or holds a value the contract forbids is refused rather than crashing
+    the check. A schema change freezes the new contract beside the old ones (a test enforces
+    it), so releases of every version stay verifiable;
+  - every row of a release names exactly the evidence stored for its run (run ID and
+    raw-evidence hash, checked row by row, so one run's rows cannot name different evidence),
+    so it can be rebuilt from versioned evidence;
+  - every release not yet versioned **is** what its stored evidence builds: its runs are
+    rebuilt from the evidence store under the current label rules, through the same code the
+    build uses, and must reproduce its rows exactly (and, for the current format, its Parquet
+    bytes). Agreeing hashes alone only prove a release names its evidence; this refuses an
+    edited value, a dropped row, a re-encoded file, or a release built from other sources (an
+    API build records save times the store does not hold). A release that cannot be rebuilt
+    (for example one built before the label rules changed) blocks versioning until it is
+    retired: `make retire-release RELEASE=<release>` removes it with its build reports,
+    quality-gate attempts, and splits, and refuses, removing nothing, if DVC already holds any
+    of those files (in the committed version or a snapshot). Releases DVC reports unchanged since the committed
+    version (`dvc data status --unchanged`) were rebuilt when they were versioned and the
+    append-only check keeps them identical, so they are not rebuilt again, and changing the
+    rules or the code later never blocks versioning;
+  - every build report is readable and names a release that exists;
+  - every quality-gate attempt is readable and holds exactly `result.json` and the
+    `statistics.pbtxt` whose hash its result recorded;
+  - every split file hashes to its id and belongs to an existing release;
+  - nothing in either store is a symbolic link, or a folder where a file belongs (or the
+    reverse): a version must hold the content itself, not a pointer to files outside it;
+  - everything can be read: an unreadable file or folder, or JSON nested deeper than the
+    decoder allows, is reported as a problem rather than stopping the check.
+- **The stores are append-only.** Before snapshotting, `make version-dataset` asks DVC
+  (`dvc data status --granular`) which already-versioned files were deleted or modified since
+  the last snapshot or commit, and refuses if any were. A failed quality-gate verdict, a
+  release, or evidence therefore cannot quietly disappear from the next version.
+- **Nothing half-written or hidden is versioned.** `.dvcignore` excludes the hidden staging
+  names every command writes before renaming its output into place (`.building-*`,
+  `.adding-*`, `.attempt-*`, `.*.tmp`) and every other hidden entry inside the stores, such as
+  macOS `.DS_Store` files; the dataset build skips hidden directories too.
+- **Snapshots are incremental and history stays retrievable.** Every store file is
+  immutable and new releases add new directories, so a new version uploads only new files, and
+  checking out an older commit and pulling restores the stores exactly as they were then.
+- **A versioned release is reproducible.** `pipelines/versioning/tests` versions the recorded
+  run, pulls it into a fresh clone, and rebuilds there from the pulled evidence: the dataset
+  version is the same and every release file is byte-identical. Quality-gate attempts and split
+  files are pulled with the release, so `load_split` can still recheck the gate.
+- **Reading a version.** Training and evaluation can `make pull-dataset`, or pull one release
+  with what `load_split` needs to recheck it:
+  `make pull-dataset TARGET="data/datasets/<release> data/datasets/validations/<release>
+  data/datasets/splits/<release>"` (the release folder alone has no gate verdict or split). A
+  single file can also be read at any git revision without pulling:
+  `dvc.api.read("data/datasets/<release>/steps.parquet", rev="<commit>", mode="rb")`.
+
+**Working with others.** Each pointer file is one checksum for a whole store, so two people
+versioning different additions from the same commit change the same line. Because the stores
+are append-only, the right merge is always the union, and DVC's merge driver computes it
+(`.gitattributes` assigns it to `data/*.dvc`). Once per clone, run `make
+dataset-merge-driver`. Then, to bring `main` into a branch that also versioned data:
+
+```sh
+git fetch origin
+make fetch-dataset           # the driver reads both versions' listings from the DVC cache
+git merge origin/main        # data/*.dvc merge into the union, without a conflict
+make pull-dataset            # check out the other side's additions
+make version-dataset         # confirms the merge lost nothing (append-only check)
+```
+
+GitHub's merge button does not run custom merge drivers, so a pull request whose pointer files
+conflict with `main` is merged locally this way and pushed. `make pull-dataset` also refuses to
+overwrite evidence or releases you added but have not versioned: version (or move) them first,
+and never answer with DVC's suggested `--force`, which deletes them.
+
+**Remotes.** No remote is committed until a shared one exists. For local work, add one that
+stays out of git: `uv run --project pipelines/versioning dvc remote add --local -d storage
+<directory>`. When workstream F provides the bucket, the GCS remote is committed as the default
+(`dvc remote add -d gcs gs://<bucket>/agentwatch/dvc`), and the pointer files are committed
+with each version. People authenticate with `gcloud auth application-default login`; CI and
+Airflow use a service account, never a key in the repository. The bucket uses DVC's
+content-addressed layout, so files are found through the pointers rather than by release name.
 
 ## Column roles
 
