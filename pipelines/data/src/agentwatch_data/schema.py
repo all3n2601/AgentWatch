@@ -242,6 +242,23 @@ def contract() -> dict:
     }
 
 
+def columns_from(document: dict) -> tuple[Column, ...]:
+    """The columns a contract() document describes (descriptions are not shipped)."""
+    return tuple(
+        Column(
+            entry["name"],
+            entry["dtype"],
+            Role(entry["role"]),
+            "",
+            entry["nullable"],
+            tuple(entry["allowed"]) if entry["allowed"] is not None else None,
+            entry["minimum"],
+            entry["maximum"],
+        )
+        for entry in document["columns"]
+    )
+
+
 def columns_with(role: Role) -> list[str]:
     return [column.name for column in COLUMNS if column.role == role]
 
@@ -313,18 +330,22 @@ def check_value(column: Column, value) -> str | None:
     return None
 
 
-def validate_rows(rows: list[dict], expected: frozenset[str] | None = None) -> None:
+def validate_rows(
+    rows: list[dict], expected: frozenset[str] | None = None, columns: tuple[Column, ...] = COLUMNS
+) -> None:
     """Require every row to have exactly the expected columns, each with a valid value.
 
     By default the expected columns are the full schema minus release-only columns, which
-    is what the per-run stages produce.
+    is what the per-run stages produce. columns defaults to the current contract; a release
+    built under an earlier one is checked against that one.
     """
-    expected = expected or frozenset(COLUMNS_BY_NAME) - RELEASE_COLUMNS
+    by_name = {column.name: column for column in columns}
+    expected = expected or frozenset(by_name) - RELEASE_COLUMNS
     for index, row in enumerate(rows):
         missing, extra = expected - row.keys(), row.keys() - expected
         if missing or extra:
             raise SchemaError(f"Row {index}: missing {sorted(missing)}, unexpected {sorted(extra)}")
         for name in expected:
-            problem = check_value(COLUMNS_BY_NAME[name], row[name])
+            problem = check_value(by_name[name], row[name])
             if problem:
                 raise SchemaError(f"Row {index} ({row.get('step_id')}): {name} {problem}")

@@ -325,7 +325,8 @@ def test_a_changed_split_file_is_refused(release):
     split = json.loads(result.path.read_text())
     split["groups"] = {task: "train" for task in split["groups"]}
     result.path.write_text(json.dumps(split))
-    with pytest.raises(SplitError, match="is not what .* produce"):
+    # Not re-signed, so its id no longer hashes its content: refused before any rebuild.
+    with pytest.raises(SplitError, match="does not match its content or location"):
         rows_of(result.path, "train")
     with pytest.raises(SplitError, match="Existing split .* does not match its content"):
         split_of(release)
@@ -462,7 +463,9 @@ def test_a_failed_write_leaves_nothing(release, monkeypatch):
     def fail(source, target):
         raise OSError("disk full")
 
-    monkeypatch.setattr(splits_module.os, "replace", fail)
+    from agentwatch_data import files
+
+    monkeypatch.setattr(files.os, "replace", fail)  # split files use the shared writer
     with pytest.raises(OSError, match="disk full"):
         split_of(release)
     assert list((release.parent / "splits" / release.name).iterdir()) == []
@@ -710,3 +713,61 @@ def test_module_runs_as_a_command(release, monkeypatch):
     with pytest.raises(SystemExit) as exited:
         runpy.run_module("agentwatch_data.splits", run_name="__main__")
     assert exited.value.code == 0
+
+
+def test_hash_consistent_bytes_that_are_not_parquet_are_refused(release):
+    from agentwatch_data.splits import load_release
+
+    (release / DATASET_FILE).write_bytes(b"not parquet at all")
+    resign(release)
+    with pytest.raises(SplitError, match="steps.parquet is not readable Parquet"):
+        load_release(release)
+
+
+def test_timestamps_python_cannot_represent_are_refused(release):
+    import pyarrow as pa
+    from agentwatch_data.splits import load_release
+
+    table = pq.read_table(release / DATASET_FILE)
+    index = table.column_names.index("recorded_at")
+    field = table.schema.field(index)
+    far = pa.array([2**62] * table.num_rows, pa.int64()).cast(field.type)
+    pq.write_table(table.set_column(index, field, far), release / DATASET_FILE)
+    resign(release)
+    with pytest.raises(SplitError, match="steps.parquet is not readable Parquet"):
+        load_release(release)
+
+
+# Verdict selection shared with the quality gate
+
+
+VERDICT_CASES = json.loads(
+    (Path(__file__).resolve().parents[2] / "validation/tests/verdict_cases.json").read_text()
+)
+
+
+@pytest.mark.parametrize("case", VERDICT_CASES["cases"], ids=lambda case: case["name"])
+def test_verdict_selection_matches_the_shared_cases(tmp_path, case):
+    """The gate's own reader (gate.latest_result) runs the same cases; the two must agree."""
+    from agentwatch_data.splits import latest_verdict
+
+    release, now = VERDICT_CASES["release"], datetime.fromisoformat(VERDICT_CASES["now"])
+    base = tmp_path / "validations" / release
+    base.mkdir(parents=True)
+    for attempt in case["attempts"]:
+        content = attempt["result"]
+        if attempt.get("file"):
+            (base / attempt["name"]).write_text(content)
+            continue
+        (base / attempt["name"]).mkdir()
+        if "nesting" in attempt:
+            content = "[" * attempt["nesting"] + "]" * attempt["nesting"]
+        if content is not None:
+            text = content if isinstance(content, str) else json.dumps(content)
+            (base / attempt["name"] / "result.json").write_text(text)
+    try:
+        result = latest_verdict(tmp_path / release, now)
+        found = None if result is None else {k: result[k] for k in ("attempt", "status")}
+    except SplitError:
+        found = "unknown"
+    assert found == case["verdict"]

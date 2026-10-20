@@ -776,3 +776,13 @@ def test_the_copy_with_more_telemetry_is_kept_whatever_the_order(tmp_path, resul
     empty, missing = extract_local(tmp_path / "a"), extract_local(tmp_path / "b")
     for merged in (combine(empty, missing), combine(missing, empty)):
         assert merged.runs[0].telemetry_status == TELEMETRY_EMPTY
+
+
+def test_hidden_directories_are_never_read_as_evidence(tmp_path, result):
+    """They hold staging or tool state; DVC excludes them from versions too."""
+    write_run(tmp_path / "cpu-visible", result)
+    write_run(tmp_path / ".adding-k1ll3d" / "cpu-staged", make_result())
+    write_run(tmp_path / "archive" / ".old" / "cpu-hidden", make_result())
+    extraction = extract_local(tmp_path)
+    assert [run.run_id for run in extraction.runs] == [result["run_id"]]
+    assert extraction.rejections == []
