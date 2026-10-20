@@ -1,6 +1,7 @@
 import type { Experiment } from "./experiment-schema";
 export const pages = [
   "overview",
+  "live",
   "runs",
   "traces",
   "agents",

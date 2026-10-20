@@ -24,6 +24,7 @@ import {
   ListTree,
   Menu,
   Orbit,
+  RadioTower,
   RefreshCw,
   Search,
   Settings2,
@@ -44,6 +45,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { AgentRun } from "@/components/agent-run";
+import { LiveRun } from "@/components/live-run";
 import {
   PanelHeading,
   Resources,
@@ -65,6 +67,7 @@ import {
   type Page,
 } from "@/lib/dashboard-data";
 import type { DashboardData, Experiment } from "@/lib/experiment-schema";
+import type { LivePageData } from "@/lib/live-replay";
 import { cn } from "@/lib/utils";
 
 const navigation = [
@@ -73,6 +76,12 @@ const navigation = [
     label: "Overview",
     icon: LayoutDashboard,
     detail: "Activity across your workspace",
+  },
+  {
+    id: "live",
+    label: "Live runs",
+    icon: RadioTower,
+    detail: "Active steps, failures and feed status for runs in progress",
   },
   {
     id: "runs",
@@ -243,11 +252,13 @@ export function Dashboard({
   page = "overview",
   initialRunId,
   initialBaselineId,
+  live,
 }: {
   initialData: DashboardData;
   page?: Page;
   initialRunId?: string;
   initialBaselineId?: string;
+  live?: LivePageData;
 }) {
   const [data, setData] = useState(initialData);
   const [range, setRange] = useState("all");
@@ -259,7 +270,6 @@ export function Dashboard({
   const [mobile, setMobile] = useState(false);
   const [prefs, setPrefs] = usePreferences();
   const inflight = useRef(false);
-  const [updated, setUpdated] = useState<string | null>(null);
   const meta = navigation.find((item) => item.id === page)!;
   const runs = scopedRuns(data.experiments, range);
   const totals = aggregate(runs);
@@ -295,7 +305,6 @@ export function Dashboard({
         ],
         nextCursor: old.nextCursor ?? next.nextCursor,
       }));
-      setUpdated(new Date().toLocaleTimeString());
     } catch {
       setError(
         "Refresh failed. Previously loaded evidence is still available.",
@@ -329,6 +338,8 @@ export function Dashboard({
             (r) => !old.experiments.some((n) => n.run_id === r.run_id),
           ),
         ],
+        // Older pages do not refresh the newest history.
+        loadedAt: old.loadedAt,
       }));
     } catch {
       setError("Older history could not be retrieved.");
@@ -343,6 +354,20 @@ export function Dashboard({
     return `/${target}${targetRun ? `?run=${targetRun.run_id}${baseline ? `&baseline=${baseline.run_id}` : ""}` : ""}`;
   };
   const baseline = data.experiments.find((r) => r.run_id === initialBaselineId);
+  const source =
+    page === "live" && live?.replay
+      ? {
+          badge: "REPLAY",
+          description: "synthetic development replay",
+          replay: true,
+        }
+      : data.source === "database"
+        ? { badge: "HISTORY", description: "saved run history", replay: false }
+        : {
+            badge: "LOCAL FILES",
+            description: "local artifact fallback",
+            replay: false,
+          };
   return (
     <div
       className={cn(
@@ -473,15 +498,26 @@ export function Dashboard({
             <ChevronRight className="hidden size-3 sm:inline" />
             <span className="text-foreground">{meta.label}</span>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="hidden text-[11px] text-muted-foreground md:inline">
-              {updated ? `Updated ${updated}` : "Saved experiment history"}
-            </span>
+          <div className="flex items-center gap-2 sm:gap-3">
+            {data.loadedAt && (
+              <span className="text-[11px] text-muted-foreground">
+                <span className="sr-only sm:not-sr-only">History updated </span>
+                <time dateTime={data.loadedAt} suppressHydrationWarning>
+                  {new Date(data.loadedAt).toLocaleTimeString()}
+                </time>
+              </span>
+            )}
             <Badge
               variant="outline"
-              className="text-[9px] tracking-wide text-muted-foreground"
+              aria-label={`Data source: ${source.description}`}
+              className={cn(
+                "text-[9px] tracking-wide",
+                source.replay
+                  ? "border-violet-400/40 text-violet-200"
+                  : "text-muted-foreground",
+              )}
             >
-              LOCAL
+              {source.badge}
             </Badge>
             <Button
               variant="ghost"
@@ -508,7 +544,7 @@ export function Dashboard({
                 {meta.detail}
               </p>
             </div>
-            {page !== "settings" && (
+            {page !== "settings" && page !== "live" && (
               <Filters
                 label="Time range"
                 options={[
@@ -537,6 +573,7 @@ export function Dashboard({
               {data.warnings.join(" ")}
             </div>
           )}
+          {page === "live" && live && <LiveRun data={live} />}
           {page === "overview" && (
             <>
               <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -961,7 +998,9 @@ export function Dashboard({
           <footer className="flex flex-wrap items-center justify-between gap-2 border-t pt-5 text-[10px] text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <ShieldCheck className="size-3" />
-              Recorded measurements · rule-based attribution
+              {source.replay
+                ? "Synthetic development replay · not recorded evidence"
+                : "Recorded measurements · rule-based attribution"}
             </span>
             <span>
               {runs.length} runs in scope ·{" "}
