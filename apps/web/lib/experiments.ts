@@ -41,6 +41,7 @@ export async function loadExperiments(before?: number): Promise<DashboardData> {
       warnings: [],
       source: "database",
       nextCursor: history.next_cursor,
+      loadedAt: new Date().toISOString(),
     };
   } catch {
     if (before) throw new Error("Older history could not be loaded");
@@ -51,6 +52,7 @@ export async function loadExperiments(before?: number): Promise<DashboardData> {
       "Run history is unavailable. Showing the latest local artifacts.",
     ],
     source: "local",
+    loadedAt: new Date().toISOString(),
   };
   for (const kind of ["coding", "cpu"] as const) {
     try {
