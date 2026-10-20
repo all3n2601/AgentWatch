@@ -298,7 +298,7 @@ def committed_attempts(
             continue
         try:
             result = json.loads((directory / RESULT_FILE).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):  # RecursionError: deep nesting
             result = None
         moment = validated_time(result) if isinstance(result, dict) else None
         if (

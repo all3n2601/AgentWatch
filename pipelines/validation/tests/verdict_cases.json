@@ -1,5 +1,5 @@
 {
-  "description": "Gate verdict selection, shared by pipelines/validation (gate.latest_result) and pipelines/data (splits.latest_verdict). Each reader is implemented in its own environment; both suites run these cases so the rules cannot drift apart. 'now' is the reading time; an attempt is {name, result}: result is a JSON object, raw text, or null for a committed directory without result.json; file=true makes it a stray file, not a directory.",
+  "description": "Gate verdict selection, shared by pipelines/validation (gate.latest_result) and pipelines/data (splits.latest_verdict). Each reader is implemented in its own environment; both suites run these cases so the rules cannot drift apart. 'now' is the reading time; an attempt is {name, result}: result is a JSON object, raw text, or null for a committed directory without result.json; file=true makes it a stray file, not a directory; nesting=n makes result.json n nested JSON arrays, deeper than the JSON decoder allows.",
   "release": "steps-v1.2+aaaaaaaaaaaa",
   "now": "2026-10-18T12:00:00+00:00",
   "cases": [
@@ -330,6 +330,26 @@
             "status": "passed",
             "validated_at": "2027-01-01T00:00:00+00:00"
           }
+        }
+      ],
+      "verdict": "unknown"
+    },
+    {
+      "name": "a result nested past the JSON decoder's limit is damaged",
+      "attempts": [
+        {
+          "name": "a1",
+          "result": {
+            "attempt": "a1",
+            "release": "steps-v1.2+aaaaaaaaaaaa",
+            "status": "passed",
+            "validated_at": "2026-10-18T10:00:00+00:00"
+          }
+        },
+        {
+          "name": "a2",
+          "result": null,
+          "nesting": 100000
         }
       ],
       "verdict": "unknown"

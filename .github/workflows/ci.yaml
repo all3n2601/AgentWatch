@@ -68,18 +68,23 @@ jobs:
 
   data-versioning:
     # DVC has its own environment (about 120 packages with GCS support). Its end-to-end tests
-    # drive the data commands, so the shared workspace environment is synced as well.
+    # drive the data commands through make, so the shared workspace environment is synced as
+    # well. The data pipeline supports CPython 3.13 and 3.14, so both are tested here.
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-dependency-glob: |
             uv.lock
             pipelines/versioning/uv.lock
       - run: uv sync --all-packages --frozen
+      - run: uv run --frozen pytest pipelines/data/tests
       - run: uv sync --project pipelines/versioning --frozen
       - run: uv run --project pipelines/versioning --frozen pytest pipelines/versioning/tests
 

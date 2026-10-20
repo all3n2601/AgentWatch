@@ -641,6 +641,8 @@ def lay_out_attempts(datasets: Path, release: str, attempts: list[dict]) -> None
             (base / attempt["name"]).write_text(content)
             continue
         (base / attempt["name"]).mkdir()
+        if "nesting" in attempt:
+            content = "[" * attempt["nesting"] + "]" * attempt["nesting"]
         if content is not None:
             text = content if isinstance(content, str) else json.dumps(content)
             (base / attempt["name"] / RESULT_FILE).write_text(text)

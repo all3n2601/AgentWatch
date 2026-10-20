@@ -1,6 +1,9 @@
+import contextlib
 import hashlib
 import json
+import os
 import shutil
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -823,6 +826,10 @@ def test_a_linked_store_folder_of_a_release_is_refused(stores, tmp_path):
 # Releases not yet versioned must be what their stored evidence builds (re-review at 6d46efa)
 
 
+def retire_hint(release: Path) -> str:
+    return f"; retire it with make retire-release RELEASE={release.name} and build again"
+
+
 def unchanged(release: Path) -> dict:
     """DVC status reporting release as versioned and unchanged (--unchanged)."""
     return {"unchanged": [str(release / "steps.parquet"), str(release / "manifest.json")]}
@@ -848,7 +855,7 @@ def test_a_consistent_release_with_edited_values_is_refused(stores):
     assert report.problems == [
         (
             f"datasets/{forged.name}: its rows are not what its stored evidence builds; "
-            "it was edited or built elsewhere"
+            f"it was edited or built elsewhere{retire_hint(forged)}"
         )
     ]
     assert report.rebuilt == 2
@@ -860,7 +867,7 @@ def test_a_consistent_release_missing_a_row_is_refused(stores):
     assert problems(evidence, datasets) == [
         (
             f"datasets/{forged.name}: its rows are not what its stored evidence builds; "
-            "it was edited or built elsewhere"
+            f"it was edited or built elsewhere{retire_hint(forged)}"
         )
     ]
 
@@ -873,6 +880,7 @@ def test_a_re_encoded_release_is_refused(stores):
     resign(release)
     assert problems(evidence, datasets) == [
         f"datasets/{release.name}: its steps.parquet is not the bytes its rows build"
+        + retire_hint(release)
     ]
     assert problems(evidence, datasets, unchanged(release)) == []
 
@@ -898,7 +906,7 @@ def test_releases_of_other_label_rules_must_already_be_versioned(stores, monkeyp
     assert problem.startswith(f"datasets/{release.name}: it was labeled under labels-v1.1+")
     assert problem.endswith(
         f"but this pipeline labels under {retuned.label_version}, so it cannot be rebuilt "
-        "from its evidence; build it again"
+        f"from its evidence{retire_hint(release)}"
     )
     report = verify(evidence, datasets, unchanged(release))
     assert report.problems == [] and report.rebuilt == 0
@@ -913,6 +921,7 @@ def test_evidence_that_no_longer_builds_is_reported(stores, monkeypatch):
     monkeypatch.setattr(integrity, "derive_rows", lambda runs, rules: ([], {"label": [rejection]}))
     assert problems(evidence, datasets) == [
         f"datasets/{release.name}: its evidence no longer builds (label: baseline missing)"
+        + retire_hint(release)
     ]
 
 
@@ -933,3 +942,105 @@ def test_a_partly_versioned_release_is_rebuilt(stores):
     evidence, datasets, release = stores
     status = {"unchanged": [str(release / "manifest.json")]}
     assert verify(evidence, datasets, status).rebuilt == 1
+
+
+# Malformed or unreadable stores are reported, never a crash (full pipeline audit)
+
+DEEP_JSON = "[" * 100_000 + "]" * 100_000  # past the JSON decoder's nesting limit on 3.13 and 3.14
+
+
+@pytest.mark.parametrize("value", [["x"], {"x": 1}, None, 3])
+def test_a_manifest_label_version_that_is_not_text_is_refused(stores, value):
+    evidence, datasets, release = stores
+    resign(release, label_version=value)
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: rows do not all carry the manifest's label_version {value!r}"
+    ]
+
+
+def test_deeply_nested_json_anywhere_in_the_store_is_reported(stores):
+    evidence, datasets, release = stores
+    [report] = sorted((datasets / "builds").iterdir())
+    report.write_text(DEEP_JSON)
+    split = write_split(datasets, release.name, {"rows": 1})
+    split.write_text(DEEP_JSON)
+    write_attempt(datasets, release.name, "a1", result=DEEP_JSON)
+    found = problems(evidence, datasets)
+    assert found == [
+        f"datasets/builds/{report.name}: unreadable build report",
+        (
+            f"datasets/validations/{release.name}: Quality-gate verdict of {release.name} is "
+            "unknown: damaged attempts ['a1']"
+        ),
+        f"datasets/splits/{release.name}: Split {split.name} is unreadable: RecursionError",
+    ]
+
+
+def test_a_deeply_nested_manifest_is_reported(stores):
+    evidence, datasets, release = stores
+    (release / "manifest.json").write_text(DEEP_JSON)
+    [problem, *_] = problems(evidence, datasets)
+    assert problem == (
+        f"datasets/{release.name}: Manifest manifest.json is unreadable: RecursionError"
+    )
+
+
+def test_a_deeply_nested_gate_result_beside_a_valid_verdict_is_reported(stores, monkeypatch):
+    """latest_verdict accepts the attempts; check_attempt then reads each result itself."""
+    from agentwatch_data import integrity
+
+    evidence, datasets, release = stores
+    write_attempt(datasets, release.name, "a1")
+    monkeypatch.setattr(integrity, "latest_verdict", lambda release: None)
+    (datasets / "validations" / release.name / "a1" / "result.json").write_text(DEEP_JSON)
+    assert problems(evidence, datasets) == [
+        f"datasets/validations/{release.name}/a1: unreadable: RecursionError"
+    ]
+
+
+@contextlib.contextmanager
+def unreadable(path: Path):
+    """path with no permissions for the test, restored so pytest can clean up."""
+    mode = stat.S_IMODE(path.stat().st_mode)
+    path.chmod(0)
+    try:
+        yield
+    finally:
+        path.chmod(mode)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read anything")
+def test_unreadable_files_and_folders_are_reported(stores):
+    evidence, datasets, release = stores
+    with unreadable(release / "steps.parquet"):
+        assert problems(evidence, datasets) == [
+            f"datasets/{release.name}: cannot be read: Permission denied: steps.parquet"
+        ]
+    [entry] = evidence.iterdir()
+    with unreadable(entry):
+        found = problems(evidence, datasets)
+        assert found[0] == f"{entry}: cannot be listed: Permission denied"
+    write_attempt(datasets, release.name, "a1")
+    folder = datasets / "validations" / release.name
+    with unreadable(folder):
+        assert problems(evidence, datasets) == [
+            f"datasets/validations/{release.name}: cannot be listed: Permission denied"
+        ]
+
+
+def test_an_unreadable_dvc_status_file_is_refused(stores, tmp_path, capsys):
+    evidence, datasets, _ = stores
+    status = tmp_path / "status.json"
+    status.write_text(DEEP_JSON)
+    args = ["--evidence", str(evidence), "--datasets", str(datasets), "--dvc-status", str(status)]
+    assert main(args) == 1
+    assert "Not versioning: cannot read DVC status" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "status",
+    [{"committed": []}, {"committed": {"deleted": "x"}}, {"uncommitted": {"modified": [3]}}],
+)
+def test_malformed_dvc_status_sections_are_ignored(stores, status):
+    evidence, datasets, _ = stores
+    assert problems(evidence, datasets, status) == []

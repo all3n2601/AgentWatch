@@ -172,8 +172,8 @@ def check_compatibility(contract: Contract, manifest: dict) -> None:
 def read_object(path: Path, what: str) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        raise SplitError(f"{what} {path.name} is unreadable: {error}") from error
+    except (OSError, ValueError, RecursionError) as error:  # RecursionError: deep nesting
+        raise SplitError(f"{what} {path.name} is unreadable: {type(error).__name__}") from error
     if not isinstance(value, dict):
         raise SplitError(f"{what} {path.name} is not a JSON object")
     return value
@@ -241,7 +241,7 @@ def latest_verdict(release: Path, now: datetime | None = None) -> dict | None:
             continue
         try:
             result = json.loads((directory / RESULT_FILE).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):  # RecursionError: deep nesting
             result = None
         moment = validated_time(result) if isinstance(result, dict) else None
         if (

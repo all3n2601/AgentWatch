@@ -3,10 +3,14 @@
 The acceptance check for dataset versioning: a release versioned with its evidence can be
 pulled into a fresh clone and rebuilt there, byte for byte, under the same dataset version.
 A local remote stands in for GCS; DVC treats both as the same content-addressed store.
+
+Every step runs the repository's own make targets (with make -f, in throwaway repositories),
+so a broken target fails here rather than in someone's checkout.
 """
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -70,9 +74,13 @@ def git(cwd: Path, *args: str) -> str:
     return run(["git", *GIT_IDENTITY, *args], cwd)
 
 
-def data(cwd: Path, module: str, *args: str) -> str:
-    uv = ["uv", "run", "--project", str(ROOT), "--package", "agentwatch-data", "--frozen"]
-    return run([*uv, "python", "-m", f"agentwatch_data.{module}", *args], cwd)
+def make(cwd: Path, *args: str) -> str:
+    """A target of this repository's Makefile, run in cwd."""
+    return run(["make", "-s", "-f", str(ROOT / "Makefile"), *args], cwd)
+
+
+def add_evidence(cwd: Path, run_dir: Path) -> str:
+    return make(cwd, "add-evidence", f"RUN={run_dir}")
 
 
 def files(directory: Path) -> dict[str, bytes]:
@@ -109,14 +117,8 @@ def remote(tmp_path) -> Path:
 
 
 def snapshot(repo: Path) -> str:
-    """What make version-dataset does; returns the integrity check's summary."""
-    status = repo / ".dvc/tmp/version-dataset-status.json"
-    status.parent.mkdir(parents=True, exist_ok=True)
-    status.write_text(dvc(repo, "data", "status", "--granular", "--unchanged", "--json"))
-    stores = ["--evidence", "data/evidence", "--datasets", "data/datasets"]
-    summary = data(repo, "integrity", *stores, "--dvc-status", str(status))
-    dvc(repo, "add", "data/evidence", "data/datasets")
-    return summary
+    """make version-dataset; returns its output, including the integrity check's summary."""
+    return make(repo, "version-dataset")
 
 
 def version(repo: Path, remote: Path, message: str) -> str:
@@ -124,7 +126,7 @@ def version(repo: Path, remote: Path, message: str) -> str:
     snapshot(repo)
     if "store" not in dvc(repo, "remote", "list"):
         dvc(repo, "remote", "add", "--local", "-d", "store", str(remote))
-    dvc(repo, "push")
+    make(repo, "push-dataset")
     git(repo, "add", "data/evidence.dvc", "data/datasets.dvc", "data/.gitignore")
     git(repo, "commit", "-q", "-m", message)
     return git(repo, "rev-parse", "HEAD").strip()
@@ -137,7 +139,7 @@ def clone(repo: Path, remote: Path, target: Path) -> Path:
 
 
 def build(repo: Path, output: str) -> Path:
-    out = data(repo, "build", "--source", "local:data/evidence", "--output", output)
+    out = make(repo, "dataset", f"DATASET_OUTPUT={output}")
     return repo / out.split("release: ", 1)[1].splitlines()[0].strip()
 
 
@@ -152,7 +154,7 @@ def test_a_versioned_release_is_rebuilt_byte_for_byte_from_versioned_evidence(
     repo, remote, tmp_path
 ):
     shutil.copytree(GOLDEN, tmp_path / "recorded" / "coding-run")
-    data(repo, "evidence", "--store", "data/evidence", str(tmp_path / "recorded" / "coding-run"))
+    add_evidence(repo, tmp_path / "recorded" / "coding-run")
     release = build(repo, "data/datasets")
     version(repo, remote, "version the recorded run")
 
@@ -169,7 +171,7 @@ def test_a_versioned_release_is_rebuilt_byte_for_byte_from_versioned_evidence(
 
 def test_one_release_can_be_pulled_alone(repo, remote, tmp_path):
     shutil.copytree(GOLDEN, tmp_path / "recorded" / "coding-run")
-    data(repo, "evidence", "--store", "data/evidence", str(tmp_path / "recorded" / "coding-run"))
+    add_evidence(repo, tmp_path / "recorded" / "coding-run")
     release = build(repo, "data/datasets")
     version(repo, remote, "version")
     copy = clone(repo, remote, tmp_path / "clone")
@@ -180,7 +182,7 @@ def test_one_release_can_be_pulled_alone(repo, remote, tmp_path):
 
 def test_staging_is_never_versioned(repo, remote, tmp_path):
     shutil.copytree(GOLDEN, tmp_path / "recorded" / "coding-run")
-    data(repo, "evidence", "--store", "data/evidence", str(tmp_path / "recorded" / "coding-run"))
+    add_evidence(repo, tmp_path / "recorded" / "coding-run")
     build(repo, "data/datasets")
     (repo / "data/datasets/.building-x").mkdir()
     (repo / "data/datasets/.building-x/steps.parquet").write_text("half written")
@@ -195,13 +197,13 @@ def test_staging_is_never_versioned(repo, remote, tmp_path):
 
 def test_every_committed_version_stays_retrievable(repo, remote, tmp_path):
     shutil.copytree(GOLDEN, tmp_path / "recorded" / "coding-run")
-    data(repo, "evidence", "--store", "data/evidence", str(tmp_path / "recorded" / "coding-run"))
+    add_evidence(repo, tmp_path / "recorded" / "coding-run")
     first_release = build(repo, "data/datasets")
     first = version(repo, remote, "first")
 
     result = make_result()
     write_run(tmp_path / "recorded" / "cpu-run", result)
-    data(repo, "evidence", "--store", "data/evidence", str(tmp_path / "recorded" / "cpu-run"))
+    add_evidence(repo, tmp_path / "recorded" / "cpu-run")
     second_release = build(repo, "data/datasets")
     # Only the new release is rebuilt from evidence; DVC reports the first one unchanged.
     assert "; 1 releases rebuilt from evidence" in snapshot(repo)
@@ -241,7 +243,7 @@ def write_attempt(repo: Path, release: str, name: str, status: str, validated_at
 def test_a_versioned_failed_verdict_cannot_be_deleted(repo, remote, tmp_path):
     """Deleting the later failed attempt would turn the release's verdict back into a pass."""
     shutil.copytree(GOLDEN, tmp_path / "recorded" / "coding-run")
-    data(repo, "evidence", "--store", "data/evidence", str(tmp_path / "recorded" / "coding-run"))
+    add_evidence(repo, tmp_path / "recorded" / "coding-run")
     release = build(repo, "data/datasets")
     write_attempt(repo, release.name, "a1-pass", "passed", "2026-10-18T10:00:00+00:00")
     write_attempt(repo, release.name, "a2-fail", "failed", "2026-10-18T11:00:00+00:00")
@@ -255,7 +257,7 @@ def test_a_versioned_failed_verdict_cannot_be_deleted(repo, remote, tmp_path):
 
 def test_hidden_entries_are_never_versioned_or_built(repo, remote, tmp_path):
     shutil.copytree(GOLDEN, tmp_path / "recorded" / "coding-run")
-    data(repo, "evidence", "--store", "data/evidence", str(tmp_path / "recorded" / "coding-run"))
+    add_evidence(repo, tmp_path / "recorded" / "coding-run")
     release = build(repo, "data/datasets")
     [entry] = (repo / "data/evidence").iterdir()
     for directory in (repo / "data/evidence", entry, repo / "data/datasets", release):
@@ -269,13 +271,6 @@ def test_hidden_entries_are_never_versioned_or_built(repo, remote, tmp_path):
     assert build(copy, str(tmp_path / "rebuilt")).name == release.name
 
 
-def merge_driver(clone_dir: Path) -> None:
-    """What make dataset-merge-driver configures, with this environment's DVC."""
-    git(clone_dir, "config", "merge.dvc.name", "DVC merge driver")
-    driver = f"{sys.executable} -m dvc git-hook merge-driver --ancestor %O --our %A --their %B"
-    git(clone_dir, "config", "merge.dvc.driver", driver)
-
-
 def test_concurrent_versions_merge_into_their_union(repo, remote, tmp_path):
     """Two people version different runs from the same commit; git merges both versions."""
     origin = tmp_path / "origin.git"
@@ -286,21 +281,21 @@ def test_concurrent_versions_merge_into_their_union(repo, remote, tmp_path):
         clone(origin, remote, tmp_path / "second"),
     )
     for person in (first, second):
-        merge_driver(person)
+        make(person, "dataset-merge-driver")
 
     shutil.copytree(GOLDEN, tmp_path / "recorded" / "coding-run")
-    data(first, "evidence", "--store", "data/evidence", str(tmp_path / "recorded" / "coding-run"))
+    add_evidence(first, tmp_path / "recorded" / "coding-run")
     first_release = build(first, "data/datasets")
     version(first, remote, "first versions the recorded run")
     git(first, "push", "-q", "origin", f"HEAD:{branch}")
 
     write_run(tmp_path / "recorded" / "cpu-run", make_result())
-    data(second, "evidence", "--store", "data/evidence", str(tmp_path / "recorded" / "cpu-run"))
+    add_evidence(second, tmp_path / "recorded" / "cpu-run")
     second_release = build(second, "data/datasets")
     version(second, remote, "second versions a CPU run")
 
     git(second, "fetch", "-q", "origin")
-    dvc(second, "fetch", "--all-commits")  # make fetch-dataset: the driver reads both listings
+    make(second, "fetch-dataset")  # the driver reads both listings
     git(second, "merge", "-q", "-m", "merge", f"origin/{branch}")  # no conflict to resolve
     dvc(second, "pull")
     releases = sorted(p.name for p in (second / "data/datasets").glob("steps-*"))
@@ -308,3 +303,34 @@ def test_concurrent_versions_merge_into_their_union(repo, remote, tmp_path):
     assert len(list((second / "data/evidence").iterdir())) == 2
     snapshot(second)  # intact, reproducible, and nothing versioned was lost in the merge
     assert dvc(second, "data", "status", "--granular", "--json").strip() == "{}"
+
+
+def test_a_release_the_pipeline_can_no_longer_build_is_retired_unless_versioned(
+    repo, remote, tmp_path
+):
+    """Label rules changed after a release was built: it cannot be rebuilt from evidence, so
+    it blocks versioning until it is retired; a versioned release can never be retired."""
+    shutil.copytree(GOLDEN, tmp_path / "recorded" / "coding-run")
+    add_evidence(repo, tmp_path / "recorded" / "coding-run")
+    current = build(repo, "data/datasets")
+    version(repo, remote, "version the current release")
+    with pytest.raises(AssertionError, match="is already versioned"):
+        make(repo, "retire-release", f"RELEASE={current.name}")
+
+    rules = tmp_path / "retuned.toml"
+    labels = ROOT / "pipelines/data/src/agentwatch_data/labels.toml"
+    rules.write_text(labels.read_text().replace("stdev_multiplier = 3.0", "stdev_multiplier = 2.5"))
+    out = run(
+        [
+            *["uv", "run", "--project", str(ROOT), "--package", "agentwatch-data"],
+            *["python", "-m", "agentwatch_data.build", "--source", "local:data/evidence"],
+            *["--output", "data/datasets", "--rules", str(rules)],
+        ],
+        repo,
+    )
+    old = out.split("release: ", 1)[1].splitlines()[0].strip().rsplit("/", 1)[1]
+    with pytest.raises(AssertionError, match=re.escape(f"retire-release RELEASE={old}")):
+        snapshot(repo)
+    assert f"removed: data/datasets/{old}" in make(repo, "retire-release", f"RELEASE={old}")
+    assert "; 0 releases rebuilt from evidence" in snapshot(repo)
+    assert sorted(p.name for p in (repo / "data/datasets").glob("steps-*")) == [current.name]

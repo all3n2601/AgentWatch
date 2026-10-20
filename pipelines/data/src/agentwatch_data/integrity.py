@@ -19,7 +19,8 @@ versioned evidence. Refused, with every problem listed:
 - a quality-gate attempt that is damaged (an unknown verdict), whose statistics do not match
   the hash its result recorded, or that holds unexpected files;
 - anything stored as a symbolic link, or as a folder where a file belongs (or the reverse): a
-  version must hold the content itself, not a pointer to files outside the stores;
+  version must hold the content itself, not a pointer to files outside the stores, and
+  anything that cannot be read, which is reported rather than stopping the check;
 - a split file that does not hash to its id, sit beside the release it names, or refer to a
   release that exists;
 - with --dvc-status, any file DVC already versioned that was deleted or modified: both stores
@@ -118,8 +119,13 @@ def is_directory(path: Path) -> bool:
 
 def visible(directory: Path, report: Report) -> list[Path]:
     """Entries of directory, sorted, with hidden entries counted and skipped."""
+    try:
+        listed = sorted(directory.iterdir())
+    except OSError as error:
+        report.problems.append(f"{directory}: cannot be listed: {error.strerror}")
+        return []
     entries = []
-    for path in sorted(directory.iterdir()):
+    for path in listed:
         if path.name.startswith("."):
             report.hidden += 1
         else:
@@ -191,6 +197,8 @@ def check_release(path: Path, report: Report) -> Release | None:
         problem = identity_problem(path, manifest, current, rows)
     except SplitError as error:
         problem = str(error)
+    except OSError as error:  # hash-consistent so far, but a file cannot be read
+        problem = f"cannot be read: {error.strerror}: {Path(error.filename or path).name}"
     if problem:
         report.problems.append(f"{label}: {problem}")
         return None
@@ -245,7 +253,7 @@ def identity_problem(path: Path, manifest: dict, current: bool, rows: list[dict]
         ("label_version", manifest.get("label_version")),
         ("schema_version", manifest.get("schema_version")),
     ):
-        if {row.get(column) for row in rows} != {declared}:
+        if not isinstance(declared, str) or {row.get(column) for row in rows} != {declared}:
             return f"rows do not all carry the manifest's {column} {declared!r}"
     digest = rows_digest([{k: v for k, v in row.items() if k != "dataset_version"} for row in rows])
     if current:
@@ -311,6 +319,10 @@ def check_reproducible(
         report.problems.append(f"datasets/{path.name}: {problem}")
 
 
+# A release that was never versioned may be removed; see retire.py.
+RETIRE = "; retire it with make retire-release RELEASE={name} and build again"
+
+
 def rebuild_problem(
     path: Path, release: Release, runs: list[RawRun], rules: LabelConfig
 ) -> str | None:
@@ -321,10 +333,18 @@ def rebuild_problem(
     """
     labeled = release.rows[0]["label_version"]  # nonempty and uniform: identity checked
     if labeled != rules.label_version:
-        return (
+        problem = (
             f"it was labeled under {labeled}, but this pipeline labels under "
-            f"{rules.label_version}, so it cannot be rebuilt from its evidence; build it again"
+            f"{rules.label_version}, so it cannot be rebuilt from its evidence"
         )
+    else:
+        problem = derived_problem(path, release, runs, rules)
+    return problem and problem + RETIRE.format(name=path.name)
+
+
+def derived_problem(
+    path: Path, release: Release, runs: list[RawRun], rules: LabelConfig
+) -> str | None:
     rows, stage_rejections = derive_rows(runs, rules)
     refused = [
         f"{stage}: {item.reason}" for stage, items in stage_rejections.items() for item in items
@@ -367,7 +387,7 @@ def check_reports(builds: Path, releases: set[str], report: Report) -> None:
         label = f"datasets/{BUILDS_DIR}/{path.name}"
         try:
             value = json.loads(path.read_text(encoding="utf-8")) if is_file(path) else None
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             value = None
         if path.suffix != ".json" or not isinstance(value, dict):
             report.problems.append(f"{label}: unreadable build report")
@@ -391,6 +411,9 @@ def check_validations(store: Path, releases: set[str], report: Report) -> None:
         except SplitError as error:
             report.problems.append(f"{label}: {error}")
             continue
+        except OSError as error:
+            report.problems.append(f"{label}: cannot be listed: {error.strerror}")
+            continue
         for attempt in visible(folder, report):
             check_attempt(attempt, f"{label}/{attempt.name}", report)
 
@@ -408,8 +431,8 @@ def check_attempt(attempt: Path, label: str, report: Report) -> None:
         result = json.loads((attempt / RESULT_FILE).read_text(encoding="utf-8"))
         # The gate hashes the statistics text it wrote; the drift baseline relies on it.
         text = (attempt / STATISTICS_FILE).read_text(encoding="utf-8")
-    except (OSError, ValueError) as error:
-        report.problems.append(f"{label}: unreadable: {error}")
+    except (OSError, ValueError, RecursionError) as error:
+        report.problems.append(f"{label}: unreadable: {type(error).__name__}")
         return
     if hashlib.sha256(text.encode()).hexdigest() != result.get("statistics_sha256"):
         report.problems.append(f"{label}: statistics do not match the hash their result recorded")
@@ -446,21 +469,57 @@ def check_append_only(status: dict, stores: list[Path], report: Report) -> None:
     roots = [store.resolve() for store in stores]
     for section in ("committed", "uncommitted"):
         for change in ("deleted", "modified"):
-            for entry in status.get(section, {}).get(change, []):
+            for entry in status_files(status, section, change):
                 path = Path(entry).resolve()
-                if entry.endswith("/") or not any(path.is_relative_to(root) for root in roots):
+                if not any(path.is_relative_to(root) for root in roots):
                     continue
                 report.problems.append(
                     f"{entry}: versioned file was {change}; the stores are append-only"
                 )
 
 
+def status_files(status: dict | None, *keys: str) -> list[str]:
+    """The file entries DVC status lists under keys, ignoring anything malformed.
+
+    Directory entries (ending in "/") change whenever a file is added, so only files count.
+    """
+    value = status
+    for key in keys:
+        value = value.get(key) if isinstance(value, dict) else None
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, str) and not entry.endswith("/")]
+
+
 def versioned_files(status: dict | None) -> set[Path]:
     """Files DVC reports unchanged since the committed version (needs --unchanged)."""
-    entries = (status or {}).get("unchanged")
-    if not isinstance(entries, list):
-        return set()
-    return {Path(entry).resolve() for entry in entries if isinstance(entry, str)}
+    return {Path(entry).resolve() for entry in status_files(status, "unchanged")}
+
+
+def known_files(status: dict | None) -> set[Path]:
+    """Files DVC already holds in a snapshot or a commit: all it lists but files added since
+    the last snapshot (needs --unchanged). Removing one would break the append-only rule."""
+    listed = status_files(status, "unchanged")
+    for change in ("added", "modified", "deleted"):
+        listed += status_files(status, "committed", change)
+    for change in ("modified", "deleted"):
+        listed += status_files(status, "uncommitted", change)
+    return {Path(entry).resolve() for entry in listed}
+
+
+class StatusError(RuntimeError):
+    """DVC status output that cannot be used."""
+
+
+def read_status(path: Path) -> dict:
+    """`dvc data status --granular --unchanged --json` output, or StatusError saying why not."""
+    try:
+        status = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as error:
+        raise StatusError(f"cannot read DVC status: {error}") from error
+    if not isinstance(status, dict):
+        raise StatusError("DVC status is not a JSON object")
+    return status
 
 
 def verify(evidence: Path, datasets: Path, dvc_status: dict | None = None) -> Report:
@@ -489,12 +548,9 @@ def main(argv: list[str] | None = None) -> int:
     status = None
     if args.dvc_status is not None:
         try:
-            status = json.loads(args.dvc_status.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
-            print(f"Not versioning: cannot read DVC status: {error}", file=sys.stderr)
-            return 1
-        if not isinstance(status, dict):
-            print("Not versioning: DVC status is not a JSON object", file=sys.stderr)
+            status = read_status(args.dvc_status)
+        except StatusError as error:
+            print(f"Not versioning: {error}", file=sys.stderr)
             return 1
     report = verify(args.evidence, args.datasets, status)
     for problem in report.problems:

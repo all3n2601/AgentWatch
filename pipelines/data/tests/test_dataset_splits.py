@@ -760,6 +760,8 @@ def test_verdict_selection_matches_the_shared_cases(tmp_path, case):
             (base / attempt["name"]).write_text(content)
             continue
         (base / attempt["name"]).mkdir()
+        if "nesting" in attempt:
+            content = "[" * attempt["nesting"] + "]" * attempt["nesting"]
         if content is not None:
             text = content if isinstance(content, str) else json.dumps(content)
             (base / attempt["name"] / "result.json").write_text(text)

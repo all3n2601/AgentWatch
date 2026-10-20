@@ -148,7 +148,8 @@ successful build verifies and publishes.
 - Releases are never rewritten, so a release in an older format is never upgraded in place. A
   format 1 release (from before `schema.json` existed) stays as it was, and the next build
   publishes a new format 2 release of the same rows beside it, which becomes the newest
-  published release.
+  published release. If the old release was never versioned and the current pipeline cannot
+  rebuild it, `make retire-release` removes it before the store is versioned (see Versioning).
 - Building a version that already exists verifies its format and the hashes of its rows,
   Parquet file, and contract instead of rewriting it; a mismatch fails the build.
 - A build writes everything into a staging directory, fsyncs it, and renames it into place only
@@ -278,12 +279,15 @@ make version-dataset   # verify both stores, then snapshot them; commit the data
 make push-dataset      # upload the snapshot to the DVC remote
 make pull-dataset      # download what this commit versions (TARGET=data/datasets/<release> for one)
 make dataset-status    # what is not yet versioned, and (with a remote) what is not yet uploaded
+make retire-release RELEASE=<release>  # remove a never-versioned release the pipeline can no longer build
 ```
 
 - **DVC runs in its own project**, `pipelines/versioning` (DVC 3.67.1 with GCS support, about
   120 packages, its own `uv.lock`, CPython 3.13 and 3.14), so the shared workspace and
   `make bootstrap` are unchanged. The committed `.dvc/config` turns off DVC's usage analytics
-  and update checks and holds no remote.
+  and update checks and holds no remote. CI runs the data and versioning tests on both
+  versions, and the versioning tests drive the Makefile's own dataset targets, so a broken
+  target fails CI.
 - **Nothing damaged or unreproducible is versioned.** `make version-dataset` first runs
   `python -m agentwatch_data.integrity`, which lists every problem and refuses to continue
   unless:
@@ -312,8 +316,11 @@ make dataset-status    # what is not yet versioned, and (with a remote) what is 
     build uses, and must reproduce its rows exactly (and, for the current format, its Parquet
     bytes). Agreeing hashes alone only prove a release names its evidence; this refuses an
     edited value, a dropped row, a re-encoded file, or a release built from other sources (an
-    API build records save times the store does not hold). A release built under other label
-    rules is refused until it is built again. Releases DVC reports unchanged since the committed
+    API build records save times the store does not hold). A release that cannot be rebuilt
+    (for example one built before the label rules changed) blocks versioning until it is
+    retired: `make retire-release RELEASE=<release>` removes it with its build reports,
+    quality-gate attempts, and splits, and refuses, removing nothing, if DVC already holds any
+    of those files (in the committed version or a snapshot). Releases DVC reports unchanged since the committed
     version (`dvc data status --unchanged`) were rebuilt when they were versioned and the
     append-only check keeps them identical, so they are not rebuilt again, and changing the
     rules or the code later never blocks versioning;
@@ -322,7 +329,9 @@ make dataset-status    # what is not yet versioned, and (with a remote) what is 
     `statistics.pbtxt` whose hash its result recorded;
   - every split file hashes to its id and belongs to an existing release;
   - nothing in either store is a symbolic link, or a folder where a file belongs (or the
-    reverse): a version must hold the content itself, not a pointer to files outside it.
+    reverse): a version must hold the content itself, not a pointer to files outside it;
+  - everything can be read: an unreadable file or folder, or JSON nested deeper than the
+    decoder allows, is reported as a problem rather than stopping the check.
 - **The stores are append-only.** Before snapshotting, `make version-dataset` asks DVC
   (`dvc data status --granular`) which already-versioned files were deleted or modified since
   the last snapshot or commit, and refuses if any were. A failed quality-gate verdict, a
