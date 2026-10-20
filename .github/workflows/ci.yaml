@@ -72,6 +72,7 @@ jobs:
     # well. The data pipeline supports CPython 3.13 and 3.14, so both are tested here.
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false  # a failure on one version must not hide the other's result
       matrix:
         python-version: ["3.13", "3.14"]
     steps:

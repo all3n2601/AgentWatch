@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 from datetime import UTC, datetime
@@ -946,7 +947,10 @@ def test_a_partly_versioned_release_is_rebuilt(stores):
 
 # Malformed or unreadable stores are reported, never a crash (full pipeline audit)
 
-DEEP_JSON = "[" * 100_000 + "]" * 100_000  # past the JSON decoder's nesting limit on 3.13 and 3.14
+# Deeper than the JSON decoder allows on most platforms (RecursionError), but where the stack
+# is large enough it parses, as a list. Either way the file must be reported, never a crash.
+DEEP_JSON = "[" * 100_000 + "]" * 100_000
+UNREADABLE_OR_NOT_AN_OBJECT = r"(unreadable: RecursionError|not a JSON object)"
 
 
 @pytest.mark.parametrize("value", [["x"], {"x": 1}, None, 3])
@@ -966,36 +970,48 @@ def test_deeply_nested_json_anywhere_in_the_store_is_reported(stores):
     split.write_text(DEEP_JSON)
     write_attempt(datasets, release.name, "a1", result=DEEP_JSON)
     found = problems(evidence, datasets)
-    assert found == [
+    assert found[:2] == [
         f"datasets/builds/{report.name}: unreadable build report",
         (
             f"datasets/validations/{release.name}: Quality-gate verdict of {release.name} is "
             "unknown: damaged attempts ['a1']"
         ),
-        f"datasets/splits/{release.name}: Split {split.name} is unreadable: RecursionError",
     ]
+    assert re.fullmatch(
+        rf"datasets/splits/{re.escape(release.name)}: Split {re.escape(split.name)} is "
+        + UNREADABLE_OR_NOT_AN_OBJECT,
+        found[2],
+    )
+    assert len(found) == 3
 
 
 def test_a_deeply_nested_manifest_is_reported(stores):
     evidence, datasets, release = stores
     (release / "manifest.json").write_text(DEEP_JSON)
     [problem, *_] = problems(evidence, datasets)
-    assert problem == (
-        f"datasets/{release.name}: Manifest manifest.json is unreadable: RecursionError"
+    assert re.fullmatch(
+        rf"datasets/{re.escape(release.name)}: Manifest manifest.json is "
+        + UNREADABLE_OR_NOT_AN_OBJECT,
+        problem,
     )
 
 
-def test_a_deeply_nested_gate_result_beside_a_valid_verdict_is_reported(stores, monkeypatch):
-    """latest_verdict accepts the attempts; check_attempt then reads each result itself."""
+@pytest.mark.parametrize("content", [DEEP_JSON, "[]", '"passed"'])
+def test_a_gate_result_that_is_not_an_object_is_reported(stores, monkeypatch, content):
+    """latest_verdict would call these attempts damaged; check_attempt reads each result
+    itself, so it must not depend on that and crash on a result that is not an object."""
     from agentwatch_data import integrity
 
     evidence, datasets, release = stores
     write_attempt(datasets, release.name, "a1")
     monkeypatch.setattr(integrity, "latest_verdict", lambda release: None)
-    (datasets / "validations" / release.name / "a1" / "result.json").write_text(DEEP_JSON)
-    assert problems(evidence, datasets) == [
-        f"datasets/validations/{release.name}/a1: unreadable: RecursionError"
-    ]
+    (datasets / "validations" / release.name / "a1" / "result.json").write_text(content)
+    [problem] = problems(evidence, datasets)
+    assert re.fullmatch(
+        rf"datasets/validations/{re.escape(release.name)}/a1: (result\.json is )?"
+        + UNREADABLE_OR_NOT_AN_OBJECT,
+        problem,
+    )
 
 
 @contextlib.contextmanager
@@ -1034,7 +1050,11 @@ def test_an_unreadable_dvc_status_file_is_refused(stores, tmp_path, capsys):
     status.write_text(DEEP_JSON)
     args = ["--evidence", str(evidence), "--datasets", str(datasets), "--dvc-status", str(status)]
     assert main(args) == 1
-    assert "Not versioning: cannot read DVC status" in capsys.readouterr().err
+    assert re.fullmatch(
+        r"Not versioning: (cannot read DVC status: .*|DVC status is not a JSON object)\n",
+        capsys.readouterr().err,
+        flags=re.DOTALL,
+    )
 
 
 @pytest.mark.parametrize(

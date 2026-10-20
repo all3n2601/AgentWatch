@@ -434,6 +434,9 @@ def check_attempt(attempt: Path, label: str, report: Report) -> None:
     except (OSError, ValueError, RecursionError) as error:
         report.problems.append(f"{label}: unreadable: {type(error).__name__}")
         return
+    if not isinstance(result, dict):
+        report.problems.append(f"{label}: {RESULT_FILE} is not a JSON object")
+        return
     if hashlib.sha256(text.encode()).hexdigest() != result.get("statistics_sha256"):
         report.problems.append(f"{label}: statistics do not match the hash their result recorded")
         return
