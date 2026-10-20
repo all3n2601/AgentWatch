@@ -38,6 +38,10 @@ make llm-up
 export OLLAMA_URL=http://127.0.0.1:11435
 export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/agentwatch" UV_LINK_MODE=copy
 bash deploy/diagnostics/measurement-access.sh
+# Since 2026-10-20 the probe drives the agent runner, which reports to the live API: start
+# PostgreSQL (`make infra-up` from Windows) and, in another Ubuntu terminal, the worker API:
+#   uv run --package agentwatch-worker uvicorn agentwatch_worker.app:app --port 8090
+# The probe checks GET /readyz first. Set AGENTWATCH_API_URL if the API is elsewhere.
 bash deploy/diagnostics/gpu-sampled-llm-run.sh a01-my-run
 python3 -I deploy/diagnostics/summarize_gpu_run.py .data/a01-my-run
 ```
@@ -79,7 +83,8 @@ Without `AGENTWATCH_LLM_GPU=1`, `make llm-up` starts the unchanged CPU-only serv
   `agentwatch.resource_class=inference_cpu`. The two preserved runs below carry those incorrect
   labels; Ollama logs and `ollama ps` showed 100% GPU placement for both. New runs record placement
   from `/api/ps` after each request and after the loop or a failure (see
-  [the LLM guide](llm-demo.md)). The two committed-config runs predate the per-request reading
+  [the LLM guide](llm-demo.md)). That describes the demo as it was on 2026-10-13; since
+  2026-10-20 the agent runner records placement after each model call and after a failed call. The two committed-config runs predate the per-request reading
   and store a single `model_placement` with `observed_at_unix_ns` instead of `observed_at`.
 
 ## Recorded runs
@@ -111,9 +116,12 @@ two of them claim contended execution time increased, while the measurements sho
 
 ## First-request latency diagnostic
 
-`deploy/diagnostics/first_request_timing.py` sends the demo's exact first request with its
+`deploy/diagnostics/first_request_timing.py` sent the demo's exact first request with its
 imported messages and options. Both protocols were declared in the script before evaluation;
-all 36 requests are kept.
+all 36 requests are kept. Since 2026-10-20 the script sends the agent runner's first request
+instead (its system prompt, task message, four tool definitions and `num_predict` 512), so
+the results below, recorded with the removed demo's single-tool request, are not comparable
+with later runs.
 
 - **Tool definitions are not the cause.** After unloading with `keep_alive=0`, cold requests took
   3.44–3.89 s with tools (load 3.05–3.58 s, prompt 0.17–0.20 s for 208 tokens) and 3.66–4.61 s

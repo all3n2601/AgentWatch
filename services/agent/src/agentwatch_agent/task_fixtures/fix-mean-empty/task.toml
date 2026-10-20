@@ -1,0 +1,34 @@
+name = "fix-mean-empty"
+revision = 1
+title = "Make mean() follow the empty-input contract"
+instructions = """
+The test suite of this small statistics project fails. Find out what mean() must return for
+an empty input, fix it by applying exactly one of the listed patches, and confirm that the
+tests pass.
+"""
+
+[[patches]]
+id = "return-none-for-empty"
+description = "Return None from mean() when it receives no values"
+file = "stats.py"
+find = """
+    return sum(values) / len(values)
+"""
+replace = """
+    if not values:
+        return None
+    return sum(values) / len(values)
+"""
+
+[[patches]]
+id = "return-zero-for-empty"
+description = "Return 0 from mean() when it receives no values"
+file = "stats.py"
+find = """
+    return sum(values) / len(values)
+"""
+replace = """
+    if not values:
+        return 0
+    return sum(values) / len(values)
+"""

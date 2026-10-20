@@ -34,11 +34,12 @@ for its filters, saved preferences, and measurement definitions.
 
 ### Local LLM with tool support
 
-Run `make llm-up` to start Docker Ollama and download Qwen3 1.7B, then `make demo-llm`.
-With the ingestion API running, `make record-llm` saves the model-invoked coding experiment
-to dashboard history. The **Agent** tab shows its actual conversation, inference timings,
-token counts, and model/tool timeline, with evidence retained both locally and in the saved run.
-See [the Docker LLM test guide](docs/llm-demo.md) for setup, evidence, and limits.
+Run `make llm-up` to start Docker Ollama and download Qwen3 1.7B. With PostgreSQL and the
+ingestion API running, `make agent-run` executes one fixed coding task with the instrumented
+agent and reports its model calls, tool calls and retrieval as live steps; see
+[the agent runner guide](services/agent/README.md). The dashboard's **Agent** tab shows agent
+evidence saved by the earlier tool-calling demo. See [the Docker LLM guide](docs/llm-demo.md)
+for model setup and limits.
 `AGENTWATCH_LLM_GPU=1 make llm-up` adds optional NVIDIA GPU access; the measured signals on the
 team's GPU laptop are in [the GPU measurement access record](docs/gpu-measurement-access.md).
 
