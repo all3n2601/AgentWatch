@@ -41,7 +41,7 @@ from agentwatch_agent.delivery import (
 )
 from agentwatch_agent.resources import CpuResourceSampler
 from agentwatch_agent.session import RunSession
-from agentwatch_agent.steps import StepRecorder, new_trace_id
+from agentwatch_agent.steps import Step, StepRecorder, new_trace_id
 from agentwatch_agent.tasks import Task
 from agentwatch_agent.workspace import Workspace
 
@@ -76,6 +76,38 @@ def summarize(values: list[float]) -> dict:
     }
 
 
+def merged_availability(summaries: list[dict]) -> dict[str, dict[str, int]]:
+    """Availability counts across every repetition's sampler, not just the last one."""
+    merged: dict[str, dict[str, int]] = {}
+    for summary in summaries:
+        for metric, counts in summary["availability_counts"].items():
+            for availability, count in counts.items():
+                bucket = merged.setdefault(metric, {})
+                bucket[availability] = bucket.get(availability, 0) + count
+    return merged
+
+
+def _close_failed(
+    recorder: StepRecorder,
+    open_step: Step | None,
+    delivery: LiveDelivery,
+    session: RunSession,
+    cause: BaseException,
+) -> None:
+    """Best effort: fail the open step and the run without hiding the original error."""
+    reason = f"Overhead measurement failed ({type(cause).__name__})"
+    try:
+        if open_step is not None and not open_step.terminal:
+            recorder.fail(open_step, reason)
+        if delivery.flush():
+            session.change_state("failed", reason)
+        else:
+            session.defer_change("failed", reason)
+    # The caller re-raises `cause`; the closure failure is attached to it rather than lost.
+    except Exception as closure_error:  # noqa: BLE001
+        cause.add_note(f"The live run could not be closed as failed: {closure_error!r}")
+
+
 def protocol_digest(task: Task, sampling_interval_seconds: float) -> str:
     canonical = json.dumps(
         {
@@ -107,7 +139,9 @@ def measure_overhead(
     if patch is None:
         raise ValueError(f"Task {task.name} has no patch {correct_patch_id!r}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    task_id = f"{task.task_id}-overhead"
+    # The task identity stays the task's own: dataset splits group by task_id, and the
+    # overhead protocol is identified by the registered configuration digest instead.
+    task_id = task.task_id
     clock = MonotonicClock()
     host = ResourceRegistration(
         resource_id=f"tool-host-{uuid4().hex[:12]}",
@@ -137,12 +171,12 @@ def measure_overhead(
         clock=clock,
         emit=delivery.emit,
     )
-    workspace = Workspace.create(task)
-    workspace.apply(patch)
     never_cancel = threading.Event()
     walls: dict[str, list[float]] = {condition: [] for condition in CONDITIONS}
     runner_cpu: dict[str, float] = dict.fromkeys(CONDITIONS, 0.0)
     sampling: list[dict] = []
+    workspace: Workspace | None = None
+    open_step: Step | None = None
 
     def workload() -> float:
         result = run_project_tests(
@@ -153,6 +187,7 @@ def measure_overhead(
         return result.wall_seconds
 
     def instrumented(index: int) -> float:
+        nonlocal open_step
         sampler = CpuResourceSampler(
             delivery.emit,
             run_id=session.run_id,
@@ -162,17 +197,24 @@ def measure_overhead(
             interval_seconds=sampling_interval_seconds,
             proc=proc,
         )
-        with PeriodicFlusher(delivery, FLUSH_INTERVAL_SECONDS), sampler:
-            step = recorder.submit(f"overhead-{index}", "tool", parent=None, resource=host)
-            recorder.start(step)
+        flusher = PeriodicFlusher(delivery, FLUSH_INTERVAL_SECONDS)
+        with flusher, sampler:
+            open_step = recorder.submit(f"overhead-{index}", "tool", parent=None, resource=host)
+            recorder.start(open_step)
             wall = workload()
-            recorder.complete(step)
-        if sampler.error is not None:
-            raise sampler.error
+            recorder.complete(open_step)
+            open_step = None
+        # A dead flusher or sampler would silently remove instrumentation work and understate
+        # the overhead, so either one ends the measurement.
+        for component in (flusher, sampler):
+            if component.error is not None:
+                raise component.error
         sampling.append(sampler.summary())
         return wall
 
     try:
+        workspace = Workspace.create(task)
+        workspace.apply(patch)
         session.change_state("running", None)
         for _ in range(warmup):
             workload()
@@ -184,8 +226,12 @@ def measure_overhead(
             walls[condition].append(wall)
         delivery.flush()
         final_state = session.change_state("completed", None)
+    except BaseException as error:
+        # Close the live run as failed so it is not left running, then re-raise the cause.
+        _close_failed(recorder, open_step, delivery, session, error)
+        raise
     finally:
-        workspace_removed = workspace.remove()
+        workspace_removed = workspace.remove() if workspace is not None else True
         journal.close()
     baseline, measured = summarize(walls["uninstrumented"]), summarize(walls["instrumented"])
     gaps = [
@@ -206,7 +252,7 @@ def measure_overhead(
         "sampling": {
             "rounds": sum(s["sample_rounds"] for s in sampling),
             "max_observed_interval_seconds": max(gaps) if gaps else None,
-            "availability_counts": sampling[-1]["availability_counts"] if sampling else {},
+            "availability_counts": merged_availability(sampling),
         },
         "workload_wall_seconds": {"uninstrumented": baseline, "instrumented": measured},
         "median_difference_seconds": measured["median"] - baseline["median"],
@@ -218,6 +264,10 @@ def measure_overhead(
         "workspace_removed": workspace_removed,
         "limitations": [
             "One host and one short subprocess workload; this is not an overhead budget",
+            (
+                "Overhead runs share the task's task_id; identify them by the agent-overhead-v1 "
+                "configuration digest and exclude them from training datasets"
+            ),
             "Model-call overhead is not measured: model requests run outside the runner",
             (
                 "Each instrumented repetition starts its own sampler and flusher threads, so "

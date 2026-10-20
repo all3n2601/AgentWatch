@@ -57,13 +57,19 @@ completed CPU/coding experiment evidence rather than OTLP or arbitrary live agen
 
 ### Docker LLM smoke test
 
+Removed 2026-10-20 in PR #27: the single-tool demo (`agentwatch_worker.llm_demo`, `make
+demo-llm`/`record-llm`) was replaced by the instrumented agent runner; its Ollama helpers moved
+to `agentwatch_worker.ollama`, and the GPU diagnostics now drive the runner. The items below
+record what the demo verified; its saved runs remain viewable in the dashboard Agent view.
+
 - [x] Optional Compose profile with digest-pinned Ollama image and persistent model volume.
 - [x] Qwen3 1.7B downloaded and executed on Docker CPU with real tool calling.
 - [x] Allowlisted `run_tests` dispatcher rejects invented arguments and sends corrective feedback.
 - [x] Real tool result returned to the model and followed by a final answer.
 - [x] Agent conversation, inference timing/token metrics, and OpenTelemetry inference spans saved.
 - [x] Model-invoked coding measurements saved in PostgreSQL and retrievable through the web API.
-- [x] Rerun/start/stop commands documented in [the LLM guide](llm-demo.md).
+- [x] Rerun/start/stop commands documented in [the LLM guide](llm-demo.md), which now covers
+  the model server for the agent runner.
 - [x] Qwen3 agent timeline, inference request metrics, token counts, and expandable conversation
   displayed in a dedicated dashboard Agent view, with spans retained in saved result evidence.
 - [x] Optional NVIDIA GPU Compose override and configurable Ollama host port; CPU-only default
@@ -302,6 +308,19 @@ Overhead protocol `agent-overhead-v1` (30 alternating repetitions of the 55 ms f
 suite): median 0.0547 s instrumented vs 0.0548 s uninstrumented, with +1.4 ms runner CPU per
 repetition. The workload is shorter than the 250 ms sampling interval, so sustained sampling
 cost is not characterized.
+
+PR #27 review follow-up (2026-10-20): closures wait for delivery (otherwise they are
+journaled for `resend`), cleanup actions run independently, setup failures close the run or
+leave nothing behind, `resend` isolates refused records and verifies the final run state,
+stale revisions are retried once, the root step fails with a failed run, signal handling is
+lock-safe, placement reads honour cancellation and the deadline, overhead runs keep the task
+ID and close on failure, and fixtures are pinned to LF. The `llm_demo` loop was migrated onto
+the runner. 26 regression tests fail or hang on the previous head (c7cd269) and pass now. Local
+verification: 766 Python tests with the dedicated PostgreSQL database and no skips (agent tests
+10 consecutive runs), Ruff, JavaScript lint/typecheck/13 tests/build, Go, and both Compose
+configurations passed. Real run `51b868fb-f838-4712-bf3e-cd1198d6000d` on this code completed
+the task (verification 5/5, 13 steps, no gaps, placement measured on all 6 model calls). The
+two changed dashboard empty-state messages were not checked in a browser.
 
 - [x] Integrate one Python agent and its tool dispatcher using the generalized client.
   Verified by the integration tests and the real CPU runs above, including one that completed

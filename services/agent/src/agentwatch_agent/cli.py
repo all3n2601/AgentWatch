@@ -17,7 +17,7 @@ from pathlib import Path
 from types import FrameType
 
 from agentwatch_sdk import LiveClient
-from agentwatch_worker.llm_demo import ollama_base_url
+from agentwatch_worker.ollama import ollama_base_url
 
 from agentwatch_agent.config import DEFAULT_MODEL, RunLimits
 from agentwatch_agent.delivery import replay_journal
@@ -99,18 +99,23 @@ def run_command(args: argparse.Namespace) -> int:
     except TaskDefinitionError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    runner = AgentRunner(
-        task=task,
-        model=OllamaChatModel(args.ollama_url, args.model),
-        transport=LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS),
-        output_dir=default_output_dir(args.output_dir, task),
-        limits=RunLimits(run_timeout_seconds=args.run_timeout),
-    )
+    try:
+        runner = AgentRunner(
+            task=task,
+            model=OllamaChatModel(args.ollama_url, args.model),
+            transport=LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS),
+            output_dir=default_output_dir(args.output_dir, task),
+            limits=RunLimits(run_timeout_seconds=args.run_timeout),
+        )
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
 
     def handle_signal(number: int, _frame: FrameType | None) -> None:
+        # No printing here: writing to a stream inside a signal handler can deadlock on its
+        # internal lock. The cancellation is reported when the run closes.
         name = signal.Signals(number).name
-        print(f"\n{name} received: cancelling and cleaning up…", file=sys.stderr, flush=True)
-        runner.request_cancel("signal", f"Cancelled by operator signal {name}")
+        runner.request_cancel_from_signal("signal", f"Cancelled by operator signal {name}")
 
     previous = {sig: signal.signal(sig, handle_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
@@ -173,15 +178,28 @@ def overhead_command(args: argparse.Namespace) -> int:
 def resend_command(args: argparse.Namespace) -> int:
     report = replay_journal(args.journal, LiveClient(args.api_url, LIVE_TIMEOUT_SECONDS))
     print(
-        f"Run {report.run_id}: resent {report.records_sent} records and "
-        f"{report.changes_sent} state changes; skipped {report.records_skipped_rejected} "
-        f"previously rejected records; {report.changes_superseded} changes were superseded."
+        f"Run {report.run_id}: resent {report.records_sent} records and applied "
+        f"{report.changes_applied} state changes; skipped {report.records_skipped_rejected} "
+        f"previously rejected records. Run state: {report.final_state} "
+        f"(journaled: {report.expected_state})."
     )
     if report.truncated_final_line:
         print("note: ignored an interrupted final journal line", file=sys.stderr)
-    for batch in report.rejected_batches:
-        print(f"rejected batch ({batch['status']}): {batch['detail']}", file=sys.stderr)
-    return EXIT_INCOMPLETE_DELIVERY if report.rejected_batches else EXIT_PASSED
+    if report.changes_superseded:
+        print("note: the run was closed by another actor before its journaled closure")
+    for rejection in report.rejections:
+        print(
+            f"rejected record {rejection['record_id']} ({rejection['status']}): "
+            f"{rejection['detail']}",
+            file=sys.stderr,
+        )
+    for unresolved in report.unresolved_changes:
+        print(
+            f"run change to {unresolved['state']} was refused ({unresolved['status']}): "
+            f"{unresolved['detail']}",
+            file=sys.stderr,
+        )
+    return EXIT_PASSED if report.complete else EXIT_INCOMPLETE_DELIVERY
 
 
 def main(argv: list[str] | None = None) -> int:

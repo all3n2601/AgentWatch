@@ -1,8 +1,12 @@
 import json
+import threading
+import time
 from urllib.error import URLError
 from uuid import uuid4
 
 import pytest
+from agent_test_doubles import http_error
+from agentwatch_agent import cli
 from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.delivery import (
     Journal,
@@ -11,10 +15,9 @@ from agentwatch_agent.delivery import (
     RetryPolicy,
     replay_journal,
 )
-from agentwatch_agent.session import RunSession
+from agentwatch_agent.session import CancellationState, RunSession
 from agentwatch_agent.steps import StepRecorder, new_trace_id
-from agentwatch_sdk.live import ResourceRegistration, RunCreate
-from conftest import http_error
+from agentwatch_sdk.live import ResourceRegistration, RunChange, RunCreate
 
 NO_SLEEP = RetryPolicy(attempts=3, initial_backoff_seconds=0, max_backoff_seconds=0)
 CLOCK = MonotonicClock("delivery-clock")
@@ -183,7 +186,8 @@ def test_journal_replay_is_idempotent_and_recovers_an_outage(server, setup):
     journal.close()
     first = replay_journal(journal.path, server, NO_SLEEP)
     assert first.run_id == session.run_id
-    assert first.records_sent == 3 and first.changes_sent == 1
+    assert first.records_sent == 3 and first.changes_applied == 1
+    assert first.complete and first.final_state == "running"
     assert server.runs[session.run_id].steps["tool-1"].state == "completed"
     second = replay_journal(journal.path, server, NO_SLEEP)
     assert second.records_sent == 3
@@ -236,3 +240,125 @@ def test_closure_race_isolates_new_steps_and_keeps_late_terminal_evidence(server
     stats = delivery.stats()
     assert (stats.delivered, stats.rejected, stats.complete) == (3, 2, False)
     assert {r["status"] for r in stats.rejections} == {409}
+
+
+# Review regressions (PR #27) --------------------------------------------------------------
+
+
+def test_stale_revision_closure_is_retried_at_the_refreshed_revision(server, setup):
+    session, *_ = setup
+    session.change_state("running", None)
+    # An earlier change applied but its response was lost: the local revision is behind.
+    session.revision, session.state = 0, "queued"
+    assert session.change_state("failed", "Model request failed") == "failed"
+    assert server.runs[session.run_id].state == "failed"
+
+
+def test_closure_refused_on_content_is_not_retried(server, setup):
+    session, delivery, recorder, _ = setup
+    session.change_state("running", None)
+    recorder.submit("tool-1", "tool", parent=None, resource=RESOURCE)
+    assert delivery.flush()
+    # Refused because a step is unfinished, not because of a stale revision: no retry.
+    assert session.change_state("completed", None) == "running"
+    assert server.calls.count("change_state") == 2
+
+
+def test_repeated_signals_never_wait_on_cancellation_locks():
+    state = CancellationState()
+    state.cancel_from_signal("signal", "Cancelled by operator signal SIGINT")
+    holding, release = threading.Event(), threading.Event()
+
+    def hold_lock():
+        with state._lock:
+            holding.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert holding.wait(5)
+    started = time.monotonic()
+    state.cancel_from_signal("signal", "Cancelled by operator signal SIGTERM")
+    assert time.monotonic() - started < 0.5, "a repeated signal blocked on the lock"
+    release.set()
+    holder.join()
+    assert state.request.reason == "Cancelled by operator signal SIGINT"
+
+
+def test_cancellation_lock_is_reentrant_for_an_interrupted_main_thread():
+    state = CancellationState()
+    with state._lock:  # A plain Lock would deadlock here, as a signal handler would.
+        state.cancel("signal", "inside")
+    assert state.event.is_set()
+
+
+def test_replay_isolates_a_refused_record_instead_of_dropping_its_batch(server, setup):
+    session, delivery, recorder, journal = setup
+    server.unavailable_calls = {"ingest"}
+    complete_step(unregistered_clock_recorder(recorder, delivery), "tool-1")
+    complete_step(recorder, "tool-2")
+    assert not delivery.flush()
+    server.unavailable_calls = set()
+    journal.close()
+    report = replay_journal(journal.path, server, NO_SLEEP)
+    assert report.records_sent == 3
+    assert {r["status"] for r in report.rejections} == {422} and len(report.rejections) == 3
+    assert set(server.runs[session.run_id].steps) == {"tool-2"}
+    assert not report.complete
+
+
+def test_replay_reports_a_completion_the_service_still_refuses(server, setup):
+    session, delivery, recorder, journal = setup
+    session.change_state("running", None)
+    step = recorder.submit("tool-1", "tool", parent=None, resource=RESOURCE)
+    recorder.start(step)  # never finished, so completion must be refused
+    assert delivery.flush()
+    session.defer_change("completed", None)
+    journal.close()
+    report = replay_journal(journal.path, server, NO_SLEEP)
+    assert (report.expected_state, report.final_state) == ("completed", "running")
+    assert report.unresolved_changes[0]["state"] == "completed"
+    assert not report.complete
+
+
+def test_replay_retries_a_stale_revision_closure_once(server, setup):
+    session, delivery, _, journal = setup
+    session.change_state("running", None)
+    delivery.flush()
+    stale = RunChange(change_id=uuid4(), expected_revision=0, state="failed", reason="late")
+    journal.write("run_change", stale, deferred=True)
+    journal.close()
+    report = replay_journal(journal.path, server, NO_SLEEP)
+    assert (report.complete, report.final_state) == (True, "failed")
+    replayed = [
+        json.loads(line)
+        for line in journal.path.read_text().splitlines()
+        if '"replayed": true' in line
+    ]
+    assert replayed[0]["payload"]["expected_revision"] == 1
+
+
+def test_replay_accepts_a_run_closed_by_another_actor(server, setup):
+    session, delivery, _, journal = setup
+    session.change_state("running", None)
+    delivery.flush()
+    session.defer_change("failed", "Model request failed")
+    server.cancel(session.run_id)
+    journal.close()
+    report = replay_journal(journal.path, server, NO_SLEEP)
+    assert (report.final_state, report.changes_superseded, report.complete) == (
+        "cancelled",
+        1,
+        True,
+    )
+
+
+def test_resend_command_exits_nonzero_when_the_run_stays_open(server, setup, monkeypatch):
+    session, delivery, recorder, journal = setup
+    session.change_state("running", None)
+    recorder.start(recorder.submit("tool-1", "tool", parent=None, resource=RESOURCE))
+    delivery.flush()
+    session.defer_change("completed", None)
+    journal.close()
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args: server)
+    assert cli.main(["resend", str(journal.path)]) == cli.EXIT_INCOMPLETE_DELIVERY

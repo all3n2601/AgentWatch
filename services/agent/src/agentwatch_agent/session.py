@@ -57,27 +57,46 @@ class RunSession:
         return cls(transport, created.run_id, journal, retry)
 
     def change_state(self, state: str, reason: str | None) -> str:
-        """Request a transition; return the run's resulting state."""
-        if self.state in TERMINAL_RUN_STATES:
+        """Request a transition; return the run's resulting state.
+
+        A 409 means the run changed first. If another actor closed it, that state is adopted.
+        If only the revision moved (an earlier change applied but its response was lost), the
+        transition is retried once at the refreshed revision under a new change identity.
+        """
+        for _ in range(2):
+            if self.state in TERMINAL_RUN_STATES or self.state == state:
+                return self.state
+            change = self._change(state, reason)
+            self.journal.write("run_change", change)
+            try:
+                result = self.retry.call(
+                    lambda c=change: self.transport.change_state(self.run_id, c)
+                )
+            except LiveRejectedError as error:
+                if error.status != 409:
+                    raise
+                self.refresh()
+                if self.revision == change.expected_revision:
+                    # Refused on content (e.g. unfinished steps), not a stale revision.
+                    return self.state
+                continue
+            self.revision = result.revision
+            self.state = state
+            self.reason = change.reason
             return self.state
-        change = RunChange(
+        return self.state
+
+    def defer_change(self, state: str, reason: str | None) -> None:
+        """Journal a transition without sending it, for `resend` to apply after the records."""
+        self.journal.write("run_change", self._change(state, reason), deferred=True)
+
+    def _change(self, state: str, reason: str | None) -> RunChange:
+        return RunChange(
             change_id=uuid4(),
             expected_revision=self.revision,
             state=state,
             reason=redact_reason(reason) if reason is not None else None,
         )
-        self.journal.write("run_change", change)
-        try:
-            result = self.retry.call(lambda: self.transport.change_state(self.run_id, change))
-        except LiveRejectedError as error:
-            if error.status != 409:
-                raise
-            self.refresh()
-            return self.state
-        self.revision = result.revision
-        self.state = state
-        self.reason = change.reason
-        return self.state
 
     def refresh(self) -> RunSnapshot:
         snapshot = self.retry.call(lambda: self.snapshot())
@@ -103,13 +122,27 @@ class CancellationState:
     def __init__(self):
         self.event = threading.Event()
         self.request: CancellationRequest | None = None
-        self._lock = threading.Lock()
+        # Reentrant, because a signal handler can interrupt the main thread inside cancel().
+        self._lock = threading.RLock()
+        self._signalled = False
 
     def cancel(self, source: str, reason: str) -> None:
         with self._lock:
             if self.request is None:
                 self.request = CancellationRequest(source, reason)
         self.event.set()
+
+    def cancel_from_signal(self, source: str, reason: str) -> None:
+        """Signal-handler entry point. Only the first signal takes any lock.
+
+        Event.set() uses a non-reentrant lock internally, so a repeated signal that interrupts
+        the first handler must return without touching it. A plain attribute assignment is
+        atomic with respect to Python signal handlers, which run between bytecodes.
+        """
+        if self._signalled:
+            return
+        self._signalled = True
+        self.cancel(source, reason)
 
 
 class CancellationWatcher:

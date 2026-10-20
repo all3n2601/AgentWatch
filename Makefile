@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs dataset validate-dataset split-dataset freeze-dataset-schema llm-up llm-down demo-llm record-llm agent-tasks agent-run agent-resend agent-overhead infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs dataset validate-dataset split-dataset freeze-dataset-schema llm-up llm-down agent-tasks agent-run agent-resend agent-overhead infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -72,12 +72,6 @@ llm-up: ## Start Docker Ollama (AGENTWATCH_LLM_GPU=1 for NVIDIA, OLLAMA_HOST_POR
 
 llm-down: ## Stop the local LLM while retaining downloaded models
 	docker compose -f deploy/compose/compose.yaml stop ollama
-
-demo-llm: ## Run a real local LLM tool-call loop and retain its evidence
-	uv run --package agentwatch-worker python -m agentwatch_worker.llm_demo
-
-record-llm: ## Run the LLM loop and save its coding measurements in the dashboard
-	uv run --package agentwatch-worker python -m agentwatch_worker.llm_demo --publish
 
 AGENT_TASK ?= fix-mean-empty
 

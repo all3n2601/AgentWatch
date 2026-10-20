@@ -62,7 +62,7 @@ def test_configuration_digest_is_stable_and_sensitive():
 
 
 def test_sampling_budget_must_fit_the_live_record_limit():
-    with pytest.raises(ValueError, match="record budget"):
+    with pytest.raises(ValueError, match="sample budget"):
         configuration(run_timeout_seconds=24 * 3600)
     configuration(run_timeout_seconds=900)
 
@@ -74,3 +74,12 @@ def test_sampling_budget_must_fit_the_live_record_limit():
 def test_invalid_limits_are_rejected(limits):
     with pytest.raises(ValueError):
         RunLimits(**limits)
+
+
+def test_overlong_run_timeout_is_a_usage_error_that_creates_nothing(tmp_path, capsys):
+    code = cli.main(
+        ["run", "--task", "fix-mean-empty", "--run-timeout", "20000", "--output-dir", str(tmp_path)]
+    )
+    assert code == 2
+    assert "sample budget" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []

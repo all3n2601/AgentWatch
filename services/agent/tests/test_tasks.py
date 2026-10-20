@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 
 import pytest
 from agentwatch_agent.tasks import TaskDefinitionError, content_sha256, load_task, task_names
@@ -78,3 +79,21 @@ def test_patch_that_does_not_match_exactly_once_is_refused(tmp_path):
 def test_unknown_task_lists_available_names():
     with pytest.raises(TaskDefinitionError, match="fix-mean-empty"):
         load_task("does-not-exist")
+
+
+def test_fixtures_are_lf_only_and_pinned_to_lf_on_checkout():
+    """Task hashes and patches are byte-exact, so CRLF checkouts must not happen (PR #27)."""
+    from agentwatch_agent.tasks import TASKS_ROOT, task_files
+
+    files = task_files(TASKS_ROOT)
+    assert files
+    assert [path for path in files if b"\r" in path.read_bytes()] == []
+    sample = TASKS_ROOT / "fix-mean-empty/project/stats.py"
+    attributes = subprocess.run(
+        ["git", "check-attr", "eol", "text", "--", str(sample)],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=TASKS_ROOT,
+    ).stdout
+    assert "eol: lf" in attributes and "text: set" in attributes

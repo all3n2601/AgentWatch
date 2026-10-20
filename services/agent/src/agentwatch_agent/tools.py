@@ -10,6 +10,7 @@ isolation sandbox.
 import json
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -18,7 +19,7 @@ from agentwatch_sandbox.project_tests import run_project_tests
 from agentwatch_agent.config import RunLimits
 from agentwatch_agent.errors import RunCancelled
 from agentwatch_agent.retrieval import RETRIEVAL_METHOD, DocumentIndex
-from agentwatch_agent.tasks import Task
+from agentwatch_agent.tasks import Task, task_files
 from agentwatch_agent.workspace import Workspace, WorkspaceError
 
 MAX_QUERY_CHARS = 200
@@ -75,6 +76,37 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 15] + "\n…[truncated]"
 
 
+def tool_definitions(task: Task, readable_files: Iterable[str] | None = None) -> tuple[dict, ...]:
+    """The tool schemas offered to the model, with the task's allowlists as enums.
+
+    Without `readable_files` the task's own fixture files are used, so callers that never
+    create a workspace (such as the GPU diagnostics) send exactly the runner's definitions.
+    """
+    if readable_files is None:
+        readable_files = (
+            path.relative_to(task.project_dir).as_posix() for path in task_files(task.project_dir)
+        )
+    patch_ids = [patch.patch_id for patch in task.patches]
+    return (
+        _function(
+            "search_docs",
+            "Search the project's reference documentation. Returns the best-matching sections.",
+            {"query": {"type": "string", "maxLength": MAX_QUERY_CHARS}},
+        ),
+        _function(
+            "read_file",
+            "Read one file of the project.",
+            {"path": {"type": "string", "enum": sorted(readable_files)}},
+        ),
+        _function(
+            "apply_patch",
+            "Apply one of the task's reviewed patches to the project.",
+            {"patch_id": {"type": "string", "enum": patch_ids}},
+        ),
+        _function("run_tests", "Run the project's test suite and report the result.", {}),
+    )
+
+
 class ToolDispatcher:
     def __init__(self, task: Task, workspace: Workspace, index: DocumentIndex, limits: RunLimits):
         self.task = task
@@ -83,25 +115,7 @@ class ToolDispatcher:
         self.limits = limits
 
     def definitions(self) -> tuple[dict, ...]:
-        patch_ids = [patch.patch_id for patch in self.task.patches]
-        return (
-            _function(
-                "search_docs",
-                "Search the project's reference documentation. Returns the best-matching sections.",
-                {"query": {"type": "string", "maxLength": MAX_QUERY_CHARS}},
-            ),
-            _function(
-                "read_file",
-                "Read one file of the project.",
-                {"path": {"type": "string", "enum": sorted(self.workspace.files)}},
-            ),
-            _function(
-                "apply_patch",
-                "Apply one of the task's reviewed patches to the project.",
-                {"patch_id": {"type": "string", "enum": patch_ids}},
-            ),
-            _function("run_tests", "Run the project's test suite and report the result.", {}),
-        )
+        return tool_definitions(self.task, self.workspace.files)
 
     def prepare(self, name: object, arguments: object) -> PreparedCall:
         specs = {

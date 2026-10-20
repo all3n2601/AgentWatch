@@ -16,7 +16,7 @@ make agent-tasks       # list tasks and their pinned identities
 make agent-run AGENT_TASK=fix-mean-empty
 ```
 
-Settings come from the same variables as the LLM demo: `OLLAMA_URL`, `AGENTWATCH_LLM_MODEL`
+Settings come from the same variables as the Docker LLM setup: `OLLAMA_URL`, `AGENTWATCH_LLM_MODEL`
 and `AGENTWATCH_API_URL`. `--run-timeout` bounds the whole run (default 900 s). On the GPU
 laptop, follow the WSL setup in [the GPU access notes](../../docs/gpu-measurement-access.md)
 and export `OLLAMA_URL=http://127.0.0.1:11435`. Each run writes
@@ -92,13 +92,25 @@ keyed by `step_id` and `span_id`.
   tool-call (12), test (60 s) and run (900 s) limits fail the run with a redacted live reason.
   Full error text stays in local evidence. Reasons are stripped of paths and control
   characters.
-- A model request cannot be interrupted, so on cancellation or timeout its thread is
-  abandoned. This is recorded as `cleanup.abandoned_model_request`; Ollama stops generating
-  within the 512-token `num_predict` bound.
+- A model request, and the optional `/api/ps` placement reading after it, cannot be
+  interrupted, so on cancellation or timeout its thread is abandoned. An abandoned model
+  request is recorded as `cleanup.abandoned_model_request`, and Ollama stops generating
+  within the 512-token `num_predict` bound. An abandoned placement reading is recorded as
+  `unavailable`.
 - Records are delivered in the background in batches of up to 256, with bounded retries that
   reuse identical content. A batch the service rejects is resent record by record, so only the
   refused records are set aside, such as a step first reported after a remote cancellation
   closed the run. Everything is journaled, and `resend` replays a journal idempotently.
+- A run is closed only after its records are delivered. If delivery is still failing at the
+  end, the closure is journaled but not sent (sending it would make the service refuse the
+  undelivered steps), and the run reports `<state>_locally_undelivered`. `resend` replays the
+  records, then the closure. It retries once if the run's revision moved, and exits 3 unless
+  the run ends in the journaled state or another actor (such as the dashboard) closed it.
+- Every cleanup action (stopping threads, removing the workspace, ending steps, delivering,
+  closing the run) runs even if an earlier one fails. Failures are listed in
+  `cleanup_errors`, and the first error is re-raised after evidence is written.
+- Ctrl-C and SIGTERM are handled without printing or blocking: a repeated signal is ignored
+  rather than waiting on a lock the first one holds.
 - `cleanup_confirmed_by_service` stays null. The runner reports what it actually cleaned up,
   but isolation and enforced cleanup belong to A03/O03.
 
@@ -117,7 +129,9 @@ isolation sandbox**: do not add free-form edits or commands without the A03 isol
 instrumented repetitions of a task's patched test suite, with the live API running. It reports
 wall-time medians and p90s and runner CPU per repetition, with no pass/fail threshold, in
 `.data/agent-overhead/`. The fixture suite takes about 55 ms, shorter than one sampling
-interval, so the result covers per-step instrumentation, not sustained sampling.
+interval, so the result covers per-step instrumentation, not sustained sampling. Overhead
+runs keep the task's own `task_id` (dataset splits group by it); they are identified by the
+`agent-overhead-v1` configuration digest and must be excluded from training datasets.
 
 ## Tests
 

@@ -2,15 +2,18 @@
 
 import json
 import threading
+import time
 from pathlib import Path
 from urllib.error import URLError
 
 import pytest
+from agent_test_doubles import SOLVE_MEAN, ScriptedModel, chat_response
+from agentwatch_agent import runner as runner_module
 from agentwatch_agent.config import RunLimits
 from agentwatch_agent.delivery import RetryPolicy, replay_journal
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.runner import AgentRunner
-from conftest import SOLVE_MEAN, ScriptedModel, chat_response
+from agentwatch_agent.workspace import Workspace
 
 NO_SLEEP = RetryPolicy(attempts=2, initial_backoff_seconds=0, max_backoff_seconds=0)
 
@@ -109,7 +112,10 @@ def test_wrong_patch_fails_the_run_through_independent_verification(mean_task, s
     assert server.only_run().reason == (
         "Agent finished, but the runner's verification tests did not pass"
     )
-    assert step_states(server)["agent-run"] == "completed"
+    # The root step carries the run's outcome rather than reporting success.
+    root = server.only_run().steps["agent-run"]
+    assert (root.state, root.reason) == ("failed", server.only_run().reason)
+    assert step_states(server)["verify-tests"] == "completed"
     assert evidence(outcome)["verification"]["outcome"] == "failed"
 
 
@@ -286,3 +292,159 @@ def test_unreachable_api_at_registration_runs_nothing(mean_task, server, tmp_pat
     assert saved["status"] == "not_started"
     assert saved["cleanup"]["workspace_removed"] is True
     assert model.payloads == []
+
+
+# Review regressions (PR #27) --------------------------------------------------------------
+
+
+def journal_entries(outcome):
+    return [json.loads(line) for line in outcome.journal_path.read_text().splitlines()]
+
+
+def test_failed_run_defers_closure_while_its_records_are_undelivered(mean_task, server, tmp_path):
+    server.unavailable_calls = {"ingest"}
+    model = ScriptedModel([URLError("model server down")])
+    outcome = make_runner(mean_task, server, model, tmp_path).run()
+    run = server.only_run()
+    # Closing now would make the service refuse the steps it has not seen yet.
+    assert run.state == "running"
+    assert (outcome.state, outcome.delivery_complete) == ("failed_locally_undelivered", False)
+    deferred = [
+        e for e in journal_entries(outcome) if e["kind"] == "run_change" and e.get("deferred")
+    ]
+    assert [e["payload"]["state"] for e in deferred] == ["failed"]
+    server.unavailable_calls = set()
+    report = replay_journal(outcome.journal_path, server, NO_SLEEP)
+    assert (report.complete, run.state) == (True, "failed")
+    assert step_states(server) == {"agent-run": "failed", "model-call-1": "failed"}
+
+
+def test_cleanup_failure_still_closes_the_run_and_is_reported(
+    mean_task, server, tmp_path, monkeypatch
+):
+    original = Workspace.remove
+
+    def remove_then_fail(self):
+        original(self)
+        raise OSError("disk busy")
+
+    monkeypatch.setattr(Workspace, "remove", remove_then_fail)
+    with pytest.raises(OSError, match="disk busy"):
+        make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
+    assert server.only_run().state == "completed"
+    saved = json.loads((tmp_path / "run/agent-evidence.json").read_text())
+    assert saved["cleanup"]["workspace_removed"] is False
+    assert saved["cleanup_errors"] == ["OSError: disk busy"]
+
+
+def test_agent_error_is_kept_when_cleanup_also_fails(mean_task, server, tmp_path, monkeypatch):
+    original = Workspace.remove
+
+    def remove_then_fail(self):
+        original(self)
+        raise OSError("disk busy")
+
+    monkeypatch.setattr(Workspace, "remove", remove_then_fail)
+    model = ScriptedModel([KeyError("unexpected runner bug")])
+    with pytest.raises(KeyError):
+        make_runner(mean_task, server, model, tmp_path).run()
+    run = server.only_run()
+    assert (run.state, run.reason) == ("failed", "Runner error (KeyError)")
+
+
+def test_setup_failure_after_registration_closes_the_run(mean_task, server, tmp_path, monkeypatch):
+    def broken_sampler(*_args, **_kwargs):
+        raise RuntimeError("cgroup discovery failed")
+
+    monkeypatch.setattr(runner_module, "CpuResourceSampler", broken_sampler)
+    with pytest.raises(RuntimeError, match="cgroup discovery failed"):
+        make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
+    run = server.only_run()
+    assert (run.state, run.reason) == ("failed", "Runner error (RuntimeError)")
+    assert step_states(server) == {"agent-run": "failed"}
+    saved = json.loads((tmp_path / "run/agent-evidence.json").read_text())
+    assert saved["cleanup"]["workspace_removed"] is True
+    assert saved["resource_sampling"] is None
+    assert not [t for t in threading.enumerate() if t.name == "live-flusher" and t.is_alive()]
+
+
+def test_workspace_failure_runs_nothing_and_registers_no_run(
+    mean_task, server, tmp_path, monkeypatch
+):
+    def no_space(_task):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(Workspace, "create", staticmethod(no_space))
+    with pytest.raises(RunNotStarted, match="no space left"):
+        make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
+    assert server.runs == {}
+    assert json.loads((tmp_path / "run/agent-evidence.json").read_text())["status"] == "not_started"
+
+
+def test_invalid_sample_budget_is_refused_before_anything_is_created(mean_task, server, tmp_path):
+    with pytest.raises(ValueError, match="sample budget"):
+        make_runner(
+            mean_task,
+            server,
+            ScriptedModel(SOLVE_MEAN),
+            tmp_path,
+            limits=RunLimits(run_timeout_seconds=20_000),
+            sampling_interval_seconds=0.25,
+        )
+    assert server.runs == {}
+    assert not (tmp_path / "run").exists()
+
+
+def blocked_placement_model():
+    model = ScriptedModel(SOLVE_MEAN)
+    model.placement_block = threading.Event()
+    return model
+
+
+def test_cancellation_is_not_delayed_by_a_placement_reading(mean_task, server, tmp_path):
+    model = blocked_placement_model()
+    runner = make_runner(mean_task, server, model, tmp_path)
+
+    def cancel_during_reading():
+        assert model.placement_started.wait(10)
+        runner.request_cancel("signal", "Cancelled by operator signal SIGINT")
+
+    helper = threading.Thread(target=cancel_during_reading)
+    helper.start()
+    started = time.monotonic()
+    try:
+        outcome = runner.run()
+    finally:
+        model.placement_block.set()
+        helper.join()
+    assert outcome.state == "cancelled"
+    assert time.monotonic() - started < 5, "placement read held the runner after cancellation"
+    placement = evidence(outcome)["model_calls"][0]["model_placement"]
+    assert placement["status"] == "unavailable"
+    assert placement["reason"].startswith("Not read: Cancelled")
+
+
+def test_run_deadline_is_not_delayed_by_a_placement_reading(mean_task, server, tmp_path):
+    model = blocked_placement_model()
+    runner = make_runner(
+        mean_task, server, model, tmp_path, limits=RunLimits(run_timeout_seconds=0.5)
+    )
+    started = time.monotonic()
+    try:
+        outcome = runner.run()
+    finally:
+        model.placement_block.set()
+    assert time.monotonic() - started < 5
+    assert outcome.state == "failed"
+    assert server.only_run().reason == "Run exceeded its 0.5 s time limit"
+    assert evidence(outcome)["model_calls"][0]["model_placement"]["status"] == "unavailable"
+
+
+def test_failed_model_request_still_records_placement(mean_task, server, tmp_path):
+    outcome = make_runner(mean_task, server, ScriptedModel([URLError("refused")]), tmp_path).run()
+    placement = evidence(outcome)["model_calls"][0]["model_placement"]
+    assert placement == {
+        "source": "test double",
+        "status": "unavailable",
+        "reason": "not a model server",
+    }

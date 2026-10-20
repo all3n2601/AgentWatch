@@ -11,6 +11,8 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Callable
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -25,6 +27,7 @@ from agentwatch_agent.config import (
     DEFAULT_SAMPLING_INTERVAL_SECONDS,
     RunConfiguration,
     RunLimits,
+    validate_sample_budget,
 )
 from agentwatch_agent.delivery import (
     TRANSIENT_ERRORS,
@@ -42,7 +45,7 @@ from agentwatch_agent.model import (
     ModelResponseError,
     RequestedCall,
     parse_reply,
-    wait_for_model,
+    wait_interruptibly,
 )
 from agentwatch_agent.prompts import SYSTEM_PROMPT, task_message
 from agentwatch_agent.redaction import redact_reason
@@ -79,6 +82,7 @@ LIMITATIONS = (
     ),
     "Temperature 0 does not guarantee repeatable model output or timing",
 )
+VERIFICATION_FAILED = "Agent finished, but the runner's verification tests did not pass"
 # Raised by urllib/json/Ollama helpers for a failed or unusable model request.
 MODEL_REQUEST_ERRORS = (OSError, http.client.HTTPException, RuntimeError, ValueError)
 
@@ -146,6 +150,10 @@ class AgentRunner:
         proc: Path = Path("/proc"),
         cgroup_root: Path = Path("/sys/fs/cgroup"),
     ):
+        # Validated before anything is created, so invalid settings leave nothing behind.
+        validate_sample_budget(
+            (limits or RunLimits()).run_timeout_seconds, sampling_interval_seconds
+        )
         self.task = task
         self.model = model
         self.transport = transport
@@ -161,34 +169,24 @@ class AgentRunner:
         self.cgroup_root = cgroup_root
         self.cancellation = CancellationState()
         self.evidence: dict = {}
+        self._tools: tuple[dict, ...] = ()
+        self._background: tuple = ()
 
     def request_cancel(self, source: str, reason: str) -> None:
-        """Thread- and signal-safe: stop at the next checkpoint and clean up."""
+        """Thread-safe: stop at the next checkpoint and clean up."""
         self.cancellation.cancel(source, reason)
+
+    def request_cancel_from_signal(self, source: str, reason: str) -> None:
+        """Safe to call from a signal handler, including for repeated signals."""
+        self.cancellation.cancel_from_signal(source, reason)
 
     # Run orchestration ---------------------------------------------------------------------
 
     def run(self) -> RunOutcome:
+        """Register, execute and close one live run; evidence is written on every path."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = self.output_dir / EVIDENCE_FILE
         journal_path = self.output_dir / JOURNAL_FILE
-        journal = Journal(journal_path)
-        workspace = Workspace.create(self.task)
-        dispatcher = ToolDispatcher(
-            self.task, workspace, DocumentIndex.from_directory(self.task.docs_dir), self.limits
-        )
-        configuration = RunConfiguration(
-            task_id=self.task.task_id,
-            task_content_sha256=self.task.content_sha256,
-            model=self.model.name,
-            system_prompt=SYSTEM_PROMPT,
-            tools=dispatcher.definitions(),
-            chat_options=self.chat_options,
-            limits=self.limits,
-            sampling_interval_seconds=self.sampling_interval_seconds,
-            cancel_poll_seconds=self.cancel_poll_seconds,
-        )
-        resources = self._resources()
         self.evidence = {
             "status": "starting",
             "task": {
@@ -197,36 +195,63 @@ class AgentRunner:
                 "revision": self.task.revision,
                 "content_sha256": self.task.content_sha256,
             },
-            "configuration": configuration.as_dict(),
-            "configuration_digest": configuration.digest(),
             "model_endpoint": self.model.endpoint,
             "clock_id": self.clock.clock_id,
-            "resources": [r.model_dump() for r in resources.values()],
             "model_calls": [],
             "tool_calls": [],
             "limitations": list(LIMITATIONS),
         }
-        registration = RunCreate(
-            contract_version=CONTRACT_VERSION,
-            request_id=uuid4(),
-            task_id=self.task.task_id,
-            configuration_digest=configuration.digest(),
-            clock_ids=[self.clock.clock_id],
-            resources=list(resources.values()),
-        )
-        try:
-            session = RunSession.open(self.transport, registration, journal, self.retry)
-        # Evidence of the failed attempt is written, then the error is re-raised.
-        except Exception as error:
-            # Nothing ran; keep the attempt's evidence and leave no workspace behind.
-            self.evidence |= {
-                "status": "not_started",
-                "error": f"Live run registration failed: {type(error).__name__}: {error}",
-                "cleanup": {"workspace_removed": workspace.remove()},
-            }
-            write_json_atomic(evidence_path, self.evidence)
-            journal.close()
-            raise RunNotStarted(f"{type(error).__name__}: {error}") from error
+        with ExitStack() as owned:
+            journal = owned.enter_context(closing(Journal(journal_path)))
+            workspace: Workspace | None = None
+            try:
+                workspace = Workspace.create(self.task)
+                dispatcher = ToolDispatcher(
+                    self.task,
+                    workspace,
+                    DocumentIndex.from_directory(self.task.docs_dir),
+                    self.limits,
+                )
+                self._tools = dispatcher.definitions()
+                resources = self._resources()
+                configuration = self._configuration()
+                self.evidence |= {
+                    "configuration": configuration.as_dict(),
+                    "configuration_digest": configuration.digest(),
+                    "resources": [r.model_dump() for r in resources.values()],
+                }
+                registration = RunCreate(
+                    contract_version=CONTRACT_VERSION,
+                    request_id=uuid4(),
+                    task_id=self.task.task_id,
+                    configuration_digest=configuration.digest(),
+                    clock_ids=[self.clock.clock_id],
+                    resources=list(resources.values()),
+                )
+                session = RunSession.open(self.transport, registration, journal, self.retry)
+            # Nothing ran: keep the attempt's evidence, leave no workspace, and re-raise.
+            except Exception as error:
+                self.evidence |= {
+                    "status": "not_started",
+                    "error": f"Run setup or registration failed: {type(error).__name__}: {error}",
+                    "cleanup": {"workspace_removed": workspace.remove() if workspace else True},
+                }
+                write_json_atomic(evidence_path, self.evidence)
+                raise RunNotStarted(f"{type(error).__name__}: {error}") from error
+            return self._run_registered(
+                session, journal, workspace, dispatcher, resources, evidence_path, journal_path
+            )
+
+    def _run_registered(
+        self,
+        session: RunSession,
+        journal: Journal,
+        workspace: Workspace,
+        dispatcher: ToolDispatcher,
+        resources: dict[str, ResourceRegistration],
+        evidence_path: Path,
+        journal_path: Path,
+    ) -> RunOutcome:
         self.evidence["run_id"] = str(session.run_id)
         self.evidence["trace_id"] = trace_id = new_trace_id()
         delivery = LiveDelivery(self.transport, session.run_id, journal, retry=self.retry)
@@ -237,37 +262,40 @@ class AgentRunner:
             clock=self.clock,
             emit=delivery.emit,
         )
-        root = steps.submit("agent-run", "other", parent=None, resource=None)
-        sampler = CpuResourceSampler(
-            delivery.emit,
-            run_id=session.run_id,
-            task_id=self.task.task_id,
-            clock=self.clock,
-            resource=resources["tool_host"],
-            interval_seconds=self.sampling_interval_seconds,
-            proc=self.proc,
-            cgroup_root=self.cgroup_root,
-        )
-        watcher = CancellationWatcher(session, self.cancellation, self.cancel_poll_seconds)
-        flusher = PeriodicFlusher(delivery, self.flush_interval_seconds)
-        self._background = (flusher, sampler, watcher)
-        deadline = time.monotonic() + self.limits.run_timeout_seconds
-
-        self._tools = dispatcher.definitions()
-        state, reason, task_passed, unexpected = "failed", None, False, None
-        final_state = "failed"
-        flusher.__enter__()
-        sampler.__enter__()
-        watcher.__enter__()
+        state, reason, task_passed = "failed", None, False
+        errors: list[BaseException] = []
+        flusher: PeriodicFlusher | None = None
+        sampler: CpuResourceSampler | None = None
+        watcher: CancellationWatcher | None = None
+        background = ExitStack()
         try:
+            root = steps.submit("agent-run", "other", parent=None, resource=None)
+            flusher = background.enter_context(
+                PeriodicFlusher(delivery, self.flush_interval_seconds)
+            )
+            sampler = background.enter_context(
+                CpuResourceSampler(
+                    delivery.emit,
+                    run_id=session.run_id,
+                    task_id=self.task.task_id,
+                    clock=self.clock,
+                    resource=resources["tool_host"],
+                    interval_seconds=self.sampling_interval_seconds,
+                    proc=self.proc,
+                    cgroup_root=self.cgroup_root,
+                )
+            )
+            watcher = background.enter_context(
+                CancellationWatcher(session, self.cancellation, self.cancel_poll_seconds)
+            )
+            self._background = (flusher, sampler, watcher)
+            deadline = time.monotonic() + self.limits.run_timeout_seconds
             if session.change_state("running", None) != "running":
                 raise RunCancelled(session.reason or f"Run was {session.state} before it started")
             steps.start(root)
-            context = _RunContext(steps, root, resources, dispatcher, deadline)
-            task_passed = self._execute(context)
+            task_passed = self._execute(_RunContext(steps, root, resources, dispatcher, deadline))
             state = "completed" if task_passed else "failed"
-            if not task_passed:
-                reason = "Agent finished, but the runner's verification tests did not pass"
+            reason = None if task_passed else VERIFICATION_FAILED
         except RunCancelled as cancelled:
             request = self.cancellation.request
             state, reason = "cancelled", request.reason if request else cancelled.reason
@@ -276,39 +304,23 @@ class AgentRunner:
             self.evidence["failure_detail"] = failure.detail
         # Recorded and closed as a failed run, then re-raised below: runner bugs must surface.
         except Exception as error:  # noqa: BLE001
-            unexpected = error
+            errors.append(error)
             state, reason = "failed", f"Runner error ({type(error).__name__})"
             self.evidence["failure_detail"] = f"{type(error).__name__}: {error}"
         finally:
-            try:
-                watcher.__exit__(None, None, None)
-                sampler.__exit__(None, None, None)
-                self.evidence["cleanup"] = {
-                    "workspace_removed": workspace.remove(),
-                    "test_process_groups": "killed by run_project_tests on every exit path",
-                    "abandoned_model_request": any(
-                        call.get("abandoned_request") for call in self.evidence["model_calls"]
-                    ),
-                }
-                for step in steps.unfinished():
-                    if state == "cancelled":
-                        steps.cancel(step, reason or "Run cancelled")
-                    else:
-                        steps.fail(step, reason or "Run failed")
-                flusher.__exit__(None, None, None)
-                delivery.flush()
-                final_state = self._close_run(session, state, reason)
-            finally:
-                self._record_outcome(
-                    final_state, reason, task_passed, delivery, sampler, steps, watcher
-                )
-                write_json_atomic(evidence_path, self.evidence)
-                journal.close()
-        if unexpected is not None:
-            raise unexpected
-        for component in (flusher, sampler, watcher):
-            if component.error is not None:
-                raise component.error
+            self._attempt(errors, background.close)
+            errors.extend(
+                component.error
+                for component in (flusher, sampler, watcher)
+                if component is not None and component.error is not None
+            )
+            final_state = self._finish(session, steps, delivery, workspace, state, reason, errors)
+            self._record_outcome(
+                final_state, reason, task_passed, delivery, sampler, steps, watcher
+            )
+            write_json_atomic(evidence_path, self.evidence)
+        if errors:
+            raise errors[0]
         return RunOutcome(
             run_id=session.run_id,
             state=final_state,
@@ -319,15 +331,80 @@ class AgentRunner:
             journal_path=journal_path,
         )
 
+    def _configuration(self) -> RunConfiguration:
+        return RunConfiguration(
+            task_id=self.task.task_id,
+            task_content_sha256=self.task.content_sha256,
+            model=self.model.name,
+            system_prompt=SYSTEM_PROMPT,
+            tools=self._tools,
+            chat_options=self.chat_options,
+            limits=self.limits,
+            sampling_interval_seconds=self.sampling_interval_seconds,
+            cancel_poll_seconds=self.cancel_poll_seconds,
+        )
+
+    def _attempt[Result](
+        self,
+        errors: list[BaseException],
+        operation: Callable[[], Result],
+        default: Result | None = None,
+    ) -> Result | None:
+        """Run one cleanup action so a failure cannot skip the actions after it."""
+        try:
+            return operation()
+        # Recorded in evidence and re-raised by the caller once every action has run.
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+            self.evidence.setdefault("cleanup_errors", []).append(
+                f"{type(error).__name__}: {error}"[:500]
+            )
+            return default
+
+    def _finish(
+        self,
+        session: RunSession,
+        steps: StepRecorder,
+        delivery: LiveDelivery,
+        workspace: Workspace,
+        state: str,
+        reason: str | None,
+        errors: list[BaseException],
+    ) -> str:
+        self.evidence["cleanup"] = {
+            "workspace_removed": self._attempt(errors, workspace.remove, False),
+            "test_process_groups": "killed by run_project_tests on every exit path",
+            "abandoned_model_request": any(
+                call.get("abandoned_request") for call in self.evidence["model_calls"]
+            ),
+        }
+
+        def end_unfinished_steps() -> None:
+            for step in steps.unfinished():
+                if state == "cancelled":
+                    steps.cancel(step, reason or "Run cancelled")
+                else:
+                    steps.fail(step, reason or "Run failed")
+
+        self._attempt(errors, end_unfinished_steps)
+        delivered = self._attempt(errors, delivery.flush, False)
+        final_state = self._attempt(
+            errors, lambda: self._close_run(session, state, reason, bool(delivered))
+        )
+        if final_state is None:
+            self.evidence["run_state_delivered"] = False
+            return f"{state}_locally_undelivered"
+        return final_state
+
     def _record_outcome(
         self,
         final_state: str,
         reason: str | None,
         task_passed: bool,
         delivery: LiveDelivery,
-        sampler: CpuResourceSampler,
+        sampler: CpuResourceSampler | None,
         steps: StepRecorder,
-        watcher: CancellationWatcher,
+        watcher: CancellationWatcher | None,
     ) -> None:
         stats = delivery.stats()
         self.evidence |= {
@@ -335,7 +412,8 @@ class AgentRunner:
             "reason": redact_reason(reason) if reason else None,
             "task_passed": task_passed,
             "cancellation": self._cancellation_evidence(watcher),
-            "resource_sampling": sampler.summary(),
+            # None when the run failed before sampling started, distinct from zero samples.
+            "resource_sampling": sampler.summary() if sampler is not None else None,
             "delivery": {
                 "complete": stats.complete and self.evidence.get("run_state_delivered", True),
                 "emitted": stats.emitted,
@@ -381,11 +459,14 @@ class AgentRunner:
             ),
         }
 
-    def _close_run(self, session: RunSession, state: str, reason: str | None) -> str:
-        """Close the live run, or report why the service could not record the closure.
+    def _close_run(
+        self, session: RunSession, state: str, reason: str | None, delivered: bool
+    ) -> str:
+        """Close the live run, or defer the closure until its evidence can be delivered.
 
-        The change is journaled even when it cannot be delivered, so a later `resend` replays
-        the outstanding records and then this closure, in order.
+        A failed or cancelled closure makes the service refuse steps it has not yet seen, so
+        while records are still queued the closure is only journaled: `resend` replays the
+        outstanding records first and then this closure, in order.
         """
         request = self.cancellation.request
         try:
@@ -393,6 +474,11 @@ class AgentRunner:
                 # Already closed remotely; adopt the server's state instead of a new change.
                 session.refresh()
                 return session.state
+            if not delivered:
+                session.defer_change(state, reason)
+                self.evidence["run_state_delivered"] = False
+                self.evidence["run_state_error"] = "Closure deferred until records are resent"
+                return f"{state}_locally_undelivered"
             result = session.change_state(state, reason)
             if result not in TERMINAL_RUN_STATES:
                 # The service refused completion because some step evidence never arrived.
@@ -407,14 +493,14 @@ class AgentRunner:
             self.evidence["run_state_error"] = f"{type(error).__name__}: {error}"[:500]
             return f"{state}_locally_undelivered"
 
-    def _cancellation_evidence(self, watcher: CancellationWatcher) -> dict:
+    def _cancellation_evidence(self, watcher: CancellationWatcher | None) -> dict:
         request = self.cancellation.request
         return {
             "requested": request is not None,
             "source": request.source if request else None,
             "reason": redact_reason(request.reason) if request else None,
-            "poll_failures": watcher.poll_failures,
-            "last_poll_error": watcher.last_error,
+            "poll_failures": watcher.poll_failures if watcher else None,
+            "last_poll_error": watcher.last_error if watcher else None,
             # The runner stopped its own work; this is not service-confirmed cleanup.
             "cleanup_confirmed_by_service": None,
         }
@@ -460,7 +546,11 @@ class AgentRunner:
                 tool_calls += 1
                 messages.append(self._tool_step(context, call, tool_calls))
         passed = self._verify(context)
-        context.steps.complete(context.root)
+        if passed:
+            context.steps.complete(context.root)
+        else:
+            # The root step carries the run's outcome, so it fails with the run's reason.
+            context.steps.fail(context.root, VERIFICATION_FAILED)
         return passed
 
     def _model_step(self, context: _RunContext, messages: list[dict], index: int) -> ModelReply:
@@ -484,7 +574,7 @@ class AgentRunner:
         steps.start(step)
         started = time.monotonic()
         try:
-            response = wait_for_model(
+            response = wait_interruptibly(
                 lambda: self.model.chat(payload),
                 cancel=self.cancellation.event,
                 deadline_monotonic=context.deadline_monotonic,
@@ -499,11 +589,14 @@ class AgentRunner:
             raise
         except ModelResponseError as error:
             steps.fail(step, "Model server returned a malformed chat response")
+            record["model_placement"] = self._observe_placement(context.deadline_monotonic)
             raise RunFailure("Model server returned a malformed chat response", str(error))
         except MODEL_REQUEST_ERRORS as error:
             reason = f"Model request failed ({type(error).__name__})"
             record["error"] = f"{type(error).__name__}: {error}"[:MAX_EVIDENCE_TEXT]
             steps.fail(step, reason)
+            # Where the model was when its request failed helps diagnose the failure.
+            record["model_placement"] = self._observe_placement(context.deadline_monotonic)
             raise RunFailure(reason, record["error"]) from error
         finally:
             record["request_wall_seconds"] = time.monotonic() - started
@@ -511,8 +604,28 @@ class AgentRunner:
         record["metrics"] = reply.metrics
         record["requested_tool_calls"] = len(reply.calls)
         # Read after the step closed so the extra request is not timed as inference.
-        record["model_placement"] = self.model.observe_placement()
+        record["model_placement"] = self._observe_placement(context.deadline_monotonic)
         return reply
+
+    def _observe_placement(self, deadline_monotonic: float) -> dict | None:
+        """Read optional model placement without delaying cancellation or the run deadline.
+
+        Placement is ancillary evidence: an interrupted or skipped reading is recorded as
+        unavailable, and the next checkpoint ends the run for the actual reason.
+        """
+        try:
+            return wait_interruptibly(
+                self.model.observe_placement,
+                cancel=self.cancellation.event,
+                deadline_monotonic=deadline_monotonic,
+                activity="a model placement reading",
+            )
+        except (RunCancelled, RunFailure) as interrupted:
+            return {
+                "source": "model placement",
+                "status": "unavailable",
+                "reason": f"Not read: {interrupted}",
+            }
 
     def _tool_step(self, context: _RunContext, call: RequestedCall, index: int) -> dict:
         steps, root, dispatcher = context.steps, context.root, context.dispatcher

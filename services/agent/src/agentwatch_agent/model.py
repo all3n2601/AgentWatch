@@ -6,20 +6,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from agentwatch_worker.llm_demo import observe_model_placement, ollama_chat, ollama_loaded_models
+from agentwatch_worker.ollama import (
+    OLLAMA_METRIC_KEYS,
+    observe_model_placement,
+    ollama_chat,
+    ollama_loaded_models,
+)
 
 from agentwatch_agent.errors import RunCancelled, RunFailure
-
-# Server-reported fields kept as evidence; durations are Ollama's nanoseconds, unconverted.
-OLLAMA_METRIC_KEYS = (
-    "total_duration",
-    "load_duration",
-    "prompt_eval_count",
-    "prompt_eval_duration",
-    "eval_count",
-    "eval_duration",
-    "done_reason",
-)
 
 
 class ChatModel(Protocol):
@@ -86,18 +80,19 @@ def parse_reply(response: object) -> ModelReply:
     return ModelReply(history, content, tuple(calls), metrics)
 
 
-def wait_for_model(
-    request: Callable[[], dict],
+def wait_interruptibly[Result](
+    request: Callable[[], Result],
     *,
     cancel: threading.Event,
     deadline_monotonic: float,
+    activity: str = "a model response",
     poll_seconds: float = 0.1,
-) -> dict:
-    """Run a blocking model request while staying responsive to cancellation and the deadline.
+) -> Result:
+    """Run a blocking request while staying responsive to cancellation and the deadline.
 
     A synchronous HTTP request cannot be interrupted, so on cancellation or timeout the
-    request thread is abandoned (daemon) and may finish in the background; Ollama stops
-    generating within the request's num_predict bound. Callers record this as evidence.
+    request thread is abandoned (daemon) and may finish in the background; for chat, Ollama
+    stops generating within the request's num_predict bound. Callers record this as evidence.
     """
     outcome: dict = {}
 
@@ -108,16 +103,20 @@ def wait_for_model(
         except BaseException as error:  # noqa: BLE001
             outcome["error"] = error
 
-    thread = threading.Thread(target=target, name="model-request", daemon=True)
+    if cancel.is_set():
+        raise RunCancelled(f"Cancelled before waiting for {activity}")
+    if time.monotonic() >= deadline_monotonic:
+        raise RunFailure(f"Run time limit reached before waiting for {activity}")
+    thread = threading.Thread(target=target, name="interruptible-request", daemon=True)
     thread.start()
     while thread.is_alive():
         thread.join(poll_seconds)
         if not thread.is_alive():
             break
         if cancel.is_set():
-            raise RunCancelled("Cancelled while waiting for a model response")
+            raise RunCancelled(f"Cancelled while waiting for {activity}")
         if time.monotonic() >= deadline_monotonic:
-            raise RunFailure("Run time limit reached while waiting for a model response")
+            raise RunFailure(f"Run time limit reached while waiting for {activity}")
     if "error" in outcome:
         raise outcome["error"]
     return outcome["response"]

@@ -5,6 +5,8 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 
+from agentwatch_worker.ollama import CHAT_TIMEOUT_SECONDS
+
 RUNNER_VERSION = "agent-runner-v1"
 CONTRACT_VERSION = "live-contracts-v1"
 DEFAULT_MODEL = "qwen3:1.7b"
@@ -13,8 +15,7 @@ DEFAULT_MODEL = "qwen3:1.7b"
 # from 8192 reduced model memory (2.3 to 1.8 GiB). CPU inference speed in Docker on the
 # development Mac still varied 3-10x between runs with this setting; the cause is unknown.
 DEFAULT_CHAT_OPTIONS = {"temperature": 0, "num_ctx": 4096, "num_predict": 512}
-# agentwatch_worker.llm_demo.ollama_chat, reused here, bounds each socket wait to 300 s.
-MODEL_SOCKET_TIMEOUT_SECONDS = 300
+MODEL_SOCKET_TIMEOUT_SECONDS = CHAT_TIMEOUT_SECONDS
 DEFAULT_SAMPLING_INTERVAL_SECONDS = 0.25
 DEFAULT_CANCEL_POLL_SECONDS = 1.0
 # The live API retains at most 100,000 records per run; keep sampling well below that so step
@@ -36,6 +37,20 @@ def _positive_seconds(name: str, value: object) -> None:
         or value <= 0
     ):
         raise ValueError(f"{name} must be finite and positive seconds")
+
+
+def validate_sample_budget(run_timeout_seconds: float, sampling_interval_seconds: float) -> None:
+    """Refuse settings whose resource samples could exceed the live per-run record budget."""
+    _positive_seconds("run_timeout_seconds", run_timeout_seconds)
+    _positive_seconds("sampling_interval_seconds", sampling_interval_seconds)
+    rounds = run_timeout_seconds / sampling_interval_seconds
+    if rounds * SAMPLE_RECORDS_PER_ROUND > MAX_SAMPLE_RECORDS_PER_RUN:
+        longest = MAX_SAMPLE_RECORDS_PER_RUN / SAMPLE_RECORDS_PER_ROUND * sampling_interval_seconds
+        raise ValueError(
+            f"A {run_timeout_seconds:g} s run sampled every {sampling_interval_seconds:g} s "
+            f"exceeds the {MAX_SAMPLE_RECORDS_PER_RUN}-record sample budget per live run; "
+            f"use at most {longest:g} s"
+        )
 
 
 @dataclass(frozen=True)
@@ -82,12 +97,7 @@ class RunConfiguration:
             raise ValueError("model must be nonblank")
         _positive_seconds("sampling_interval_seconds", self.sampling_interval_seconds)
         _positive_seconds("cancel_poll_seconds", self.cancel_poll_seconds)
-        rounds = self.limits.run_timeout_seconds / self.sampling_interval_seconds
-        if rounds * SAMPLE_RECORDS_PER_ROUND > MAX_SAMPLE_RECORDS_PER_RUN:
-            raise ValueError(
-                "run_timeout_seconds / sampling_interval_seconds would emit more resource "
-                f"samples than the {MAX_SAMPLE_RECORDS_PER_RUN}-record budget per live run"
-            )
+        validate_sample_budget(self.limits.run_timeout_seconds, self.sampling_interval_seconds)
 
     def as_dict(self) -> dict:
         return asdict(self)

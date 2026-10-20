@@ -816,7 +816,7 @@ export function Dashboard({
                 title="No recorded evidence in this view"
                 detail={
                   page === "agents"
-                    ? "Record a tool-calling run with make record-llm, then refresh."
+                    ? "No saved run has agent evidence. New agent runs (make agent-run) report to the live API."
                     : "Record an experiment and refresh, or choose a wider time range."
                 }
               />

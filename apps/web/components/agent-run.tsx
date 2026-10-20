@@ -125,11 +125,12 @@ export function AgentRun({
           No agent evidence for this run
         </h2>
         <p className="max-w-md text-sm text-muted-foreground">
-          Select a recorded Qwen3 run to explore its model requests and
-          conversation. This run has no valid saved agent evidence.
+          This run has no valid saved agent evidence. Saved Qwen3 runs from the
+          earlier tool-calling demo show their model requests and conversation
+          here. New agent runs report to the live API instead.
         </p>
         <code className="rounded border bg-muted/30 px-3 py-2 text-xs">
-          make record-llm
+          make agent-run
         </code>
       </Card>
     );

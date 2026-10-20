@@ -14,10 +14,10 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 import uvicorn
+from agent_test_doubles import SOLVE_MEAN, ScriptedModel
 from agentwatch_agent.delivery import RetryPolicy, replay_journal
 from agentwatch_agent.runner import AgentRunner
 from agentwatch_sdk import LiveClient, RunChange
-from conftest import SOLVE_MEAN, ScriptedModel
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
@@ -153,6 +153,7 @@ def test_replaying_a_delivered_journal_adds_nothing(mean_task, live_api, tmp_pat
     before = len(all_records(live_api, outcome.run_id))
     report = replay_journal(outcome.journal_path, live_api, NO_SLEEP)
     assert report.run_id == outcome.run_id
-    assert report.rejected_batches == []
+    assert report.rejections == []
+    assert report.complete and report.final_state == "completed"
     assert len(all_records(live_api, outcome.run_id)) == before
     assert live_api.get_run(outcome.run_id).state == "completed"

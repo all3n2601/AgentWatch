@@ -1,6 +1,6 @@
 # 0002: Instrument the coding agent with live steps, local evidence and reviewed patches
 
-Date: October 16, 2026. Status: proposed for A02 review.
+Date: October 16, 2026; revised October 20, 2026 after review. Status: proposed for A02 review.
 
 A02 needs one real agent task whose model calls, tool calls and retrieval are correlated in
 the B01 live API, with configuration and failure evidence preserved. Three constraints shaped
@@ -22,12 +22,18 @@ copy through `services/sandbox`. It never supplies code or commands. The runner 
 tests itself, and only that verification decides task success.
 
 Delivery is background, batched and idempotent, with an append-only journal for replay after
-an outage. A rejected batch is resent record by record, so a closure race loses only the
-refused records.
+an outage. A rejected batch is resent record by record, both live and on replay, so a closure
+race loses only the refused records. A run is closed only once its records are delivered:
+otherwise the closure is journaled, and `resend` sends it after the records, then compares
+the run's actual state with the journaled closure.
 
 Consequences: live consumers see correlated lifecycle and timing without model metrics, which
 stay local until a contract version adds them. The tasks are small reviewed fixtures, not
-open-ended coding. Retrieval timing does not represent a network vector database. The
-existing `llm_demo` tool loop remains a separate CPU-experiment smoke test until its owner
-decides whether to migrate it onto this runner. Free-form edits and commands remain out of
-scope until A03 provides isolation. See [the runner README](../../services/agent/README.md).
+open-ended coding. Retrieval timing does not represent a network vector database. Decided
+in review (Benoy, owner of the former demo): the repository keeps one agent loop. The
+`llm_demo` single-tool loop and its `demo-llm`/`record-llm` targets are removed; its Ollama
+helpers move to `agentwatch_worker.ollama`, and the GPU diagnostics drive this runner.
+Previously saved demo runs remain viewable in the dashboard's Agent tab, but new agent runs
+reach only the live API until the live dashboard view (F02) consumes them. Free-form edits and
+commands remain out of scope until A03 provides isolation. See
+[the runner README](../../services/agent/README.md).
