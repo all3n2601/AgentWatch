@@ -4,8 +4,10 @@ import { z } from "zod";
 // (docs/shared-event-contracts.md). Validation is deliberately light: the B01
 // service owns identity, conflict, retry and transition rejection. This adapter
 // parses records safely, applies each step's contiguous revision prefix and
-// reports gaps. TODO(B01 merge): replace the local schema's inferred type with
-// the generated StepEvent type from @agentwatch/sdk.
+// reports gaps. The local schema matches the StepEvent type that B01 (#25)
+// generates in @agentwatch/sdk. TODO(F02): when F02 connects the live read
+// API, type the parsed records with the SDK's StepEvent instead of the local
+// inferred type.
 
 export const stepStates = [
   "queued",
