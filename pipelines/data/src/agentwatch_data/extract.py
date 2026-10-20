@@ -227,13 +227,24 @@ def validate(
     Validation is strict and JSON-mode: the ingestion contracts would otherwise turn true
     into 1 and "10" into 10, so evidence of the wrong type would pass every later check.
     """
-    run = RunResult.model_validate_json(json.dumps(result), strict=True)
-    checked = [
-        Sample.model_validate_json(json.dumps(sample), strict=True).model_dump(mode="json")
-        for sample in samples
-    ]
+    try:
+        run = RunResult.model_validate_json(json.dumps(result), strict=True)
+        checked = [
+            Sample.model_validate_json(json.dumps(sample), strict=True).model_dump(mode="json")
+            for sample in samples
+        ]
+    except ArithmeticError as error:  # the contract converts nanoseconds to float seconds
+        raise ValueError(f"Evidence holds a number out of range: {error}") from error
     check_experiment(run.model_dump(mode="json"), kind)
-    order = sorted(range(len(samples)), key=lambda index: checked[index]["timestamp_ns"])
+    # Samples at one timestamp are ordered by their raw content, so the evidence hash never
+    # depends on the order of lines in the samples file.
+    order = sorted(
+        range(len(samples)),
+        key=lambda index: (
+            checked[index]["timestamp_ns"],
+            json.dumps(samples[index], sort_keys=True),
+        ),
+    )
     normalized_samples = collapse_duplicate_samples([checked[index] for index in order])
     normalized_result = run.model_dump(mode="json")
     if telemetry_status is None:
@@ -282,16 +293,23 @@ def kind_for_directory(name: str) -> str | None:
 def run_directories(data_dir: Path, extraction: Extraction) -> list[Path]:
     """Every directory under data_dir holding results.json, without following links.
 
-    A linked run directory would otherwise vanish without a trace, so it is rejected.
+    Runs inside a linked or unreadable directory would otherwise vanish without a trace, so
+    each such directory is rejected; an unreadable data_dir fails the source.
     """
+
+    def unreadable(error: OSError) -> None:
+        if Path(error.filename) == data_dir:
+            raise ExtractionError(f"Local evidence directory {data_dir} cannot be read: {error}")
+        reject(extraction, str(error.filename), f"Directory cannot be read: {error.strerror}")
+
     found = []
-    for root, directories, files in os.walk(data_dir):  # does not follow directory links
+    for root, directories, files in os.walk(data_dir, onerror=unreadable):  # links not followed
         # Hidden directories hold staging or tool state, never evidence; DVC excludes them too.
         directories[:] = sorted(name for name in directories if not name.startswith("."))
         for name in directories:
             linked = Path(root) / name
-            if linked.is_symlink() and (linked / RESULTS_FILE).exists():
-                reason = "Run directory is a symbolic link, which is not followed; copy it"
+            if linked.is_symlink():
+                reason = "Directory is a symbolic link, which is not followed; copy it"
                 reject(extraction, str(linked), reason)
         if RESULTS_FILE in files:
             found.append(Path(root))

@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import urllib.error
 from uuid import uuid4
 
@@ -188,6 +189,35 @@ def test_hash_changes_when_telemetry_changes(result):
 def test_samples_are_sorted_by_timestamp(result):
     run = extract.validate(result, [sample(20), sample(0), sample(10)], "cpu")
     assert [s["timestamp_ns"] for s in run.samples] == [BASE_NS, BASE_NS + 10, BASE_NS + 20]
+
+
+def test_samples_at_one_timestamp_hash_the_same_in_any_line_order(result):
+    """Equal after normalization (1 and 1.0), so they collapse; their raw order must not
+    change the evidence hash, or the evidence store would refuse evidence it already holds."""
+    samples = [sample(0, 1), sample(0, 1.0), sample(10)]
+    first = extract.validate(result, samples, "cpu")
+    second = extract.validate(result, [samples[1], samples[0], samples[2]], "cpu")
+    assert first.source_sha256 == second.source_sha256
+    assert len(first.samples) == 2
+
+
+@pytest.mark.parametrize(
+    "timing",
+    [
+        {"started_ns": 10**400, "finished_ns": 10**400 + 999_000_000},  # the moment overflows
+        {"finished_ns": BASE_NS + 10**318},  # only the duration does
+    ],
+)
+def test_a_timestamp_too_large_for_seconds_is_rejected_not_fatal(tmp_path, result, timing):
+    """The review's reproduction: one run's nanoseconds overflow a float; the others extract."""
+    write_run(tmp_path / "cpu-good", make_result())
+    result["clean"] |= timing
+    write_run(tmp_path / "cpu-bad", result)
+    extraction = extract_local(tmp_path)
+    assert [run.origin for run in extraction.runs] == [str(tmp_path / "cpu-good")]
+    [rejection] = extraction.rejections
+    assert rejection.origin == str(tmp_path / "cpu-bad")
+    assert "Evidence holds a number out of range" in rejection.reason
 
 
 def test_identical_duplicate_samples_are_collapsed(result):
@@ -603,6 +633,44 @@ def test_linked_run_directories_are_rejected_not_skipped(tmp_path, result):
     assert extraction.runs == []
     [rejection] = extraction.rejections
     assert rejection.origin.endswith("cpu-linked") and "symbolic link" in rejection.reason
+
+
+def test_a_linked_folder_of_runs_is_rejected_not_skipped(tmp_path, result):
+    write_run(tmp_path / "outside" / "batch" / "coding-x", make_result("coding"))
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "batch").symlink_to(tmp_path / "outside" / "batch", target_is_directory=True)
+    extraction = extract_local(data)
+    assert extraction.runs == []
+    [rejection] = extraction.rejections
+    assert rejection.origin == str(data / "batch") and "symbolic link" in rejection.reason
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read anything")
+def test_an_unreadable_run_directory_is_rejected_not_skipped(tmp_path, result):
+    write_run(tmp_path / "cpu-good", make_result())
+    private = tmp_path / "cpu-private"
+    write_run(private, result)
+    private.chmod(0)
+    try:
+        extraction = extract_local(tmp_path)
+    finally:
+        private.chmod(0o755)
+    assert [run.origin for run in extraction.runs] == [str(tmp_path / "cpu-good")]
+    [rejection] = extraction.rejections
+    assert rejection.origin == str(private)
+    assert rejection.reason == "Directory cannot be read: Permission denied"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read anything")
+def test_an_unreadable_evidence_directory_fails_the_source(tmp_path):
+    tmp_path.joinpath("data").mkdir()
+    (tmp_path / "data").chmod(0)
+    try:
+        with pytest.raises(ExtractionError, match="cannot be read"):
+            extract_local(tmp_path / "data")
+    finally:
+        (tmp_path / "data").chmod(0o755)
 
 
 @pytest.mark.parametrize("linked", ["results.json", "samples.jsonl"])

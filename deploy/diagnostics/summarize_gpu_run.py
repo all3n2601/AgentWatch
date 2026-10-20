@@ -1,7 +1,9 @@
 """Summarize a gpu-sampled-llm-run.sh evidence directory.
 
 Reports achieved nvidia-smi sampling intervals and the GPU readings that fall inside each
-recorded agent span. Utilization is NVML's averaged reading, so it cannot resolve activity
+recorded agent step. Step windows come from the agent runner's live journal (the producer's
+UTC wall time when each step started and ended); probes recorded before 2026-10-20 used the
+removed LLM demo, whose OpenTelemetry spans are still read. Utilization is NVML's averaged reading, so it cannot resolve activity
 shorter than its averaging period; treat it as coarse evidence, not saturation.
 
 Missing, malformed, or ambiguous inputs are reported rather than summarized: samples are not
@@ -91,7 +93,56 @@ def read_samples(path: Path, zone: timezone | None) -> tuple[list[dict], int]:
     return rows, malformed
 
 
-def read_windows(spans_path: Path) -> tuple[list[tuple[str, datetime, datetime]], int]:
+Window = tuple[str, datetime, datetime]
+
+
+def read_journal_windows(journal_path: Path) -> tuple[list[Window], int]:
+    """Return executed non-root step windows from a runner journal, and malformed entries.
+
+    A window spans the `running` event's observed_at to the terminal event's observed_at.
+    Steps that never started (rejected or cancelled while queued) have no execution window.
+    """
+    started: dict[str, datetime] = {}
+    windows, malformed = [], 0
+    for line in journal_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+            if entry.get("kind") != "record" or entry["payload"]["record_type"] != "step_event":
+                continue
+            event = entry["payload"]
+            observed = datetime.fromisoformat(event["observed_at"])
+            step_id, state = event["step_id"], event["state"]
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            malformed += 1
+            continue
+        if observed.tzinfo is None:
+            malformed += 1
+            continue
+        if event.get("parent_step_id") is None:
+            continue  # The root step spans the whole run, like the old agent.tool_loop span.
+        if state == "running":
+            started[step_id] = observed
+        elif state in {"completed", "failed", "cancelled"} and step_id in started:
+            windows.append((step_id, started.pop(step_id), observed))
+    windows.sort(key=lambda window: window[1])
+    return windows, malformed
+
+
+def find_windows(probe: Path) -> tuple[list[Window], int, str]:
+    """Read step windows from the runner journal, or spans from a pre-runner probe."""
+    journals = sorted(probe.glob("agent-runs/*/live-journal.jsonl"))
+    if len(journals) > 1:
+        return [], 0, f"{len(journals)} runner journals; expected one per probe"
+    if journals:
+        windows, malformed = read_journal_windows(journals[0])
+        return windows, malformed, "agent steps"
+    windows, malformed = read_windows(probe / "llm-demo/agent-spans.jsonl")
+    return windows, malformed, "agent spans"
+
+
+def read_windows(spans_path: Path) -> tuple[list[Window], int]:
     """Return non-root agent span windows in start order and the number of malformed spans."""
     if not spans_path.is_file():
         return [], 0
@@ -162,11 +213,11 @@ def summarize(probe: Path) -> bool:
     if zone is None:
         print(f"  per-span summary unavailable: {zone_problem}")
         return True
-    windows, malformed_spans = read_windows(probe / "llm-demo/agent-spans.jsonl")
-    if malformed_spans:
-        print(f"  {malformed_spans} malformed agent spans skipped")
+    windows, malformed, source = find_windows(probe)
+    if malformed:
+        print(f"  {malformed} malformed {source} entries skipped")
     if not windows:
-        print("  per-span summary unavailable: no valid agent spans")
+        print(f"  per-step summary unavailable: no valid {source}")
         return True
     if rows[0]["observed_at"] < windows[0][1]:
         windows.insert(0, ("idle before loop", rows[0]["observed_at"], windows[0][1]))
