@@ -12,8 +12,11 @@ export type LiveReplay = {
   title: string;
   description: string;
   run: RunStatus;
-  /** Scripted age of the latest record when the browser receives the page. */
-  receivedAgoMs: number;
+  /**
+   * Scripted age of the latest record when the browser receives the page, or
+   * null when no record has been received.
+   */
+  receivedAgoMs: number | null;
   view: LiveRunView;
 };
 

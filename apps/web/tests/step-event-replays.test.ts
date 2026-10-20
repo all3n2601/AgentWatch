@@ -131,6 +131,16 @@ test("out-of-order holds the early completion behind a gap", () => {
   assert.equal(totals.final, false);
 });
 
+test("no-records has no steps, no receipt and non-final totals", () => {
+  const { replay, view, totals, freshness } = scenario("no-records");
+  assert.equal(replay.receivedAgoMs, null);
+  assert.deepEqual(view.steps, []);
+  assert.equal(view.lastObservedAt, null);
+  assert.equal(freshness, "never");
+  assert.equal(totals.final, false);
+  assert.ok(totals.reasons.includes("No steps have been reported"));
+});
+
 test("stale-feed is stale while the run is open", () => {
   assert.equal(scenario("stale-feed").freshness, "stale");
 });

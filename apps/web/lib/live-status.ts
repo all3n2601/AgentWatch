@@ -87,6 +87,65 @@ export function feedFreshness({
   return ageMs > staleAfterMs ? "stale" : "fresh";
 }
 
+/** One reading of the viewer's clocks; null until the browser has mounted. */
+export type BrowserClockReading = {
+  anchorMonotonicMs: number;
+  nowMonotonicMs: number;
+  nowWallMs: number;
+} | null;
+
+/**
+ * The display clock must keep ticking whenever a receipt age is shown, even
+ * for a closed run whose freshness no longer changes.
+ */
+export const feedClockTicks = (receivedAgoMs: number | null) =>
+  receivedAgoMs !== null;
+
+export type FeedDisplay = {
+  freshness: FeedFreshness;
+  ageMs: number | null;
+  ageText: string | null;
+  /** Receipt time on the viewer's wall clock; null before mount or receipt. */
+  receivedAtWallMs: number | null;
+};
+
+/**
+ * Derives freshness and the "last record received" text from one receipt age.
+ * `receivedAgoMs` is the age when the browser received the data, or null when
+ * nothing has been received.
+ */
+export function feedDisplay({
+  receivedAgoMs,
+  outcome,
+  clock,
+}: {
+  receivedAgoMs: number | null;
+  outcome: RunOutcome;
+  clock: BrowserClockReading;
+}): FeedDisplay {
+  const ageMs =
+    receivedAgoMs === null
+      ? null
+      : clock
+        ? receiptAgeMs(
+            {
+              ageAtAnchorMs: receivedAgoMs,
+              anchorMonotonicMs: clock.anchorMonotonicMs,
+            },
+            clock.nowMonotonicMs,
+          )
+        : receivedAgoMs;
+  return {
+    freshness: feedFreshness({ ageMs, outcome }),
+    ageMs,
+    ageText: ageMs === null ? null : formatReceiptAge(ageMs),
+    receivedAtWallMs:
+      ageMs === null || !clock
+        ? null
+        : receivedAtWallMs(ageMs, clock.nowWallMs),
+  };
+}
+
 export type TimingTotal = {
   seconds: number;
   measuredSteps: number;

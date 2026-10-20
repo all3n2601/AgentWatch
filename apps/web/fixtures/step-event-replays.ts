@@ -60,8 +60,11 @@ export type ReplayScenario = {
   title: string;
   description: string;
   run: RunStatus;
-  /** How long before page load the replayed records are treated as received. */
-  receivedAgoMs: number;
+  /**
+   * How long before page load the replayed records are treated as received;
+   * null when no record has been received.
+   */
+  receivedAgoMs: number | null;
   records: unknown[];
 };
 
@@ -211,6 +214,15 @@ export const replayScenarios: ReplayScenario[] = [
         (_, index) => index !== 1,
       ),
     ],
+  },
+  {
+    id: "no-records",
+    title: "No records yet",
+    description:
+      "The run is registered and queued, but no step record has been received.",
+    run: { state: "queued", reason: null },
+    receivedAgoMs: null,
+    records: [],
   },
   {
     id: "stale-feed",

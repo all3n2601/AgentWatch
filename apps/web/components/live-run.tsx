@@ -20,12 +20,11 @@ import type { LivePageData, LiveReplay } from "@/lib/live-replay";
 import {
   activeSteps,
   failedSteps,
-  feedFreshness,
-  formatReceiptAge,
-  receiptAgeMs,
-  receivedAtWallMs,
+  feedClockTicks,
+  feedDisplay,
   runOutcome,
   stepTotals,
+  type BrowserClockReading,
   type CpuTotal,
   type FeedFreshness,
   type TimingTotal,
@@ -100,15 +99,26 @@ function StatusTile({
   label,
   children,
   detail,
+  announce = false,
 }: {
   label: string;
   children: React.ReactNode;
   detail?: React.ReactNode;
+  /** Announce value changes to screen readers (polite live region). */
+  announce?: boolean;
 }) {
   return (
     <Card className="gap-0 p-4 sm:p-5">
       <span className="text-xs text-muted-foreground">{label}</span>
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-sm font-semibold">
+      <div
+        className="mt-3 flex flex-wrap items-center gap-2 text-sm font-semibold"
+        {...(announce && {
+          role: "status",
+          "aria-live": "polite" as const,
+          "aria-atomic": true,
+        })}
+      >
+        {announce && <span className="sr-only">{label}:</span>}
         {children}
       </div>
       {detail && (
@@ -363,12 +373,6 @@ function StepRow({ step }: { step: LiveStep }) {
   );
 }
 
-type BrowserClock = {
-  anchorMonotonicMs: number;
-  nowMonotonicMs: number;
-  nowWallMs: number;
-};
-
 /**
  * Reads only the browser's clocks, after mount. The anchor is the browser's
  * monotonic time when the replay was received (hydration), so feed age never
@@ -377,7 +381,7 @@ type BrowserClock = {
  */
 function useBrowserClock(ticking: boolean) {
   const anchorRef = useRef<number | null>(null);
-  const [clock, setClock] = useState<BrowserClock | null>(null);
+  const [clock, setClock] = useState<BrowserClockReading>(null);
   useEffect(() => {
     const read = () => {
       const nowMonotonicMs = performance.now();
@@ -402,19 +406,13 @@ function useBrowserClock(ticking: boolean) {
 
 function ReplayView({ replay }: { replay: LiveReplay }) {
   const outcome = runOutcome(replay.run);
-  // Only an open run can turn stale, so a closed run needs no ticking.
-  const clock = useBrowserClock(outcome === "active" || outcome === "unknown");
-  // Before the browser clock is read, the age is the scripted age at receipt.
-  const ageMs = clock
-    ? receiptAgeMs(
-        {
-          ageAtAnchorMs: replay.receivedAgoMs,
-          anchorMonotonicMs: clock.anchorMonotonicMs,
-        },
-        clock.nowMonotonicMs,
-      )!
-    : replay.receivedAgoMs;
-  const freshness = feedFreshness({ ageMs, outcome });
+  const clock = useBrowserClock(feedClockTicks(replay.receivedAgoMs));
+  const feed = feedDisplay({
+    receivedAgoMs: replay.receivedAgoMs,
+    outcome,
+    clock,
+  });
+  const freshness = feed.freshness;
   const { view, run } = replay;
   const active = activeSteps(view);
   const failed = failedSteps(view);
@@ -429,7 +427,11 @@ function ReplayView({ replay }: { replay: LiveReplay }) {
         >
           {run ? <StateBadge state={run.state} /> : "Unknown"}
         </StatusTile>
-        <StatusTile label="Feed" detail={freshnessText[freshness].detail}>
+        <StatusTile
+          label="Feed"
+          detail={freshnessText[freshness].detail}
+          announce
+        >
           {freshness === "stale" ? (
             <Clock3 className="size-4 text-amber-300" aria-hidden />
           ) : (
@@ -442,28 +444,30 @@ function ReplayView({ replay }: { replay: LiveReplay }) {
         <StatusTile
           label="Last record received"
           detail={
-            <>
-              {clock && (
-                <>
-                  At{" "}
-                  <Timestamp
-                    iso={new Date(
-                      receivedAtWallMs(ageMs, clock.nowWallMs),
-                    ).toISOString()}
-                  />{" "}
-                  on this device&apos;s clock.{" "}
-                </>
-              )}
-              {view.lastObservedAt && (
-                <>
-                  Latest producer observation{" "}
-                  <Timestamp iso={view.lastObservedAt} />
-                </>
-              )}
-            </>
+            feed.ageText === null ? (
+              "No step record has been received for this run."
+            ) : (
+              <>
+                {feed.receivedAtWallMs !== null && (
+                  <>
+                    At{" "}
+                    <Timestamp
+                      iso={new Date(feed.receivedAtWallMs).toISOString()}
+                    />{" "}
+                    on this device&apos;s clock.{" "}
+                  </>
+                )}
+                {view.lastObservedAt && (
+                  <>
+                    Latest producer observation{" "}
+                    <Timestamp iso={view.lastObservedAt} />
+                  </>
+                )}
+              </>
+            )
           }
         >
-          {formatReceiptAge(ageMs)}
+          {feed.ageText ?? "None yet"}
         </StatusTile>
         <StatusTile
           label="Steps"
