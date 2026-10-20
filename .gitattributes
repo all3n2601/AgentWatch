@@ -1,0 +1,4 @@
+# Task fixtures are hashed byte for byte to pin task identity, and their patches match exact
+# text, so they must check out with LF line endings on every platform (including
+# core.autocrlf=true on Windows).
+services/agent/src/agentwatch_agent/task_fixtures/** text eol=lf

@@ -1,0 +1,12 @@
+# Pinned identity of every runnable task. load_task() refuses a task whose files no longer
+# match content_sha256: bump the task's revision (in task.toml and here) whenever it changes.
+
+[[task]]
+name = "fix-mean-empty"
+revision = 1
+content_sha256 = "a792a9ee36c558df4ceb91f6e587b7ad03cbc8a27c6ee2cd140314b7e49ba144"
+
+[[task]]
+name = "fix-window-count"
+revision = 1
+content_sha256 = "b2efa32156fe9b8e9828e110922ecdad76fbba5b7594004c864fc6957a5ebb4b"

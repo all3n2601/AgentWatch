@@ -48,14 +48,16 @@ from local run directories named `cpu`, `coding`, or `llm`, or starting with `cp
   number, `"10"` is not an integer, and neither an integer nor a numeric string such as
   `"1791200000"` is a timestamp (`created_at` must be an RFC 3339 date and time with an
   offset). A run that fails is recorded as a rejection with its reason; the other runs still
-  extract.
+  extract. That includes a number too large for the contract to convert (a nanosecond
+  timestamp that overflows seconds).
 - JSON is parsed strictly: an object that repeats a key is rejected rather than silently
   keeping the last value, and JSON nested more than 64 levels deep (recorded evidence nests 4)
   rejects its run instead of aborting the extraction. The limit is explicit so the result is
   the same on every supported Python version.
-- Run directories and evidence files must be real, not symbolic links: a linked run directory
-  or a linked `results.json` or `samples.jsonl` is rejected with a reason, never skipped or
-  read from outside the data directory.
+- Directories and evidence files must be real, not symbolic links: a linked directory (a run,
+  or a folder of runs) or a linked `results.json` or `samples.jsonl` is rejected with a reason,
+  never skipped or read from outside the data directory. A directory that cannot be read is
+  rejected too; an unreadable data directory fails the source.
 - The evidence must match its declared kind: a `coding` run declares `tests_per_step`, and a
   `cpu` run does not. A run in an `llm-*` directory must carry the agent evidence
   (`result["agent"]`); without it the LLM loop did not finish.
@@ -365,7 +367,7 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 | `label_version` | string | Labeling rules version plus fingerprint, for example `labels-v1.1+1a2b3c4d` |
 | `schema_version` | string | Dataset schema version the row was built with (`steps-v1.2`) |
 | `dataset_version` | string | Dataset release this row belongs to |
-| `source_sha256` | string | SHA-256 of the run's results and its samples as received, before contract normalization, serialized as canonical JSON (sorted keys, samples ordered by timestamp). Any change to a value produces a new hash; key order, sample order, and whitespace do not |
+| `source_sha256` | string | SHA-256 of the run's results and its samples as received, before contract normalization, serialized as canonical JSON (sorted keys, samples ordered by timestamp, then by content). Any change to a value produces a new hash; key order, sample order, and whitespace do not |
 
 ## Leakage rules
 

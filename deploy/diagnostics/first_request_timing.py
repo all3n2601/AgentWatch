@@ -1,20 +1,22 @@
-"""Bounded A01 diagnostic: what makes the LLM demo's first request slow.
+"""Bounded A01 diagnostic: what makes the agent runner's first model request slow.
 
-Both protocols were declared before their results were evaluated. Model, messages, and
-options are imported from the LLM demo so they cannot drift. Every request is recorded;
-nothing is discarded or retried.
+Both protocols were declared before their results were evaluated. The prompt, tool
+definitions and chat options are imported from the agent runner for the selected task, so
+they cannot drift from what `agentwatch_agent run` sends. Every request is recorded; nothing
+is discarded or retried. Results recorded before 2026-10-20 used the removed LLM demo's
+single-tool request and are not comparable with later runs.
 
 cold-tools: for each of REPETITIONS, run two blocks in an order that alternates by
-repetition. A block unloads the model, then sends the demo's exact first request once cold
-and WARM_REQUESTS times warm, either with or without the run_tests tool definition.
+repetition. A block unloads the model, then sends the runner's exact first request once cold
+and WARM_REQUESTS times warm, either with or without the runner's tool definitions.
 "Cold" means the model was unloaded through keep_alive=0. That restarts Ollama's model
 runner but not the container, so it does not reproduce a freshly created container.
 
-warm-state: with the model loaded, for each of REPETITIONS, prime with the demo request,
+warm-state: with the model loaded, for each of REPETITIONS, prime with the runner request,
 then send it again after each IDLE_GAPS_SECONDS pause, then send a different prompt and the
-demo request immediately afterwards. This separates idle time from prompt-cache contents.
+runner request immediately afterwards. This separates idle time from prompt-cache contents.
 
-Usage: OLLAMA_URL=http://127.0.0.1:11435 uv run --package agentwatch-worker \
+Usage: OLLAMA_URL=http://127.0.0.1:11435 uv run --package agentwatch-agent \
            python deploy/diagnostics/first_request_timing.py --protocol cold-tools
 """
 
@@ -27,10 +29,11 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agentwatch_worker.llm_demo import (
-    CHAT_OPTIONS,
-    INITIAL_MESSAGES,
-    TOOL,
+from agentwatch_agent.config import DEFAULT_CHAT_OPTIONS
+from agentwatch_agent.prompts import SYSTEM_PROMPT, task_message
+from agentwatch_agent.tasks import Task, load_task
+from agentwatch_agent.tools import tool_definitions
+from agentwatch_worker.ollama import (
     model_placement,
     observe_model_placement,
     ollama_base_url,
@@ -77,8 +80,18 @@ def duration_seconds(nanoseconds: object) -> float | None:
     return nanoseconds / 1e9
 
 
-def timed_request(url: str, model: str, with_tools: bool, user_prompt: str | None = None) -> dict:
-    messages = [dict(message) for message in INITIAL_MESSAGES]
+def first_messages(task: Task) -> list[dict]:
+    """The runner's first request for `task`: its system prompt and task message."""
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": task_message(task)},
+    ]
+
+
+def timed_request(
+    url: str, model: str, task: Task, with_tools: bool, user_prompt: str | None = None
+) -> dict:
+    messages = first_messages(task)
     if user_prompt is not None:
         messages[-1]["content"] = user_prompt
     payload = {
@@ -86,10 +99,10 @@ def timed_request(url: str, model: str, with_tools: bool, user_prompt: str | Non
         "messages": messages,
         "stream": False,
         "think": False,
-        "options": dict(CHAT_OPTIONS),
+        "options": dict(DEFAULT_CHAT_OPTIONS),
     }
     if with_tools:
-        payload["tools"] = [TOOL]
+        payload["tools"] = list(tool_definitions(task))
     started_at = datetime.now(UTC)
     started = time.monotonic_ns()
     response = ollama_chat(url, payload)
@@ -127,7 +140,7 @@ class Recorder:
         )
 
 
-def cold_tools(url: str, model: str, recorder: Recorder) -> None:
+def cold_tools(url: str, model: str, task: Task, recorder: Recorder) -> None:
     for repetition in range(REPETITIONS):
         order = (True, False) if repetition % 2 == 0 else (False, True)
         for with_tools in order:
@@ -139,27 +152,27 @@ def cold_tools(url: str, model: str, recorder: Recorder) -> None:
                     "state": "cold" if position == 0 else "warm",
                     "position": position,
                 }
-                recorder.record(labels, timed_request(url, model, with_tools))
+                recorder.record(labels, timed_request(url, model, task, with_tools))
 
 
-def warm_state(url: str, model: str, recorder: Recorder) -> None:
+def warm_state(url: str, model: str, task: Task, recorder: Recorder) -> None:
     for repetition in range(REPETITIONS):
         recorder.record(
-            {"repetition": repetition, "condition": "prime"}, timed_request(url, model, True)
+            {"repetition": repetition, "condition": "prime"}, timed_request(url, model, task, True)
         )
         for gap_seconds in IDLE_GAPS_SECONDS:
             time.sleep(gap_seconds)
             recorder.record(
                 {"repetition": repetition, "condition": f"after_{gap_seconds}s_idle"},
-                timed_request(url, model, True),
+                timed_request(url, model, task, True),
             )
         recorder.record(
             {"repetition": repetition, "condition": "other_prompt"},
-            timed_request(url, model, True, OTHER_PROMPT),
+            timed_request(url, model, task, True, OTHER_PROMPT),
         )
         recorder.record(
             {"repetition": repetition, "condition": "after_other_prompt"},
-            timed_request(url, model, True),
+            timed_request(url, model, task, True),
         )
 
 
@@ -169,6 +182,7 @@ PROTOCOLS = {"cold-tools": cold_tools, "warm-state": warm_state}
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--protocol", choices=sorted(PROTOCOLS), required=True)
+    parser.add_argument("--task", default="fix-mean-empty", help="Agent runner task name")
     parser.add_argument("--model", default=os.environ.get("AGENTWATCH_LLM_MODEL", "qwen3:1.7b"))
     parser.add_argument(
         "--url",
@@ -176,6 +190,7 @@ def main() -> None:
         default=os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"),
     )
     args = parser.parse_args()
+    task = load_task(args.task)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = Path(".data") / f"a01-first-request-{args.protocol}-{stamp}"
     output.mkdir(parents=True, exist_ok=False)
@@ -183,13 +198,16 @@ def main() -> None:
         json.dumps(
             {
                 "protocol": args.protocol,
+                "request_source": "agent runner first request",
+                "task_id": task.task_id,
+                "task_content_sha256": task.content_sha256,
                 "model": args.model,
                 "url": args.url,
                 "repetitions": REPETITIONS,
                 "warm_requests_per_block": WARM_REQUESTS,
                 "idle_gaps_seconds": IDLE_GAPS_SECONDS,
                 "other_prompt": OTHER_PROMPT,
-                "options": CHAT_OPTIONS,
+                "options": DEFAULT_CHAT_OPTIONS,
                 "cold_definition": "model unloaded with keep_alive=0; container not restarted",
                 "wall_clock": "time.monotonic_ns around the HTTP request",
             },
@@ -199,7 +217,7 @@ def main() -> None:
     )
     recorder = Recorder(output / "requests.jsonl")
     try:
-        PROTOCOLS[args.protocol](args.url, args.model, recorder)
+        PROTOCOLS[args.protocol](args.url, args.model, task, recorder)
     except Exception as error:
         # Keep why the declared protocol stopped next to the requests it did complete.
         (output / "aborted.json").write_text(
