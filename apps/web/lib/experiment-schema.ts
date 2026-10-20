@@ -66,4 +66,6 @@ export type DashboardData = {
   warnings: string[];
   source?: "database" | "local";
   nextCursor?: number | null;
+  /** ISO time this server load or refresh completed. */
+  loadedAt?: string;
 };
