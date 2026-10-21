@@ -45,6 +45,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { AgentRun } from "@/components/agent-run";
+import { LiveFeed } from "@/components/live-feed";
 import { LiveRun } from "@/components/live-run";
 import {
   PanelHeading,
@@ -361,13 +362,19 @@ export function Dashboard({
           description: "synthetic development replay",
           replay: true,
         }
-      : data.source === "database"
-        ? { badge: "HISTORY", description: "saved run history", replay: false }
-        : {
-            badge: "LOCAL FILES",
-            description: "local artifact fallback",
-            replay: false,
-          };
+      : page === "live" && live?.feed
+        ? { badge: "LIVE API", description: "live run read API", replay: false }
+        : data.source === "database"
+          ? {
+              badge: "HISTORY",
+              description: "saved run history",
+              replay: false,
+            }
+          : {
+              badge: "LOCAL FILES",
+              description: "local artifact fallback",
+              replay: false,
+            };
   return (
     <div
       className={cn(
@@ -573,7 +580,13 @@ export function Dashboard({
               {data.warnings.join(" ")}
             </div>
           )}
-          {page === "live" && live && <LiveRun data={live} />}
+          {page === "live" &&
+            live &&
+            (live.feed && !live.requestedReplay ? (
+              <LiveFeed feed={live.feed} scenarios={live.scenarios} />
+            ) : (
+              <LiveRun data={live} />
+            ))}
           {page === "overview" && (
             <>
               <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
