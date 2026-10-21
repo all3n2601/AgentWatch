@@ -275,6 +275,8 @@ release (`pipelines/data/src/agentwatch_data/splits.py`).
 The evidence store and the dataset store (releases, build reports, quality-gate attempts, and
 split files) are versioned with [DVC](https://dvc.org). Git holds two small pointer files,
 `data/evidence.dvc` and `data/datasets.dvc`; DVC keeps the files in its cache and a remote.
+Until the team remote exists, gated releases are shared as zip archives in
+[`data/shared/`](../data/shared/README.md); these are interim copies, not versions.
 
 ```sh
 make version-dataset   # verify both stores, then snapshot them; commit the data/*.dvc changes
