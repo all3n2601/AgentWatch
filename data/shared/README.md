@@ -7,8 +7,8 @@ Archives committed here are interim team copies of a gated dataset release, for 
 at the repository root; its own `README.md` describes the collection and its limitations, and
 `SHA256SUMS` lists every file.
 
-| Archive | Release | Contents | SHA-256 |
-|---|---|---|---|
+| Archive                                          | Release                   | Contents                                                                                                                                                                         | SHA-256                                                            |
+| ------------------------------------------------ | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `agentwatch-dataset-steps-v1.2-5954f97ef8b2.zip` | `steps-v1.2+5954f97ef8b2` | 350 rows from 25 CPU and 25 coding runs recorded 2026-10-21 UTC (TFDV gate passed; split frozen but blocked by the leakage check), plus 5 GPU-sampled agent runs as raw evidence | `ba58a5f057da22ceee33e58a680d02db878912d8807b2c826730b5224e1098da` |
 
 This release can train or evaluate nothing yet: it has two tasks and two classes, and its
