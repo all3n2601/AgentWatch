@@ -3,6 +3,7 @@ import {
   replayScenarios,
   SYNTHETIC_RUN_ID,
 } from "../fixtures/step-event-replays";
+import type { LiveFeedData } from "./live-feed-data";
 import type { RunStatus } from "./live-status";
 import { readStepEvents, type LiveRunView } from "./step-events";
 
@@ -25,6 +26,8 @@ export type LivePageData = {
   /** Requested scenario id, kept so an unknown id can be reported. */
   requestedReplay: string | null;
   scenarios: { id: string; title: string }[];
+  /** Recorded runs from the live API; set only when no replay was requested. */
+  feed?: LiveFeedData;
 };
 
 /**

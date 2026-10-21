@@ -149,7 +149,7 @@ function ReplayBanner({ replay }: { replay: LiveReplay }) {
   );
 }
 
-function ScenarioPicker({
+export function ScenarioPicker({
   scenarios,
   current,
 }: {
@@ -404,7 +404,7 @@ function useBrowserClock(ticking: boolean) {
   return clock;
 }
 
-function ReplayView({ replay }: { replay: LiveReplay }) {
+export function ReplayView({ replay }: { replay: LiveReplay }) {
   const outcome = runOutcome(replay.run);
   const clock = useBrowserClock(feedClockTicks(replay.receivedAgoMs));
   const feed = feedDisplay({
