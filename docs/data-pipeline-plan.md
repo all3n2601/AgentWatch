@@ -79,8 +79,8 @@ one to the pipeline and plans what is missing; the roadmap steps above own the w
 | Unit tests (edge cases, missing values, anomalies) | pytest at 100% line and branch coverage, including failure paths, two audits' regressions, Python 3.13 and 3.14 | Done |
 | Schema and statistics generation, validated over time | TFDV quality gate against a frozen, reviewed schema; statistics kept per attempt; drift against the previous passing release | Done (#16, #20) |
 | Anomaly detection | The gate's anomalies (missing values, out-of-range values, unknown categories, type changes) and per-run rejections with reasons | Done; alerts are planned below |
-| Data versioning with DVC, `.dvc` files in git | Evidence and dataset stores versioned, append-only, rebuildable byte for byte | Done (#28); committing the `.dvc` files needs the shared remote |
-| Reproducibility on another machine | A fresh clone pulls and rebuilds the same version byte for byte | Done (#28) for a fresh clone pulling from a local DVC remote in the versioning tests; another machine needs the shared remote |
+| Data versioning with DVC, `.dvc` files in git | Evidence and dataset stores versioned, append-only, rebuildable byte for byte | Partial: the local DVC mechanism is in place (#28); open until the `.dvc` files are committed, which needs the shared remote |
+| Reproducibility on another machine | A fresh clone pulls and rebuilds the same version byte for byte | Partial: a fresh clone rebuilds byte for byte from a local DVC remote in the versioning tests (#28); open until shown on another machine through the shared remote |
 | Error handling and logging | Every stage rejects untrustworthy input with a reason; build reports and gate results are durable records; Python logging | Done for the commands; Airflow task logs with step 11 |
 | Code style (PEP 8) | Ruff on every PR | Done |
 | Airflow DAG for the whole workflow | Not built | Step 11 |
