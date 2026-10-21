@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { Dashboard } from "@/components/dashboard";
 import { loadRequestedRuns } from "@/lib/experiments";
+import { loadLiveFeed } from "@/lib/live-feed";
 import { liveReplayData } from "@/lib/live-replay";
 import { pages, type Page } from "@/lib/dashboard-data";
 export const dynamic = "force-dynamic";
@@ -9,7 +10,12 @@ export default async function Section({
   searchParams,
 }: {
   params: Promise<{ section: string }>;
-  searchParams: Promise<{ run?: string; baseline?: string; replay?: string }>;
+  searchParams: Promise<{
+    run?: string;
+    baseline?: string;
+    replay?: string;
+    liveRun?: string;
+  }>;
 }) {
   const { section } = await params;
   if (!pages.includes(section as Page)) notFound();
@@ -21,9 +27,10 @@ export default async function Section({
           replayEnabled: process.env.NODE_ENV !== "production",
         })
       : undefined;
+  if (live && !query.replay) live.feed = await loadLiveFeed(query.liveRun);
   return (
     <Dashboard
-      key={`${section}:${query.run || ""}:${query.baseline || ""}:${query.replay || ""}`}
+      key={`${section}:${query.run || ""}:${query.baseline || ""}:${query.replay || ""}:${query.liveRun || ""}`}
       initialData={await loadRequestedRuns([query.run, query.baseline])}
       page={section as Page}
       initialRunId={query.run}
