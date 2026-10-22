@@ -36,7 +36,7 @@ branch coverage, and exercised against real recorded runs and the live ingestion
 | 5. Build | `make dataset`: versioned Parquet release, manifest, and per-build report | Done (#14) |
 | 6. Quality gate | `make validate-dataset`: TFDV statistics against a frozen, reviewed schema; anomalies fail, drift is reported. Isolated in `pipelines/validation` because TFDV brings TensorFlow (~1.7 GB) | Done (#16) |
 | 7. Splits | `make split-dataset`: 70/15/15 grouped by `task_id` from the evaluation contract, measured-only test split, a deterministic split file with per-split row hashes, and the contract's leakage check | Done (#17) |
-| **8. Versioning** | `make add-evidence` curates runs into an immutable evidence store; `make version-dataset` verifies both stores and snapshots them with DVC (isolated in `pipelines/versioning`); a fresh clone rebuilds a versioned release byte for byte. The GCS remote is connected when F provides the bucket | This PR |
+| 8. Versioning | `make add-evidence` curates runs into an immutable evidence store; `make version-dataset` verifies both stores and snapshots them with DVC (isolated in `pipelines/versioning`); a fresh clone rebuilds a versioned release byte for byte. The GCS remote is connected when F provides the bucket | Done (#28); the shared remote waits on F |
 | Hardening pass | Request batching for large API histories; sweeping staging left by killed builds; fuzzing the per-run rejection guarantee with generated bad evidence; a scale run with thousands of runs; real multi-process concurrency of build, gate, split, and versioning; a cross-stage audit of the merged pipeline; anything left from reviews | Before Airflow |
 | 9. More resources | Prometheus reader; `steps-v2` inference and retrieval features; `labels-v2` with mixed contention. Split follow-ups: force at least one injection method wholly into test, and check that mixed-contention cases reach test | Waits on B |
 | 10. Real collection | Scheduled runs over a task suite on a Linux GCP VM, where PSI and cgroup readings exist. Split follow-up: rebuild and re-split once step events carry a real `task_id`, so the test split holds unseen tasks and training is no longer empty. Before any collection, run the extractor end to end against the live ingestion API and Postgres (deferred from the audit), and add an export of API-saved runs into the evidence store that keeps their saved time, so releases built from them stay reproducible | Waits on A, B, F |
@@ -53,7 +53,7 @@ promotion owner's call (it means a new `SPLIT_METHOD`).
 
 | From | Need | Why |
 |---|---|---|
-| A, agent | A real `task_id` (and `step_type`) in step events. A02 (#27, open) introduces `<name>-r<revision>`; its overhead runs append `-overhead`, which would split one task into two groups (raised on #27) | Today's `task_id` is a placeholder (`kind:workload:iterations`), so grouped splits cannot guarantee unseen tasks |
+| A, agent | A real `task_id` (and `step_type`) in step events. A02 (#27) delivers both: `task_id` is `<name>-r<revision>`, and overhead runs keep their task's own `task_id`, so the step 10 extractor must exclude them from training datasets by `service_id` (`agentwatch-agent-overhead`), not by a suffix. The pipeline does not read live step events or `service_id` yet | Today's `task_id` is a placeholder (`kind:workload:iterations`), so grouped splits cannot guarantee unseen tasks |
 | B, contention | Prometheus metric names for inference and retrieval; at least a second injection method; Qdrant in its own CPU-limited container | `steps-v2` features, the contract's held-out injection method, and separable retrieval labels |
 | Worker owner | Faster or per-step sampling (250 ms leaves short steps without coverage); the `CpuSampler.summarize` reset fix; monotonic durations; strict contract bounds; `demo.py --output` defaulting by workload; agent evidence written when the LLM loop fails | Measurement quality at the source |
 | F, platform | A pinned CI Postgres image (`public.ecr.aws/docker/library/postgres:17-alpine@sha256:b0f9560a…`, verified identical to Docker Hub's) | Docker Hub's anonymous pull limit has failed CI before tests ran |
@@ -74,13 +74,13 @@ one to the pipeline and plans what is missing; the roadmap steps above own the w
 | Criterion | How the pipeline meets it | Status |
 |---|---|---|
 | Data acquisition | Extraction from local recorded runs and the ingestion API, with strict validation and per-run rejection | Done (#2, #10, #13, #21) |
-| Reproducible environment | Dependencies pinned in `uv.lock` for the shared workspace and the quality gate (`pipelines/validation`); the versioning environment (`pipelines/versioning`) and the curated evidence store come with #28 | Done for the pipeline and gate (#14, #16); versioning in review (#28) |
+| Reproducible environment | Dependencies pinned in `uv.lock` for the shared workspace and the quality gate (`pipelines/validation`), and the versioning environment (`pipelines/versioning`) | Done (#14, #16, #28) |
 | Preprocessing and feature engineering, modular | One module per stage: extract, flatten (step windows, coverage, queue fraction), label, schema validation, build | Done |
 | Unit tests (edge cases, missing values, anomalies) | pytest at 100% line and branch coverage, including failure paths, two audits' regressions, Python 3.13 and 3.14 | Done |
 | Schema and statistics generation, validated over time | TFDV quality gate against a frozen, reviewed schema; statistics kept per attempt; drift against the previous passing release | Done (#16, #20) |
 | Anomaly detection | The gate's anomalies (missing values, out-of-range values, unknown categories, type changes) and per-run rejections with reasons | Done; alerts are planned below |
-| Data versioning with DVC, `.dvc` files in git | Evidence and dataset stores versioned, append-only, rebuildable byte for byte | In review (#28); committing the `.dvc` files needs the shared remote |
-| Reproducibility on another machine | A fresh clone pulls and rebuilds the same version byte for byte | In review (#28) |
+| Data versioning with DVC, `.dvc` files in git | Evidence and dataset stores versioned, append-only, rebuildable byte for byte | Partial: the local DVC mechanism is in place (#28); open until the `.dvc` files are committed, which needs the shared remote |
+| Reproducibility on another machine | A fresh clone pulls and rebuilds the same version byte for byte | Partial: a fresh clone rebuilds byte for byte from a local DVC remote in the versioning tests (#28); open until shown on another machine through the shared remote |
 | Error handling and logging | Every stage rejects untrustworthy input with a reason; build reports and gate results are durable records; Python logging | Done for the commands; Airflow task logs with step 11 |
 | Code style (PEP 8) | Ruff on every PR | Done |
 | Airflow DAG for the whole workflow | Not built | Step 11 |
