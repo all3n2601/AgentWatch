@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  cpuSeries,
   latestReceiptAgeMs,
+  liveSampleSeries,
   parseGpuSamples,
   summarizeSeries,
   wallSteps,
@@ -73,7 +73,7 @@ const sample = (
 });
 
 test("unavailable CPU readings stay gaps instead of becoming zero", () => {
-  const [psi] = cpuSeries([
+  const [psi] = liveSampleSeries([
     sample("cpu.psi.some.avg10.v1", 1, 0.5),
     sample("cpu.psi.some.avg10.v1", 2, null, "unavailable"),
   ]);
@@ -85,8 +85,48 @@ test("unavailable CPU readings stay gaps instead of becoming zero", () => {
   assert.equal(psi.unavailable, 1);
 });
 
+test("live NVML GPU samples are labeled, converted to MiB and keep gaps", () => {
+  const gpu = (
+    metric: string,
+    second: number,
+    value: number | null,
+    unit: string,
+  ) => ({
+    ...sample(
+      metric,
+      second,
+      value,
+      value === null ? "unsupported" : "measured",
+    ),
+    resource_class: "inference",
+    unit,
+  });
+  const series = liveSampleSeries([
+    gpu("gpu.nvml.memory.used_bytes.v1", 1, 1_702_593_821, "bytes"),
+    gpu("gpu.nvml.memory.used_bytes.v1", 2, null, "bytes"),
+    gpu("gpu.nvml.utilization.gpu.v1", 1, 0, "percent"),
+  ]);
+  const memory = series.find((s) => s.key === "gpu.nvml.memory.used_bytes.v1");
+  const utilization = series.find(
+    (s) => s.key === "gpu.nvml.utilization.gpu.v1",
+  );
+  assert.equal(memory?.label, "GPU memory used (NVML)");
+  assert.equal(memory?.unit, "MiB");
+  assert.equal(memory?.source, "inference live samples");
+  assert.deepEqual(
+    memory?.points.map((p) => p.value),
+    [1_702_593_821 / (1024 * 1024), null],
+  );
+  assert.equal(memory?.unavailable, 1);
+  // A measured idle GPU is a zero reading, not a gap.
+  assert.deepEqual(
+    utilization?.points.map((p) => p.value),
+    [0],
+  );
+});
+
 test("cumulative throttling becomes per-sample milliseconds and skips gaps", () => {
-  const [throttled] = cpuSeries([
+  const [throttled] = liveSampleSeries([
     sample("cpu.cgroup.throttled_usec.v1", 3, 5_000),
     sample("cpu.cgroup.throttled_usec.v1", 1, 1_000),
     sample("cpu.cgroup.throttled_usec.v1", 2, null, "unavailable"),

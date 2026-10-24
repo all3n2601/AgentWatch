@@ -3,10 +3,10 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { apiUrl, dataDirectory } from "./experiments";
 import {
-  cpuSeries,
   latestReceiptAgeMs,
   liveDetailSchema,
   liveListSchema,
+  liveSampleSeries,
   parseGpuSamples,
   wallSteps,
   type GpuEvidence,
@@ -166,7 +166,7 @@ export async function loadLiveFeed(requested?: string): Promise<LiveFeedData> {
           resourceClass: r.resource_class,
         })),
         wallSteps: wallSteps(steps),
-        cpuSeries: cpuSeries(samples),
+        liveSeries: liveSampleSeries(samples),
         gpu: await loadGpuEvidence(runId),
         recordCount: records.length,
       },

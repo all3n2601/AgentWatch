@@ -6,10 +6,10 @@ from uuid import uuid4
 
 import pytest
 from agentwatch_sdk.client import LiveClient
-from agentwatch_sdk.live import LiveBatch, StepEvent
+from agentwatch_sdk.live import LiveBatch, ResourceSample, StepEvent
 from agentwatch_worker.export_live_contracts import openapi_document, typescript_document
 from pydantic import ValidationError
-from test_live_api import event
+from test_live_api import event, sample
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -85,3 +85,41 @@ def test_sdk_rejects_path_injection_before_network():
     sdk = LiveClient("http://localhost:8090")
     with pytest.raises(ValueError):
         sdk.get_run("../other")
+
+
+GPU_METRICS = {
+    "gpu.nvml.utilization.gpu.v1": ("percent", 100),
+    "gpu.nvml.utilization.memory.v1": ("percent", 100),
+    "gpu.nvml.memory.used_bytes.v1": ("bytes", None),
+    "gpu.nvml.power.usage_watts.v1": ("watts", None),
+    "gpu.nvml.clock.sm_mhz.v1": ("megahertz", None),
+}
+
+
+def gpu_sample(metric, **changes):
+    unit, _ = GPU_METRICS[metric]
+    return (
+        sample(str(uuid4()), resource_class="inference", metric=metric, unit=unit, value=0)
+        | changes
+    )
+
+
+@pytest.mark.parametrize("metric", GPU_METRICS)
+def test_gpu_metrics_are_registered_for_inference_resources(metric):
+    ResourceSample.model_validate(gpu_sample(metric))
+    unsupported = gpu_sample(metric, value=None, availability="unsupported", reason="No NVML")
+    assert ResourceSample.model_validate(unsupported).value is None
+    with pytest.raises(ValidationError, match="class/unit mismatch"):
+        ResourceSample.model_validate(gpu_sample(metric, resource_class="cpu_sandbox"))
+    with pytest.raises(ValidationError, match="class/unit mismatch"):
+        ResourceSample.model_validate(gpu_sample(metric, unit="milliwatts"))
+    with pytest.raises(ValidationError, match="outside registered bounds"):
+        ResourceSample.model_validate(gpu_sample(metric, value=-1))
+
+
+@pytest.mark.parametrize(
+    "metric", [m for m, (_, maximum) in GPU_METRICS.items() if maximum is not None]
+)
+def test_gpu_percentages_are_bounded(metric):
+    with pytest.raises(ValidationError, match="outside registered bounds"):
+        ResourceSample.model_validate(gpu_sample(metric, value=100.5))
