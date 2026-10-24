@@ -112,9 +112,23 @@ integer range. Derived seconds use compatible ticks. Queue delay, execution wall
 process CPU time remain distinct. Unstarted failed/cancelled steps have null queue/execution/CPU
 and a total notification duration. Zero-duration steps have null queue fraction.
 
-The metric registry accepts `cpu.psi.some.avg10.v1` (percent 0–100) and
-`cpu.cgroup.throttled_usec.v1` (nonnegative cumulative microseconds). A04 must supply measured,
-versioned definitions before inference/GPU/retrieval metrics are added. All five availability
+The metric registry (`METRICS` in `agentwatch_sdk.live`) accepts:
+
+| Metric | Class | Unit, bounds | Meaning |
+| --- | --- | --- | --- |
+| `cpu.psi.some.avg10.v1` | `cpu_sandbox` | percent 0–100 | Host CPU PSI `some avg10` gauge |
+| `cpu.cgroup.throttled_usec.v1` | `cpu_sandbox` | microseconds ≥ 0 | Cumulative cgroup throttling counter |
+| `gpu.nvml.utilization.gpu.v1` | `inference` | percent 0–100 | Share of NVML's sample period with a kernel running |
+| `gpu.nvml.utilization.memory.v1` | `inference` | percent 0–100 | Share of NVML's sample period with device memory busy |
+| `gpu.nvml.memory.used_bytes.v1` | `inference` | bytes ≥ 0 | Device memory in use by every process |
+| `gpu.nvml.power.usage_watts.v1` | `inference` | watts ≥ 0 | Device power draw gauge |
+| `gpu.nvml.clock.sm_mhz.v1` | `inference` | megahertz ≥ 0 | Current SM clock |
+
+GPU entries (A04, [ADR 0003](adr/0003-gpu-and-inference-measurement.md)) are whole-device
+NVML gauges, never per process, and NVML utilization cannot resolve activity shorter than its
+own period or establish saturation. New signals (DCGM, vLLM, retrieval) need new versioned
+names; a definition never changes meaning in place. The change is additive: an older service
+refuses the GPU metrics, so deploy the service before producers that send them. All five availability
 states survive history; absent readings never become measured zero. Alignment, deltas and
 coverage are B02 work; no predictions or host-saturation diagnosis are produced here.
 
