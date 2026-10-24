@@ -254,6 +254,18 @@ These can be completed before adding an agent.
   Ruff and JavaScript lint/typecheck/13 tests/build pass. Real uvicorn/SDK smoke verifies
   rollback, validation, numeric retries, cancellation polling and 413 before 100 Continue.
 - [ ] Join samples to steps in the service rather than trusting only precomputed experiment summaries.
+  B02, October 24, 2026 (branch `feature/step-sample-features`): shared
+  [`step-features-v1`](step-features.md) joins applied live StepEvents to same-run,
+  same-resource/service, same-clock samples in `[start, finish)` and validates FeatureRows;
+  `agentwatch_worker.live_features` loads them from PostgreSQL. `steps-v1.2` window code moved
+  unchanged into `agentwatch_features.legacy`, so training and serving share one implementation.
+  Regressions: 53 synthetic cases in `packages/features/tests/test_live_features.py` (null vs
+  zero, units, counter resets, half-open and incomplete windows, cancellation, clock/identity
+  joins, retries, conflicts) and 4 isolated-schema PostgreSQL cases in
+  `services/worker/tests/test_live_feature_join.py`. Local verification: 1011 Python tests passed
+  with a dedicated PostgreSQL 17 test database and no skips; Ruff passed. Open until B03 serves
+  rows from a real run: no endpoint calls the join yet, live runs record no declared sampling
+  interval (coverage stays null without one), and only synthetic fixtures have been joined.
 - [ ] Add automatic dashboard updates, connection status, last-update time, and stale-data indicators.
   Completed-history polling, source status, and last-refresh time now exist; live-run streaming and
   stale-event indicators remain unfinished.

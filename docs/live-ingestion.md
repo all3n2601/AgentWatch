@@ -115,8 +115,9 @@ and a total notification duration. Zero-duration steps have null queue fraction.
 The metric registry accepts `cpu.psi.some.avg10.v1` (percent 0–100) and
 `cpu.cgroup.throttled_usec.v1` (nonnegative cumulative microseconds). A04 must supply measured,
 versioned definitions before inference/GPU/retrieval metrics are added. All five availability
-states survive history; absent readings never become measured zero. Alignment, deltas and
-coverage are B02 work; no predictions or host-saturation diagnosis are produced here.
+states survive history; absent readings never become measured zero. B02 alignment, deltas and
+coverage are defined in [shared step features](step-features.md); no predictions or
+host-saturation diagnosis are produced here.
 
 ## Producer and frontend handoff
 
