@@ -2,16 +2,15 @@ import "server-only";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { apiUrl, dataDirectory } from "./experiments";
+import { createLiveApi, type LiveApi } from "./live-api";
+import type { LiveSavedRecord } from "./live-api-schema";
 import {
   cpuSeries,
   latestReceiptAgeMs,
-  liveDetailSchema,
-  liveListSchema,
   parseGpuSamples,
   wallSteps,
   type GpuEvidence,
   type LiveFeedData,
-  type LiveRecord,
   type LiveRunSummary,
 } from "./live-feed-data";
 import { readStepEvents } from "./step-events";
@@ -19,32 +18,28 @@ import { readStepEvents } from "./step-events";
 // Prototype reader for recorded live runs: the B01 read API plus, when present, the A01
 // nvidia-smi diagnostic files under the local data directory.
 
-const API_TIMEOUT_MS = 3000;
-const RUN_LIST_LIMIT = 50;
-const RECORD_PAGE_LIMIT = 256;
 const MAX_RECORD_PAGES = 40;
 
-async function getJson(url: string): Promise<unknown> {
-  const response = await fetch(url, {
-    cache: "no-store",
-    signal: AbortSignal.timeout(API_TIMEOUT_MS),
-  });
-  if (!response.ok) throw new Error(`${response.status} from ${url}`);
-  return response.json();
+class LiveReadError extends Error {
+  constructor(
+    message: string,
+    readonly notFound: boolean,
+  ) {
+    super(message);
+  }
 }
 
-async function loadRunRecords(runId: string) {
+async function loadRunRecords(api: LiveApi, runId: string) {
   let after = 0;
-  const records: LiveRecord[] = [];
+  const records: LiveSavedRecord[] = [];
   for (let page = 0; page < MAX_RECORD_PAGES; page += 1) {
-    const detail = liveDetailSchema.parse(
-      await getJson(
-        `${apiUrl()}/v1/live/runs/${encodeURIComponent(runId)}?after=${after}&limit=${RECORD_PAGE_LIMIT}`,
-      ),
-    );
-    records.push(...detail.records);
-    if (detail.next_cursor === null) return { detail, records };
-    after = detail.next_cursor;
+    const result = await api.runSnapshot(runId, after);
+    if (!result.ok)
+      throw new LiveReadError(result.message, result.kind === "not_found");
+    records.push(...result.data.records);
+    if (result.data.next_cursor === null)
+      return { detail: result.data, records };
+    after = result.data.next_cursor;
   }
   throw new Error(`more than ${MAX_RECORD_PAGES} record pages`);
 }
@@ -122,29 +117,26 @@ const message = (error: unknown) =>
 
 export async function loadLiveFeed(requested?: string): Promise<LiveFeedData> {
   const base = { requested: requested ?? null, selected: null };
-  let runs: LiveRunSummary[];
-  try {
-    runs = liveListSchema
-      .parse(await getJson(`${apiUrl()}/v1/live/runs?limit=${RUN_LIST_LIMIT}`))
-      .runs.map((run) => ({
-        runId: run.run_id,
-        taskId: run.registration.task_id,
-        state: run.state,
-        createdAt: run.created_at,
-      }));
-  } catch (error) {
+  const api = createLiveApi(apiUrl());
+  const page = await api.runPage();
+  if (!page.ok)
     return {
       ...base,
       runs: [],
-      error: `Live API unavailable: ${message(error)}`,
+      error: `Live API unavailable: ${page.message}`,
     };
-  }
-  // Show only the selected UUID; a missing selection is reported, never substituted.
+  const runs: LiveRunSummary[] = page.data.runs.map((run) => ({
+    runId: run.run_id,
+    taskId: run.registration.task_id,
+    state: run.state,
+    createdAt: run.created_at,
+  }));
+  // A requested UUID is read directly, so runs older than the newest page stay selectable.
+  // A missing one is reported, never substituted.
   const runId = requested ?? runs[0]?.runId;
-  if (!runId || (requested && !runs.some((r) => r.runId === requested)))
-    return { ...base, runs, error: null };
+  if (!runId) return { ...base, runs, error: null };
   try {
-    const { detail, records } = await loadRunRecords(runId);
+    const { detail, records } = await loadRunRecords(api, runId);
     const payloads = records.map((r) => r.payload);
     const steps = payloads.filter((p) => p.record_type === "step_event");
     const samples = payloads.filter((p) => p.record_type === "resource_sample");
@@ -172,6 +164,8 @@ export async function loadLiveFeed(requested?: string): Promise<LiveFeedData> {
       },
     };
   } catch (error) {
+    if (error instanceof LiveReadError && error.notFound)
+      return { ...base, runs, error: null };
     return {
       ...base,
       runs,

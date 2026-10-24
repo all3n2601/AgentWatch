@@ -6,43 +6,12 @@ import { stepStates } from "./step-events";
 // diagnostic files become chart-ready series. I/O lives in live-feed.ts.
 
 export const runStateSchema = z.enum(stepStates);
-const registrationSchema = z
-  .object({
-    task_id: z.string(),
-    resources: z.array(
-      z.object({ resource_id: z.string(), resource_class: z.string() }),
-    ),
-  })
-  .loose();
-export const liveListSchema = z.object({
-  runs: z.array(
-    z
-      .object({
-        run_id: z.string(),
-        state: runStateSchema,
-        created_at: z.string(),
-        registration: registrationSchema,
-      })
-      .loose(),
-  ),
-});
-const recordSchema = z.object({
-  sequence: z.number().int(),
-  disposition: z.string(),
-  received_at: z.iso.datetime({ offset: true }),
-  payload: z.object({ record_type: z.string() }).loose(),
-});
-export type LiveRecord = z.infer<typeof recordSchema>;
-export const liveDetailSchema = z
-  .object({
-    run_id: z.string(),
-    state: runStateSchema,
-    reason: z.string().nullable(),
-    registration: registrationSchema,
-    records: z.array(recordSchema),
-    next_cursor: z.number().int().nullable(),
-  })
-  .loose();
+export type LiveRecord = {
+  sequence: number;
+  disposition: string;
+  received_at: string;
+  payload: { record_type: string };
+};
 const sampleSchema = z.object({
   observed_at: z.iso.datetime({ offset: true }),
   resource_class: z.string(),
