@@ -46,7 +46,6 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { AgentRun } from "@/components/agent-run";
 import { LiveFeed } from "@/components/live-feed";
-import { LiveRun } from "@/components/live-run";
 import {
   PanelHeading,
   Resources,
@@ -68,7 +67,6 @@ import {
   type Page,
 } from "@/lib/dashboard-data";
 import type { DashboardData, Experiment } from "@/lib/experiment-schema";
-import type { LivePageData } from "@/lib/live-replay";
 import { cn } from "@/lib/utils";
 
 const navigation = [
@@ -259,7 +257,8 @@ export function Dashboard({
   page?: Page;
   initialRunId?: string;
   initialBaselineId?: string;
-  live?: LivePageData;
+  /** On the live page: the `?liveRun=` UUID, or null to follow the newest run. */
+  live?: { requested: string | null };
 }) {
   const [data, setData] = useState(initialData);
   const [range, setRange] = useState("all");
@@ -356,25 +355,11 @@ export function Dashboard({
   };
   const baseline = data.experiments.find((r) => r.run_id === initialBaselineId);
   const source =
-    page === "live" && live?.replay
-      ? {
-          badge: "REPLAY",
-          description: "synthetic development replay",
-          replay: true,
-        }
-      : page === "live" && live?.liveFeed
-        ? { badge: "LIVE API", description: "live run read API", replay: false }
-        : data.source === "database"
-          ? {
-              badge: "HISTORY",
-              description: "saved run history",
-              replay: false,
-            }
-          : {
-              badge: "LOCAL FILES",
-              description: "local artifact fallback",
-              replay: false,
-            };
+    page === "live" && live
+      ? { badge: "LIVE API", description: "live run read API" }
+      : data.source === "database"
+        ? { badge: "HISTORY", description: "saved run history" }
+        : { badge: "LOCAL FILES", description: "local artifact fallback" };
   return (
     <div
       className={cn(
@@ -517,12 +502,7 @@ export function Dashboard({
             <Badge
               variant="outline"
               aria-label={`Data source: ${source.description}`}
-              className={cn(
-                "text-[9px] tracking-wide",
-                source.replay
-                  ? "border-violet-400/40 text-violet-200"
-                  : "text-muted-foreground",
-              )}
+              className="text-[9px] tracking-wide text-muted-foreground"
             >
               {source.badge}
             </Badge>
@@ -580,16 +560,7 @@ export function Dashboard({
               {data.warnings.join(" ")}
             </div>
           )}
-          {page === "live" &&
-            live &&
-            (live.liveFeed && !live.requestedReplay ? (
-              <LiveFeed
-                requested={live.liveFeed.requested}
-                scenarios={live.scenarios}
-              />
-            ) : (
-              <LiveRun data={live} />
-            ))}
+          {page === "live" && live && <LiveFeed requested={live.requested} />}
           {page === "overview" && (
             <>
               <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -1014,9 +985,7 @@ export function Dashboard({
           <footer className="flex flex-wrap items-center justify-between gap-2 border-t pt-5 text-[10px] text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <ShieldCheck className="size-3" />
-              {source.replay
-                ? "Synthetic development replay · not recorded evidence"
-                : "Recorded measurements · rule-based attribution"}
+              Recorded measurements · rule-based attribution
             </span>
             <span>
               {runs.length} runs in scope ·{" "}

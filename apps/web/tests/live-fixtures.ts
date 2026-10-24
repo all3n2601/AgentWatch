@@ -49,6 +49,7 @@ type StepOptions = {
   started?: number | null;
   finished?: number | null;
   cpu?: number | null;
+  cpuScope?: "process" | "process_and_children";
   reason?: string | null;
   second?: number;
 };
@@ -87,7 +88,9 @@ export function stepEvent(
     finished_tick_ns: seconds(options.finished),
     cpu_seconds: options.cpu ?? null,
     cpu_scope:
-      options.cpu === undefined || options.cpu === null ? null : "process",
+      options.cpu === undefined || options.cpu === null
+        ? null
+        : (options.cpuScope ?? "process"),
     reason: options.reason ?? null,
   };
 }

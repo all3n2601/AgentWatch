@@ -5,7 +5,7 @@ import type {
   LiveSavedRecord,
 } from "./live-api-schema";
 import type { FeedReceipt } from "./live-status";
-import { terminalStates } from "./step-events";
+import { terminalStates } from "./live-view";
 
 // Polling state for one selected live run, kept free of timers and fetch so it can be tested.
 // B01 offers polling only (docs/live-ingestion.md): read the snapshot after the largest record

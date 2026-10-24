@@ -3,7 +3,7 @@ import {
   type LiveRunView,
   type LiveStep,
   type StepState,
-} from "./step-events";
+} from "./live-view";
 
 /** Server-owned run state; distinct from step states and unknown when null. */
 export type RunStatus = { state: StepState; reason: string | null } | null;
@@ -263,8 +263,8 @@ export function stepTotals(view: LiveRunView, run: RunStatus): StepTotals {
       `${plural(waiting, "step")} ${isAre(waiting)} waiting for a missing revision`,
     expired > 0 &&
       `${plural(expired, "step")} ${expired === 1 ? "has" : "have"} expired revisions that will never be applied`,
-    view.unreadableRecords > 0 &&
-      `${plural(view.unreadableRecords, "record")} could not be read`,
+    view.otherRunRecords > 0 &&
+      `${plural(view.otherRunRecords, "record")} belong${view.otherRunRecords === 1 ? "s" : ""} to another run`,
   ].filter((reason): reason is string => !!reason);
   const terminal = view.steps.filter(isTerminal);
   const parents = new Set(view.steps.map((step) => step.parentStepId));

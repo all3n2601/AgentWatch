@@ -10,7 +10,7 @@ import {
   type LiveStep,
   type SequenceGap,
   type StepTimings,
-} from "./step-events";
+} from "./live-view";
 
 // Reads a B01 run snapshot into the live view. The service's `steps` (validated contiguous
 // prefixes) and `gaps` are authoritative: pending and expired records are never applied here,
@@ -97,7 +97,6 @@ export function readRunSnapshot(
     runId,
     steps,
     gaps,
-    unreadableRecords: 0,
     otherRunRecords: records.length - ownRecords.length,
     lastObservedAt,
   };

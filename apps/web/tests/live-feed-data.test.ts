@@ -310,7 +310,7 @@ test("the live view draws applied records only and counts every record received"
     "the pending completion is not drawn",
   );
   assert.equal(run.liveSeries.length, 1);
-  assert.equal(run.replay.view.gaps.length, 0);
-  assert.equal(run.replay.receivedAgoMs, null);
+  assert.equal(run.view.gaps.length, 0);
+  assert.equal(run.title, "synthetic-task-r1");
   assert.equal(run.gpu, null);
 });

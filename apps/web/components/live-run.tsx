@@ -1,22 +1,18 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import { useEffect, useState } from "react";
 import {
   CircleAlert,
   CircleCheck,
   CircleDashed,
   CircleSlash,
   Clock3,
-  FlaskConical,
   LoaderCircle,
   RadioTower,
-  Unplug,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { PanelHeading } from "@/components/run-views";
 import { duration } from "@/lib/dashboard-data";
-import type { LivePageData, LiveReplay } from "@/lib/live-replay";
 import {
   activeSteps,
   failedSteps,
@@ -28,10 +24,16 @@ import {
   type CpuTotal,
   type FeedFreshness,
   type FeedReceipt,
+  type RunStatus,
   type SpanTotal,
   type TimingTotal,
 } from "@/lib/live-status";
-import type { LiveStep, SequenceGap, StepState } from "@/lib/step-events";
+import type {
+  LiveRunView,
+  LiveStep,
+  SequenceGap,
+  StepState,
+} from "@/lib/live-view";
 import { cn } from "@/lib/utils";
 
 const FRESHNESS_CHECK_INTERVAL_MS = 5_000;
@@ -132,60 +134,6 @@ function StatusTile({
   );
 }
 
-function ReplayBanner({ replay }: { replay: LiveReplay }) {
-  return (
-    <div
-      role="note"
-      aria-label="Development replay"
-      className="flex items-start gap-3 rounded-lg border border-violet-400/30 bg-violet-400/10 p-3 text-xs leading-5 text-violet-100"
-    >
-      <FlaskConical className="mt-0.5 size-4 shrink-0" aria-hidden />
-      <p>
-        <strong className="font-semibold uppercase tracking-wide">
-          Development replay
-        </strong>{" "}
-        — synthetic scripted events, not recorded evidence. Scenario:{" "}
-        {replay.title}. {replay.description}
-      </p>
-    </div>
-  );
-}
-
-export function ScenarioPicker({
-  scenarios,
-  current,
-}: {
-  scenarios: LivePageData["scenarios"];
-  current?: string;
-}) {
-  if (!scenarios.length) return null;
-  return (
-    <nav aria-label="Development replay scenarios">
-      <p className="mb-2 text-[11px] text-muted-foreground">
-        Development replay scenarios (synthetic):
-      </p>
-      <ul className="flex flex-wrap gap-2">
-        {scenarios.map((scenario) => (
-          <li key={scenario.id}>
-            <Link
-              href={`/live?replay=${scenario.id}`}
-              aria-current={scenario.id === current ? "page" : undefined}
-              className={cn(
-                "inline-flex min-h-11 items-center rounded-md border px-3 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-primary",
-                scenario.id === current
-                  ? "border-primary/40 bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {scenario.title}
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </nav>
-  );
-}
-
 function stepCountText(total: { measuredSteps: number }) {
   return `${total.measuredSteps} step${total.measuredSteps === 1 ? "" : "s"}`;
 }
@@ -276,8 +224,8 @@ function CpuValue({ total, final }: { total: CpuTotal; final: boolean }) {
   );
 }
 
-function Totals({ replay }: { replay: LiveReplay }) {
-  const totals = stepTotals(replay.view, replay.run);
+function Totals({ view, run }: { view: LiveRunView; run: RunStatus }) {
+  const totals = stepTotals(view, run);
   return (
     <Card className="gap-0 p-5 sm:p-6">
       <PanelHeading
@@ -419,24 +367,18 @@ function StepRow({ step }: { step: LiveStep }) {
 }
 
 /**
- * Reads only the browser's clocks, after mount. The anchor is the browser's
- * monotonic time when the replay was received (hydration), so feed age never
- * compares server and browser clocks. Returns null during server render and
- * hydration, keeping the first client render identical to the server's.
+ * Reads only the browser's clocks, after mount, so feed age never compares server and browser
+ * clocks. Returns null during server render and hydration, keeping the first client render
+ * identical to the server's.
  */
 function useBrowserClock(ticking: boolean) {
-  const anchorRef = useRef<number | null>(null);
-  const [clock, setClock] = useState<BrowserClockReading>(null);
+  const [now, setNow] = useState<{
+    nowMonotonicMs: number;
+    nowWallMs: number;
+  } | null>(null);
   useEffect(() => {
-    const read = () => {
-      const nowMonotonicMs = performance.now();
-      anchorRef.current ??= nowMonotonicMs;
-      setClock({
-        anchorMonotonicMs: anchorRef.current,
-        nowMonotonicMs,
-        nowWallMs: Date.now(),
-      });
-    };
+    const read = () =>
+      setNow({ nowMonotonicMs: performance.now(), nowWallMs: Date.now() });
     const first = setTimeout(read, 0);
     const timer = ticking
       ? setInterval(read, FRESHNESS_CHECK_INTERVAL_MS)
@@ -446,33 +388,29 @@ function useBrowserClock(ticking: boolean) {
       clearInterval(timer);
     };
   }, [ticking]);
-  return clock;
+  return now;
 }
 
-export function ReplayView({
-  replay,
+/** Run state, feed freshness, gaps, totals and steps of one live run. */
+export function LiveRunSteps({
+  run,
+  view,
   receipt,
 }: {
-  replay: LiveReplay;
-  /**
-   * A live feed's receipt, anchored when the browser received new records. Omitted for a
-   * replay, whose scripted age is anchored when the page mounts.
-   */
-  receipt?: FeedReceipt | null;
+  run: RunStatus;
+  view: LiveRunView;
+  /** When the browser last received new records for this run; null before any. */
+  receipt: FeedReceipt | null;
 }) {
-  const outcome = runOutcome(replay.run);
-  const receivedAgoMs =
-    receipt === undefined
-      ? replay.receivedAgoMs
-      : (receipt?.ageAtAnchorMs ?? null);
-  const browserClock = useBrowserClock(feedClockTicks(receivedAgoMs));
-  const clock =
-    receipt && browserClock
-      ? { ...browserClock, anchorMonotonicMs: receipt.anchorMonotonicMs }
-      : browserClock;
+  const outcome = runOutcome(run);
+  const receivedAgoMs = receipt?.ageAtAnchorMs ?? null;
+  const now = useBrowserClock(feedClockTicks(receivedAgoMs));
+  const clock: BrowserClockReading =
+    receipt && now
+      ? { ...now, anchorMonotonicMs: receipt.anchorMonotonicMs }
+      : null;
   const feed = feedDisplay({ receivedAgoMs, outcome, clock });
   const freshness = feed.freshness;
-  const { view, run } = replay;
   const active = activeSteps(view);
   const failed = failedSteps(view);
   return (
@@ -535,7 +473,7 @@ export function ReplayView({
           {active.length} active · {failed.length} failed or cancelled
         </StatusTile>
       </div>
-      {(view.gaps.length > 0 || view.unreadableRecords > 0) && (
+      {(view.gaps.length > 0 || view.otherRunRecords > 0) && (
         <div
           role="status"
           className="space-y-1 rounded-lg border border-amber-400/20 bg-amber-400/5 p-3 text-xs text-amber-200"
@@ -545,16 +483,16 @@ export function ReplayView({
               {gapText(gap)}
             </p>
           ))}
-          {view.unreadableRecords > 0 && (
+          {view.otherRunRecords > 0 && (
             <p>
-              {view.unreadableRecords} record
-              {view.unreadableRecords === 1 ? "" : "s"} could not be read and
-              {view.unreadableRecords === 1 ? " was" : " were"} not applied.
+              {view.otherRunRecords} record
+              {view.otherRunRecords === 1 ? " belongs" : "s belong"} to another
+              run and {view.otherRunRecords === 1 ? "was" : "were"} not applied.
             </p>
           )}
         </div>
       )}
-      <Totals replay={replay} />
+      <Totals view={view} run={run} />
       <Card className="gap-0 p-5 sm:p-6">
         <PanelHeading
           title="Steps"
@@ -573,30 +511,5 @@ export function ReplayView({
         )}
       </Card>
     </>
-  );
-}
-
-export function LiveRun({ data }: { data: LivePageData }) {
-  if (data.replay)
-    return (
-      <div className="space-y-6">
-        <ReplayBanner replay={data.replay} />
-        <ScenarioPicker scenarios={data.scenarios} current={data.replay.id} />
-        <ReplayView replay={data.replay} />
-      </div>
-    );
-  return (
-    <div className="space-y-6">
-      <Card className="items-center gap-3 border-dashed p-8 text-center sm:p-12">
-        <Unplug className="size-7 text-muted-foreground" aria-hidden />
-        <h2 className="text-base font-semibold">Live feed not connected</h2>
-        <p className="max-w-lg text-sm leading-6 text-muted-foreground">
-          {data.requestedReplay
-            ? `Replay scenario “${data.requestedReplay}” does not exist. Choose one below.`
-            : "The dashboard does not read live runs yet. Completed runs remain available in Run history."}
-        </p>
-      </Card>
-      <ScenarioPicker scenarios={data.scenarios} />
-    </div>
   );
 }

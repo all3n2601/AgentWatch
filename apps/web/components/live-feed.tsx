@@ -23,7 +23,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PanelHeading } from "@/components/run-views";
-import { ReplayView, ScenarioPicker } from "@/components/live-run";
+import { LiveRunSteps } from "@/components/live-run";
 import {
   useGpuEvidence,
   useRunFeed,
@@ -47,7 +47,6 @@ import {
   type RunFeed,
   type RunListFeed,
 } from "@/lib/live-poll";
-import type { LivePageData } from "@/lib/live-replay";
 import { cn } from "@/lib/utils";
 
 // Live runs read from the B01 live API through this app's routes, polled in the browser.
@@ -571,7 +570,7 @@ function SelectedRun({
             for run <span className="font-mono break-all">{feed.runId}</span>.
           </p>
           <Resources run={run} />
-          <ReplayView replay={run.replay} receipt={feed.receipt} />
+          <LiveRunSteps run={run.run} view={run.view} receipt={feed.receipt} />
           <LiveEvidence runId={feed.runId} />
         </>
       ) : (
@@ -589,11 +588,9 @@ function SelectedRun({
 
 export function LiveFeed({
   requested,
-  scenarios,
 }: {
   /** The `?liveRun=` UUID, or null to follow the newest run when the list first loads. */
   requested: string | null;
-  scenarios: LivePageData["scenarios"];
 }) {
   const { list, firstNewest } = useRunList();
   const requestedValid = requested === null || isLiveRunId(requested);
@@ -651,7 +648,6 @@ export function LiveFeed({
           alert={list.connection.status !== "connecting"}
         />
       )}
-      <ScenarioPicker scenarios={scenarios} />
     </div>
   );
 }

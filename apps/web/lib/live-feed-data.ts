@@ -4,9 +4,10 @@ import type {
   LiveRunSnapshot,
   LiveSavedRecord,
 } from "./live-api-schema";
-import type { LiveReplay } from "./live-replay";
 import { readRunSnapshot, runStatusOf } from "./live-snapshot";
-import { stepStates } from "./step-events";
+import type { RunStatus } from "./live-status";
+import type { LiveRunView } from "./live-view";
+import { stepStates } from "./live-view";
 
 // Pure parsing for the live-runs prototype: B01 read-API responses and the A01 nvidia-smi
 // diagnostic files become chart-ready series. I/O lives in live-feed.ts.
@@ -110,7 +111,9 @@ export const gpuEvidenceSchema = z.union([
 ]) satisfies z.ZodType<GpuEvidence>;
 
 export type LiveFeedRun = {
-  replay: LiveReplay;
+  title: string;
+  run: RunStatus;
+  view: LiveRunView;
   resources: { resourceId: string; resourceClass: string }[];
   wallSteps: WallStep[];
   liveSeries: MetricSeries[];
@@ -132,15 +135,9 @@ export function liveFeedRun(
     r.disposition === "applied" ? [r.payload] : [],
   );
   return {
-    replay: {
-      id: snapshot.run_id,
-      title: snapshot.registration.task_id,
-      description: "",
-      run: runStatusOf(snapshot),
-      // Receipt age comes from the browser's poll receipt, not from this snapshot.
-      receivedAgoMs: null,
-      view: readRunSnapshot(snapshot, records),
-    },
+    title: snapshot.registration.task_id,
+    run: runStatusOf(snapshot),
+    view: readRunSnapshot(snapshot, records),
     resources: snapshot.registration.resources.map((r) => ({
       resourceId: r.resource_id,
       resourceClass: r.resource_class,
