@@ -109,6 +109,7 @@ space := $(subst ,, )
 PIPELINE_RUN_DIRS_JSON = [$(subst $(space),$(comma),$(foreach dir,$(PIPELINE_RUN_DIRS),"$(dir)"))]
 
 pipeline-run: ## Run the whole Airflow dataset DAG once, without a scheduler (PIPELINE_RUN_DIRS=".data/coding-demo ..." to add runs first)
+	$(if $(findstring ",$(PIPELINE_RUN_DIRS))$(findstring ',$(PIPELINE_RUN_DIRS)),$(error PIPELINE_RUN_DIRS paths cannot contain quotes; trigger the DAG with its run_dirs parameter instead))
 	$(AIRFLOW) db migrate
 	$(AIRFLOW) dags test agentwatch_dataset -c '{"run_dirs": $(PIPELINE_RUN_DIRS_JSON)}'
 

@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 
@@ -39,21 +40,50 @@ def test_acquire_without_run_dirs_runs_nothing(config, fake_run):
     assert fake_run.calls == []
 
 
-def test_acquire_adds_every_run_dir_to_the_store(config, fake_run):
-    assert stages.acquire(config, [".data/coding-demo", ".data/cpu-demo"]) == 2
+def test_acquire_adds_every_run_dir_to_the_store_after_the_options(config, fake_run):
+    stages.acquire(config, [".data/coding-demo", ".data/cpu-demo"])
     (argv,) = fake_run.argvs()
-    assert argv[-5:] == [
+    assert argv[-6:] == [
         "agentwatch_data.evidence",
         "--store",
         str(config.root / "data/evidence"),
+        "--",
         ".data/coding-demo",
         ".data/cpu-demo",
     ]
 
 
-def test_build_returns_the_release_it_reports(config, fake_run):
-    fake_run.responses = [(0, "release: data/datasets/steps-v1.2+abc\nreport: r.json\n", "")]
-    assert stages.build(config) == "data/datasets/steps-v1.2+abc"
+def test_acquire_counts_only_runs_newly_added(config, fake_run):
+    fake_run.responses = [
+        (0, "added: data/evidence/coding-a\nalready stored: data/evidence/coding-b\n", "")
+    ]
+    assert stages.acquire(config, [".data/a", ".data/b"]) == 1
+
+
+@pytest.mark.parametrize("option", ["--store=/tmp/elsewhere", "-h"])
+def test_acquire_refuses_run_dirs_that_look_like_options(config, fake_run, option):
+    with pytest.raises(stages.StageError, match="look like options"):
+        stages.acquire(config, [".data/coding-demo", option])
+    assert fake_run.calls == []
+
+
+def write_report(config, rows=357, runs=51, rejections=()):
+    path = config.root / "data/datasets/builds/report.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"rows": rows, "runs": runs, "rejections": list(rejections)}))
+    return path
+
+
+def test_build_returns_the_release_and_report_counts(config, fake_run):
+    report = write_report(config, rejections=[{"run": "r1", "reason": "bad"}])
+    fake_run.responses = [(0, f"release: data/datasets/steps-v1.2+abc\nreport: {report}\n", "")]
+    assert stages.build(config) == stages.BuildOutcome(
+        release="data/datasets/steps-v1.2+abc",
+        report=str(report),
+        rows=357,
+        runs=51,
+        runs_rejected=1,
+    )
     (argv,) = fake_run.argvs()
     assert argv[argv.index("--source") + 1] == f"local:{config.root / 'data/evidence'}"
     assert "api:" not in " ".join(argv)
@@ -62,9 +92,34 @@ def test_build_returns_the_release_it_reports(config, fake_run):
 def test_build_adds_the_api_source_when_configured(tmp_path, fake_run):
     (tmp_path / "Makefile").write_text("")
     config = stages.PipelineConfig(root=tmp_path, api_url="http://127.0.0.1:8090")
-    fake_run.responses = [(0, "release: r\n", "")]
+    fake_run.responses = [(0, f"release: r\nreport: {write_report(config)}\n", "")]
     stages.build(config)
     assert "api:http://127.0.0.1:8090" in fake_run.argvs()[0]
+
+
+def test_build_reads_a_relative_report_path_from_the_root(config, fake_run):
+    write_report(config, rows=7)
+    fake_run.responses = [(0, "release: r\nreport: data/datasets/builds/report.json\n", "")]
+    assert stages.build(config).rows == 7
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (None, "unreadable"),
+        ("{not json", "unreadable"),
+        ('{"rows": 1, "runs": 1}', "unreadable"),
+        ('{"rows": -1, "runs": 1, "rejections": []}', "invalid counts"),
+        ('{"rows": true, "runs": 1, "rejections": []}', "invalid counts"),
+    ],
+)
+def test_build_with_a_bad_report_fails(config, fake_run, content, message):
+    report = config.root / "report.json"
+    if content is not None:
+        report.write_text(content)
+    fake_run.responses = [(0, f"release: r\nreport: {report}\n", "")]
+    with pytest.raises(stages.StageError, match=message):
+        stages.build(config)
 
 
 def test_build_without_a_release_line_fails(config, fake_run):
@@ -159,10 +214,28 @@ def test_version_snapshots_nothing_when_integrity_fails(config, fake_run):
     assert len(fake_run.calls) == 2
 
 
-@pytest.mark.parametrize(("code", "configured"), [(0, True), (251, False)])
-def test_remote_configured_follows_dvc(config, fake_run, code, configured):
-    fake_run.responses = [(code, "", "")]
-    assert stages.remote_configured(config) is configured
+def test_a_default_remote_is_configured(config, fake_run):
+    fake_run.responses = [(0, "storage\n", "")]
+    assert stages.remote_configured(config) is True
+
+
+def test_no_default_remote_is_unconfigured(config, fake_run):
+    fake_run.responses = [(1, "", "No default remote set\n")]
+    assert stages.remote_configured(config) is False
+
+
+@pytest.mark.parametrize(
+    ("code", "stderr"),
+    [
+        (1, "ERROR: configuration error - config file error"),
+        (251, "ERROR: you are not inside of a DVC repository"),
+        (2, "error: Failed to spawn: `dvc`"),
+    ],
+)
+def test_other_remote_failures_fail_the_push(config, fake_run, code, stderr):
+    fake_run.responses = [(code, "", stderr)]
+    with pytest.raises(stages.StageError, match=f"exit code {code}"):
+        stages.remote_configured(config)
 
 
 def test_config_from_env_reads_root_api_and_timeout(config):

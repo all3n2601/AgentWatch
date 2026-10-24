@@ -12,6 +12,7 @@ split, or versioned in this run's place.
 This module does not import Airflow, so it is tested without it.
 """
 
+import json
 import logging
 import os
 import subprocess
@@ -28,10 +29,16 @@ DEFAULT_STAGE_TIMEOUT_SECONDS = 30 * 60
 STDERR_TAIL_LINES = 20  # how much of a failed command's stderr the error carries
 
 # Prefixes of the lines the data commands print for later stages to read.
+ADDED_PREFIX = "added: "
 RELEASE_PREFIX = "release: "
+REPORT_PREFIX = "report: "
 SPLIT_PREFIX = "split: "
 LEAKAGE_PREFIX = "leakage: "
 REUSED_SUFFIX = " (reused)"
+# dvc remote default exits 1 with this message when no default remote is set; any other failure
+# is a broken configuration or environment, which must fail the push rather than skip it.
+NO_REMOTE_EXIT_CODE = 1
+NO_REMOTE_MESSAGE = "No default remote set"
 
 
 class StageError(RuntimeError):
@@ -79,6 +86,15 @@ class PipelineConfig:
 
 
 @dataclass(frozen=True)
+class BuildOutcome:
+    release: str
+    report: str
+    rows: int
+    runs: int  # runs that passed every stage and are in the release
+    runs_rejected: int  # runs the build rejected individually, each with a reason in the report
+
+
+@dataclass(frozen=True)
 class SplitOutcome:
     path: str
     reused: bool
@@ -90,6 +106,10 @@ class RunSummary:
     """What one pipeline run produced, so a run is traceable without reading its logs."""
 
     release: str
+    build_report: str
+    rows: int
+    runs: int
+    runs_rejected: int
     evidence_added: int
     split: str
     leakage: str
@@ -157,19 +177,29 @@ def value_after(stage: str, output: str, prefix: str) -> str:
 
 
 def acquire(config: PipelineConfig, run_dirs: Sequence[str]) -> int:
-    """Add recorded runs to the evidence store. Returns how many runs were given.
+    """Add recorded runs to the evidence store. Returns how many were newly added.
 
     Adding evidence that is already stored does nothing, so a retried or repeated run is safe.
     """
     if not run_dirs:
         return 0
+    # Run directories come from DAG parameters; one that looks like an option (--store=...,
+    # -h) must never be parsed as one, so it is refused and the rest follow "--".
+    options = [run_dir for run_dir in run_dirs if run_dir.startswith("-")]
+    if options:
+        raise StageError(f"acquire refused run directories that look like options: {options}")
     store = str(config.path(config.evidence))
-    run_command(config, "acquire", data_command(config, "evidence", "--store", store, *run_dirs))
-    return len(run_dirs)
+    argv = data_command(config, "evidence", "--store", store, "--", *run_dirs)
+    output = run_command(config, "acquire", argv).stdout
+    return sum(line.startswith(ADDED_PREFIX) for line in output.splitlines())
 
 
-def build(config: PipelineConfig) -> str:
-    """Build (or reuse) the release of the current evidence. Returns the release path."""
+def build(config: PipelineConfig) -> BuildOutcome:
+    """Build (or reuse) the release of the current evidence, with its report's counts.
+
+    Runs the build rejects do not fail it (each is recorded with a reason in the report), so
+    the counts are carried forward for the run summary and alerts.
+    """
     sources = ["--source", f"local:{config.path(config.evidence)}"]
     if config.api_url:
         sources += ["--source", f"api:{config.api_url}"]
@@ -177,7 +207,26 @@ def build(config: PipelineConfig) -> str:
     result = run_command(
         config, "build", data_command(config, "build", *sources, "--output", output)
     )
-    return value_after("build", result.stdout, RELEASE_PREFIX)
+    release = value_after("build", result.stdout, RELEASE_PREFIX)
+    report = value_after("build", result.stdout, REPORT_PREFIX)
+    counts = read_build_report(config.path(Path(report)))
+    return BuildOutcome(release=release, report=report, **counts)
+
+
+def read_build_report(path: Path) -> dict[str, int]:
+    """The row, run, and rejection counts of a build report the build just wrote."""
+    try:
+        report = json.loads(path.read_text())
+        counts = {
+            "rows": report["rows"],
+            "runs": report["runs"],
+            "runs_rejected": len(report["rejections"]),
+        }
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise StageError(f"build report {path} is unreadable: {error}") from error
+    if not all(type(value) is int and value >= 0 for value in counts.values()):
+        raise StageError(f"build report {path} has invalid counts: {counts}")
+    return counts
 
 
 def validate(config: PipelineConfig, release: str) -> None:
@@ -238,13 +287,20 @@ def version(config: PipelineConfig) -> None:
 
 
 def remote_configured(config: PipelineConfig) -> bool:
-    """Whether DVC has a default remote; without one there is nowhere to push."""
-    return (
-        run_command(
-            config, "push", dvc_command(config, "remote", "default"), check=False
-        ).returncode
-        == 0
-    )
+    """Whether DVC has a default remote; without one there is nowhere to push.
+
+    Only DVC's own "no default remote" answer means unconfigured. Any other failure raises, so
+    the push task fails (and retries) instead of being skipped like a local-only setup.
+    """
+    argv = dvc_command(config, "remote", "default")
+    result = run_command(config, "push", argv, check=False)
+    if result.returncode == 0:
+        return True
+    output = result.stdout + result.stderr
+    if result.returncode == NO_REMOTE_EXIT_CODE and NO_REMOTE_MESSAGE in output:
+        return False
+    tail = "\n".join(output.splitlines()[-STDERR_TAIL_LINES:])
+    raise StageError(f"push could not read the DVC remote (exit code {result.returncode}):\n{tail}")
 
 
 def push(config: PipelineConfig) -> None:

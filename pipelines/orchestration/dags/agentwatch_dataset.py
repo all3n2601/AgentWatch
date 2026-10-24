@@ -14,6 +14,7 @@ retried away. One run at a time, because versioning snapshots the whole stores.
 
 import logging
 import os
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
 from agentwatch_orchestration import stages
@@ -56,15 +57,21 @@ def agentwatch_dataset():
         if not isinstance(run_dirs, list) or not all(isinstance(item, str) for item in run_dirs):
             raise stages.StageError("run_dirs must be a list of directory paths")
         added = stages.acquire(config(), run_dirs)
-        logger.info("Gave %d recorded run directories to the evidence store", added)
+        logger.info("Added %d new runs to the evidence store", added)
         return added
 
     @task
-    def build(_acquired: int) -> str:
-        return stages.build(config())
+    def build(_acquired: int) -> dict[str, object]:
+        outcome = stages.build(config())
+        if outcome.runs_rejected:
+            logger.warning(
+                "Build rejected %d runs; reasons are in %s", outcome.runs_rejected, outcome.report
+            )
+        return asdict(outcome)
 
     @task
-    def validate(release: str) -> str:
+    def validate(built: dict[str, object]) -> str:
+        release = str(built["release"])
         stages.validate(config(), release)
         return release
 
@@ -95,13 +102,21 @@ def agentwatch_dataset():
 
     @task(trigger_rule="none_failed")
     def summarize(
-        added: int, release: str, split_outcome: dict[str, object], versioned: bool
+        added: int,
+        built: dict[str, object],
+        release: str,
+        split_outcome: dict[str, object],
+        versioned: bool,
     ) -> dict[str, object]:
         from airflow.sdk import get_current_context
 
         pushed = get_current_context()["ti"].xcom_pull(task_ids="push") is True
         summary = stages.RunSummary(
             release=release,
+            build_report=str(built["report"]),
+            rows=int(built["rows"]),
+            runs=int(built["runs"]),
+            runs_rejected=int(built["runs_rejected"]),
             evidence_added=added,
             split=str(split_outcome["path"]),
             leakage=str(split_outcome["leakage"]),
@@ -112,12 +127,12 @@ def agentwatch_dataset():
         return summary.as_dict()
 
     added = acquire()
-    release = build(added)
-    validated = validate(release)
+    built = build(added)
+    validated = validate(built)
     split_outcome = split(validated)
     versioned = version(split_outcome)
     pushed = push(versioned)
-    summary = summarize(added, validated, split_outcome, versioned)
+    summary = summarize(added, built, validated, split_outcome, versioned)
     pushed >> summary
 
 

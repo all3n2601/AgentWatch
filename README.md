@@ -142,10 +142,12 @@ Each language uses its native toolchain. The root `Makefile` only coordinates co
 The Airflow DAG `agentwatch_dataset` in `pipelines/orchestration/dags/` runs the dataset commands
 in order: acquire (add recorded runs to the evidence store) → build → validate (TFDV gate) →
 split → version (integrity check, then DVC) → push → summarize. Each task runs the same command
-as its `make` target, in that stage's own environment; anomalies, rejected evidence, or a failed
-integrity check fail the task and stop the run. Only the push to the DVC remote is retried, and it
-is skipped when no remote is configured. The last task logs a run summary (release, split,
-leakage status, and whether the version was pushed).
+as its `make` target, in that stage's own environment. Refused run directories, gate anomalies,
+or a failed integrity check fail the task and stop the run. Runs the build rejects do not: each is
+recorded with its reason in the build report, and the run continues with the rest. Only the push
+to the DVC remote is retried, and it is skipped only when DVC reports no default remote. The last
+task logs a run summary (release, rows, runs and rejections, build report, split, leakage status,
+and whether the version was pushed).
 
 ```bash
 uv sync --project pipelines/orchestration --frozen        # Airflow's environment, once
