@@ -17,9 +17,9 @@ make sandbox-sweep    # remove sandbox containers past their deadline (e.g. from
 ```
 
 Docker must be running. The isolated runner uses the Docker CLI and adds no Python
-dependency. It is verified locally on Docker Desktop for macOS (arm64). The CI `python` job
-runs the same tests on Docker Engine on Linux (amd64); that run is pending this change's PR.
-Docker Desktop with WSL2 is expected to work but is not verified.
+dependency. It is verified on Docker Desktop for macOS (arm64) and, in the CI `python` job, on
+Docker Engine on Linux (amd64). Docker Desktop with WSL2 is expected to work but is not
+verified.
 
 ## Using the isolated runner
 
@@ -47,13 +47,16 @@ Errors that are not evidence about the project raise a `SandboxError` subclass:
 | --- | --- | --- |
 | `SandboxRequestError` | Rejected before anything was created: an invalid timeout or limit, an unpinned image, a missing project, or a symlink or special file in the project | None created |
 | `SandboxUnavailable` | No Docker CLI, the daemon is down or unresponsive, the image is absent, or the container could not start | Released |
-| `SandboxExecutionError` | The container ran but its wrapper produced no report | Released |
+| `SandboxExecutionError` | The container ran but its wrapper produced no report, or Docker returned an unreadable container state | Released |
 | `SandboxCleanupError` | The container or staging copy could not be removed; `.result` keeps the run's result | Reported as not released |
+
+If releasing fails while another error is already being raised, the original error is kept
+and the release failure is attached to it as a note.
 
 ## Boundaries
 
 Each control is verified by a probe suite that runs inside the container
-(`tests/test_container.py`). Each of 18 controls was also checked by removing it alone and
+(`tests/test_container.py`). Each of 20 controls was also checked by removing it alone and
 confirming its probe fails.
 
 - **Filesystem:**
@@ -76,9 +79,13 @@ confirming its probe fails.
   - The host deadline or cancellation kills the container. The container is created before
     it starts, so a deadline during start-up still reaches it.
   - An in-container backstop (timeout plus 5 s) ends the suite if the host stops supervising.
-    The wrapper that runs it is PID 1, so the suite cannot stop or kill it, and an early
-    `SIGALRM` is ignored.
-  - Output is capped (4 MiB for the suite, 64 KiB for the report), and only the tails are read.
+    The wrapper that runs it is PID 1, so signals from the suite (`SIGSTOP`, `SIGKILL`,
+    `SIGTERM`, `SIGINT` and others) cannot stop or end it, and an early `SIGALRM` is ignored.
+- **Output:** the host drains the container's output as it arrives and stores only a bounded
+  tail: 4,000 bytes of the suite's output and 64 KiB of the report stream. The suite is
+  stopped once it has written more than 4 MiB (or the report stream more than 64 KiB). That
+  threshold is checked every poll, so more can arrive before the stop lands, but it is
+  counted and discarded, never stored.
 - **Leftovers:** each container carries a deadline label (backstop plus 120 s). Every isolated
   run, and `make sandbox-sweep`, removes only labelled containers past that deadline, so live
   runs are never touched.
@@ -120,4 +127,6 @@ to the caller, so anything it prints leaves the sandbox. The model still selects
 patches; allowing model-written code needs its own review ([ADR 0004](../../docs/adr/0004-container-isolation-for-tool-execution.md)).
 Docker tests run when `AGENTWATCH_TEST_DOCKER=1`, which CI sets; with it set, an unusable Docker
 fails the tests instead of skipping them. Without it they skip, which is incomplete
-verification.
+verification. CI therefore pulls the pinned image from Docker Hub on each `python` run
+(`make sandbox-image`, three attempts). If the registry stays unreachable, that job fails
+instead of reporting unverified isolation as passed; re-run it once the registry recovers.

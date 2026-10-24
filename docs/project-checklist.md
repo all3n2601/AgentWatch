@@ -431,15 +431,16 @@ lint/typecheck/13 tests/build, Go, and both Compose configurations. Real Qwen3 C
   [sandbox README](../services/sandbox/README.md): `run_project_tests_isolated` runs a suite in a
   disposable Docker container. It has a private read-only staging copy and a read-only root, a
   bounded `noexec` `/tmp`, no `/dev/shm`, no network, uid 65534 with an empty capability
-  bounding set and `no-new-privileges`, and memory/CPU/process/file and output limits. A host
-  deadline is enforced from creation onward, plus a backstop in a PID 1, non-dumpable wrapper the
-  suite cannot signal or read. Leftovers are swept by a deadline label, and the image is
-  digest-pinned and never pulled implicitly. Probe suites in
-  `services/sandbox/tests/test_container.py` (47 tests) verify each boundary from inside the
-  container. Each of 18 controls was also checked by removing it and confirming its probe fails.
+  bounding set and `no-new-privileges`, memory/CPU/process/file limits, and output drained into
+  a bounded tail. A host deadline is enforced from creation onward, plus a backstop in a PID 1,
+  non-dumpable wrapper the suite cannot signal, end or read. Leftovers are swept by a deadline
+  label, and the image is digest-pinned and never pulled implicitly. Probe suites in
+  `services/sandbox/tests/test_container.py` (54 tests) verify each boundary from inside the
+  container. Each of 20 controls was also checked by removing it and confirming its probe fails.
   Every outcome (passed, failed, timed out, cancelled, resource limit, rejected request, start
   failure) is tested to remove its container and staging copy; a failed removal raises.
-  Verified locally on Docker Desktop for macOS (arm64); the Linux CI run is pending the PR.
+  Verified on Docker Desktop for macOS (arm64) and in CI on Docker Engine on Linux (amd64)
+  (the PR #35 `python` job ran them with none skipped).
   Known limitation: a suite can exit 0 itself and appear to pass (see the threat model). Open
   until the agent runner switches to this executor (Benoy's integration); the agent still uses
   the trusted-fixture subprocess runner.

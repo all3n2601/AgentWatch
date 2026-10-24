@@ -129,8 +129,12 @@ agent-overhead: ## Measure agent instrumentation overhead (live API must be runn
 
 SANDBOX_IMAGE = $$(uv run --package agentwatch-sandbox python -c "from agentwatch_sandbox.container import SANDBOX_IMAGE; print(SANDBOX_IMAGE)")
 
-sandbox-image: ## Pull the digest-pinned image the isolated test runner uses
-	docker pull "$(SANDBOX_IMAGE)"
+sandbox-image: ## Pull the digest-pinned image the isolated test runner uses (3 attempts)
+	@image="$(SANDBOX_IMAGE)"; for attempt in 1 2 3; do \
+		docker pull "$$image" && exit 0; \
+		echo "docker pull failed (attempt $$attempt of 3)" >&2; \
+		[ "$$attempt" -lt 3 ] && sleep 10; \
+	done; exit 1
 
 sandbox-verify: ## Verify container isolation boundaries and cleanup (needs Docker)
 	AGENTWATCH_TEST_DOCKER=1 uv run pytest services/sandbox/tests/test_container.py

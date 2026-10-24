@@ -594,3 +594,88 @@ def test_an_unreachable_daemon_reports_no_false_leak(tmp_path):
     with pytest.raises(SandboxUnavailable, match="Cannot connect") as error:
         run(root, docker=str(fake))
     assert not getattr(error.value, "__notes__", None), "nothing was created, nothing leaked"
+
+
+# Regressions from the PR #35 review --------------------------------------------------------
+
+
+def test_signals_from_the_suite_cannot_end_the_wrapper(tmp_path, no_leaks):
+    """CPython handles SIGINT by default, so PID 1 would otherwise receive and die of it."""
+    root = project(
+        tmp_path,
+        "    def test_signal_the_wrapper(self):\n"
+        "        import signal\n"
+        "        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT,\n"
+        "                       signal.SIGUSR1, signal.SIGUSR2):\n"
+        "            os.kill(os.getppid(), signum)\n"
+        "        time.sleep(0.5)\n"
+        # The wrapper's handler must not leak into the suite: it keeps the normal SIGINT.
+        "        self.assertIs(signal.getsignal(signal.SIGINT), signal.default_int_handler)\n"
+        "        self.fail('the real result is a failure')\n",
+    )
+    result = run(root)
+    assert (result.outcome, result.returncode) == ("failed", 1), result.output_tail
+    assert "the real result is a failure" in result.output_tail
+
+
+def test_captured_output_is_stored_only_up_to_its_bound():
+    read_end, write_end = os.pipe()
+    written = b"".join(bytes([n % 251]) * 1024 for n in range(10 * 1024))  # 10 MiB
+
+    def write():
+        with os.fdopen(write_end, "wb") as stream:
+            stream.write(written)
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    capture = container._Capture(os.fdopen(read_end, "rb", buffering=0), keep_bytes=4000)
+    assert capture.finish(10)
+    writer.join()
+    assert capture.total_bytes == len(written)
+    assert len(capture._tail) == 4000
+    assert capture.tail(4000) == written[-4000:].decode("utf-8", errors="replace")
+
+
+def fake_docker(tmp_path: Path, script: str) -> str:
+    path = tmp_path / "docker"
+    path.write_text("#!/bin/sh\n" + script)
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_a_failing_release_does_not_replace_the_original_error(tmp_path, monkeypatch):
+    docker = fake_docker(tmp_path, 'case "$1" in create) echo refused >&2; exit 1;; esac\nexit 0\n')
+    real = container._release
+    released = []
+
+    def release_then_fail(*args):
+        released.append(real(*args))  # really release (the fake CLI answers rm and ps)
+        raise OSError("release failed")
+
+    monkeypatch.setattr(container, "_release", release_then_fail)
+    root = project(tmp_path, "    def test_ok(self):\n        pass\n")
+    with pytest.raises(SandboxUnavailable, match="could not be created") as error:
+        run(root, docker=docker)
+    assert any("release failed" in note for note in error.value.__notes__)
+    assert released == [{"container_removed": True, "staging_removed": True}]
+
+
+def test_a_release_that_raises_after_a_run_keeps_the_result(tmp_path, no_leaks, monkeypatch):
+    real = container._release
+
+    def release_then_fail(*args):
+        real(*args)  # really release, so nothing leaks
+        raise OSError("release failed")
+
+    monkeypatch.setattr(container, "_release", release_then_fail)
+    root = project(tmp_path, "    def test_ok(self):\n        pass\n")
+    with pytest.raises(SandboxCleanupError, match="release failed") as error:
+        run(root)
+    assert error.value.result is not None and error.value.result.outcome == "passed"
+
+
+@pytest.mark.parametrize("output", ["not json", "[1, 2]", ""])
+def test_unreadable_container_state_is_an_execution_error(tmp_path, output):
+    docker = fake_docker(tmp_path, f"printf '%s' '{output}'\nexit 0\n")
+    with pytest.raises(container.SandboxExecutionError, match="unreadable state"):
+        container._inspect_state(docker, "agentwatch-sandbox-x")

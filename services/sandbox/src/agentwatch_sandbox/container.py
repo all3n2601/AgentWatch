@@ -54,9 +54,11 @@ DOCKER_COMMAND_TIMEOUT_SECONDS = 30
 # host's kill and release steps, so a sweep never removes a container a runner still owns.
 SWEEP_MARGIN_SECONDS = 4 * DOCKER_COMMAND_TIMEOUT_SECONDS
 BACKSTOP_EXIT_CODE = 124
-# Captured output is a resource too: the suite is killed once it writes more than this.
+# Output is a resource too: the suite is stopped once it writes more than this. The host only
+# ever stores a bounded tail of each stream, however much arrives before the stop lands.
 MAX_CAPTURED_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_REPORT_BYTES = 64 * 1024
+CAPTURE_READ_BYTES = 64 * 1024
 _PINNED_IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$")
 # `--mount` is a comma-separated key=value list, so these characters would change its meaning.
 _UNSAFE_MOUNT_PATH = re.compile(r"[,=\s\"]")
@@ -64,6 +66,8 @@ _UNSAFE_MOUNT_PATH = re.compile(r"[,=\s\"]")
 # Runs as PID 1 inside the container: `python -I -B -c WRAPPER <backstop seconds>`.
 # - PID 1 of a PID namespace ignores signals from inside the namespace that it has no handler
 #   for, so the suite cannot SIGSTOP or SIGKILL it; its exit ends every other process.
+#   CPython handles SIGINT (KeyboardInterrupt), so the wrapper replaces that handler with one
+#   that does nothing. Handlers reset on exec, so the suite keeps its normal SIGINT behavior.
 # - It makes itself non-dumpable, so the suite (same uid) cannot read its memory or write to
 #   its file descriptors through /proc.
 # - It reads a random nonce from stdin and reports measurements on stdout behind it; the suite
@@ -75,6 +79,7 @@ import ctypes, json, os, resource, signal, subprocess, sys, time
 if ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE, 0
     sys.stderr.write("sandbox wrapper: could not become non-dumpable\n")
     sys.exit(70)
+signal.signal(signal.SIGINT, lambda signum, frame: None)
 nonce = sys.stdin.readline().strip()
 backstop = float(sys.argv[1])
 started = time.monotonic()
@@ -127,6 +132,10 @@ class SandboxCleanupError(SandboxError):
     def __init__(self, message: str, result: ProjectTestResult | None = None):
         super().__init__(message)
         self.result = result
+
+
+# What releasing can raise (the Docker CLI, the filesystem); anything else is a bug and propagates.
+_RELEASE_ERRORS = (SandboxError, OSError, subprocess.SubprocessError)
 
 
 @dataclass(frozen=True)
@@ -292,17 +301,48 @@ def _inspect_state(docker: str, name: str) -> dict | None:
     inspected = _docker(docker, "inspect", "--format", "{{json .State}}", name)
     if inspected.returncode != 0:
         return None
-    return json.loads(inspected.stdout)
+    try:
+        state = json.loads(inspected.stdout)
+    except json.JSONDecodeError:
+        state = None
+    if not isinstance(state, dict):
+        raise SandboxExecutionError(
+            f"`docker inspect` returned an unreadable state: {inspected.stdout.strip()[:300]}"
+        )
+    return state
 
 
-def _size(stream: BinaryIO) -> int:
-    return os.fstat(stream.fileno()).st_size
+class _Capture:
+    """Drain one output stream of the attached CLI on a thread, keeping a bounded tail.
 
+    Everything is read, so the CLI never blocks on a full pipe, and counted, so a flood can be
+    detected; at most `keep_bytes` are stored. The thread ends when the CLI closes the stream.
+    """
 
-def _tail(stream: BinaryIO, limit: int) -> str:
-    """The last `limit` bytes of a capture, decoded; the rest is never read into memory."""
-    stream.seek(max(_size(stream) - limit, 0))
-    return stream.read(limit).decode("utf-8", errors="replace")
+    def __init__(self, stream: BinaryIO, keep_bytes: int):
+        self._keep_bytes = keep_bytes
+        self._tail = bytearray()
+        self._lock = threading.Lock()
+        self.total_bytes = 0
+        self._thread = threading.Thread(target=self._drain, args=(stream,), daemon=True)
+        self._thread.start()
+
+    def _drain(self, stream: BinaryIO) -> None:
+        with stream:
+            while chunk := os.read(stream.fileno(), CAPTURE_READ_BYTES):
+                with self._lock:
+                    self.total_bytes += len(chunk)
+                    self._tail += chunk
+                    del self._tail[: max(len(self._tail) - self._keep_bytes, 0)]
+
+    def finish(self, timeout_seconds: float) -> bool:
+        """Wait for the stream to close; False if it is still open after the timeout."""
+        self._thread.join(timeout_seconds)
+        return not self._thread.is_alive()
+
+    def tail(self, limit: int) -> str:
+        with self._lock:
+            return bytes(self._tail[-limit:]).decode("utf-8", errors="replace")
 
 
 def _report(text: str, nonce: str) -> dict | None:
@@ -380,61 +420,77 @@ def run_project_tests_isolated(
     staging: Path | None = None
     created = False
     process: subprocess.Popen | None = None
-    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+    stdout: _Capture | None = None
+    stderr: _Capture | None = None
+    try:
+        staging = _stage(project)
+        create = _docker(
+            docker,
+            *docker_create_command(
+                docker=docker,
+                name=name,
+                staging=staging / "workspace",
+                image=image,
+                limits=limits,
+                backstop_seconds=backstop,
+                created_epoch=int(time.time()),
+            )[1:],
+        )
+        if create.returncode != 0:
+            raise SandboxUnavailable(
+                f"The sandbox container could not be created: {create.stderr.strip()[-500:]}"
+            )
+        created = True
+        started = time.monotonic()
+        # The container exists before it starts, so a kill can always reach it.
+        process = subprocess.Popen(
+            [docker, "start", "--attach", "--interactive", name],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout = _Capture(process.stdout, MAX_REPORT_BYTES)
+        stderr = _Capture(process.stderr, MAX_OUTPUT_CHARS)
+        process.stdin.write((nonce + "\n").encode())
+        process.stdin.close()
+        outcome, limit = _supervise(
+            docker, name, process, started + timeout_seconds, poll_seconds, cancel,
+            stdout, stderr,
+        )  # fmt: skip
+        wall_seconds = time.monotonic() - started
+        if not (
+            stdout.finish(DOCKER_COMMAND_TIMEOUT_SECONDS)
+            and stderr.finish(DOCKER_COMMAND_TIMEOUT_SECONDS)
+        ):
+            raise SandboxExecutionError("The sandbox output did not close after the CLI exited")
+        state = _inspect_state(docker, name)
+        if state is None:
+            raise SandboxExecutionError("The sandbox container disappeared during the run")
+        if str(state.get("StartedAt", "")).startswith("0001"):
+            # Docker reports StartedAt 0001-01-01 for a container that never started.
+            raise SandboxUnavailable(
+                f"The sandbox container could not start: {stderr.tail(2000).strip()}"
+            )
+        output = stderr.tail(MAX_OUTPUT_CHARS)
+        result = _classify(
+            outcome, limit, state, _report(stdout.tail(MAX_REPORT_BYTES), nonce),
+            output, wall_seconds, backstop,
+        )  # fmt: skip
+    except BaseException as error:
+        # Keep the original error; a failed or failing release must not replace or hide it.
         try:
-            staging = _stage(project)
-            create = _docker(
-                docker,
-                *docker_create_command(
-                    docker=docker,
-                    name=name,
-                    staging=staging / "workspace",
-                    image=image,
-                    limits=limits,
-                    backstop_seconds=backstop,
-                    created_epoch=int(time.time()),
-                )[1:],
-            )
-            if create.returncode != 0:
-                raise SandboxUnavailable(
-                    f"The sandbox container could not be created: {create.stderr.strip()[-500:]}"
-                )
-            created = True
-            started = time.monotonic()
-            # The container exists before it starts, so a kill can always reach it.
-            process = subprocess.Popen(
-                [docker, "start", "--attach", "--interactive", name],
-                stdin=subprocess.PIPE,
-                stdout=stdout,
-                stderr=stderr,
-            )
-            process.stdin.write((nonce + "\n").encode())
-            process.stdin.close()
-            outcome, limit = _supervise(
-                docker, name, process, started + timeout_seconds, poll_seconds, cancel,
-                stdout, stderr,
-            )  # fmt: skip
-            wall_seconds = time.monotonic() - started
-            state = _inspect_state(docker, name)
-            if state is None:
-                raise SandboxExecutionError("The sandbox container disappeared during the run")
-            if str(state.get("StartedAt", "")).startswith("0001"):
-                # Docker reports StartedAt 0001-01-01 for a container that never started.
-                raise SandboxUnavailable(
-                    f"The sandbox container could not start: {_tail(stderr, 2000).strip()}"
-                )
-            output = _tail(stderr, MAX_OUTPUT_CHARS)
-            result = _classify(
-                outcome, limit, state, _report(_tail(stdout, MAX_REPORT_BYTES), nonce),
-                output, wall_seconds, backstop,
-            )  # fmt: skip
-        except BaseException as error:
-            cleanup = _release(docker, name, staging, process, created)
+            cleanup = _release(docker, name, staging, process, created, (stdout, stderr))
+        except _RELEASE_ERRORS as release_error:
+            error.add_note(f"Releasing the sandbox also failed: {release_error!r}")
+        else:
             if not all(cleanup.values()):
-                # Keep the original error; the failed release must not disappear with it.
                 error.add_note(f"Sandbox resources were not verified released: {cleanup}")
-            raise
-    cleanup = _release(docker, name, staging, process, created)
+        raise
+    try:
+        cleanup = _release(docker, name, staging, process, created, (stdout, stderr))
+    except _RELEASE_ERRORS as release_error:
+        message = f"Releasing the sandbox failed: {release_error!r}"
+        raise SandboxCleanupError(message, result) from release_error
     if not all(cleanup.values()):
         raise SandboxCleanupError(f"Sandbox resources were not released: {cleanup}", result)
     return dataclasses.replace(result, cleanup=cleanup)
@@ -447,8 +503,8 @@ def _supervise(
     deadline: float,
     poll_seconds: float,
     cancel: threading.Event | None,
-    stdout: BinaryIO,
-    stderr: BinaryIO,
+    stdout: _Capture,
+    stderr: _Capture,
 ) -> tuple[Outcome | None, str | None]:
     """Wait for the suite; stop it on cancellation, the deadline or an output flood."""
     while True:
@@ -460,7 +516,10 @@ def _supervise(
                 decided = ("cancelled", None)
             elif time.monotonic() >= deadline:
                 decided = ("timed_out", None)
-            elif _size(stderr) > MAX_CAPTURED_OUTPUT_BYTES or _size(stdout) > MAX_REPORT_BYTES:
+            elif (
+                stderr.total_bytes > MAX_CAPTURED_OUTPUT_BYTES
+                or stdout.total_bytes > MAX_REPORT_BYTES
+            ):
                 decided = ("resource_limit", "output")
             else:
                 continue
@@ -519,15 +578,20 @@ def _release(
     staging: Path | None,
     process: subprocess.Popen | None,
     created: bool,
+    captures: tuple[_Capture | None, ...],
 ) -> dict[str, bool]:
     """Remove the container and the staging copy, and report whether each is verified gone.
 
     A container whose creation never returned may still be created by the daemon, so removal
-    is attempted whether or not `created` was confirmed, and retried briefly.
+    is attempted whether or not `created` was confirmed, and retried briefly. The attached CLI
+    is killed and its output threads joined; neither outlives the run.
     """
     if process is not None and process.poll() is None:
         process.kill()
-        process.wait(timeout=DOCKER_COMMAND_TIMEOUT_SECONDS)
+        try:
+            process.wait(timeout=DOCKER_COMMAND_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass  # Removing the container below still ends it; it is not left running.
     container_removed = False
     try:
         for attempt in range(3):
@@ -543,6 +607,9 @@ def _release(
     if staging is not None:
         shutil.rmtree(staging, ignore_errors=True)
         staging_removed = not staging.exists()
+    for capture in captures:
+        if capture is not None:
+            capture.finish(DOCKER_COMMAND_TIMEOUT_SECONDS)
     return {"container_removed": container_removed, "staging_removed": staging_removed}
 
 
