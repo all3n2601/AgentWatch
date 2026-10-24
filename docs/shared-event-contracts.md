@@ -142,7 +142,9 @@ entries define gauge/counter semantics, units, bounds, scope and aggregation. In
 entries map existing PSI `some avg10` to percent `[0,100]` and cgroup throttled time to a
 nonnegative microsecond counter. Counter resets are unavailable deltas, never negative load.
 Inference/GPU and retrieval entries require their owners' measured definitions under A04;
-they are not assumed available because an enum exists. Cumulative counters and host-wide
+they are not assumed available because an enum exists. A04 registered five whole-device NVML
+GPU gauges for `inference` resources ([the registry](live-ingestion.md)); no retrieval
+metric is registered yet. Cumulative counters and host-wide
 PSI must not be presented as step-exclusive duration. Sampling configuration records both
 declared interval and observed gaps; duplicates must not inflate coverage.
 

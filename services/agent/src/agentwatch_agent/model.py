@@ -37,6 +37,18 @@ class OllamaChatModel:
         return observe_model_placement(lambda: ollama_loaded_models(self.endpoint), self.name)
 
 
+def chat_payload(model: str, messages: list[dict], tools: list[dict], options: dict) -> dict:
+    """The runner's non-streaming chat request; thinking is off so replies stay bounded."""
+    return {
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "stream": False,
+        "think": False,
+        "options": dict(options),
+    }
+
+
 class ModelResponseError(ValueError):
     """The model server's reply does not have the expected chat shape."""
 
