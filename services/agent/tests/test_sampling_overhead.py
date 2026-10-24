@@ -4,7 +4,12 @@ import json
 
 import pytest
 from agent_test_doubles import FakeGpu
-from agentwatch_agent.sampling_overhead import PROTOCOL, first_request, measure_sampling_overhead
+from agentwatch_agent.sampling_overhead import (
+    PROTOCOL,
+    first_request,
+    measure_sampling_overhead,
+    reply_digest,
+)
 from agentwatch_agent.tools import tool_definitions
 
 # Illustrative Ollama durations in nanoseconds.
@@ -89,3 +94,23 @@ def test_failure_before_both_conditions_has_no_difference(mean_task, tmp_path):
     assert report["status"] == "failed"
     assert report["conditions"] == {"unsampled": None, "sampled": None}
     assert report["median_wall_difference_fraction"] is None
+
+
+def tool_reply(call_ids, query="mean() contract"):
+    calls = [
+        {
+            "id": call_id,
+            "function": {"index": 0, "name": "search_docs", "arguments": {"query": query}},
+        }
+        for call_id in call_ids
+    ]
+    return {"message": {"role": "assistant", "content": "", "tool_calls": calls}}
+
+
+def test_reply_digest_ignores_ollamas_random_tool_call_ids():
+    # Ollama 0.35.1 returned the same call with ids call_jq4oxp6v and call_bvno9r3v.
+    assert reply_digest(tool_reply(["call_jq4oxp6v"])) == reply_digest(
+        tool_reply(["call_bvno9r3v"])
+    )
+    assert reply_digest(tool_reply(["call_a"])) != reply_digest(tool_reply(["call_a"], "median"))
+    assert reply_digest({"message": {"content": "done"}}) != reply_digest(tool_reply(["call_a"]))

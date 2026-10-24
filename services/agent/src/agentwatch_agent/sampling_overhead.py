@@ -61,8 +61,23 @@ def first_request(task: Task, model: str) -> dict:
     return chat_payload(model, messages, list(tool_definitions(task)), DEFAULT_CHAT_OPTIONS)
 
 
-def _reply_digest(response: dict) -> str:
+def reply_digest(response: dict) -> str:
+    """Identify what the model said: its text and called functions.
+
+    Ollama gives every tool call a new random `id`, so hashing the whole message would make
+    identical replies look different.
+    """
     message = response.get("message") if isinstance(response, dict) else None
+    if isinstance(message, dict):
+        calls = message.get("tool_calls")
+        message = {
+            "content": message.get("content"),
+            "tool_calls": [
+                call.get("function") if isinstance(call, dict) else call for call in calls
+            ]
+            if isinstance(calls, list)
+            else calls,
+        }
     canonical = json.dumps(message, sort_keys=True, allow_nan=False)
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
@@ -110,7 +125,7 @@ def measure_sampling_overhead(
             **{key: response.get(key) for key in SERVER_DURATIONS},
             "prompt_eval_count": response.get("prompt_eval_count"),
             "eval_count": response.get("eval_count"),
-            "reply_digest": _reply_digest(response),
+            "reply_digest": reply_digest(response),
         }
 
     def sampled(index: int) -> dict:
