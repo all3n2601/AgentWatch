@@ -4,6 +4,7 @@ import Link from "next/link";
 import {
   CircleAlert,
   Database,
+  Download,
   LoaderCircle,
   RadioTower,
   RefreshCw,
@@ -500,6 +501,44 @@ function EmptyState({
   );
 }
 
+function LiveEvidence({ runId }: { runId: string }) {
+  return (
+    <Card className="gap-0 p-5 sm:p-6">
+      <PanelHeading
+        title="Evidence for this run"
+        detail="What can be downloaded for the selected live run."
+      />
+      <dl className="grid grid-cols-1 gap-4 text-xs sm:grid-cols-2">
+        <div>
+          <dt className="font-semibold">Saved evidence</dt>
+          <dd className="mt-1 leading-5 text-muted-foreground">
+            Not available for live runs. Live records are kept separately from
+            saved run history, and agent runs report only to the live API, so
+            this run has no saved-run file.
+          </dd>
+        </div>
+        <div>
+          <dt className="font-semibold">Live records</dt>
+          <dd className="mt-1 leading-5 text-muted-foreground">
+            Every record the live API holds for run{" "}
+            <span className="font-mono break-all">{runId}</span>, read page by
+            page with its gaps and pending or expired records unchanged. Run
+            state, steps and gaps are as of the time of reading.
+          </dd>
+          <dd className="mt-3">
+            <Button asChild variant="outline" className="min-h-11">
+              <a href={`/api/live/runs/${encodeURIComponent(runId)}/export`}>
+                <Download className="size-4" aria-hidden />
+                Download live records (JSON)
+              </a>
+            </Button>
+          </dd>
+        </div>
+      </dl>
+    </Card>
+  );
+}
+
 function SelectedRun({
   feed,
   onReadAgain,
@@ -533,6 +572,7 @@ function SelectedRun({
           </p>
           <Resources run={run} />
           <ReplayView replay={run.replay} receipt={feed.receipt} />
+          <LiveEvidence runId={feed.runId} />
         </>
       ) : (
         !notFound &&
