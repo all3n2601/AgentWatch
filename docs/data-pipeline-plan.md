@@ -42,7 +42,7 @@ branch coverage, and exercised against real recorded runs and the live ingestion
 | 10. Real collection | Scheduled runs over a task suite on a Linux GCP VM, where PSI and cgroup readings exist. Split follow-up: rebuild and re-split once step events carry a real `task_id`, so the test split holds unseen tasks and training is no longer empty. Before any collection, run the extractor end to end against the live ingestion API and Postgres (deferred from the audit), and add an export of API-saved runs into the evidence store that keeps their saved time, so releases built from them stay reproducible | Waits on A, B, F |
 | 11. Airflow DAG | collect → extract → validate → build → split → version, with retries and alerts. A version is only findable through committed pointer files, so the DAG needs an identity allowed to commit `data/*.dvc` (or a data branch), the DVC merge driver for versions committed alongside people's, and a service account for the bucket | After 6–8 |
 | 12. Reports | Quality, slice, label-sanity, and drift statistics per release | After 11 |
-| 13. Shared features | The live attribution service reuses `window_readings` and related code | With E |
+| 13. Shared features | `window_readings` moved to `agentwatch_features.legacy`; live `step-features-v1` rows in `agentwatch_features.live` ([shared step features](step-features.md)). Serving them is B03 | B02 done 2026-10-24 |
 | 14. Demo | Corrupted evidence rejected live; lineage from model to dataset to raw run | Last |
 
 Split items owned elsewhere: the minimum test counts are judged by evaluation from the counts

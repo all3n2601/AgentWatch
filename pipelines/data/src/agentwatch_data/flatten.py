@@ -10,6 +10,8 @@ import re
 import statistics
 from itertools import pairwise
 
+from agentwatch_features.legacy import window_readings
+
 from agentwatch_data.extract import TELEMETRY_PRESENT, RawRun, Rejection
 from agentwatch_data.schema import SCHEMA_VERSION, brief, finite_number
 
@@ -64,19 +66,6 @@ def conditioned_steps(result: dict) -> list[tuple[str, dict]]:
     return steps
 
 
-def throttled_delta_usec(counters: list[int | None]) -> int | None:
-    """Throttling gained across ordered counter readings, or None if it was not measured.
-
-    A missing reading breaks the chain, and a decrease between consecutive readings means
-    the counter reset; either way the window's total is unknown.
-    """
-    if len(counters) < 2 or None in counters:
-        return None
-    if any(later < earlier for earlier, later in pairwise(counters)):
-        return None
-    return counters[-1] - counters[0]
-
-
 def declared_interval_seconds(result: dict) -> float | None:
     """The sampler's configured interval, as recorded in the step telemetry summaries.
 
@@ -116,49 +105,6 @@ def sampling_interval_seconds(samples: list[dict]) -> float | None:
     gaps = [(b["timestamp_ns"] - a["timestamp_ns"]) / 1e9 for a, b in pairwise(samples)]
     gaps = [gap for gap in gaps if gap > 0]
     return statistics.median(gaps) if gaps else None
-
-
-def window_readings(
-    samples: list[dict],
-    submitted_ns: int,
-    finished_ns: int,
-    interval_seconds: float | None = None,
-) -> dict:
-    """Summarize samples inside the step window.
-
-    Unavailable readings stay None with a False flag; they are never reported as zero.
-    Unlike CpuSampler.summarize, every consecutive counter pair is checked for resets.
-    """
-    rows = sorted(
-        (s for s in samples if submitted_ns <= s["timestamp_ns"] <= finished_ns),
-        key=lambda s: s["timestamp_ns"],
-    )
-    pressures = [
-        row["cpu_pressure"]["some"]["avg10"]
-        for row in rows
-        if row["cpu_pressure"] and "avg10" in row["cpu_pressure"].get("some", {})
-    ]
-    # As with the throttling counter, a reading missing from any sample voids the window:
-    # a maximum over the samples that happened to carry PSI is not the step's maximum.
-    if len(pressures) != len(rows):
-        pressures = []
-    counters = [(row["cgroup_cpu_stat"] or {}).get("throttled_usec") for row in rows]
-    throttled = throttled_delta_usec(counters)
-    coverage = None
-    if interval_seconds:
-        # Whole intervals inside the window: a healthy sampler delivers at least this many.
-        # A step shorter than one interval cannot show whether samples were lost. Integer
-        # nanoseconds, because floor(0.3 / 0.1) is 2 in floating point.
-        expected = (finished_ns - submitted_ns) // round(interval_seconds * 1e9)
-        coverage = min(1.0, len(rows) / expected) if expected > 0 else None
-    return {
-        "cpu_pressure_max_avg10": max(pressures) if pressures else None,
-        "cpu_pressure_available": bool(pressures),
-        "cgroup_throttled_usec_delta": throttled,
-        "cgroup_available": throttled is not None,
-        "telemetry_sample_count": len(rows),
-        "telemetry_coverage": coverage,
-    }
 
 
 def failed_checks(result: dict) -> list[str]:
