@@ -239,8 +239,9 @@ driver scripts, journals, coverage reports, live read-backs and `SHA256SUMS`.
 
 [ADR 0005](adr/0005-cpu-counters-retrieval-timing-and-step-correlation.md) added three
 cumulative CPU counters (host PSI `some` total, the runner cgroup's usage and its own PSI
-`some` total), retrieval service timing and `coverage-v2`, which joins a step only to its own
-resource. Protocol `a04-cpu-retrieval-evidence-v1` was declared in writing before measuring
+`some` total), retrieval service timing and a coverage report that joins a step only to its
+own resource. That report is now `coverage-v3`, which lists entries by resource, service and
+clock, and the evidence reports below were regenerated with it. Protocol `a04-cpu-retrieval-evidence-v1` was declared in writing before measuring
 and run twice. Every attempt is kept.
 
 Configurations (one live API container on the Compose network, GPU Ollama 0.35.1,
