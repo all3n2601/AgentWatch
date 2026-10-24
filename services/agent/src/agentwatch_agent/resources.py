@@ -8,6 +8,7 @@ cgroup counter covers the runner's whole cgroup and NVML describes the whole dev
 of them is step-exclusive.
 """
 
+import math
 import statistics
 import threading
 import time
@@ -129,7 +130,8 @@ def _field(
     if key not in fields:
         return None, absent, f"{name} has no {key} field"
     value = fields[key]
-    if value < 0 or (maximum is not None and value > maximum):
+    # float() accepts "nan" and "inf", which compare false against both bounds.
+    if not math.isfinite(value) or value < 0 or (maximum is not None and value > maximum):
         bounds = f"0-{maximum:g}" if maximum is not None else "nonnegative"
         return None, "malformed", f"{name} {key} was outside {bounds}"
     return float(value), "measured", None

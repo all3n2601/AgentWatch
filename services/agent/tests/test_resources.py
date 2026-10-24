@@ -114,6 +114,17 @@ def test_cumulative_cpu_counters_are_read_with_the_gauges(tmp_path):
                 "cpu.cgroup.psi.some.total_usec.v1": "malformed",
             },
         ),
+        # Non-finite values parse as floats but are never measurements.
+        (
+            "some avg10=nan total=inf\n",
+            "usage_usec 1\nthrottled_usec 0\n",
+            "some total=nan\n",
+            {
+                "cpu.psi.some.avg10.v1": "malformed",
+                "cpu.psi.some.total_usec.v1": "malformed",
+                "cpu.cgroup.psi.some.total_usec.v1": "malformed",
+            },
+        ),
         # A negative counter is malformed, never a measured value.
         (
             "some avg10=1.0 total=-5\n",
