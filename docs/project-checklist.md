@@ -296,8 +296,9 @@ These can be completed before adding an agent.
   failures, ±60 s skew, late-evidence checks; `live-scenarios.spec.ts`), lint, typecheck and build. Manual checks
   against the real stack (`make infra-up`, `dev-worker`, `dev-web`, `agent-overhead`): run
   selection, active to Completed with final totals, reconnect after a worker restart, not-found
-  and invalid UUIDs. Final manual check on the real stack, October 24, 2026: the live view at
-  iPhone SE and 768 px widths, 200% zoom and keyboard navigation; "Check for late evidence"
+  and invalid UUIDs. Final manual check on the real stack, October 24, 2026: every check was
+  done first in a normal desktop browser window on a MacBook, then the live view at iPhone SE
+  and 768 px widths, 200% zoom and keyboard navigation; "Check for late evidence"
   shows that it is checking, then its result; `?replay=` no longer shows a replay. Left
   unchecked for reviewers to confirm.
 - [ ] Display active steps, terminal failures, and incomplete telemetry without misleading totals.
