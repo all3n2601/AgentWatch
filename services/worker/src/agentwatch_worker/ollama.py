@@ -25,6 +25,19 @@ OLLAMA_METRIC_KEYS = (
     "eval_duration",
     "done_reason",
 )
+REQUEST_TIMING_METHOD = "ollama-request-timing-v1"
+# Ollama's documented per-request durations, in nanoseconds.
+SERVER_DURATION_KEYS = {
+    "server_total_seconds": "total_duration",
+    "server_load_seconds": "load_duration",
+    "server_prompt_eval_seconds": "prompt_eval_duration",
+    "server_eval_seconds": "eval_duration",
+}
+# The live contracts' timing-breakdown tolerance.
+TIMING_TOLERANCE_SECONDS = 1e-6
+QUEUE_UNAVAILABLE_REASON = (
+    "Ollama reports no request queue wait; any wait is inside its total or load duration"
+)
 PLACEMENT_TIMEOUT_SECONDS = 10
 # Order matters: the registry prefix can precede the namespace.
 DEFAULT_MODEL_PREFIXES = ("registry.ollama.ai/", "library/")
@@ -52,6 +65,60 @@ def ollama_chat(url: str, payload: dict) -> dict:
     if result.get("error") or not isinstance(result.get("message"), dict):
         raise RuntimeError(f"Invalid Ollama response: {result}")
     return result
+
+
+def _nonnegative_or_none(value: float) -> float | None:
+    return value if value >= -TIMING_TOLERANCE_SECONDS else None
+
+
+def request_timing(metrics: dict, client_wall_seconds: float) -> dict:
+    """Split one chat request's latency into what was observed and what Ollama reported.
+
+    The runner observes only its own wall time around the request. Ollama reports its total,
+    model-load, prompt-evaluation and generation durations but no queue wait, so the observed
+    queue stays unavailable instead of being inferred. Two derived differences are estimates
+    across two clocks (the runner's and Ollama's): server time outside load, prompt and
+    generation, and runner time outside Ollama's total (HTTP, JSON and thread scheduling).
+    A difference below zero beyond the timing tolerance is reported as inconsistent.
+    """
+    timing: dict = {
+        "method": REQUEST_TIMING_METHOD,
+        "client_wall_seconds": client_wall_seconds,
+        "observed_queue_seconds": None,
+        "observed_queue_availability": "unavailable",
+        "observed_queue_reason": QUEUE_UNAVAILABLE_REASON,
+    }
+    problems, inconsistent = [], False
+    for field, key in SERVER_DURATION_KEYS.items():
+        value = metrics.get(key)
+        if key not in metrics:
+            problems.append(f"{key} missing")
+            value = None
+        elif isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            problems.append(f"{key} is not a nonnegative integer")
+            value = None
+        timing[field] = None if value is None else value / 1e9
+    parts = [timing[field] for field in SERVER_DURATION_KEYS]
+    total, *components = parts
+    unattributed = outside = None
+    if None not in parts:
+        unattributed = _nonnegative_or_none(total - sum(components))
+        if unattributed is None:
+            inconsistent = True
+            problems.append("load, prompt and generation exceed Ollama's total duration")
+    if total is not None:
+        outside = _nonnegative_or_none(client_wall_seconds - total)
+        if outside is None:
+            inconsistent = True
+            problems.append("Ollama's total duration exceeds the runner's request wall time")
+    timing |= {
+        "server_unattributed_seconds": unattributed,
+        "client_outside_server_seconds": outside,
+        "derived_differences": "estimates across runner and Ollama clocks",
+        "status": "inconsistent" if inconsistent else ("partial" if problems else "reported"),
+        "problems": problems,
+    }
+    return timing
 
 
 def ollama_loaded_models(url: str) -> dict:

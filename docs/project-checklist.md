@@ -82,8 +82,14 @@ record what the demo verified; its saved runs remain viewable in the dashboard A
   Only the fixed tool loop has run on a local laptop GPU; L4/GCP, vLLM, retrieval, failure,
   and multi-tool cases remain. The first request after creating the GPU container took
   53–64 s, and two first requests of later runs took 2.05–2.27 s, for unexplained reasons.
-- [ ] GPU resource samples recorded by AgentWatch itself (A04). A01 used an `nvidia-smi`
-  diagnostic that is not ingested or correlated with steps.
+- [x] GPU resource samples recorded by AgentWatch itself (A04). A01 used an `nvidia-smi`
+  diagnostic that is not ingested or correlated with steps. 2026-10-24, branch
+  `feature/gpu-inference-telemetry` (not yet merged): the runner samples five versioned
+  whole-device NVML gauges as live `inference` samples on the run's clock domain. Three real
+  RTX 5070 Laptop runs (`a0709063…`, `2f8b2674…`, `3a4e8ce3…`) measured all metrics in every
+  round, and the live API stored exactly the journaled samples
+  ([A04 record](gpu-measurement-access.md#a04-gpu-and-inference-telemetry-recorded-by-agentwatch-october-24-2026)).
+  Tests: `services/worker/tests/test_nvml.py`, `services/agent/tests/test_resources.py`.
 
 ### Dashboard
 
@@ -220,9 +226,17 @@ These can be completed before adding an agent.
   passed the unchanged 15% variability gate (CVs 10.9–42.2%); validation is inconclusive there.
 - [ ] Exercise supported and unavailable cgroup configurations, permissions, and malformed counters.
 - [ ] Measure achieved sampling intervals, missed samples, and short-step coverage.
+  2026-10-24 (A04, GPU laptop/WSL2 only): runs record achieved intervals, late and missed
+  rounds, and `coverage` reports per-step windows. Three GPU runs: median 0.250 s, max 0.290 s,
+  no missed rounds; 0.24 s model calls were shorter than the 250 ms interval and one had no
+  GPU reading. Open: other hosts, longer workloads and a choice of interval.
 - [ ] Compare a genuinely CPU-starved task with a busy worker queue and a naturally long clean task.
 - [ ] Verify boundaries under clock changes and specify monotonic timing for duration calculations.
 - [ ] Measure profiler and sampler overhead against uninstrumented execution.
+  2026-10-24 (A04): `resource-sampling-overhead-v1`, two attempts of 30+30 real GPU requests:
+  sampled minus unsampled median −0.5 ms and +3.1 ms, within a 54 ms shift between attempts,
+  so no effect was resolved; sampler thread 2.8–3.6 ms CPU per round. Open: live delivery
+  under sustained sampling, other hosts, and a declared overhead budget (O01).
 - [ ] Repeat experiments across more workload sizes and host loads; establish false-positive rates.
 - [ ] Verify task timeout/cancellation cleans up worker and child processes under failure.
 
@@ -298,7 +312,12 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
 ### Milestone 2 Three resource classes
 
 - [ ] Add inference telemetry from vLLM queues/request timing and NVIDIA DCGM where available.
+  2026-10-24 (A04): NVML GPU gauges and per-call Ollama request timing
+  (`ollama-request-timing-v1`) on the laptop; the inference queue is recorded as unavailable
+  because Ollama reports none. vLLM and DCGM are not installed there and remain open.
 - [ ] Add retrieval telemetry from Qdrant requests and queue/service latency where observable.
+  No retrieval metric is registered; retrieval is in-process BM25 (A04 CPU/retrieval support
+  is Akshayaa's).
 - [ ] Add Prometheus collection and resource/service identity correlation.
 - [ ] Extend rule attribution to CPU, inference, retrieval, none, and explicit uncertainty.
 - [ ] Add CPU hardware saturation, inference, and retrieval views to the dashboard.

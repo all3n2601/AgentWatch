@@ -2,8 +2,8 @@
 
 Status: verified on one laptop, October 13, 2026. Task A01, owner Benoy, reviewer Akshayaa.
 This records what the team's only GPU-equipped machine can measure today. It does not establish
-NVIDIA L4, GKE, or GCP readiness, and it does not add GPU telemetry to AgentWatch ingestion.
-The AgentWatch GPU sampler is planned separately under A04.
+NVIDIA L4, GKE, or GCP readiness. A01 did not add GPU telemetry to AgentWatch ingestion; the
+A04 sampler that does is [described below](#a04-gpu-and-inference-telemetry-recorded-by-agentwatch-october-24-2026).
 
 ## Hardware and runtime identity
 
@@ -168,6 +168,72 @@ Including the six agent runs, 6 of 16 coding experiments on this machine passed 
 clean/busy queue detection was consistent in all sixteen (clean < 0.001 s, busy 0.95–1.27 s).
 CPU baseline validation is **inconclusive on this configuration**. Windows background activity
 is a hypothesis, not an established cause.
+
+## A04: GPU and inference telemetry recorded by AgentWatch (October 24, 2026)
+
+Since A04 ([ADR 0003](adr/0003-gpu-and-inference-measurement.md)) the agent runner samples
+the GPU itself through NVML, as live `inference` ResourceSamples in its own clock domain, and
+records each model call's timing breakdown. Protocol `a04-gpu-evidence-v1` was declared in
+writing before measuring; every attempt is kept and none was rerun for a better result.
+
+Conditions: branch `feature/gpu-inference-telemetry` at `246bd1f` (agent runs, attempt 1)
+and `cb54813` (attempt 2); only documentation files were modified during the runs. Runner
+and branch live API (port 8091, dev database) in WSL2; GPU Ollama 0.35.1 on 11435 with
+`qwen3:1.7b` (Q4_K_M, context 4,096). Windows: Balanced power scheme, AC power, CPU load
+24–45% before the runs, and eight unrelated containers from another project running. WSL
+load average 0.45 before and 4.11 after; CPU PSI `some avg10` 0.00 before, 1.52 after.
+
+**Agent runs.** Three back-to-back `fix-mean-empty` runs, 250 ms sampling:
+
+| Run | Duration | Rounds | Interval median / max (host, GPU) | Round cost: wall median, thread CPU median, core share |
+|---|---|---|---|---|
+| `a0709063-fec0-4c6a-a575-ae5f1618ebfb` | 2.04 s | 9 | 0.250 s / 0.259 s, 0.290 s | 25.6 ms, 3.6 ms, 2.2% |
+| `2f8b2674-ba81-448c-806c-42dde41bbe57` | 1.36 s | 6 | 0.250 s / 0.255 s, 0.283 s | 16.7 ms, 2.9 ms, 1.5% |
+| `3a4e8ce3-14c2-474e-9777-233c154dda8a` | 1.33 s | 6 | 0.250 s / 0.251 s, 0.263 s | 20.3 ms, 3.1 ms, 1.9% |
+
+- All three completed with runner verification passing, 8 steps each and no late or
+  missed rounds (rechecked after review with the corrected definition: expected rounds over
+  the sampled span minus rounds taken). All seven metrics were `measured` in all 21 rounds. Delivery was complete
+  with nothing refused, and the live API returned exactly the journaled records and
+  per-metric sample counts (87, 66 and 66 records).
+- Round wall time (max 46–71 ms) is mostly waiting: NVML calls through WSL2's GPU bridge and
+  seven journal writes to the Windows-mounted checkout. The thread used 1.5–2.2% of one core.
+- **Coverage is the main limitation.** On this warm GPU, model calls took 0.24–0.94 s and
+  tools at most 0.13 s. Calls of 0.42 s or more had one GPU reading each (the 0.94 s call
+  had four). Both 0.24 s calls were shorter than one interval, and in run 3 one of them had
+  no GPU reading in its window at all. At 250 ms the samples describe the run and the longer
+  calls, not individual short steps. Single readings during model calls were 11–51% GPU
+  utilization; root-step means were 33–48%.
+- GPU memory used read 3,093–3,453 MiB: NVML is whole-device, so this includes the Windows
+  desktop as well as the 1.70 GB model, which `/api/ps` placed 100% in VRAM for all 9 calls.
+- **Inference timing**, 9 calls: runner wall 0.240–0.943 s; Ollama total 0.233–0.941 s;
+  load 1–12 ms (model already loaded); server time outside load, prompt and generation
+  5–29 ms; runner time outside Ollama's total 1.6–9.6 ms. The observed queue is
+  `unavailable` in every call: Ollama reports none, and the differences are cross-clock
+  estimates, not a measured queue.
+
+**Sampling overhead** (`resource-sampling-overhead-v1`, 30 unsampled and 30 sampled
+requests of the runner's first model call, alternating, after 3 discarded warm-ups):
+
+| Attempt | Unsampled median / p90 | Sampled median / p90 | Difference | Sampler CPU per round |
+|---|---|---|---|---|
+| 1 (16:23 UTC) | 0.2973 / 0.3756 s | 0.2968 / 0.3692 s | −0.5 ms (−0.2%) | 3.5 ms |
+| 2 (16:26 UTC) | 0.3515 / 0.3788 s | 0.3546 / 0.3704 s | +3.1 ms (+0.9%) | 2.8 ms |
+
+Every request generated 43 tokens. Attempt 1's reply digests were unusable: they hashed
+Ollama's random per-call tool-call `id`, so all 60 differed. This was found and fixed (and two
+requests outside the protocol confirmed the cause) before attempt 2, which was declared
+first; in attempt 2 all 60 replies were identical. The first warm-up of attempt 1 loaded the
+model (9.36 s). The unsampled median moved by 54 ms between attempts, much more than either
+sampled-minus-unsampled difference. So this workload resolves no sampling effect on
+inference timing; that is not evidence of zero overhead, and live delivery is excluded.
+
+Not established: DCGM, vLLM queue metrics, per-process GPU use, retrieval latency beyond
+in-process BM25, L4/GCP hardware, behavior under GPU contention, and a non-WSL Linux host.
+Hosts without NVML are covered by unit tests only (`unsupported`, never zero). The
+evidence is in `.data/a04-20261024/` on the GPU laptop and in
+`C:\Users\benoy\AgentWatch-evidence\a04-2026-10-24\`, with the protocol, host conditions,
+driver scripts, journals, coverage reports, live read-backs and `SHA256SUMS`.
 
 ## Evidence locations
 
