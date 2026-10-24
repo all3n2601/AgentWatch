@@ -23,6 +23,7 @@ from agentwatch_worker.sampler import discover_cgroup, read_cpu_stat, read_press
 
 from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.config import CONTRACT_VERSION
+from agentwatch_agent.stats import p90
 
 PSI_METRIC = ("cpu.psi.some.avg10.v1", "percent")
 THROTTLED_METRIC = ("cpu.cgroup.throttled_usec.v1", "microseconds")
@@ -39,8 +40,11 @@ GPU_METRICS = (
     GPU_POWER_METRIC,
     GPU_SM_CLOCK_METRIC,
 )
-# A gap this many declared intervals long means at least one sampling round was missed.
+# A gap this many declared intervals long means a round was late. The sampler then takes the
+# overdue rounds back to back (gaps under EARLY_ROUND_FACTOR), so late rounds are bunched,
+# not lost: missed rounds come from the span, not from the late gaps.
 LATE_ROUND_FACTOR = 1.5
+EARLY_ROUND_FACTOR = 0.5
 Reading = tuple[float | None, str, str | None]
 MetricReading = tuple[tuple[str, str], Reading]
 
@@ -205,20 +209,24 @@ class GpuProbe:
 
 
 def interval_summary(ticks_ns: list[int], declared_seconds: float) -> dict:
-    """Achieved gaps between consecutive sampling rounds, against the declared interval."""
+    """Achieved gaps between consecutive sampling rounds, against the declared interval.
+
+    `missed_rounds` is the rounds the declared cadence expects over the sampled span (first
+    to last round, inclusive) minus the rounds taken. Rounds taken late and bunched together
+    afterwards are counted as late and early, not missed.
+    """
     gaps = [(b - a) / 1e9 for a, b in pairwise(ticks_ns)]
-    late = [gap for gap in gaps if gap > LATE_ROUND_FACTOR * declared_seconds]
-    ordered = sorted(gaps)
+    declared_ns = round(declared_seconds * 1e9)
+    expected = (ticks_ns[-1] - ticks_ns[0]) // declared_ns + 1 if ticks_ns else 0
     return {
         "sample_rounds": len(ticks_ns),
         "observed_interval_median_seconds": statistics.median(gaps) if gaps else None,
-        "observed_interval_p90_seconds": (
-            ordered[min(len(ordered) - 1, int(0.9 * len(ordered)))] if ordered else None
-        ),
+        "observed_interval_p90_seconds": p90(gaps),
         "observed_interval_max_seconds": max(gaps) if gaps else None,
-        "late_rounds": len(late),
-        # Rounds that would have fallen inside late gaps at the declared cadence.
-        "missed_rounds_estimate": sum(max(round(gap / declared_seconds) - 1, 0) for gap in late),
+        "late_rounds": sum(gap > LATE_ROUND_FACTOR * declared_seconds for gap in gaps),
+        "early_rounds": sum(gap < EARLY_ROUND_FACTOR * declared_seconds for gap in gaps),
+        "expected_rounds": expected,
+        "missed_rounds": max(expected - len(ticks_ns), 0),
     }
 
 

@@ -17,6 +17,7 @@ and whole-device GPU readings are context for a step, never a step-exclusive mea
 import json
 import statistics
 from collections import defaultdict
+from itertools import pairwise
 from pathlib import Path
 
 from agentwatch_sdk.live import ResourceSample, StepEvent
@@ -34,7 +35,11 @@ class CoverageError(ValueError):
 
 
 def read_journal(path: Path) -> tuple[list[dict], int]:
-    """Valid journaled records, deduplicated by identity, and the count of unusable lines."""
+    """Valid journaled records, deduplicated by identity, and the count of unusable lines.
+
+    Raises CoverageError when one identity carries different content: which copy is true
+    cannot be decided, so the journal cannot support a report.
+    """
     records: dict[str, dict] = {}
     unreadable = 0
     with path.open(encoding="utf-8") as stream:
@@ -59,8 +64,10 @@ def read_journal(path: Path) -> tuple[list[dict], int]:
             except (ValidationError, ValueError):
                 unreadable += 1
                 continue
-            identity = payload.get("sample_id") or payload.get("event_id")
-            records.setdefault(str(identity), payload)
+            identity = str(payload.get("sample_id") or payload.get("event_id"))
+            if records.setdefault(identity, payload) != payload:
+                # Exact duplicates are retries; changed content under one identity is not.
+                raise CoverageError(f"Journal has conflicting records for identity {identity}")
     return list(records.values()), unreadable
 
 
@@ -68,9 +75,10 @@ def _aggregate(metric: str, values: list[float]) -> dict:
     if not values:
         return {"measured": 0}
     if metric in COUNTER_METRICS:
-        increase = values[-1] - values[0]
-        # A counter that went down was reset: no delta, never negative load.
-        return {"measured": len(values), "increase": increase if increase >= 0 else None}
+        # A counter that went down anywhere in the window was reset: no delta, even if it
+        # later climbed back above its first value, and never negative load.
+        reset = any(later < earlier for earlier, later in pairwise(values))
+        return {"measured": len(values), "increase": None if reset else values[-1] - values[0]}
     return {
         "measured": len(values),
         "min": min(values),

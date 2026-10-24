@@ -17,6 +17,20 @@ from dataclasses import dataclass
 
 # WSL2 ships the library outside the default search path; Windows names it nvml.dll.
 LIBRARY_CANDIDATES = ("libnvidia-ml.so.1", "/usr/lib/wsl/lib/libnvidia-ml.so.1", "nvml.dll")
+# Every entry point the binding calls, checked at open: an older or partial library then
+# reads as unavailable instead of failing a run with AttributeError at the first sample.
+REQUIRED_FUNCTIONS = (
+    "nvmlInit_v2",
+    "nvmlShutdown",
+    "nvmlDeviceGetCount_v2",
+    "nvmlDeviceGetHandleByIndex_v2",
+    "nvmlDeviceGetName",
+    "nvmlSystemGetDriverVersion",
+    "nvmlDeviceGetMemoryInfo",
+    "nvmlDeviceGetUtilizationRates",
+    "nvmlDeviceGetPowerUsage",
+    "nvmlDeviceGetClockInfo",
+)
 NVML_SUCCESS = 0
 NVML_ERROR_NOT_SUPPORTED = 3
 NVML_CLOCK_SM = 1
@@ -122,6 +136,9 @@ class NvmlDevice:
                 continue
         if library is None:
             raise NvmlUnavailable("NVML library was not found on this host", unsupported=True)
+        missing = [name for name in REQUIRED_FUNCTIONS if not hasattr(library, name)]
+        if missing:
+            raise NvmlUnavailable(f"NVML library lacks {', '.join(missing)}")
         code = library.nvmlInit_v2()
         if code != NVML_SUCCESS:
             raise NvmlUnavailable(f"NVML could not initialize: {NvmlError('nvmlInit_v2', code)}")

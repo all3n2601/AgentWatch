@@ -108,6 +108,23 @@ def test_later_candidates_are_tried():
     assert tried == ["first", "second"]
 
 
+def test_library_missing_an_entry_point_is_unavailable_before_initializing():
+    library = FakeNvml()
+
+    class Partial:
+        """An older library: every entry point except nvmlInit_v2."""
+
+        def __getattr__(self, name):
+            if name == "nvmlInit_v2":
+                raise AttributeError(name)
+            return getattr(library, name)
+
+    with pytest.raises(NvmlUnavailable, match="lacks nvmlInit_v2") as raised:
+        open_fake(Partial())
+    assert not raised.value.unsupported
+    assert library.calls == []
+
+
 def test_initialization_failure_is_unavailable_not_unsupported():
     with pytest.raises(NvmlUnavailable) as raised:
         open_fake(FakeNvml(init=9))

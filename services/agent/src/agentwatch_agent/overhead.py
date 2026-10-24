@@ -17,7 +17,6 @@ import hashlib
 import json
 import platform
 import resource
-import statistics
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -44,6 +43,7 @@ from agentwatch_agent.delivery import (
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.resources import CpuProbe, ResourceSampler
 from agentwatch_agent.session import TERMINAL_RUN_STATES, CancellationState, RunSession
+from agentwatch_agent.stats import summarize
 from agentwatch_agent.steps import Step, StepRecorder, new_trace_id
 from agentwatch_agent.tasks import Task
 from agentwatch_agent.workspace import Workspace
@@ -69,17 +69,6 @@ CONDITIONS = ("uninstrumented", "instrumented")
 def _process_cpu_seconds() -> float:
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return usage.ru_utime + usage.ru_stime
-
-
-def summarize(values: list[float]) -> dict:
-    ordered = sorted(values)
-    return {
-        "count": len(ordered),
-        "median": statistics.median(ordered),
-        "p90": ordered[round(0.9 * (len(ordered) - 1))],
-        "min": ordered[0],
-        "max": ordered[-1],
-    }
 
 
 def merged_availability(summaries: list[dict]) -> dict[str, dict[str, int]]:

@@ -32,9 +32,10 @@ from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.config import DEFAULT_CHAT_OPTIONS, DEFAULT_SAMPLING_INTERVAL_SECONDS
 from agentwatch_agent.delivery import Journal
 from agentwatch_agent.model import chat_payload
-from agentwatch_agent.overhead import merged_availability, summarize
+from agentwatch_agent.overhead import merged_availability
 from agentwatch_agent.prompts import SYSTEM_PROMPT, task_message
 from agentwatch_agent.resources import CpuProbe, GpuProbe, ResourceSampler
+from agentwatch_agent.stats import summarize
 from agentwatch_agent.tasks import Task
 from agentwatch_agent.tools import tool_definitions
 

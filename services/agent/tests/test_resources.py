@@ -242,7 +242,28 @@ def test_summary_counts_late_and_missed_rounds():
     assert summary["sample_rounds"] == 5
     assert summary["observed_interval_median_seconds"] == pytest.approx(0.01)
     assert summary["observed_interval_max_seconds"] == pytest.approx(0.03)
-    assert (summary["late_rounds"], summary["missed_rounds_estimate"]) == (1, 2)
+    assert (summary["late_rounds"], summary["early_rounds"]) == (1, 0)
+    assert (summary["expected_rounds"], summary["missed_rounds"]) == (7, 2)
+
+
+def test_late_rounds_taken_back_to_back_are_not_missed():
+    # The sampler catches up after a slow round: one 3-interval gap, then two overdue
+    # rounds 1 ms apart. Every round the cadence expects was taken, only late.
+    ms = 1_000_000
+    ticks = [0, 10 * ms, 40 * ms, 41 * ms, 42 * ms]
+    instance = ResourceSampler(
+        lambda _sample: None,
+        run_id=uuid4(),
+        task_id="fix-mean-empty-r1",
+        clock=ScriptedClock(ticks),
+        probes=[GpuProbe(GPU_RESOURCE, FakeGpu)],
+        interval_seconds=0.01,
+    )
+    for _ in ticks:
+        instance.sample_once()
+    summary = instance.summary()
+    assert (summary["late_rounds"], summary["early_rounds"]) == (1, 2)
+    assert (summary["expected_rounds"], summary["missed_rounds"]) == (5, 0)
 
 
 def test_summary_without_rounds_reports_no_intervals():

@@ -127,8 +127,12 @@ The metric registry (`METRICS` in `agentwatch_sdk.live`) accepts:
 GPU entries (A04, [ADR 0003](adr/0003-gpu-and-inference-measurement.md)) are whole-device
 NVML gauges, never per process, and NVML utilization cannot resolve activity shorter than its
 own period or establish saturation. New signals (DCGM, vLLM, retrieval) need new versioned
-names; a definition never changes meaning in place. The change is additive: an older service
-refuses the GPU metrics, so deploy the service before producers that send them. All five availability
+names; a definition never changes meaning in place. The change is additive, but an older
+service refuses the GPU metrics, and **every** agent `run` sends them: it always registers the
+GPU and reports it as `unsupported` where NVML is missing (macOS, CPU-only hosts). Deploy the
+service first; a runner reporting to an older service ends every run with refused records
+(exit 5). With 7 records per round, the longest `--run-timeout` the per-run sample budget
+allows at 250 ms falls from 10,000 s to about 2,857 s on every host. All five availability
 states survive history; absent readings never become measured zero. Alignment, deltas and
 coverage are B02 work; no predictions or host-saturation diagnosis are produced here.
 

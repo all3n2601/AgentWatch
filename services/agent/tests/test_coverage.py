@@ -148,6 +148,27 @@ def test_counter_reports_increase_and_null_after_reset(tmp_path):
     assert by_id["b"]["resources"]["host-1"]["measured"][metric]["increase"] is None
 
 
+def test_counter_reset_inside_the_window_has_no_increase(tmp_path):
+    metric = "cpu.cgroup.throttled_usec.v1"
+    records = [
+        step("a", 0, "queued", 0),
+        step("a", 1, "running", 0, 0),
+        step("a", 2, "completed", 0, 0, 400 * MS),
+        sample(0, metric, 100, resource="host-1"),
+        sample(100 * MS, metric, 5, resource="host-1"),  # reset
+        sample(200 * MS, metric, 300, resource="host-1"),  # climbs back above the first
+    ]
+    entry = steps_by_id(coverage_report(write_run(tmp_path, records)))["a"]
+    assert entry["resources"]["host-1"]["measured"][metric]["increase"] is None
+
+
+def test_conflicting_records_under_one_identity_are_refused(tmp_path):
+    original = sample(0, "gpu.nvml.utilization.gpu.v1", 10)
+    changed = original.model_copy(update={"value": 90.0})
+    with pytest.raises(CoverageError, match="conflicting records"):
+        coverage_report(write_run(tmp_path, [original, changed]))
+
+
 def test_short_unexecuted_and_unsampled_steps_are_distinguished(tmp_path):
     records = [
         step("short", 0, "queued", 0),
@@ -179,7 +200,7 @@ def test_run_level_intervals_and_unusable_lines(tmp_path):
     gpu = report["sampling"]["gpu-1"]
     assert gpu["sample_rounds"] == 5
     assert gpu["observed_interval_max_seconds"] == pytest.approx(0.3)
-    assert (gpu["late_rounds"], gpu["missed_rounds_estimate"]) == (1, 2)
+    assert (gpu["late_rounds"], gpu["missed_rounds"]) == (1, 2)
     assert report["unusable_journal_lines"] == 2
 
 

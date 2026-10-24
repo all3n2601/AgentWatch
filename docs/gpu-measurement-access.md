@@ -192,7 +192,8 @@ load average 0.45 before and 4.11 after; CPU PSI `some avg10` 0.00 before, 1.52 
 | `3a4e8ce3-14c2-474e-9777-233c154dda8a` | 1.33 s | 6 | 0.250 s / 0.251 s, 0.263 s | 20.3 ms, 3.1 ms, 1.9% |
 
 - All three completed with runner verification passing, 8 steps each and no late or
-  missed rounds. All seven metrics were `measured` in all 21 rounds. Delivery was complete
+  missed rounds (rechecked after review with the corrected definition: expected rounds over
+  the sampled span minus rounds taken). All seven metrics were `measured` in all 21 rounds. Delivery was complete
   with nothing refused, and the live API returned exactly the journaled records and
   per-metric sample counts (87, 66 and 66 records).
 - Round wall time (max 46–71 ms) is mostly waiting: NVML calls through WSL2's GPU bridge and

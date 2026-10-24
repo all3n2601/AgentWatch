@@ -88,8 +88,10 @@ URLs are excluded: the same configuration can run on different hosts.
   ([registry](../../docs/live-ingestion.md), [ADR 0003](../../docs/adr/0003-gpu-and-inference-measurement.md)).
   PSI is host-wide, the counter covers the runner's whole cgroup and NVML covers the whole
   device (every process on it), so none is step-exclusive. On macOS CPU metrics are
-  `unsupported` and so are GPU metrics without NVML; a library that fails to initialize or
-  a missing device is `unavailable`. None is ever zero. `run` samples GPU index 0 and records
+  `unsupported` and so are GPU metrics without NVML; a library that fails to initialize,
+  lacks an entry point the binding needs, or a missing device is `unavailable`. Because
+  `run` always samples the GPU, it needs a live API that registers the GPU metrics, and the
+  longest `--run-timeout` the sample budget allows at 250 ms is about 2,857 s. None is ever zero. `run` samples GPU index 0 and records
   the device count, name, driver and memory size under `resource_sampling.resources`.
   No retrieval metric exists yet: retrieval is in-process BM25.
 - **`task_passed`** in the evidence reports only the runner's verification. A run can still be
@@ -174,7 +176,10 @@ isolation sandbox**: do not add free-form edits or commands without the A03 isol
 
 `uv run --package agentwatch-agent python -m agentwatch_agent coverage <run dir>` prints a
 `coverage-v1` report built only from the run's journal: per resource, the achieved sampling
-interval (median, p90, max), late rounds and an estimate of missed rounds; per executed step,
+interval (median, p90, max), late and early rounds, and missed rounds (rounds the declared
+cadence expects over the sampled span, minus rounds taken; after a slow round the sampler
+takes the overdue rounds back to back, so those count as late and early, not missed); p90
+everywhere is the sorted element at `round(0.9 * (n - 1))`; per executed step,
 its `[started, finished)` window, the sampling rounds inside it, coverage against the
 declared interval, and min/mean/max of measured gauges (or the counter's increase, null after
 a reset). Steps shorter than one interval report `shorter_than_interval`, not 0 or 100%.
