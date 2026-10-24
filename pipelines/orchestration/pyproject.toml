@@ -1,0 +1,17 @@
+[project]
+name = "agentwatch-orchestration"
+version = "0.1.0"
+description = "AgentWatch data pipeline orchestration: the Airflow DAG over the dataset commands"
+# Airflow brings several hundred packages and its own pins, so it stays out of the shared
+# workspace. Each stage still runs in its own environment (shared workspace, TFDV, DVC).
+requires-python = ">=3.13,<3.15"
+dependencies = [
+  "apache-airflow==3.3.2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

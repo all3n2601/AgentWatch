@@ -132,8 +132,33 @@ and running-step updates remain future work. See [the ingestion guide](docs/inge
 - `packages` — shared UI and generated SDK packages
 - `db` — database documentation; packaged migrations live with the ingestion service
 - `deploy` — local Compose, Helm, and Terraform assets
+- `pipelines` — dataset pipeline: stages (`data`), TFDV gate (`validation`), DVC (`versioning`),
+  and the Airflow DAG (`orchestration`)
 
 Each language uses its native toolchain. The root `Makefile` only coordinates common tasks.
+
+## Data pipeline in Airflow
+
+The Airflow DAG `agentwatch_dataset` in `pipelines/orchestration/dags/` runs the dataset commands
+in order: acquire (add recorded runs to the evidence store) → build → validate (TFDV gate) →
+split → version (integrity check, then DVC) → push → summarize. Each task runs the same command
+as its `make` target, in that stage's own environment; anomalies, rejected evidence, or a failed
+integrity check fail the task and stop the run. Only the push to the DVC remote is retried, and it
+is skipped when no remote is configured. The last task logs a run summary (release, split,
+leakage status, and whether the version was pushed).
+
+```bash
+uv sync --project pipelines/orchestration --frozen        # Airflow's environment, once
+make pipeline-run                                         # run the DAG once from the stored evidence
+make pipeline-run PIPELINE_RUN_DIRS=".data/coding-demo"   # add recorded runs first
+make pipeline-ui                                          # scheduler and UI on http://localhost:8080
+```
+
+Airflow's home (metadata database and task logs) is `.data/airflow`. Tasks read
+`AGENTWATCH_ROOT` (default: this checkout), `AGENTWATCH_DATASET_API_URL` (also build from runs
+saved through the ingestion API), and `AGENTWATCH_STAGE_TIMEOUT_SECONDS` (default 1800). The DAG
+does not commit the updated `data/*.dvc` files; commit them yourself after a run. Stage details
+are in [the data card](docs/data-card.md) and [the data pipeline plan](docs/data-pipeline-plan.md).
 
 ## Prerequisites
 

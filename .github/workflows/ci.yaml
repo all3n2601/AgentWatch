@@ -89,6 +89,20 @@ jobs:
       - run: uv sync --project pipelines/versioning --frozen
       - run: uv run --project pipelines/versioning --frozen pytest pipelines/versioning/tests
 
+  data-orchestration:
+    # Airflow has its own environment (its pins conflict with the shared workspace's). The tests
+    # load the DAG and exercise the stage runner without running the stage commands.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: pipelines/orchestration/uv.lock
+      - run: uv sync --project pipelines/orchestration --frozen
+      - run: uv run --project pipelines/orchestration --frozen pytest pipelines/orchestration/tests
+
   go:
     runs-on: ubuntu-latest
     steps:

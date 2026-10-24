@@ -468,6 +468,12 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   row hashes, and runs the contract's single-feature AUC leakage check on the training split
   (`test_dataset_splits.py`, 100% line and branch coverage). Unseen tasks still depend on a real
   `task_id`.
+- [x] Orchestrate the dataset stages with Airflow (2026-10-24): the `agentwatch_dataset` DAG in
+  `pipelines/orchestration` runs acquire → build → validate → split → version → push →
+  summarize, each in its stage's own environment, with only the DVC push retried
+  (`pipelines/orchestration/tests`). Run end to end with `make pipeline-run` on the shared
+  `steps-v1.2+5954f97ef8b2` evidence and with a new recorded run added. Alerts, committing
+  `data/*.dvc` from the DAG, and the Gantt-chart optimization are open.
 - [ ] Hold out unseen tasks and at least one injection method.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
