@@ -273,10 +273,10 @@ These can be completed before adding an agent.
   same-resource/service, same-clock samples in `[start, finish)` and validates FeatureRows;
   `agentwatch_worker.live_features` loads them from PostgreSQL. `steps-v1.2` window code moved
   unchanged into `agentwatch_features.legacy`, so training and serving share one implementation.
-  Regressions: 53 synthetic cases in `packages/features/tests/test_live_features.py` (null vs
+  Regressions: 55 synthetic cases in `packages/features/tests/test_live_features.py` (null vs
   zero, units, counter resets, half-open and incomplete windows, cancellation, clock/identity
   joins, retries, conflicts) and 4 isolated-schema PostgreSQL cases in
-  `services/worker/tests/test_live_feature_join.py`. Local verification after merging `main` at e60984a: 1069 Python tests passed
+  `services/worker/tests/test_live_feature_join.py`. Local verification after merging `main` at e60984a: 1071 Python tests passed
   with a dedicated PostgreSQL 17 test database and no skips; Ruff passed. Open until B03 serves
   rows from a real run: no endpoint calls the join yet, live runs record no declared sampling
   interval (coverage stays null without one), and only synthetic fixtures have been joined.

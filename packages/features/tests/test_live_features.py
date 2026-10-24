@@ -217,8 +217,18 @@ def test_samples_join_only_the_registered_target_and_clock(samples, status):
     assert row.source_sample_ids == []
     assert row.features.cpu_pressure_max_avg10 is None
     assert row.telemetry.sample_count == 0
-    expected_coverage = None if status == "unaligned" else 0.0
-    assert row.telemetry.coverage == expected_coverage
+    # Only a same-domain stream for the target shows samples were lost; otherwise null.
+    assert row.telemetry.coverage == (0.0 if status == "no_overlap" else None)
+
+
+def test_target_sampled_only_by_unread_metrics_is_empty_not_zero_coverage():
+    gpu = sample(START_NS, value=50.0).model_copy(
+        update={"metric": "gpu.nvml.utilization.gpu.v1", "resource_class": "inference"}
+    )
+    row = compute_feature_row(completed(), [gpu], 0.5)
+    assert row.telemetry.status == "empty"
+    assert row.features.telemetry_coverage is None
+    assert row.features.telemetry_sample_count == 0
 
 
 def test_step_without_a_measured_target_is_missing():
@@ -291,7 +301,7 @@ NO_SAMPLES = {"sample_count": 0, "observed_interval_seconds": None}
         ({"features": {"telemetry_sample_count": 3}}, "Telemetry features differ"),
         ({"features": {"execution_seconds": 9.0}}, "Timing features differ"),
         ({"telemetry": {"status": "unaligned"}}, "Only present telemetry"),
-        ({"telemetry": {"status": "unaligned", **NO_SAMPLES}}, "null coverage"),
+        ({"telemetry": {"status": "unaligned", **NO_SAMPLES}}, "Coverage needs a sampler stream"),
         ({"telemetry": {"sample_count": 1}}, "two samples"),
         ({"telemetry": {"coverage": 1.5}}, "less than or equal to 1"),
         ({"window": {"finished_tick_ns": None}}, "both exist"),
@@ -335,3 +345,8 @@ def test_feature_row_rejects_inconsistent_envelopes(change, message):
         payload[key] = {**payload[key], **value} if isinstance(value, dict) else value
     with pytest.raises(ValidationError, match=message):
         FeatureRow.model_validate(payload)
+
+
+def test_run_without_step_events_has_no_rows():
+    result = compute_feature_rows([], every_half_second(), 0.5)
+    assert result.rows == [] and result.incomplete_step_ids == []

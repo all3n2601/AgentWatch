@@ -46,7 +46,7 @@ or two readings sharing a resource/service/clock/metric/tick, raises `ValueError
 | --- | --- | --- |
 | `present` | At least one sample inside the window | Computed |
 | `no_overlap` | Same-domain samples exist for the target, none inside the window | Computed (0 when an interval fits) |
-| `empty` | The step's target has no v1-metric samples in this run | Computed (0 when an interval fits) |
+| `empty` | The step's target has no v1-metric samples in this run, so no sampler is known to target it | Null: an unsampled target is not a sampler that lost every reading |
 | `unaligned` | The target's samples are all in other clock domains | Null |
 | `missing` | The step never started, or has no measured resource/service identity | Null |
 
@@ -86,13 +86,16 @@ present telemetry, or a non-`missing` status for a step that never started.
 
 ## Verification and limitations
 
-- `packages/features/tests/test_live_features.py`: 53 synthetic, test-only cases for measured
+- `packages/features/tests/test_live_features.py`: 55 synthetic, test-only cases for measured
   zero versus unsupported, units, counter resets, half-open windows, incomplete/partial windows,
   cancellation before start, zero duration, identity and clock joins, retries, conflicts and row
   validation. 100% line and branch coverage of `live.py`.
 - `services/worker/tests/test_live_feature_join.py`: 4 isolated-schema PostgreSQL cases for
   stored joins, pending revisions, late samples and a missing run.
 - `pipelines/data/tests/` pass unchanged against the moved `steps-v1.2` functions.
+- A synthetic run at the contract bounds (1,000 steps, 99,000 samples) computes in about
+  0.1 s locally: samples are deduplicated and indexed once per run, then each window is
+  found by binary search.
 - No HTTP endpoint serves feature rows yet; B03 decides how rows are served and stored.
 - Coverage needs the producer's declared sampling interval, which live runs do not record.
 - No real agent run has been joined: evidence so far is synthetic fixtures only. Sampling

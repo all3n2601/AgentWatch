@@ -9,6 +9,8 @@ only the metrics named here are read; newer metrics never change a v1 row.
 
 import math
 import statistics
+from bisect import bisect_left
+from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import groupby, pairwise
@@ -38,6 +40,10 @@ NANOSECONDS_PER_SECOND = 1_000_000_000
 TIMING_NAMES = ("queue_seconds", "execution_seconds", "duration_seconds", "cpu_seconds")
 
 TelemetryStatus = Literal["present", "empty", "missing", "no_overlap", "unaligned"]
+# No same-domain v1 stream exists for the step's target, so lost samples cannot be judged:
+# an unsampled target must not look like a sampler that lost every reading.
+UNSAMPLED_STATUSES = {"missing", "empty", "unaligned"}
+V1_METRICS = {PSI_METRIC, THROTTLED_METRIC}
 Fraction = Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)]
 PositiveSeconds = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 QUEUE_FRACTION_TOLERANCE = 1e-6  # absolute, as for contract timing breakdowns
@@ -84,8 +90,8 @@ class Telemetry(FeatureModel):
     def consistent(self) -> Self:
         if (self.status == "present") != (self.sample_count > 0):
             raise ValueError("Only present telemetry has samples inside the window")
-        if self.status in {"missing", "unaligned"} and self.coverage is not None:
-            raise ValueError("Missing or unaligned telemetry has null coverage")
+        if self.status in UNSAMPLED_STATUSES and self.coverage is not None:
+            raise ValueError("Coverage needs a sampler stream for the target in its clock domain")
         if self.sample_count < 2 and self.observed_interval_seconds is not None:
             raise ValueError("An observed interval needs at least two samples")
         return self
@@ -220,28 +226,37 @@ def distinct_samples(
     return list(by_id.values())
 
 
-def join_window(
-    step: StepEventFields, samples: list[ResourceSampleFields]
-) -> tuple[TelemetryStatus, list[ResourceSampleFields]]:
-    """The step's telemetry status and its samples inside `[start, finish)`, by tick."""
-    if step.started_tick_ns is None or step.resource_id is None or step.service_id is None:
-        return "missing", []  # nothing executed, or no measured target to join
-    stream = [
-        s
-        for s in samples
-        if (s.resource_id, s.service_id) == (step.resource_id, step.service_id)
-        and s.metric in {PSI_METRIC, THROTTLED_METRIC}
-    ]
-    if not stream:
-        return "empty", []
-    aligned = [s for s in stream if s.clock_id == step.clock_id]
-    if not aligned:
-        return "unaligned", []
-    inside = sorted(
-        (s for s in aligned if step.started_tick_ns <= s.tick_ns < step.finished_tick_ns),
-        key=lambda s: (s.tick_ns, s.metric),
-    )
-    return ("present" if inside else "no_overlap"), inside
+class SampleIndex:
+    """A run's distinct v1 samples by target and clock domain, sorted by tick.
+
+    Built once per run so each step window is two binary searches, not a scan of the run.
+    """
+
+    def __init__(self, samples: list[ResourceSampleFields]):
+        streams: dict[tuple[str, str, str], list[ResourceSampleFields]] = defaultdict(list)
+        for sample in samples:
+            if sample.metric in V1_METRICS:
+                streams[(sample.resource_id, sample.service_id, sample.clock_id)].append(sample)
+        self.targets = {(resource, service) for resource, service, _ in streams}
+        self.streams = {
+            key: sorted(stream, key=lambda s: (s.tick_ns, s.metric))
+            for key, stream in streams.items()
+        }
+        self.ticks = {key: [s.tick_ns for s in stream] for key, stream in self.streams.items()}
+
+    def join(self, step: StepEventFields) -> tuple[TelemetryStatus, list[ResourceSampleFields]]:
+        """The step's telemetry status and its samples inside `[start, finish)`, by tick."""
+        if step.started_tick_ns is None or step.resource_id is None or step.service_id is None:
+            return "missing", []  # nothing executed, or no measured target to join
+        if (step.resource_id, step.service_id) not in self.targets:
+            return "empty", []
+        key = (step.resource_id, step.service_id, step.clock_id)
+        if key not in self.streams:
+            return "unaligned", []
+        ticks = self.ticks[key]
+        first = bisect_left(ticks, step.started_tick_ns)
+        inside = self.streams[key][first : bisect_left(ticks, step.finished_tick_ns)]
+        return ("present" if inside else "no_overlap"), inside
 
 
 def gauge_max(readings: list[ResourceSampleFields]) -> float | None:
@@ -292,12 +307,19 @@ def compute_feature_row(
     """
     validate_interval(declared_interval_seconds)
     history = applied_history(events)
+    index = SampleIndex(distinct_samples(samples, history[-1].run_id))
+    return row_from_history(history, index, declared_interval_seconds)
+
+
+def row_from_history(
+    history: list[StepEventFields], index: SampleIndex, declared_interval_seconds: float | None
+) -> FeatureRow:
     step = history[-1]
-    status, inside = join_window(step, distinct_samples(samples, step.run_id))
+    status, inside = index.join(step)
     ticks = sorted({s.tick_ns for s in inside})
     gaps = [(b - a) / NANOSECONDS_PER_SECOND for a, b in pairwise(ticks)]
     coverage = None
-    if status in {"present", "no_overlap", "empty"}:
+    if status not in UNSAMPLED_STATUSES:
         coverage = window_coverage(
             len(ticks), step.finished_tick_ns - step.started_tick_ns, declared_interval_seconds
         )
@@ -350,14 +372,20 @@ def compute_feature_rows(
     declared_interval_seconds: float | None,
 ) -> FeatureRows:
     """Rows for every terminal step of one run, in step_id order; incomplete steps listed."""
-    samples = list(samples)
+    validate_interval(declared_interval_seconds)
     rows, incomplete = [], []
     by_step = sorted(events, key=lambda event: (event.step_id, event.sequence))
-    if len({event.run_id for event in by_step}) > 1:
+    run_ids = {event.run_id for event in by_step}
+    if len(run_ids) > 1:
         raise ValueError("Step events from different runs cannot share one window join")
+    if not run_ids:
+        return FeatureRows(rows, incomplete)
+    index = SampleIndex(distinct_samples(samples, run_ids.pop()))
     for step_id, history in groupby(by_step, key=lambda event: event.step_id):
         try:
-            rows.append(compute_feature_row(history, samples, declared_interval_seconds))
+            rows.append(
+                row_from_history(applied_history(history), index, declared_interval_seconds)
+            )
         except IncompleteStepError:
             incomplete.append(step_id)
     return FeatureRows(rows, incomplete)
