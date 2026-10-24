@@ -51,6 +51,7 @@ def configuration(**limits):
         model="m",
         system_prompt="p",
         tools=(),
+        sampled_metrics=("cpu.psi.some.avg10.v1",),
         limits=RunLimits(**limits),
     )
 

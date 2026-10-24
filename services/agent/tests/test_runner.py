@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.error import URLError
 
 import pytest
-from agent_test_doubles import SOLVE_MEAN, ScriptedModel, chat_response
+from agent_test_doubles import SOLVE_MEAN, FakeGpu, ScriptedModel, chat_response
 from agentwatch_agent import runner as runner_module
 from agentwatch_agent.config import RunLimits
 from agentwatch_agent.delivery import COMPLETION_REFUSED, RetryPolicy, replay_journal
@@ -357,7 +357,7 @@ def test_setup_failure_after_registration_closes_the_run(mean_task, server, tmp_
     def broken_sampler(*_args, **_kwargs):
         raise RuntimeError("cgroup discovery failed")
 
-    monkeypatch.setattr(runner_module, "CpuResourceSampler", broken_sampler)
+    monkeypatch.setattr(runner_module, "ResourceSampler", broken_sampler)
     with pytest.raises(RuntimeError, match="cgroup discovery failed"):
         make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
     run = server.only_run()
@@ -674,7 +674,7 @@ def test_refused_completion_after_full_delivery_closes_the_run_as_failed(
 
 
 def test_background_error_during_shutdown_fails_the_run(mean_task, server, tmp_path, monkeypatch):
-    original = runner_module.CpuResourceSampler
+    original = runner_module.ResourceSampler
 
     class FailsOnStop(original):
         def __exit__(self, *exc):
@@ -682,7 +682,7 @@ def test_background_error_during_shutdown_fails_the_run(mean_task, server, tmp_p
             self.error = RuntimeError("last sample failed")
             return result
 
-    monkeypatch.setattr(runner_module, "CpuResourceSampler", FailsOnStop)
+    monkeypatch.setattr(runner_module, "ResourceSampler", FailsOnStop)
     with pytest.raises(RuntimeError, match="last sample failed"):
         make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
     run = server.only_run()
@@ -706,3 +706,104 @@ def test_adopted_remote_closure_reports_the_remote_reason(mean_task, server, tmp
     outcome = make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
     assert (outcome.state, outcome.reason) == ("cancelled", "Stopped by reviewer")
     assert evidence(outcome)["reason"] == "Stopped by reviewer"
+
+
+# A04 resource sampling --------------------------------------------------------------------
+
+# Short enough that the helper's 0.05 s sampling fits the live sample budget with the GPU.
+GPU_TEST_LIMITS = RunLimits(run_timeout_seconds=60)
+
+
+def test_gpu_is_registered_and_sampled_with_the_run(mean_task, server, tmp_path):
+    device = FakeGpu(utilization=(64, 20))
+    outcome = make_runner(
+        mean_task,
+        server,
+        ScriptedModel(SOLVE_MEAN),
+        tmp_path,
+        open_gpu=lambda: device,
+        limits=GPU_TEST_LIMITS,
+    ).run()
+    run = server.only_run()
+    gpu = [r for r in run.registration.resources if r.service_id == "nvidia-nvml"]
+    assert [(r.resource_class, r.resource_id.startswith("gpu-")) for r in gpu] == [
+        ("inference", True)
+    ]
+    samples = [r for r in run.records.values() if r["record_type"] == "resource_sample"]
+    gpu_samples = [s for s in samples if s["resource_id"] == gpu[0].resource_id]
+    assert gpu_samples and {s["clock_id"] for s in samples} == {outcome_clock(outcome)}
+    utilization = [s for s in gpu_samples if s["metric"] == "gpu.nvml.utilization.gpu.v1"]
+    assert {(s["availability"], s["value"]) for s in utilization} == {("measured", 64.0)}
+    saved = evidence(outcome)
+    sampling = saved["resource_sampling"]
+    assert sampling["sample_rounds"] * 7 == len(samples)
+    assert sampling["resources"][1]["device"]["name"] == "Test GPU"
+    assert saved["configuration"]["sampled_metrics"][2:] == [
+        "gpu.nvml.utilization.gpu.v1",
+        "gpu.nvml.utilization.memory.v1",
+        "gpu.nvml.memory.used_bytes.v1",
+        "gpu.nvml.power.usage_watts.v1",
+        "gpu.nvml.clock.sm_mhz.v1",
+    ]
+    # The device is released once sampling has stopped.
+    assert device.closed == 1
+
+
+def outcome_clock(outcome):
+    return evidence(outcome)["clock_id"]
+
+
+def test_runs_without_a_gpu_opener_register_no_gpu(mean_task, server, tmp_path):
+    outcome = make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
+    run = server.only_run()
+    assert "nvidia-nvml" not in {r.service_id for r in run.registration.resources}
+    assert evidence(outcome)["configuration"]["sampled_metrics"] == [
+        "cpu.psi.some.avg10.v1",
+        "cpu.cgroup.throttled_usec.v1",
+    ]
+
+
+def test_gpu_sampling_changes_the_configuration_digest(mean_task, server, tmp_path):
+    model = ScriptedModel(SOLVE_MEAN)
+    settings = {"limits": GPU_TEST_LIMITS}
+    with_gpu = make_runner(mean_task, server, model, tmp_path, open_gpu=FakeGpu, **settings)
+    without_gpu = make_runner(mean_task, server, model, tmp_path, **settings)
+    assert with_gpu._configuration().digest() != without_gpu._configuration().digest()
+
+
+def test_sample_budget_counts_gpu_metrics(mean_task, server, tmp_path):
+    # 900 s at 0.025 s is 36,000 rounds: 72,000 CPU records fit, 252,000 with the GPU do not.
+    make_runner(
+        mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path, sampling_interval_seconds=0.025
+    )
+    with pytest.raises(ValueError, match="sample budget"):
+        make_runner(
+            mean_task,
+            server,
+            ScriptedModel(SOLVE_MEAN),
+            tmp_path,
+            sampling_interval_seconds=0.025,
+            open_gpu=FakeGpu,
+        )
+
+
+def test_model_calls_record_a_timing_breakdown(mean_task, server, tmp_path):
+    # Durations far below any real request wall time, so the breakdown is consistent.
+    reported = {
+        "total_duration": 4,
+        "load_duration": 1,
+        "prompt_eval_duration": 1,
+        "eval_duration": 1,
+    }
+    model = ScriptedModel([response | reported for response in SOLVE_MEAN])
+    outcome = make_runner(mean_task, server, model, tmp_path).run()
+    calls = evidence(outcome)["model_calls"]
+    assert len(calls) == len(SOLVE_MEAN)
+    for call in calls:
+        timing = call["timing"]
+        assert timing["status"] == "reported"
+        assert timing["client_wall_seconds"] == call["request_wall_seconds"]
+        assert timing["observed_queue_seconds"] is None
+        assert timing["observed_queue_availability"] == "unavailable"
+        assert timing["server_unattributed_seconds"] == pytest.approx(1e-9)
+        assert timing["client_outside_server_seconds"] > 0
