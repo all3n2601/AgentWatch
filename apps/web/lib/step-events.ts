@@ -71,6 +71,9 @@ export type LiveStep = {
   state: StepState;
   appliedSequence: number;
   clockId: string;
+  /** Monotonic ticks in `clockId`; only comparable with ticks of the same domain. */
+  submittedTickNs: number;
+  finishedTickNs: number | null;
   /** Whether the applied revision records a start tick. */
   started: boolean;
   /** Producer wall time of the applied running revision, if one was received. */
@@ -187,6 +190,8 @@ export function readStepEvents(
       state: applied.state,
       appliedSequence: applied.sequence,
       clockId: applied.clock_id,
+      submittedTickNs: applied.submitted_tick_ns,
+      finishedTickNs: applied.finished_tick_ns,
       started: applied.started_tick_ns !== null,
       startedObservedAt,
       lastObservedAt: applied.observed_at,

@@ -8,31 +8,8 @@ import {
   runSnapshot,
   savedRecord,
   stepEvent,
+  stepView,
 } from "./live-fixtures";
-
-type Event = ReturnType<typeof stepEvent>;
-const NS_PER_SECOND = 1e9;
-
-/** A step view with the service's derived timings (agentwatch_sdk.live.step_timings). */
-function stepView(event: Event) {
-  const { submitted_tick_ns: submit, started_tick_ns: start } = event;
-  const finish = event.finished_tick_ns;
-  const duration = finish === null ? null : (finish - submit) / NS_PER_SECOND;
-  const queue = start === null ? null : (start - submit) / NS_PER_SECOND;
-  return {
-    event,
-    timings: {
-      queue_seconds: queue,
-      execution_seconds:
-        start === null || finish === null
-          ? null
-          : (finish - start) / NS_PER_SECOND,
-      duration_seconds: duration,
-      cpu_seconds: event.cpu_seconds,
-      queue_fraction: queue !== null && duration ? queue / duration : null,
-    },
-  };
-}
 
 /** Parses through the response schema, as the live routes do. */
 const snapshotOf = (overrides: Record<string, unknown>) =>

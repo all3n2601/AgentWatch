@@ -27,6 +27,7 @@ import {
   type BrowserClockReading,
   type CpuTotal,
   type FeedFreshness,
+  type SpanTotal,
   type TimingTotal,
 } from "@/lib/live-status";
 import type { LiveStep, SequenceGap, StepState } from "@/lib/step-events";
@@ -184,7 +185,7 @@ export function ScenarioPicker({
   );
 }
 
-function stepCountText(total: TimingTotal) {
+function stepCountText(total: { measuredSteps: number }) {
   return `${total.measuredSteps} step${total.measuredSteps === 1 ? "" : "s"}`;
 }
 
@@ -216,6 +217,31 @@ function TimingValue({
         {stepCountText(total)}
         {total.unmeasuredSteps > 0 &&
           ` · excludes ${total.unmeasuredSteps} that never started`}
+      </dd>
+    </div>
+  );
+}
+
+function SpanValue({ total, final }: { total: SpanTotal; final: boolean }) {
+  return (
+    <div>
+      <dt className="text-[11px] text-muted-foreground">Step wall-time span</dt>
+      <dd className="metric-number mt-1 text-xl font-semibold">
+        {total.measuredSteps === 0
+          ? "No finished steps"
+          : total.seconds === null
+            ? "Not combined"
+            : duration(total.seconds)}
+        {!final && total.seconds !== null && total.measuredSteps > 0 && (
+          <span className="ml-1.5 text-xs font-normal text-amber-200">
+            so far
+          </span>
+        )}
+      </dd>
+      <dd className="mt-1 text-[11px] text-muted-foreground">
+        {total.seconds === null && total.measuredSteps > 0
+          ? `Steps use ${total.clockDomains} clock domains, which are not compared`
+          : `${stepCountText(total)} · overlapping parent and child windows count once`}
       </dd>
     </div>
   );
@@ -257,8 +283,8 @@ function Totals({ replay }: { replay: LiveReplay }) {
         title={totals.final ? "Final step totals" : "Partial step totals"}
         detail={
           totals.final
-            ? "Sums of per-step timings for every step in the closed run."
-            : "Not final: these sums cover finished steps only and will change."
+            ? "Totals for every step in the closed run."
+            : "Not final: these totals cover finished steps only and will change."
         }
       >
         <Badge
@@ -280,11 +306,7 @@ function Totals({ replay }: { replay: LiveReplay }) {
         </ul>
       )}
       <dl className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
-        <TimingValue
-          label="Total step duration"
-          total={totals.duration}
-          final={totals.final}
-        />
+        <SpanValue total={totals.duration} final={totals.final} />
         <TimingValue
           label="Queue delay"
           total={totals.queue}
@@ -297,6 +319,14 @@ function Totals({ replay }: { replay: LiveReplay }) {
         />
         <CpuValue total={totals.cpu} final={totals.final} />
       </dl>
+      {totals.parentSteps > 0 && (
+        <p className="mt-4 text-[11px] leading-5 text-muted-foreground">
+          Queue delay, execution and CPU time are summed over steps without
+          children; {totals.parentSteps} parent step
+          {totals.parentSteps === 1 ? " is" : "s are"} left out because its
+          window contains its children&apos;s. Concurrent steps still add up.
+        </p>
+      )}
     </Card>
   );
 }

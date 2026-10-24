@@ -42,6 +42,7 @@ export function runSummary(runId = RUN_ID, sequence = 1, state = "running") {
 
 type StepOptions = {
   runId?: string;
+  clock?: string;
   parent?: string | null;
   type?: "model_call" | "tool" | "retrieval" | "other";
   submitted?: number;
@@ -69,7 +70,7 @@ export function stepEvent(
     run_id: options.runId ?? RUN_ID,
     task_id: TASK_ID,
     observed_at: at(options.second ?? sequence),
-    clock_id: CLOCK_ID,
+    clock_id: options.clock ?? CLOCK_ID,
     record_type: "step_event",
     event_id: `${stepId}-${sequence}`,
     step_id: stepId,
@@ -88,6 +89,29 @@ export function stepEvent(
     cpu_scope:
       options.cpu === undefined || options.cpu === null ? null : "process",
     reason: options.reason ?? null,
+  };
+}
+
+type Event = ReturnType<typeof stepEvent>;
+
+/** A step view with the service's derived timings (agentwatch_sdk.live.step_timings). */
+export function stepView(event: Event) {
+  const { submitted_tick_ns: submit, started_tick_ns: start } = event;
+  const finish = event.finished_tick_ns;
+  const duration = finish === null ? null : (finish - submit) / NS_PER_SECOND;
+  const queue = start === null ? null : (start - submit) / NS_PER_SECOND;
+  return {
+    event,
+    timings: {
+      queue_seconds: queue,
+      execution_seconds:
+        start === null || finish === null
+          ? null
+          : (finish - start) / NS_PER_SECOND,
+      duration_seconds: duration,
+      cpu_seconds: event.cpu_seconds,
+      queue_fraction: queue !== null && duration ? queue / duration : null,
+    },
   };
 }
 

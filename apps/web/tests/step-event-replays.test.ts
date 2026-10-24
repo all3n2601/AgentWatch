@@ -94,7 +94,7 @@ test("active-steps shows running and queued steps with partial totals", () => {
 test("completed-run has final totals", () => {
   const { totals, freshness } = scenario("completed-run");
   assert.equal(totals.final, true);
-  assert.ok(Math.abs(totals.duration.seconds - 4.2) < 1e-9);
+  assert.ok(Math.abs((totals.duration.seconds ?? NaN) - 4.2) < 1e-9);
   assert.ok(Math.abs((totals.cpu.seconds ?? NaN) - 1.2) < 1e-9);
   assert.equal(freshness, "closed");
 });

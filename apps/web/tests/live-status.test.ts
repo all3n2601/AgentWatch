@@ -132,7 +132,8 @@ test("totals are final only for a closed run with every step terminal", () => {
     unmeasuredSteps: 0,
   });
   assert.equal(totals.execution.seconds, 3);
-  assert.equal(totals.duration.seconds, 4.5);
+  // Both steps are submitted at tick 0, so their windows overlap: [0, 3] and [0, 1.5].
+  assert.equal(totals.duration.seconds, 3);
   assert.deepEqual(totals.cpu, {
     seconds: 1.75,
     scope: "process",

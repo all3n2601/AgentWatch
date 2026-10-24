@@ -70,6 +70,8 @@ export function readRunSnapshot(
       state: event.state,
       appliedSequence: event.sequence,
       clockId: event.clock_id,
+      submittedTickNs: event.submitted_tick_ns,
+      finishedTickNs: event.finished_tick_ns,
       started: event.started_tick_ns !== null,
       startedObservedAt: appliedStart.get(event.step_id) ?? null,
       lastObservedAt: event.observed_at,
