@@ -398,17 +398,45 @@ def test_host_environment_is_not_inherited(tmp_path, no_leaks, monkeypatch):
     assert run(root).outcome == "passed"
 
 
-def test_memory_limit_ends_the_suite_as_a_resource_limit(tmp_path, no_leaks):
+def test_memory_limit_ends_the_suite_as_a_resource_limit(tmp_path, no_leaks, monkeypatch):
     root = project(
         tmp_path,
         "    def test_allocate(self):\n"
         "        blocks = [bytearray(32 * 1024 * 1024) for _ in range(32)]\n"
         "        self.assertTrue(blocks)\n",
     )
+    reports = []
+    real_report = container._report
+
+    def recording_report(text, nonce):
+        reports.append(real_report(text, nonce))
+        return reports[-1]
+
+    monkeypatch.setattr(container, "_report", recording_report)
     result = run(root, limits=SandboxLimits(memory_mb=128))
     assert result.outcome == "resource_limit", result.output_tail
     assert result.limit_exceeded == "memory"
     assert (result.returncode, result.cpu_seconds) == (None, None)
+    # The wrapper's own count, which does not depend on when the runtime's flag arrives.
+    assert reports[0]["oom_kills"] >= 1, reports
+
+
+@pytest.mark.parametrize(
+    ("oom_flag", "oom_kills", "expected"),
+    [
+        (False, 1, ("resource_limit", "memory")),  # the runtime's flag had not arrived yet
+        (True, 0, ("resource_limit", "memory")),
+        (True, None, ("resource_limit", "memory")),  # cgroup v1: only the flag
+        (False, 0, ("failed", None)),
+        (False, None, ("failed", None)),
+        (False, True, ("failed", None)),  # not a count
+    ],
+)
+def test_either_oom_signal_classifies_a_memory_limit(oom_flag, oom_kills, expected):
+    report = {"returncode": -9, "oom_kills": oom_kills, "cpu_seconds": 0.1, "wall_seconds": 1.0}
+    state = {"OOMKilled": oom_flag, "ExitCode": 1}
+    result = container._classify(None, None, state, report, "", 1.0, 65.0)
+    assert (result.outcome, result.limit_exceeded) == expected
 
 
 def test_process_cpu_and_file_limits_apply(tmp_path, no_leaks):

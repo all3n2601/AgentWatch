@@ -34,8 +34,10 @@ Measurement: `wall_seconds` is host-measured and includes container start-up. Th
 own wall time and CPU time (its process and children) are measured inside the container by a
 small wrapper and reported separately. An unavailable measurement stays `None`, never zero.
 
-Outcome: host decisions (cancellation, deadline, output cap) come first, then the runtime's OOM
-flag, then the wrapper's report. The wrapper is PID 1 and non-dumpable, and reads a random
+Outcome: host decisions (cancellation, deadline, output cap) come first, then memory: the
+runtime's `OOMKilled` flag or the wrapper's count of OOM kills in the container's cgroup. The
+flag is set by an asynchronous event and was observed missing at inspect on Linux CI, so it
+cannot be the only evidence. Then comes the wrapper's report. The wrapper is PID 1 and non-dumpable, and reads a random
 nonce from stdin, so the suite cannot read, signal or forge its report. A backstop timeout
 also needs exit code 124 and enough host wall time. `passed` needs the suite's return code 0
 and container exit code 0. The suite's return code still belongs to the suite: code under test

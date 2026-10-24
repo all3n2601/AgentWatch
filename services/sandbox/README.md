@@ -35,7 +35,7 @@ result = run_project_tests_isolated(
 ```
 
 Outcomes are `passed`, `failed`, `timed_out` and `cancelled`, as for the subprocess runner.
-There is also `resource_limit`, where `limit_exceeded` is `memory` (the runtime's OOM flag) or
+There is also `resource_limit`, where `limit_exceeded` is `memory` (a process was OOM-killed) or
 `output` (the suite wrote more than 4 MiB, so the host stopped it). A `resource_limit` outcome
 is a limit that was hit, not a failing test: the agent's `run_tests` tool reports it as a tool
 failure. A suite that kills itself with a signal, or hits the process or file limit and fails,
@@ -56,7 +56,7 @@ and the release failure is attached to it as a note.
 ## Boundaries
 
 Each control is verified by a probe suite that runs inside the container
-(`tests/test_container.py`). Each of 20 controls was also checked by removing it alone and
+(`tests/test_container.py`). Each of 21 controls was also checked by removing it alone and
 confirming its probe fails.
 
 - **Filesystem:**
@@ -108,7 +108,10 @@ descriptors and cannot forge that report.
 The outcome is decided in this order:
 
 1. The host's own decisions: cancellation, deadline or the output cap.
-2. The runtime's OOM flag.
+2. Memory: the runtime's `OOMKilled` flag, or the wrapper's count of OOM kills in the
+   container's memory cgroup (`memory.events`). The flag arrives asynchronously and can be
+   missing when the container is inspected; the count cannot. On cgroup v1 the count is
+   unavailable and the flag is the only evidence.
 3. The backstop. This needs the report's flag, exit code 124, and host wall time of at least
    the backstop.
 4. The wrapper's report of the suite's return code. `passed` needs return code 0 and

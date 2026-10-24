@@ -435,8 +435,8 @@ lint/typecheck/13 tests/build, Go, and both Compose configurations. Real Qwen3 C
   a bounded tail. A host deadline is enforced from creation onward, plus a backstop in a PID 1,
   non-dumpable wrapper the suite cannot signal, end or read. Leftovers are swept by a deadline
   label, and the image is digest-pinned and never pulled implicitly. Probe suites in
-  `services/sandbox/tests/test_container.py` (54 tests) verify each boundary from inside the
-  container. Each of 20 controls was also checked by removing it and confirming its probe fails.
+  `services/sandbox/tests/test_container.py` (60 tests) verify each boundary from inside the
+  container. Each of 21 controls was also checked by removing it and confirming its probe fails.
   Every outcome (passed, failed, timed out, cancelled, resource limit, rejected request, start
   failure) is tested to remove its container and staging copy; a failed removal raises.
   Verified on Docker Desktop for macOS (arm64) and in CI on Docker Engine on Linux (amd64)

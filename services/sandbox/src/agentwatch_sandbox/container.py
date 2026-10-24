@@ -72,6 +72,9 @@ _UNSAFE_MOUNT_PATH = re.compile(r"[,=\s\"]")
 #   its file descriptors through /proc.
 # - It reads a random nonce from stdin and reports measurements on stdout behind it; the suite
 #   runs with stdin closed and its output on stderr.
+# - It reports how many processes the container's memory cgroup OOM-killed during the suite.
+#   The kernel counts the kill before the victim's parent sees it exit, while the runtime's
+#   OOMKilled flag arrives as a separate, asynchronous event and can be missing at inspect.
 # - The backstop ends the container if the host runner is gone. A suite can send SIGALRM to
 #   PID 1, so an alarm that arrives before the backstop is ignored.
 WRAPPER = r"""
@@ -90,6 +93,17 @@ def expire(signum, frame):
     sys.stdout.flush()
     os._exit(124)
 signal.signal(signal.SIGALRM, expire)
+def oom_kills():
+    try:
+        with open("/sys/fs/cgroup/memory.events") as events:
+            for line in events:
+                key, _, value = line.partition(" ")
+                if key == "oom_kill":
+                    return int(value)
+    except (OSError, ValueError):
+        pass
+    return None  # e.g. cgroup v1: the runtime's flag is then the only evidence
+oom_before = oom_kills()
 signal.setitimer(signal.ITIMER_REAL, backstop)
 child = subprocess.Popen(
     [sys.executable, "-I", "-B", "-m", "unittest", "discover", "-s", ".", "-t", ".",
@@ -99,8 +113,10 @@ child = subprocess.Popen(
 returncode = child.wait()
 signal.setitimer(signal.ITIMER_REAL, 0)
 usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+oom_after = oom_kills()
 sys.stdout.write(nonce + json.dumps({
     "returncode": returncode,
+    "oom_kills": None if None in (oom_before, oom_after) else oom_after - oom_before,
     "cpu_seconds": usage.ru_utime + usage.ru_stime,
     "wall_seconds": time.monotonic() - started,
 }) + "\n")
@@ -537,11 +553,13 @@ def _classify(
     backstop_seconds: float,
 ) -> ProjectTestResult:
     """Decide the outcome. Host decisions (deadline, cancellation, output) come first, then the
-    runtime's OOM flag, then the wrapper's report, which the suite cannot reach. The suite's own
-    exit status is still the suite's: code under test can always end its process with 0."""
+    runtime's OOM flag or the wrapper's count of OOM kills, then the rest of the wrapper's
+    report, which the suite cannot reach. The suite's own exit status is still the suite's:
+    code under test can always end its process with 0."""
     if outcome is None:
         exit_code = state.get("ExitCode")
-        if state.get("OOMKilled"):
+        oom_kills = report.get("oom_kills") if report is not None else None
+        if state.get("OOMKilled") or (type(oom_kills) is int and oom_kills > 0):
             outcome, limit = "resource_limit", "memory"
         elif (
             report is not None
