@@ -26,6 +26,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@agentwatch/sdk": "workspace:*",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
