@@ -1,4 +1,4 @@
-import { apiUrl } from "@/lib/experiments";
+import { liveRunsUrl } from "@/lib/experiments";
 import {
   createLiveApi,
   failureStatus,
@@ -24,10 +24,10 @@ export async function GET(
       { error: "Invalid record cursor or page size" },
       { status: 400 },
     );
-  const result = await createLiveApi(apiUrl()).runSnapshot(
+  const result = await createLiveApi(liveRunsUrl()).runSnapshot(
     runId,
     query.data.after,
-    query.data.limit,
+    { limit: query.data.limit },
   );
   if (!result.ok)
     return Response.json(

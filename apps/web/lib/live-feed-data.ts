@@ -1,17 +1,17 @@
 import { z } from "zod";
+import type {
+  LiveRunPage,
+  LiveRunSnapshot,
+  LiveSavedRecord,
+} from "./live-api-schema";
 import type { LiveReplay } from "./live-replay";
+import { readRunSnapshot, runStatusOf } from "./live-snapshot";
 import { stepStates } from "./step-events";
 
 // Pure parsing for the live-runs prototype: B01 read-API responses and the A01 nvidia-smi
 // diagnostic files become chart-ready series. I/O lives in live-feed.ts.
 
 export const runStateSchema = z.enum(stepStates);
-export type LiveRecord = {
-  sequence: number;
-  disposition: string;
-  received_at: string;
-  payload: { record_type: string };
-};
 const sampleSchema = z.object({
   observed_at: z.iso.datetime({ offset: true }),
   resource_id: z.string(),
@@ -37,6 +37,14 @@ export type LiveRunSummary = {
   state: z.infer<typeof runStateSchema>;
   createdAt: string;
 };
+
+export const liveRunSummaries = (page: LiveRunPage): LiveRunSummary[] =>
+  page.runs.map((run) => ({
+    runId: run.run_id,
+    taskId: run.registration.task_id,
+    state: run.state,
+    createdAt: run.created_at,
+  }));
 
 /**
  * A step's producer wall-clock window (observed_at of its running and terminal events).
@@ -71,20 +79,80 @@ export type MetricSeries = {
 };
 export type GpuEvidence =
   { series: MetricSeries[]; evidenceDir: string } | { missing: string };
+
+const seriesSchema = z.object({
+  key: z.string(),
+  metric: z.string(),
+  label: z.string(),
+  resource: z
+    .object({ resourceId: z.string(), serviceId: z.string() })
+    .nullable(),
+  unit: z.string(),
+  source: z.string(),
+  points: z.array(
+    z.object({
+      atMs: z.number().finite(),
+      value: z.number().finite().nullable(),
+    }),
+  ),
+  unavailable: z.number().int().nonnegative(),
+  notMeasured: z
+    .record(
+      z.string(),
+      z.object({ count: z.number().int(), reason: z.string().nullable() }),
+    )
+    .nullable(),
+}) satisfies z.ZodType<MetricSeries>;
+/** Validates the GPU diagnostic route's response in the browser. */
+export const gpuEvidenceSchema = z.union([
+  z.object({ series: z.array(seriesSchema), evidenceDir: z.string() }),
+  z.object({ missing: z.string() }),
+]) satisfies z.ZodType<GpuEvidence>;
+
 export type LiveFeedRun = {
   replay: LiveReplay;
   resources: { resourceId: string; resourceClass: string }[];
   wallSteps: WallStep[];
   liveSeries: MetricSeries[];
-  gpu: GpuEvidence;
+  /** Null while the local GPU diagnostic has not been read. */
+  gpu: GpuEvidence | null;
   recordCount: number;
 };
-export type LiveFeedData = {
-  runs: LiveRunSummary[];
-  selected: LiveFeedRun | null;
-  requested: string | null;
-  error: string | null;
-};
+
+/**
+ * The selected run's view from its latest snapshot and every record received. Charts draw
+ * applied records only; pending and expired revisions are reported by the snapshot's gaps.
+ */
+export function liveFeedRun(
+  snapshot: LiveRunSnapshot,
+  records: readonly LiveSavedRecord[],
+  gpu: GpuEvidence | null,
+): LiveFeedRun {
+  const applied = records.flatMap((r) =>
+    r.disposition === "applied" ? [r.payload] : [],
+  );
+  return {
+    replay: {
+      id: snapshot.run_id,
+      title: snapshot.registration.task_id,
+      description: "",
+      run: runStatusOf(snapshot),
+      // Receipt age comes from the browser's poll receipt, not from this snapshot.
+      receivedAgoMs: null,
+      view: readRunSnapshot(snapshot, records),
+    },
+    resources: snapshot.registration.resources.map((r) => ({
+      resourceId: r.resource_id,
+      resourceClass: r.resource_class,
+    })),
+    wallSteps: wallSteps(applied.filter((p) => p.record_type === "step_event")),
+    liveSeries: liveSampleSeries(
+      applied.filter((p) => p.record_type === "resource_sample"),
+    ),
+    gpu,
+    recordCount: records.length,
+  };
+}
 
 const terminal = new Set(["completed", "failed", "cancelled"]);
 
@@ -289,16 +357,6 @@ export function parseGpuSamples(
     });
   }
   return { series, evidenceDir };
-}
-
-/** Wall-clock receipt age of the newest record, or null when nothing was received. */
-export function latestReceiptAgeMs(
-  records: readonly LiveRecord[],
-  nowMs: number,
-) {
-  if (!records.length) return null;
-  const latest = Math.max(...records.map((r) => Date.parse(r.received_at)));
-  return Math.max(0, nowMs - latest);
 }
 
 export type SeriesSummary = {

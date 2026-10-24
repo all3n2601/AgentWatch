@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation";
 import { Dashboard } from "@/components/dashboard";
 import { loadRequestedRuns } from "@/lib/experiments";
-import { loadLiveFeed } from "@/lib/live-feed";
 import { liveReplayData } from "@/lib/live-replay";
 import { pages, type Page } from "@/lib/dashboard-data";
 export const dynamic = "force-dynamic";
@@ -27,7 +26,8 @@ export default async function Section({
           replayEnabled: process.env.NODE_ENV !== "production",
         })
       : undefined;
-  if (live && !query.replay) live.feed = await loadLiveFeed(query.liveRun);
+  if (live && !query.replay)
+    live.liveFeed = { requested: query.liveRun ?? null };
   return (
     <Dashboard
       key={`${section}:${query.run || ""}:${query.baseline || ""}:${query.replay || ""}:${query.liveRun || ""}`}

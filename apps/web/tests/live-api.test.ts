@@ -19,7 +19,7 @@ import {
   stepEvent,
 } from "./live-fixtures";
 
-const BASE = "http://live.test";
+const RUNS_URL = "http://live.test/v1/live/runs";
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 
 test("a selected run older than the newest history page is read by its UUID", async () => {
@@ -34,7 +34,7 @@ test("a selected run older than the newest history page is read by its UUID", as
         ? json(runSnapshot({}, older))
         : json({ detail: "Live run not found" }, 404),
   );
-  const api = createLiveApi(BASE, fetchImpl);
+  const api = createLiveApi(RUNS_URL, { fetchImpl });
 
   const page = await api.runPage();
   assert.ok(page.ok);
@@ -53,7 +53,7 @@ test("history pages continue from the previous cursor", async () => {
   const { fetchImpl, requested } = fakeFetch(() =>
     json({ runs: [], next_cursor: null }),
   );
-  await createLiveApi(BASE, fetchImpl).runPage(42);
+  await createLiveApi(RUNS_URL, { fetchImpl }).runPage(42);
   assert.equal(requested[0].searchParams.get("before"), "42");
   assert.equal(requested[0].searchParams.get("limit"), "50");
 });
@@ -79,7 +79,10 @@ test("snapshots keep records, gaps and fields added by a newer service", async (
     added_by_newer_service: "kept",
   });
   const { fetchImpl } = fakeFetch(() => json(body));
-  const result = await createLiveApi(BASE, fetchImpl).runSnapshot(RUN_ID, 7);
+  const result = await createLiveApi(RUNS_URL, { fetchImpl }).runSnapshot(
+    RUN_ID,
+    7,
+  );
   assert.ok(result.ok);
   assert.equal(result.data.records.length, 3);
   assert.equal(result.data.records[1].disposition, "pending");
@@ -97,7 +100,9 @@ test("upstream statuses map to distinct failure kinds", async () => {
   ] as const;
   for (const [status, kind] of cases) {
     const { fetchImpl } = fakeFetch(() => json({ detail: "x" }, status));
-    const result = await createLiveApi(BASE, fetchImpl).runSnapshot(RUN_ID);
+    const result = await createLiveApi(RUNS_URL, { fetchImpl }).runSnapshot(
+      RUN_ID,
+    );
     assert.ok(!result.ok);
     assert.equal(result.kind, kind, `HTTP ${status}`);
   }
@@ -109,22 +114,59 @@ test("transport failures and timeouts are reported as unavailable", async () => 
   const refused = fakeFetch(() => {
     throw new TypeError("fetch failed");
   });
-  const unreachable = await createLiveApi(BASE, refused.fetchImpl).runPage();
+  const unreachable = await createLiveApi(RUNS_URL, {
+    fetchImpl: refused.fetchImpl,
+  }).runPage();
   assert.ok(!unreachable.ok);
   assert.equal(unreachable.kind, "unavailable");
 
-  const slow = fakeFetch(() => {
-    throw new DOMException("timed out", "TimeoutError");
-  });
-  const timedOut = await createLiveApi(BASE, slow.fetchImpl).runPage();
+  // Never answers; rejects only when the client's timeout aborts the request.
+  const silent: typeof fetch = (_input, init) =>
+    new Promise((_, reject) =>
+      init?.signal?.addEventListener("abort", () =>
+        reject(init.signal?.reason),
+      ),
+    );
+  const timedOut = await createLiveApi(RUNS_URL, {
+    fetchImpl: silent,
+    timeoutMs: 20,
+  }).runPage();
   assert.ok(!timedOut.ok);
   assert.equal(timedOut.kind, "unavailable");
-  assert.match(timedOut.message, /did not respond within 8 s/);
+  assert.match(timedOut.message, /did not respond within 0.02 s/);
+});
+
+test("failures already classified by a web route keep their kind and message", async () => {
+  const routed = fakeFetch(() =>
+    json(
+      {
+        error:
+          "The live API response does not match live-contracts-v1 (2 issues).",
+        kind: "invalid_response",
+      },
+      502,
+    ),
+  );
+  const result = await createLiveApi("http://web.test/api/live/runs", {
+    fetchImpl: routed.fetchImpl,
+  }).runSnapshot(RUN_ID);
+  assert.ok(!result.ok);
+  assert.equal(result.kind, "invalid_response");
+  assert.match(result.message, /2 issues/);
+
+  const badId = fakeFetch(() => json({ error: "Invalid live run ID" }, 400));
+  const rejected = await createLiveApi(RUNS_URL, {
+    fetchImpl: badId.fetchImpl,
+  }).runSnapshot("not-a-uuid");
+  assert.ok(!rejected.ok);
+  assert.equal(rejected.kind, "invalid_request");
 });
 
 test("bodies that are not JSON or not the live contract are invalid responses", async () => {
   const notJson = fakeFetch(() => new Response("<html>proxy error</html>"));
-  const garbled = await createLiveApi(BASE, notJson.fetchImpl).runPage();
+  const garbled = await createLiveApi(RUNS_URL, {
+    fetchImpl: notJson.fetchImpl,
+  }).runPage();
   assert.ok(!garbled.ok);
   assert.equal(garbled.kind, "invalid_response");
 
@@ -132,9 +174,9 @@ test("bodies that are not JSON or not the live contract are invalid responses", 
     records: [savedRecord(resourceSample("s-1", { availability: "zero" }), 1)],
   });
   const offContract = fakeFetch(() => json(zeroForMissing));
-  const result = await createLiveApi(BASE, offContract.fetchImpl).runSnapshot(
-    RUN_ID,
-  );
+  const result = await createLiveApi(RUNS_URL, {
+    fetchImpl: offContract.fetchImpl,
+  }).runSnapshot(RUN_ID);
   assert.ok(!result.ok);
   assert.equal(result.kind, "invalid_response");
   assert.doesNotMatch(result.message, /zero/, "input values are not echoed");

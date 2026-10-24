@@ -148,8 +148,8 @@ export function resourceSample(
   };
 }
 
-export function savedRecord(
-  payload: { record_type: string },
+export function savedRecord<Payload extends { record_type: string }>(
+  payload: Payload,
   sequence: number,
   disposition = "applied",
 ) {

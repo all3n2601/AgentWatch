@@ -58,10 +58,16 @@ export function parseListQuery(params: URLSearchParams) {
 }
 export const isLiveRunId = (value: string) => z.uuid().safeParse(value).success;
 
-function upstreamFailure(status: number): LiveApiFailure {
+const failureKinds = Object.keys(failureStatus) as LiveApiFailure["kind"][];
+const routeErrorSchema = z.object({
+  error: z.string(),
+  kind: z.enum(failureKinds),
+});
+
+function statusFailure(status: number): LiveApiFailure {
   if (status === 404)
     return { kind: "not_found", message: "The live API has no such run." };
-  if (status === 422)
+  if (status === 400 || status === 422)
     return {
       kind: "invalid_request",
       message: "The live API rejected the request parameters.",
@@ -72,32 +78,51 @@ function upstreamFailure(status: number): LiveApiFailure {
   };
 }
 
+/** Prefers the failure a web route already classified; B01 errors are mapped by status. */
+async function failureOf(response: Response): Promise<LiveApiFailure> {
+  try {
+    const routed = routeErrorSchema.safeParse(await response.json());
+    if (routed.success)
+      return { kind: routed.data.kind, message: routed.data.error };
+  } catch {
+    // An unreadable error body is classified by its status alone.
+  }
+  return statusFailure(response.status);
+}
+
+/**
+ * A client for the live runs collection at `runsUrl`: B01's `/v1/live/runs` on the server,
+ * or this app's `/api/live/runs` routes in the browser, which return the same bodies.
+ */
 export function createLiveApi(
-  baseUrl: string,
-  fetchImpl: typeof fetch = fetch,
+  runsUrl: string,
+  {
+    fetchImpl = fetch,
+    timeoutMs = LIVE_API_TIMEOUT_MS,
+  }: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
 ) {
   async function get<T>(
     path: string,
     schema: z.ZodType<T>,
+    signal?: AbortSignal,
   ): Promise<LiveApiResult<T>> {
+    const timeout = AbortSignal.timeout(timeoutMs);
     let response: Response;
     try {
-      response = await fetchImpl(`${baseUrl}${path}`, {
+      response = await fetchImpl(`${runsUrl}${path}`, {
         cache: "no-store",
-        signal: AbortSignal.timeout(LIVE_API_TIMEOUT_MS),
+        signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
       });
-    } catch (error) {
-      const timedOut =
-        error instanceof DOMException && error.name === "TimeoutError";
+    } catch {
       return {
         ok: false,
         kind: "unavailable",
-        message: timedOut
-          ? `The live API did not respond within ${LIVE_API_TIMEOUT_MS / 1000} s.`
+        message: timeout.aborted
+          ? `The live API did not respond within ${timeoutMs / 1000} s.`
           : "The live API could not be reached.",
       };
     }
-    if (!response.ok) return { ok: false, ...upstreamFailure(response.status) };
+    if (!response.ok) return { ok: false, ...(await failureOf(response)) };
     let body: unknown;
     try {
       body = await response.json();
@@ -120,24 +145,31 @@ export function createLiveApi(
 
   return {
     /** One page of live runs, newest first; `before` continues from a previous page. */
-    runPage(before?: number): Promise<LiveApiResult<LiveRunPage>> {
+    runPage(
+      before?: number,
+      signal?: AbortSignal,
+    ): Promise<LiveApiResult<LiveRunPage>> {
       const query = new URLSearchParams({ limit: String(LIVE_RUN_LIST_LIMIT) });
       if (before !== undefined) query.set("before", String(before));
-      return get(`/v1/live/runs?${query}`, runPageSchema);
+      return get(`?${query}`, runPageSchema, signal);
     },
     /** The run's current snapshot with one page of records after `after`. */
     runSnapshot(
       runId: string,
       after = 0,
-      limit = LIVE_RECORD_PAGE_LIMIT,
+      {
+        limit = LIVE_RECORD_PAGE_LIMIT,
+        signal,
+      }: { limit?: number; signal?: AbortSignal } = {},
     ): Promise<LiveApiResult<LiveRunSnapshot>> {
       const query = new URLSearchParams({
         after: String(after),
         limit: String(limit),
       });
       return get(
-        `/v1/live/runs/${encodeURIComponent(runId)}?${query}`,
+        `/${encodeURIComponent(runId)}?${query}`,
         runSnapshotSchema,
+        signal,
       );
     },
   };

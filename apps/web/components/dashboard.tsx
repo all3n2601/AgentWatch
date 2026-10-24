@@ -362,7 +362,7 @@ export function Dashboard({
           description: "synthetic development replay",
           replay: true,
         }
-      : page === "live" && live?.feed
+      : page === "live" && live?.liveFeed
         ? { badge: "LIVE API", description: "live run read API", replay: false }
         : data.source === "database"
           ? {
@@ -582,8 +582,11 @@ export function Dashboard({
           )}
           {page === "live" &&
             live &&
-            (live.feed && !live.requestedReplay ? (
-              <LiveFeed feed={live.feed} scenarios={live.scenarios} />
+            (live.liveFeed && !live.requestedReplay ? (
+              <LiveFeed
+                requested={live.liveFeed.requested}
+                scenarios={live.scenarios}
+              />
             ) : (
               <LiveRun data={live} />
             ))}

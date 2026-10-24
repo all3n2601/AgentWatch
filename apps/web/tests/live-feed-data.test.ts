@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runSnapshotSchema } from "../lib/live-api-schema";
 import {
-  latestReceiptAgeMs,
+  resourceSample,
+  runSnapshot,
+  savedRecord,
+  stepEvent,
+  stepView as fixtureStepView,
+} from "./live-fixtures";
+import {
+  liveFeedRun,
   liveSampleSeries,
   parseGpuSamples,
   summarizeSeries,
   wallSteps,
-  type LiveRecord,
 } from "../lib/live-feed-data";
 
 const at = (second: number) =>
@@ -250,18 +257,6 @@ test("GPU samples are refused when the offset is missing or changed", () => {
   );
 });
 
-test("receipt age uses the newest record and is null with none", () => {
-  const record = (second: number): LiveRecord => ({
-    sequence: second,
-    disposition: "applied",
-    received_at: at(second),
-    payload: { record_type: "step_event" },
-  });
-  assert.equal(latestReceiptAgeMs([], ms(10)), null);
-  assert.equal(latestReceiptAgeMs([record(2), record(5)], ms(10)), 5_000);
-  assert.equal(latestReceiptAgeMs([record(5)], ms(1)), 0);
-});
-
 test("series summaries ignore gaps and report nothing when unmeasured", () => {
   const series = {
     key: "k",
@@ -288,4 +283,34 @@ test("series summaries ignore gaps and report nothing when unmeasured", () => {
     summarizeSeries({ ...series, points: [{ atMs: 0, value: null }] }),
     null,
   );
+});
+
+test("the live view draws applied records only and counts every record received", () => {
+  const queued = stepEvent("tool-1", 0, "queued", { second: 1 });
+  const early = stepEvent("tool-1", 2, "completed", {
+    started: 2,
+    finished: 3,
+    second: 3,
+  });
+  const snapshot = runSnapshotSchema.parse(
+    runSnapshot({
+      steps: [fixtureStepView(queued)],
+      records: [
+        savedRecord(queued, 1),
+        savedRecord(early, 2, "pending"),
+        savedRecord(resourceSample("s-1", { second: 2 }), 3),
+      ],
+    }),
+  );
+  const run = liveFeedRun(snapshot, snapshot.records, null);
+  assert.equal(run.recordCount, 3);
+  assert.deepEqual(
+    run.wallSteps.map((s) => [s.stepId, s.state, s.endMs]),
+    [["tool-1", "queued", null]],
+    "the pending completion is not drawn",
+  );
+  assert.equal(run.liveSeries.length, 1);
+  assert.equal(run.replay.view.gaps.length, 0);
+  assert.equal(run.replay.receivedAgoMs, null);
+  assert.equal(run.gpu, null);
 });

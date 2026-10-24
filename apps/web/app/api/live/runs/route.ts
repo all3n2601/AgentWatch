@@ -1,4 +1,4 @@
-import { apiUrl } from "@/lib/experiments";
+import { liveRunsUrl } from "@/lib/experiments";
 import { createLiveApi, failureStatus, parseListQuery } from "@/lib/live-api";
 export const dynamic = "force-dynamic";
 
@@ -7,7 +7,7 @@ export async function GET(request: Request) {
   const query = parseListQuery(new URL(request.url).searchParams);
   if (!query.success)
     return Response.json({ error: "Invalid history cursor" }, { status: 400 });
-  const result = await createLiveApi(apiUrl()).runPage(query.data.before);
+  const result = await createLiveApi(liveRunsUrl()).runPage(query.data.before);
   if (!result.ok)
     return Response.json(
       { error: result.message, kind: result.kind },

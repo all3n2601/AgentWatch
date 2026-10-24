@@ -27,6 +27,7 @@ import {
   type BrowserClockReading,
   type CpuTotal,
   type FeedFreshness,
+  type FeedReceipt,
   type SpanTotal,
   type TimingTotal,
 } from "@/lib/live-status";
@@ -448,14 +449,28 @@ function useBrowserClock(ticking: boolean) {
   return clock;
 }
 
-export function ReplayView({ replay }: { replay: LiveReplay }) {
+export function ReplayView({
+  replay,
+  receipt,
+}: {
+  replay: LiveReplay;
+  /**
+   * A live feed's receipt, anchored when the browser received new records. Omitted for a
+   * replay, whose scripted age is anchored when the page mounts.
+   */
+  receipt?: FeedReceipt | null;
+}) {
   const outcome = runOutcome(replay.run);
-  const clock = useBrowserClock(feedClockTicks(replay.receivedAgoMs));
-  const feed = feedDisplay({
-    receivedAgoMs: replay.receivedAgoMs,
-    outcome,
-    clock,
-  });
+  const receivedAgoMs =
+    receipt === undefined
+      ? replay.receivedAgoMs
+      : (receipt?.ageAtAnchorMs ?? null);
+  const browserClock = useBrowserClock(feedClockTicks(receivedAgoMs));
+  const clock =
+    receipt && browserClock
+      ? { ...browserClock, anchorMonotonicMs: receipt.anchorMonotonicMs }
+      : browserClock;
+  const feed = feedDisplay({ receivedAgoMs, outcome, clock });
   const freshness = feed.freshness;
   const { view, run } = replay;
   const active = activeSteps(view);
