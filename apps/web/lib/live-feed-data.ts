@@ -14,11 +14,14 @@ export type LiveRecord = {
 };
 const sampleSchema = z.object({
   observed_at: z.iso.datetime({ offset: true }),
+  resource_id: z.string(),
+  service_id: z.string(),
   resource_class: z.string(),
   metric: z.string(),
   unit: z.string(),
   value: z.number().finite().nullable(),
   availability: z.string(),
+  reason: z.string().nullable().optional(),
 });
 const stepWallSchema = z.object({
   step_id: z.string(),
@@ -47,13 +50,24 @@ export type WallStep = {
   endMs: number | null;
 };
 export type SeriesPoint = { atMs: number; value: number | null };
+/** Readings that were not measured, by reported availability, with the latest reason. */
+export type NotMeasured = Record<
+  string,
+  { count: number; reason: string | null }
+>;
 export type MetricSeries = {
+  /** Unique per series: live samples are keyed by resource, service and metric. */
   key: string;
+  metric: string;
   label: string;
+  /** The registered resource and service the readings belong to; null for diagnostics. */
+  resource: { resourceId: string; serviceId: string } | null;
   unit: string;
   source: string;
   points: SeriesPoint[];
   unavailable: number;
+  /** Null when the source does not report availability (the nvidia-smi diagnostic). */
+  notMeasured: NotMeasured | null;
 };
 export type GpuEvidence =
   { series: MetricSeries[]; evidenceDir: string } | { missing: string };
@@ -124,33 +138,60 @@ const GPU_METRIC_DISPLAY: Record<
   "gpu.nvml.clock.sm_mhz.v1": { label: "GPU SM clock (NVML)", unit: "MHz" },
 };
 
-/** Live samples per metric, for every resource; unavailable readings stay gaps, never zero. */
+/**
+ * Live samples per resource, service and metric, so readings from different resources are
+ * never merged (or differenced) into one series. Unavailable readings stay gaps, never zero.
+ */
 export function liveSampleSeries(payloads: readonly unknown[]): MetricSeries[] {
   const series = new Map<string, MetricSeries>();
   for (const raw of payloads) {
     const sample = sampleSchema.safeParse(raw);
     if (!sample.success) continue;
-    const { metric, unit, value, availability, resource_class, observed_at } =
-      sample.data;
-    const entry = series.get(metric) ?? {
-      key: metric,
+    const {
+      metric,
+      unit,
+      value,
+      availability,
+      reason,
+      resource_id,
+      service_id,
+      resource_class,
+      observed_at,
+    } = sample.data;
+    const key = JSON.stringify([resource_id, service_id, metric]);
+    const entry: MetricSeries = series.get(key) ?? {
+      key,
+      metric,
       label: metric,
+      resource: { resourceId: resource_id, serviceId: service_id },
       unit,
       source: `${resource_class} live samples`,
       points: [],
       unavailable: 0,
+      notMeasured: {},
     };
     const measured = availability === "measured" && value !== null;
-    if (!measured) entry.unavailable += 1;
+    if (!measured) {
+      entry.unavailable += 1;
+      const state =
+        availability === "measured" ? "measured without a value" : availability;
+      const notMeasured = entry.notMeasured ?? {};
+      const counted = notMeasured[state] ?? { count: 0, reason: null };
+      notMeasured[state] = {
+        count: counted.count + 1,
+        reason: reason ?? counted.reason,
+      };
+      entry.notMeasured = notMeasured;
+    }
     entry.points.push({
       atMs: Date.parse(observed_at),
       value: measured ? value : null,
     });
-    series.set(metric, entry);
+    series.set(key, entry);
   }
   for (const entry of series.values()) {
     entry.points.sort((a, b) => a.atMs - b.atMs);
-    if (entry.key.startsWith("cpu.cgroup.throttled_usec")) {
+    if (entry.metric.startsWith("cpu.cgroup.throttled_usec")) {
       // A cumulative counter: plot the increase since the previous measured reading.
       entry.label = "CPU throttled per sample";
       entry.unit = "ms";
@@ -163,11 +204,11 @@ export function liveSampleSeries(payloads: readonly unknown[]): MetricSeries[] {
         if (value !== null) previous = value;
         return { atMs, value: delta };
       });
-    } else if (entry.key.startsWith("cpu.psi.some.avg10")) {
+    } else if (entry.metric.startsWith("cpu.psi.some.avg10")) {
       entry.label = "CPU pressure (PSI some, avg10)";
       entry.unit = "%";
-    } else if (entry.key in GPU_METRIC_DISPLAY) {
-      const { label, unit, divisor = 1 } = GPU_METRIC_DISPLAY[entry.key];
+    } else if (entry.metric in GPU_METRIC_DISPLAY) {
+      const { label, unit, divisor = 1 } = GPU_METRIC_DISPLAY[entry.metric];
       entry.label = label;
       entry.unit = unit;
       entry.points = entry.points.map(({ atMs, value }) => ({
@@ -224,11 +265,14 @@ export function parseGpuSamples(
     return { missing: "gpu-samples.csv has no timestamp column." };
   const series: MetricSeries[] = GPU_COLUMNS.map(({ key, label, unit }) => ({
     key,
+    metric: key,
     label,
+    resource: null,
     unit,
     source: "nvidia-smi diagnostic (not ingested)",
     points: [],
     unavailable: 0,
+    notMeasured: null,
   }));
   for (const row of rows) {
     const cells = row.split(",").map((c) => c.trim());

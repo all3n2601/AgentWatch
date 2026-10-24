@@ -246,9 +246,20 @@ function MetricChart({
         </h3>
         <span className="text-[10px] text-muted-foreground">
           {series.source} · {measured} measured
-          {series.unavailable > 0 && ` · ${series.unavailable} unavailable`}
+          {series.notMeasured
+            ? Object.entries(series.notMeasured).map(
+                ([state, { count }]) => ` · ${count} ${state}`,
+              )
+            : series.unavailable > 0 && ` · ${series.unavailable} unavailable`}
         </span>
       </div>
+      {series.resource && (
+        <p className="mb-2 text-[10px] break-all text-muted-foreground">
+          Resource{" "}
+          <span className="font-mono">{series.resource.resourceId}</span> ·
+          service <span className="font-mono">{series.resource.serviceId}</span>
+        </p>
+      )}
       <div className="h-36" aria-hidden>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
@@ -299,6 +310,16 @@ function MetricChart({
         </ResponsiveContainer>
       </div>
       <SeriesSummaryText series={series} />
+      {series.notMeasured &&
+        Object.entries(series.notMeasured).map(([state, { reason }]) => (
+          <p
+            key={state}
+            className="mt-1 text-[11px] break-words text-muted-foreground"
+          >
+            Not measured ({state}){reason ? `: ${reason}` : ""}. Shown as gaps,
+            never as zero.
+          </p>
+        ))}
     </Card>
   );
 }
@@ -308,7 +329,7 @@ function Resources({ run }: { run: LiveFeedRun }) {
   if (!window) return null;
   const modelCalls = run.wallSteps.filter((s) => s.stepType === "model_call");
   const gpu = "series" in run.gpu ? run.gpu : null;
-  const liveGpu = run.liveSeries.some((s) => s.key.startsWith("gpu."));
+  const liveGpu = run.liveSeries.some((s) => s.metric.startsWith("gpu."));
   const charts = [
     ...(gpu?.series.filter((s) => s.key !== "gpu.mem") ?? []),
     ...run.liveSeries,
@@ -327,7 +348,7 @@ function Resources({ run }: { run: LiveFeedRun }) {
             series={s}
             window={window}
             modelCalls={modelCalls}
-            color={seriesColors[s.key] ?? CPU_SERIES_COLOR}
+            color={seriesColors[s.metric] ?? CPU_SERIES_COLOR}
           />
         ))}
       </div>
