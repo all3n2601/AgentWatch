@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver llm-up llm-down agent-tasks agent-run agent-resend agent-overhead infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver pipeline-run pipeline-ui llm-up llm-down agent-tasks agent-run agent-resend agent-overhead sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -98,6 +98,24 @@ dataset-status: ## Show changes not yet versioned, and (with a remote configured
 	$(DVC) status
 	@if $(DVC) remote default >/dev/null 2>&1; then $(DVC) status --cloud; else echo "No DVC remote configured, so uploads are not checked; see docs/data-card.md"; fi
 
+# The Airflow DAG runs the dataset targets above in order. Airflow has its own environment, and
+# its home (metadata database, task logs) is local scratch output under .data/. Run from the
+# repository root; $(CURDIR) keeps paths that contain spaces intact.
+AIRFLOW_HOME ?= $(CURDIR)/.data/airflow
+AIRFLOW = AIRFLOW_HOME="$(AIRFLOW_HOME)" AIRFLOW__CORE__DAGS_FOLDER="$(CURDIR)/pipelines/orchestration/dags" AIRFLOW__CORE__LOAD_EXAMPLES=False uv run --project pipelines/orchestration --frozen airflow
+PIPELINE_RUN_DIRS ?=
+comma := ,
+space := $(subst ,, )
+PIPELINE_RUN_DIRS_JSON = [$(subst $(space),$(comma),$(foreach dir,$(PIPELINE_RUN_DIRS),"$(dir)"))]
+
+pipeline-run: ## Run the whole Airflow dataset DAG once, without a scheduler (PIPELINE_RUN_DIRS=".data/coding-demo ..." to add runs first)
+	$(if $(findstring ",$(PIPELINE_RUN_DIRS))$(findstring ',$(PIPELINE_RUN_DIRS)),$(error PIPELINE_RUN_DIRS paths cannot contain quotes; trigger the DAG with its run_dirs parameter instead))
+	$(AIRFLOW) db migrate
+	$(AIRFLOW) dags test agentwatch_dataset -c '{"run_dirs": $(PIPELINE_RUN_DIRS_JSON)}'
+
+pipeline-ui: ## Start Airflow locally (UI on http://localhost:8080; the login is printed and saved under AIRFLOW_HOME)
+	$(AIRFLOW) standalone
+
 # Make variables rather than shell defaults: Windows make may run recipes through cmd.exe.
 AGENTWATCH_LLM_MODEL ?= qwen3:1.7b
 OLLAMA_HOST_PORT ?= 11434
@@ -126,6 +144,21 @@ agent-resend: ## Resend a run journal after a live API outage (JOURNAL=path)
 
 agent-overhead: ## Measure agent instrumentation overhead (live API must be running)
 	uv run --package agentwatch-agent python -m agentwatch_agent overhead
+
+SANDBOX_IMAGE = $$(uv run --package agentwatch-sandbox python -c "from agentwatch_sandbox.container import SANDBOX_IMAGE; print(SANDBOX_IMAGE)")
+
+sandbox-image: ## Pull the digest-pinned image the isolated test runner uses (3 attempts)
+	@image="$(SANDBOX_IMAGE)"; for attempt in 1 2 3; do \
+		docker pull "$$image" && exit 0; \
+		echo "docker pull failed (attempt $$attempt of 3)" >&2; \
+		[ "$$attempt" -lt 3 ] && sleep 10; \
+	done; exit 1
+
+sandbox-verify: ## Verify container isolation boundaries and cleanup (needs Docker)
+	AGENTWATCH_TEST_DOCKER=1 uv run pytest services/sandbox/tests/test_container.py
+
+sandbox-sweep: ## Remove sandbox containers left by a killed runner (past their deadline label)
+	uv run --package agentwatch-sandbox python -c "from agentwatch_sandbox.container import remove_orphaned_sandboxes as r; print('\n'.join(r()) or 'none')"
 
 infra-up: ## Start the AgentWatch PostgreSQL service
 	docker compose -f deploy/compose/compose.yaml up -d

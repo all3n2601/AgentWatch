@@ -141,8 +141,11 @@ CPU-only hosts), and a CPU counter a host lacks as `unsupported` or `unavailable
 service first; a runner reporting to an older service ends every run with refused records
 (exit 5). With 10 records per round, the longest `--run-timeout` the per-run sample budget
 allows at 250 ms is 2,000 s on every host (4,000 s for the CPU-only `overhead` protocol). All five availability
-states survive history; absent readings never become measured zero. Alignment, deltas and
-coverage are B02 work; no predictions or host-saturation diagnosis are produced here.
+states survive history; absent readings never become measured zero. B02 alignment, deltas and
+coverage are defined in [shared step features](step-features.md); `step-features-v1` reads only
+`cpu.psi.some.avg10.v1` and `cpu.cgroup.throttled_usec.v1`, so the GPU readings and the newer
+CPU counters need a new feature version. No predictions or host-saturation diagnosis are
+produced here.
 
 ## Producer and frontend handoff
 

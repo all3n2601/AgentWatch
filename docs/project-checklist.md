@@ -285,9 +285,21 @@ These can be completed before adding an agent.
   Ruff and JavaScript lint/typecheck/13 tests/build pass. Real uvicorn/SDK smoke verifies
   rollback, validation, numeric retries, cancellation polling and 413 before 100 Continue.
 - [ ] Join samples to steps in the service rather than trusting only precomputed experiment summaries.
+  B02, October 24, 2026 (branch `feature/step-sample-features`): shared
+  [`step-features-v1`](step-features.md) joins applied live StepEvents to same-run,
+  same-resource/service, same-clock samples in `[start, finish)` and validates FeatureRows;
+  `agentwatch_worker.live_features` loads them from PostgreSQL. `steps-v1.2` window code moved
+  unchanged into `agentwatch_features.legacy`, so training and serving share one implementation.
+  Regressions: 55 synthetic cases in `packages/features/tests/test_live_features.py` (null vs
+  zero, units, counter resets, half-open and incomplete windows, cancellation, clock/identity
+  joins, retries, conflicts) and 4 isolated-schema PostgreSQL cases in
+  `services/worker/tests/test_live_feature_join.py`. Local verification after merging `main` at e60984a: 1071 Python tests passed
+  with a dedicated PostgreSQL 17 test database and no skips; Ruff passed. Open until B03 serves
+  rows from a real run: no endpoint calls the join yet, live runs record no declared sampling
+  interval (coverage stays null without one), and only synthetic fixtures have been joined.
   2026-10-24: the producer-side `coverage-v2` report applies the contract's join rules to a
-  run's journal (own resource only, registered clocks, `[started, finished)`). The service
-  join remains B02.
+  run's journal (own resource and service, registered clocks, `[started, finished)`), aligned
+  with `step-features-v1`'s statuses and join key; it does not import the service join.
 - [ ] Add automatic dashboard updates, connection status, last-update time, and stale-data indicators.
   Completed-history polling, source status, and last-refresh time now exist; live-run streaming and
   stale-event indicators remain unfinished.
@@ -449,6 +461,23 @@ lint/typecheck/13 tests/build, Go, and both Compose configurations. Real Qwen3 C
   Task inputs are pinned by content hash and the configuration digest is registered; replay
   state and repeated clean runs are not implemented.
 - [ ] Add actual container isolation and resource limits for executed code.
+  A03 (2026-10-24), [ADR 0004](adr/0004-container-isolation-for-tool-execution.md) and the
+  [sandbox README](../services/sandbox/README.md): `run_project_tests_isolated` runs a suite in a
+  disposable Docker container. It has a private read-only staging copy and a read-only root, a
+  bounded `noexec` `/tmp`, no `/dev/shm`, no network, uid 65534 with an empty capability
+  bounding set and `no-new-privileges`, memory/CPU/process/file limits, and output drained into
+  a bounded tail. A host deadline is enforced from creation onward, plus a backstop in a PID 1,
+  non-dumpable wrapper the suite cannot signal, end or read. Leftovers are swept by a deadline
+  label, and the image is digest-pinned and never pulled implicitly. Probe suites in
+  `services/sandbox/tests/test_container.py` (60 tests) verify each boundary from inside the
+  container. Each of 21 controls was also checked by removing it and confirming its probe fails.
+  Every outcome (passed, failed, timed out, cancelled, resource limit, rejected request, start
+  failure) is tested to remove its container and staging copy; a failed removal raises.
+  Verified on Docker Desktop for macOS (arm64) and in CI on Docker Engine on Linux (amd64)
+  (the PR #35 `python` job ran them with none skipped).
+  Known limitation: a suite can exit 0 itself and appear to pass (see the threat model). Open
+  until the agent runner switches to this executor (Benoy's integration); the agent still uses
+  the trusted-fixture subprocess runner.
 - [x] Bound task duration and preserve failure/cancellation evidence.
   Model-call, tool-call, test and run limits are enforced (real run `301307b7…` closed at the
   900 s limit), and cancellation ends every step with recorded cleanup. Service-confirmed
@@ -509,6 +538,12 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   row hashes, and runs the contract's single-feature AUC leakage check on the training split
   (`test_dataset_splits.py`, 100% line and branch coverage). Unseen tasks still depend on a real
   `task_id`.
+- [x] Orchestrate the dataset stages with Airflow (2026-10-24): the `agentwatch_dataset` DAG in
+  `pipelines/orchestration` runs acquire → build → validate → split → version → push →
+  summarize, each in its stage's own environment, with only the DVC push retried
+  (`pipelines/orchestration/tests`). Run end to end with `make pipeline-run` on the shared
+  `steps-v1.2+5954f97ef8b2` evidence and with a new recorded run added. Alerts, committing
+  `data/*.dvc` from the DAG, and the Gantt-chart optimization are open.
 - [ ] Hold out unseen tasks and at least one injection method.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).

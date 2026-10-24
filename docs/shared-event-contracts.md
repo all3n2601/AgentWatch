@@ -5,7 +5,8 @@ the Team Planner October 13, 2026. Board task C01, owner Allen, partner reviewer
 The record semantics below preserve the October 11 proposal; references to proposal review
 describe that historical process. B01 implements StepEvent/ResourceSample ingestion, lifecycle,
 SDK and additive storage; see [live ingestion](live-ingestion.md) for transport and bounds.
-FeatureRow/Prediction serving and producer instrumentation remain follow-up work.
+B02 implements the window join and the `step-features-v1` FeatureRow allowlist; see
+[shared step features](step-features.md). FeatureRow/Prediction serving remains B03 work.
 
 The current [completed-run ingestion](ingestion-api.md) remains supported unchanged.
 The [data card](data-card.md) defines the separate, implemented `steps-v1.2` dataset.
@@ -174,8 +175,9 @@ integer. Coverage is null or a finite fraction `[0,1]`; intervals are null or fi
 seconds. Counts refer to distinct observations inside the aligned step window, not all run
 samples. Unaligned telemetry yields null coverage and null resource aggregates.
 
-`FeatureRow` is a proposed serving/training envelope, not a replacement Parquet schema.
-B02 defines an immutable allowlist and common feature computation before consumers use it.
+`FeatureRow` is a serving/training envelope, not a replacement Parquet schema. B02 defines
+the immutable `step-features-v1` allowlist and common computation in
+[shared step features](step-features.md), including how each telemetry status is assigned.
 For legacy dataset extraction, preserve `steps-v1.2` definitions, including its documented
 coverage denominator; changing window semantics requires a new version and compatibility
 tests. IDs, versions, lineage, condition, injector configuration, rule predictions, baselines

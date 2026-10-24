@@ -172,7 +172,7 @@ keyed by `step_id` and `span_id`.
   repeated signal is ignored rather than waiting on a lock the first one holds. `overhead`
   closes its run as `cancelled` and exits 1, or 3 if the closure could not be delivered.
 - `cleanup_confirmed_by_service` stays null. The runner reports what it actually cleaned up,
-  but isolation and enforced cleanup belong to A03/O03.
+  but enforced cleanup of the test process belongs to the isolated runner (A03, below).
 
 ## Safety boundary
 
@@ -180,7 +180,9 @@ Model output is untrusted. The model can only search the task documents, read fi
 from the fixture, apply one reviewed patch per file, and run the fixture's tests in a disposable
 copy. It never supplies code or commands. The tests run in a subprocess with a scrubbed
 environment, a timeout and process-group cleanup. That is a trusted-fixture boundary, **not an
-isolation sandbox**: do not add free-form edits or commands without the A03 isolation design.
+isolation sandbox**. The isolated container runner (`agentwatch_sandbox.container`, A03,
+[sandbox README](../sandbox/README.md)) is ready for the agent to adopt; until it does, and
+until model-written code gets its own review, do not add free-form edits or commands.
 
 ## Sampling evidence
 

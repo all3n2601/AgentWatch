@@ -40,9 +40,9 @@ branch coverage, and exercised against real recorded runs and the live ingestion
 | Hardening pass | Request batching for large API histories; sweeping staging left by killed builds; fuzzing the per-run rejection guarantee with generated bad evidence; a scale run with thousands of runs; real multi-process concurrency of build, gate, split, and versioning; a cross-stage audit of the merged pipeline; anything left from reviews | Before Airflow |
 | 9. More resources | Prometheus reader; `steps-v2` inference and retrieval features; `labels-v2` with mixed contention. Split follow-ups: force at least one injection method wholly into test, and check that mixed-contention cases reach test | Waits on B |
 | 10. Real collection | Scheduled runs over a task suite on a Linux GCP VM, where PSI and cgroup readings exist. Split follow-up: rebuild and re-split once step events carry a real `task_id`, so the test split holds unseen tasks and training is no longer empty. Before any collection, run the extractor end to end against the live ingestion API and Postgres (deferred from the audit), and add an export of API-saved runs into the evidence store that keeps their saved time, so releases built from them stay reproducible | Waits on A, B, F |
-| 11. Airflow DAG | collect → extract → validate → build → split → version, with retries and alerts. A version is only findable through committed pointer files, so the DAG needs an identity allowed to commit `data/*.dvc` (or a data branch), the DVC merge driver for versions committed alongside people's, and a service account for the bucket | After 6–8 |
+| 11. Airflow DAG | collect → extract → validate → build → split → version, with retries and alerts. A version is only findable through committed pointer files, so the DAG needs an identity allowed to commit `data/*.dvc` (or a data branch), the DVC merge driver for versions committed alongside people's, and a service account for the bucket | DAG done (2026-10-24, `pipelines/orchestration`, `make pipeline-run`); alerts, committing pointer files, and the bucket account are open |
 | 12. Reports | Quality, slice, label-sanity, and drift statistics per release | After 11 |
-| 13. Shared features | The live attribution service reuses `window_readings` and related code | With E |
+| 13. Shared features | `window_readings` moved to `agentwatch_features.legacy`; live `step-features-v1` rows in `agentwatch_features.live` ([shared step features](step-features.md)). Serving them is B03 | B02 done 2026-10-24 |
 | 14. Demo | Corrupted evidence rejected live; lineage from model to dataset to raw run | Last |
 
 Split items owned elsewhere: the minimum test counts are judged by evaluation from the counts
@@ -81,15 +81,22 @@ one to the pipeline and plans what is missing; the roadmap steps above own the w
 | Anomaly detection | The gate's anomalies (missing values, out-of-range values, unknown categories, type changes) and per-run rejections with reasons | Done; alerts are planned below |
 | Data versioning with DVC, `.dvc` files in git | Evidence and dataset stores versioned, append-only, rebuildable byte for byte | Partial: the local DVC mechanism is in place (#28); open until the `.dvc` files are committed, which needs the shared remote |
 | Reproducibility on another machine | A fresh clone pulls and rebuilds the same version byte for byte | Partial: a fresh clone rebuilds byte for byte from a local DVC remote in the versioning tests (#28); open until shown on another machine through the shared remote |
-| Error handling and logging | Every stage rejects untrustworthy input with a reason; build reports and gate results are durable records; Python logging | Done for the commands; Airflow task logs with step 11 |
+| Error handling and logging | Every stage rejects untrustworthy input with a reason; build reports and gate results are durable records; Python logging; each Airflow task logs its command's output and fails with the exit code and stderr tail | Done |
 | Code style (PEP 8) | Ruff on every PR | Done |
-| Airflow DAG for the whole workflow | Not built | Step 11 |
+| Airflow DAG for the whole workflow | `agentwatch_dataset`: acquire → build → validate → split → version → push → summarize, run end to end on the shared 50-run release and with new recorded runs | Done (2026-10-24) |
 | Alerts (email or Slack) for errors and anomalies | Not built | Step 11 |
 | Pipeline flow optimization with Airflow's Gantt chart | Not built | Step 11, once the DAG runs |
 | Bias detection and mitigation through data slicing | Not built | Step 12 |
-| README: setup, run, structure, DVC | The data card and this plan exist; the README has no pipeline section | With step 11 |
+| README: setup, run, structure, DVC | The README has an Airflow section (setup, `make pipeline-run`, configuration); the course-layout mapping and DVC pull steps are not written yet | Partial |
 
 ### Airflow DAG (step 11)
+
+Built 2026-10-24 in `pipelines/orchestration` (own environment, Airflow 3.3.2). The DAG is
+triggered by hand with the run directories to add; each task passes the release it built to the
+next, so a release someone else publishes between tasks is never validated or split in its
+place. Measured on the shared release (50 runs, 350 rows) on a MacBook: about 25 s per run, of
+which the TFDV gate takes about 19 s. Not built yet: alerts, committing `data/*.dvc`, the API
+export, and the report task.
 
 - **Tasks, in order:** acquire (add recorded runs to the evidence store; export API-saved runs
   once step 10 adds it) → build → validate (the TFDV gate) → split → integrity → version →
