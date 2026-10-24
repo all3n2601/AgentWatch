@@ -39,6 +39,8 @@ const stepColors: Record<string, string> = {
 const seriesColors: Record<string, string> = {
   "gpu.util": "#a78bfa",
   "gpu.power": "#fbbf24",
+  "gpu.nvml.utilization.gpu.v1": "#a78bfa",
+  "gpu.nvml.power.usage_watts.v1": "#fbbf24",
 };
 const CPU_SERIES_COLOR = "#34d399";
 const tooltipStyle = {
@@ -306,15 +308,16 @@ function Resources({ run }: { run: LiveFeedRun }) {
   if (!window) return null;
   const modelCalls = run.wallSteps.filter((s) => s.stepType === "model_call");
   const gpu = "series" in run.gpu ? run.gpu : null;
+  const liveGpu = run.liveSeries.some((s) => s.key.startsWith("gpu."));
   const charts = [
     ...(gpu?.series.filter((s) => s.key !== "gpu.mem") ?? []),
-    ...run.cpuSeries,
+    ...run.liveSeries,
   ];
   return (
     <Card className="gap-0 p-5 sm:p-6">
       <PanelHeading
         title="Step timeline and resource signals"
-        detail="Shaded bands mark model-call steps. CPU signals are ingested live samples; GPU signals come from the A01 nvidia-smi diagnostic, which is not ingested and is aligned only by wall clock."
+        detail="Shaded bands mark model-call steps. CPU and NVML GPU signals are ingested live samples of the whole host or device, not of one step. Signals labeled nvidia-smi come from the A01 diagnostic, which is not ingested and is aligned only by wall clock."
       />
       <Timeline steps={run.wallSteps} window={window} />
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -328,7 +331,7 @@ function Resources({ run }: { run: LiveFeedRun }) {
           />
         ))}
       </div>
-      {"missing" in run.gpu && (
+      {"missing" in run.gpu && !liveGpu && (
         <p className="mt-4 text-xs text-muted-foreground">
           GPU: not measured for this run. {run.gpu.missing}
         </p>
@@ -338,8 +341,8 @@ function Resources({ run }: { run: LiveFeedRun }) {
         {run.resources
           .map((r) => `${r.resourceClass} (${r.resourceId})`)
           .join(", ")}
-        . Only the CPU sandbox reports live samples; inference and retrieval
-        have none yet.
+        . Every live sample a resource reported is charted above; retrieval has
+        no registered live metric yet.
       </p>
     </Card>
   );

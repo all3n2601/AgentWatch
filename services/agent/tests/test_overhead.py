@@ -9,9 +9,9 @@ from agentwatch_agent.overhead import (
     OverheadCancelled,
     OverheadFailed,
     measure_overhead,
-    summarize,
 )
 from agentwatch_agent.session import CancellationState
+from agentwatch_agent.stats import summarize
 
 
 def test_overhead_alternates_conditions_and_delivers_instrumented_steps(

@@ -19,6 +19,7 @@ from agentwatch_sdk.live import (
     StepEvent,
     validate_transition,
 )
+from agentwatch_worker.nvml import GpuIdentity, NvmlError
 
 TERMINAL = {"completed", "failed", "cancelled"}
 
@@ -231,3 +232,43 @@ SOLVE_MEAN = [
     chat_response(tool_calls=[("run_tests", {})]),
     chat_response("Applied return-none-for-empty; all 5 tests pass."),
 ]
+
+
+class FakeGpu:
+    """Test double for an open NVML device; its readings are synthetic, never evidence."""
+
+    identity = GpuIdentity(
+        index=0,
+        device_count=1,
+        name="Test GPU",
+        driver_version="0.0",
+        memory_total_bytes=8 * 2**30,
+    )
+
+    def __init__(self, utilization=(0, 0), used=2**30, power=4.2, clock=180, failures=None):
+        self.utilization, self.used, self.power, self.clock = utilization, used, power, clock
+        self.failures = failures or {}
+        self.closed = 0
+
+    def _maybe_fail(self, name):
+        if name in self.failures:
+            raise NvmlError(f"nvml-{name}", self.failures[name])
+
+    def utilization_percent(self):
+        self._maybe_fail("utilization")
+        return self.utilization
+
+    def memory_bytes(self):
+        self._maybe_fail("memory")
+        return self.used, self.identity.memory_total_bytes
+
+    def power_watts(self):
+        self._maybe_fail("power")
+        return self.power
+
+    def sm_clock_mhz(self):
+        self._maybe_fail("clock")
+        return self.clock
+
+    def close(self):
+        self.closed += 1

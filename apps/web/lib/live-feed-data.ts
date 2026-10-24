@@ -61,7 +61,7 @@ export type LiveFeedRun = {
   replay: LiveReplay;
   resources: { resourceId: string; resourceClass: string }[];
   wallSteps: WallStep[];
-  cpuSeries: MetricSeries[];
+  liveSeries: MetricSeries[];
   gpu: GpuEvidence;
   recordCount: number;
 };
@@ -98,9 +98,34 @@ export function wallSteps(payloads: readonly unknown[]): WallStep[] {
 }
 
 const MICROSECONDS_PER_MILLISECOND = 1000;
+const BYTES_PER_MEBIBYTE = 1024 * 1024;
+/**
+ * Labels for the registered whole-device NVML gauges (A04). Exact versioned names: a future
+ * version may change meaning, so it keeps its raw name until it is described here.
+ */
+const GPU_METRIC_DISPLAY: Record<
+  string,
+  { label: string; unit: string; divisor?: number }
+> = {
+  "gpu.nvml.utilization.gpu.v1": { label: "GPU utilization (NVML)", unit: "%" },
+  "gpu.nvml.utilization.memory.v1": {
+    label: "GPU memory busy (NVML)",
+    unit: "%",
+  },
+  "gpu.nvml.memory.used_bytes.v1": {
+    label: "GPU memory used (NVML)",
+    unit: "MiB",
+    divisor: BYTES_PER_MEBIBYTE,
+  },
+  "gpu.nvml.power.usage_watts.v1": {
+    label: "GPU power draw (NVML)",
+    unit: "W",
+  },
+  "gpu.nvml.clock.sm_mhz.v1": { label: "GPU SM clock (NVML)", unit: "MHz" },
+};
 
-/** Live CPU samples per metric; unavailable readings stay gaps, never zero. */
-export function cpuSeries(payloads: readonly unknown[]): MetricSeries[] {
+/** Live samples per metric, for every resource; unavailable readings stay gaps, never zero. */
+export function liveSampleSeries(payloads: readonly unknown[]): MetricSeries[] {
   const series = new Map<string, MetricSeries>();
   for (const raw of payloads) {
     const sample = sampleSchema.safeParse(raw);
@@ -141,6 +166,14 @@ export function cpuSeries(payloads: readonly unknown[]): MetricSeries[] {
     } else if (entry.key.startsWith("cpu.psi.some.avg10")) {
       entry.label = "CPU pressure (PSI some, avg10)";
       entry.unit = "%";
+    } else if (entry.key in GPU_METRIC_DISPLAY) {
+      const { label, unit, divisor = 1 } = GPU_METRIC_DISPLAY[entry.key];
+      entry.label = label;
+      entry.unit = unit;
+      entry.points = entry.points.map(({ atMs, value }) => ({
+        atMs,
+        value: value === null ? null : value / divisor,
+      }));
     }
   }
   return [...series.values()];

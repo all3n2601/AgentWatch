@@ -5,8 +5,8 @@ import { apiUrl, dataDirectory } from "./experiments";
 import { createLiveApi, type LiveApi } from "./live-api";
 import type { LiveSavedRecord } from "./live-api-schema";
 import {
-  cpuSeries,
   latestReceiptAgeMs,
+  liveSampleSeries,
   parseGpuSamples,
   wallSteps,
   type GpuEvidence,
@@ -161,7 +161,7 @@ export async function loadLiveFeed(requested?: string): Promise<LiveFeedData> {
           resourceClass: r.resource_class,
         })),
         wallSteps: wallSteps(steps),
-        cpuSeries: cpuSeries(samples),
+        liveSeries: liveSampleSeries(samples),
         gpu: await loadGpuEvidence(runId),
         recordCount: records.length,
       },

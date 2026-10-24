@@ -172,10 +172,17 @@ class StepEvent(StepEventFields):
         return self
 
 
-# Initial measured CPU definitions only; A04 must version additional metrics before ingestion.
+# metric: (resource class, unit, minimum, maximum). Additions need new versioned names; a
+# definition never changes meaning in place. Semantics are in docs/live-ingestion.md.
 METRICS = {
     "cpu.psi.some.avg10.v1": ("cpu_sandbox", "percent", 0, 100),
     "cpu.cgroup.throttled_usec.v1": ("cpu_sandbox", "microseconds", 0, None),
+    # A04: whole-device NVML gauges for the GPU serving inference, never per process.
+    "gpu.nvml.utilization.gpu.v1": ("inference", "percent", 0, 100),
+    "gpu.nvml.utilization.memory.v1": ("inference", "percent", 0, 100),
+    "gpu.nvml.memory.used_bytes.v1": ("inference", "bytes", 0, None),
+    "gpu.nvml.power.usage_watts.v1": ("inference", "watts", 0, None),
+    "gpu.nvml.clock.sm_mhz.v1": ("inference", "megahertz", 0, None),
 }
 
 

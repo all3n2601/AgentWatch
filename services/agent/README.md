@@ -23,8 +23,9 @@ and export `OLLAMA_URL=http://127.0.0.1:11435`. Each run writes
 `.data/agent-runs/<task>-<UTC time>-<id>/` containing:
 
 - `agent-evidence.json`: task identity, full configuration and its digest, model endpoint,
-  conversation, per-call Ollama metrics and placement, tool calls (including rejected ones),
-  runner verification, sampling coverage, delivery statistics, cancellation and cleanup.
+  conversation, per-call Ollama metrics, timing breakdown and placement, tool calls
+  (including rejected ones), runner verification, resource sampling (achieved intervals,
+  missed rounds, sampler cost, GPU identity), delivery statistics, cancellation and cleanup.
 - `live-journal.jsonl`: every registration, record and state change sent, in order.
 
 The same exit codes apply to `run`, `overhead` and `resend`:
@@ -72,13 +73,27 @@ URLs are excluded: the same configuration can run on different hosts.
   monotonic clock domain (`agent-runner-<uuid>`) for the runner process lifetime.
   `observed_at` is UTC wall time and is never subtracted from ticks.
 - **Queue delay** of a model call is runner-side dispatch only. Time spent waiting inside
-  Ollama is part of execution wall time, not a measured inference queue.
+  Ollama is part of execution wall time, not a measured inference queue. Each call's
+  `timing` (method `ollama-request-timing-v1`) keeps the runner's wall time and Ollama's
+  total, load, prompt-evaluation and generation durations, and records the observed queue
+  as `unavailable`: Ollama reports none. Its two differences (server time outside load,
+  prompt and generation; runner time outside Ollama's total) are estimates across two
+  clocks, and an impossible one is reported as `inconsistent`, never clamped.
 - **Resource IDs** are opaque and new for every runner process. `model-server-*` identifies
   the model endpoint as used by this run, not an Ollama process lifetime.
-- **Resource samples:** CPU PSI `some avg10` and the runner cgroup's `throttled_usec`, every
-  250 ms, for the tool host. PSI is host-wide and the counter covers the runner's whole cgroup,
-  so neither is step-exclusive. On macOS both are recorded as `unsupported`, never zero.
-  Inference, GPU and retrieval metrics wait for A04 to register them.
+- **Resource samples:** one thread reads every probe every 250 ms, each with its own tick in
+  the runner's clock domain. The tool host gets CPU PSI `some avg10` and the runner cgroup's
+  `throttled_usec`; the GPU (`gpu-*`, service `nvidia-nvml`, class `inference`) gets five
+  NVML gauges: kernel and memory utilization, memory used, power and SM clock
+  ([registry](../../docs/live-ingestion.md), [ADR 0003](../../docs/adr/0003-gpu-and-inference-measurement.md)).
+  PSI is host-wide, the counter covers the runner's whole cgroup and NVML covers the whole
+  device (every process on it), so none is step-exclusive. On macOS CPU metrics are
+  `unsupported` and so are GPU metrics without NVML; a library that fails to initialize,
+  lacks an entry point the binding needs, or a missing device is `unavailable`. Because
+  `run` always samples the GPU, it needs a live API that registers the GPU metrics, and the
+  longest `--run-timeout` the sample budget allows at 250 ms is about 2,857 s. None is ever zero. `run` samples GPU index 0 and records
+  the device count, name, driver and memory size under `resource_sampling.resources`.
+  No retrieval metric exists yet: retrieval is in-process BM25.
 - **`task_passed`** in the evidence reports only the runner's verification. A run can still be
   `failed` with `task_passed: true` when a runner error (listed in `background_errors` or
   `cleanup_errors`) happened after verification; the run's state and reason say which.
@@ -156,6 +171,29 @@ from the fixture, apply one reviewed patch per file, and run the fixture's tests
 copy. It never supplies code or commands. The tests run in a subprocess with a scrubbed
 environment, a timeout and process-group cleanup. That is a trusted-fixture boundary, **not an
 isolation sandbox**: do not add free-form edits or commands without the A03 isolation design.
+
+## Sampling evidence
+
+`uv run --package agentwatch-agent python -m agentwatch_agent coverage <run dir>` prints a
+`coverage-v1` report built only from the run's journal: per resource, the achieved sampling
+interval (median, p90, max), late and early rounds, and missed rounds (rounds the declared
+cadence expects over the sampled span, minus rounds taken; after a slow round the sampler
+takes the overdue rounds back to back, so those count as late and early, not missed); p90
+everywhere is the sorted element at `round(0.9 * (n - 1))`; per executed step,
+its `[started, finished)` window, the sampling rounds inside it, coverage against the
+declared interval, and min/mean/max of measured gauges (or the counter's increase, null after
+a reset). Steps shorter than one interval report `shorter_than_interval`, not 0 or 100%.
+Journal lines that fail contract validation are counted, never used. This is producer-side
+evidence, not the service's window join (B02).
+
+`... python -m agentwatch_agent sampling-overhead` runs protocol
+`resource-sampling-overhead-v1` (declared in `sampling_overhead.py`) against the real model
+server, without the live API: after 3 discarded warm-ups, the runner's first model request
+for a task alternates 30 times without and 30 times with CPU and GPU sampling (records are
+journaled as in a run). It reports wall-time and Ollama-duration medians and p90s, generated
+token counts, and the sampler's per-round cost, with no threshold, in
+`.data/sampling-overhead/`. A failed or interrupted measurement keeps what it measured, with
+its status and error, and exits 1.
 
 ## Overhead
 
