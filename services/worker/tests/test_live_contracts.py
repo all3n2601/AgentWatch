@@ -104,6 +104,27 @@ def gpu_sample(metric, **changes):
     )
 
 
+CPU_COUNTERS = (
+    "cpu.psi.some.total_usec.v1",
+    "cpu.cgroup.usage_usec.v1",
+    "cpu.cgroup.psi.some.total_usec.v1",
+)
+
+
+@pytest.mark.parametrize("metric", CPU_COUNTERS)
+def test_cpu_counters_are_nonnegative_microseconds_for_cpu_resources(metric):
+    counter = {"metric": metric, "unit": "microseconds", "value": 499_359_020}
+    assert ResourceSample.model_validate(sample(str(uuid4()), **counter)).value == 499_359_020
+    with pytest.raises(ValidationError, match="outside registered bounds"):
+        ResourceSample.model_validate(sample(str(uuid4()), **counter | {"value": -1}))
+    with pytest.raises(ValidationError, match="class/unit mismatch"):
+        ResourceSample.model_validate(sample(str(uuid4()), **counter | {"unit": "percent"}))
+    with pytest.raises(ValidationError, match="class/unit mismatch"):
+        ResourceSample.model_validate(
+            sample(str(uuid4()), **counter | {"resource_class": "inference"})
+        )
+
+
 @pytest.mark.parametrize("metric", GPU_METRICS)
 def test_gpu_metrics_are_registered_for_inference_resources(metric):
     ResourceSample.model_validate(gpu_sample(metric))

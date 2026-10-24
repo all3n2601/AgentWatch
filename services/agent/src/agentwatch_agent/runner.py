@@ -61,7 +61,7 @@ from agentwatch_agent.resources import (
     Probe,
     ResourceSampler,
 )
-from agentwatch_agent.retrieval import DocumentIndex
+from agentwatch_agent.retrieval import RETRIEVAL_METHOD, DocumentIndex
 from agentwatch_agent.session import (
     TERMINAL_RUN_STATES,
     CancellationState,
@@ -92,7 +92,10 @@ LIMITATIONS = (
         "server's own use; NVML utilization averages over the driver's sample period and does "
         "not establish saturation"
     ),
-    "Retrieval is in-process BM25 over fixed task documents, not a vector database",
+    (
+        "Retrieval is in-process BM25 over fixed task documents, not a vector database; its "
+        "service time is the search alone, and the index has no request queue (unsupported)"
+    ),
     (
         "Tests run as a trusted-fixture subprocess, not an isolation sandbox; the model can "
         "only select reviewed patches, so no model-written code is executed"
@@ -242,12 +245,16 @@ class AgentRunner:
             stage = "setup"  # becomes "registration" once the live API is contacted
             try:
                 workspace = Workspace.create(self.task)
-                dispatcher = ToolDispatcher(
-                    self.task,
-                    workspace,
-                    DocumentIndex.from_directory(self.task.docs_dir),
-                    self.limits,
-                )
+                build_started = time.monotonic_ns()
+                index = DocumentIndex.from_directory(self.task.docs_dir)
+                self.evidence["retrieval_index"] = {
+                    "method": RETRIEVAL_METHOD,
+                    "passages": len(index.passages),
+                    "documents": len({passage.document for passage in index.passages}),
+                    # Built during setup, before the run is registered: no step covers it.
+                    "build_wall_seconds": (time.monotonic_ns() - build_started) / 1e9,
+                }
+                dispatcher = ToolDispatcher(self.task, workspace, index, self.limits)
                 self._tools = dispatcher.definitions()
                 resources = self._resources()
                 configuration = self._configuration()

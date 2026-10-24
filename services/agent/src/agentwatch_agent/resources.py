@@ -8,6 +8,7 @@ cgroup counter covers the runner's whole cgroup and NVML describes the whole dev
 of them is step-exclusive.
 """
 
+import math
 import statistics
 import threading
 import time
@@ -27,12 +28,33 @@ from agentwatch_agent.stats import p90
 
 PSI_METRIC = ("cpu.psi.some.avg10.v1", "percent")
 THROTTLED_METRIC = ("cpu.cgroup.throttled_usec.v1", "microseconds")
+PSI_TOTAL_METRIC = ("cpu.psi.some.total_usec.v1", "microseconds")
+CGROUP_USAGE_METRIC = ("cpu.cgroup.usage_usec.v1", "microseconds")
+CGROUP_PSI_TOTAL_METRIC = ("cpu.cgroup.psi.some.total_usec.v1", "microseconds")
 GPU_UTILIZATION_METRIC = ("gpu.nvml.utilization.gpu.v1", "percent")
 GPU_MEMORY_UTILIZATION_METRIC = ("gpu.nvml.utilization.memory.v1", "percent")
 GPU_MEMORY_USED_METRIC = ("gpu.nvml.memory.used_bytes.v1", "bytes")
 GPU_POWER_METRIC = ("gpu.nvml.power.usage_watts.v1", "watts")
 GPU_SM_CLOCK_METRIC = ("gpu.nvml.clock.sm_mhz.v1", "megahertz")
-CPU_METRICS = (PSI_METRIC, THROTTLED_METRIC)
+# The first two keep their original order, so sampled_metrics stays a stable prefix.
+CPU_METRICS = (
+    PSI_METRIC,
+    THROTTLED_METRIC,
+    PSI_TOTAL_METRIC,
+    CGROUP_USAGE_METRIC,
+    CGROUP_PSI_TOTAL_METRIC,
+)
+# Cumulative counters: their increase across a window is the measurement, and any decrease
+# is a reset (no delta), never negative load.
+COUNTER_METRICS = frozenset(
+    metric
+    for metric, _ in (
+        THROTTLED_METRIC,
+        PSI_TOTAL_METRIC,
+        CGROUP_USAGE_METRIC,
+        CGROUP_PSI_TOTAL_METRIC,
+    )
+)
 GPU_METRICS = (
     GPU_UTILIZATION_METRIC,
     GPU_MEMORY_UTILIZATION_METRIC,
@@ -59,45 +81,97 @@ class Probe(Protocol):
     def close(self) -> None: ...
 
 
-def _psi_reading(proc: Path) -> Reading:
-    if not proc.is_dir():
-        return None, "unsupported", "procfs is not available on this platform"
+PSI_UNSUPPORTED: Reading = (None, "unsupported", "CPU PSI is not exposed by this kernel")
+NO_PROCFS: Reading = (None, "unsupported", "procfs is not available on this platform")
+NO_CGROUP: Reading = (None, "unavailable", "cgroup v2 membership was not found")
+CGROUP_PSI_UNSUPPORTED: Reading = (
+    None,
+    "unsupported",
+    "cgroup cpu.pressure does not exist (PSI is not enabled for cgroups)",
+)
+
+
+def _pressure(path: Path, name: str, missing: Reading) -> tuple[dict | None, Reading | None]:
+    """The `some` line of a PSI file, or the reading that explains why it is unusable."""
     try:
-        value = read_pressure(proc / "pressure/cpu")["some"]["avg10"]
+        return read_pressure(path)["some"], None
     except FileNotFoundError:
-        return None, "unsupported", "CPU PSI is not exposed by this kernel"
+        return None, missing
     except OSError as error:
-        return None, "unavailable", f"CPU PSI could not be read ({type(error).__name__})"
+        return None, (None, "unavailable", f"{name} could not be read ({type(error).__name__})")
     except (ValueError, KeyError):
-        return None, "malformed", "CPU PSI did not contain a numeric some avg10 field"
-    if not 0 <= value <= 100:
-        return None, "malformed", "CPU PSI some avg10 was outside 0-100 percent"
-    return value, "measured", None
+        return None, (None, "malformed", f"{name} did not contain a numeric some line")
 
 
-def _throttled_reading(proc: Path, stat_path: Path | None) -> Reading:
-    if not proc.is_dir():
-        return None, "unsupported", "procfs is not available on this platform"
-    if stat_path is None:
-        return None, "unavailable", "cgroup v2 membership was not found"
+def _cpu_stat(stat_path: Path) -> tuple[dict | None, Reading | None]:
     try:
-        stat = read_cpu_stat(stat_path)
+        return read_cpu_stat(stat_path), None
     except FileNotFoundError:
-        return None, "unavailable", "cgroup cpu.stat does not exist (CPU controller disabled)"
+        reason = "cgroup cpu.stat does not exist (CPU controller disabled)"
+        return None, (None, "unavailable", reason)
     except OSError as error:
-        return None, "unavailable", f"cgroup cpu.stat could not be read ({type(error).__name__})"
+        reason = f"cgroup cpu.stat could not be read ({type(error).__name__})"
+        return None, (None, "unavailable", reason)
     except ValueError:
-        return None, "malformed", "cgroup cpu.stat was not key/integer lines"
-    if "throttled_usec" not in stat:
-        return None, "unavailable", "cgroup cpu.stat has no throttled_usec counter"
-    if stat["throttled_usec"] < 0:
-        return None, "malformed", "cgroup throttled_usec was negative"
-    return float(stat["throttled_usec"]), "measured", None
+        return None, (None, "malformed", "cgroup cpu.stat was not key/integer lines")
+
+
+def _field(
+    fields: dict | None,
+    failure: Reading | None,
+    key: str,
+    name: str,
+    *,
+    absent: str = "malformed",
+    maximum: float | None = None,
+) -> Reading:
+    if fields is None:
+        return failure
+    if key not in fields:
+        return None, absent, f"{name} has no {key} field"
+    value = fields[key]
+    # float() accepts "nan" and "inf", which compare false against both bounds.
+    if not math.isfinite(value) or value < 0 or (maximum is not None and value > maximum):
+        bounds = f"0-{maximum:g}" if maximum is not None else "nonnegative"
+        return None, "malformed", f"{name} {key} was outside {bounds}"
+    return float(value), "measured", None
+
+
+def cpu_readings(proc: Path, stat_path: Path | None) -> list[MetricReading]:
+    """One round of CPU readings; each file is read once and yields all of its metrics."""
+    if not proc.is_dir():
+        return [(metric, NO_PROCFS) for metric in CPU_METRICS]
+    host, host_failure = _pressure(proc / "pressure/cpu", "CPU PSI", PSI_UNSUPPORTED)
+    if stat_path is None:
+        stat, stat_failure = None, NO_CGROUP
+        group, group_failure = None, NO_CGROUP
+    else:
+        stat, stat_failure = _cpu_stat(stat_path)
+        group, group_failure = _pressure(
+            stat_path.parent / "cpu.pressure", "cgroup CPU PSI", CGROUP_PSI_UNSUPPORTED
+        )
+    # A counter the controller does not provide is unavailable, not a malformed file.
+    return [
+        (PSI_METRIC, _field(host, host_failure, "avg10", "CPU PSI some", maximum=100)),
+        (
+            THROTTLED_METRIC,
+            _field(stat, stat_failure, "throttled_usec", "cgroup cpu.stat", absent="unavailable"),
+        ),
+        (PSI_TOTAL_METRIC, _field(host, host_failure, "total", "CPU PSI some")),
+        (
+            CGROUP_USAGE_METRIC,
+            _field(stat, stat_failure, "usage_usec", "cgroup cpu.stat", absent="unavailable"),
+        ),
+        (CGROUP_PSI_TOTAL_METRIC, _field(group, group_failure, "total", "cgroup CPU PSI some")),
+    ]
 
 
 class CpuProbe:
     metrics = CPU_METRICS
-    scope = "host CPU PSI; cgroup v2 counter of the runner's own cgroup"
+    scope = (
+        "host CPU PSI (whole kernel; in WSL2 the whole VM); cgroup v2 usage, throttling and "
+        "PSI of the runner's own cgroup, which includes its test subprocesses"
+    )
 
     def __init__(
         self,
@@ -110,10 +184,7 @@ class CpuProbe:
         self.stat_path = discover_cgroup(proc, cgroup_root)
 
     def read(self) -> list[MetricReading]:
-        return [
-            (PSI_METRIC, _psi_reading(self.proc)),
-            (THROTTLED_METRIC, _throttled_reading(self.proc, self.stat_path)),
-        ]
+        return cpu_readings(self.proc, self.stat_path)
 
     def describe(self) -> dict:
         return {"cgroup_found": self.stat_path is not None}
