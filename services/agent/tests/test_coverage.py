@@ -123,6 +123,18 @@ def steps_by_id(report):
     return {entry["step_id"]: entry for entry in report["steps"]}
 
 
+def only(entries, resource_id, **identity):
+    """The single entry for resource_id (and any other identity fields given)."""
+    matches = [
+        entry
+        for entry in entries
+        if entry["resource_id"] == resource_id
+        and all(entry[key] == value for key, value in identity.items())
+    ]
+    assert len(matches) == 1, matches
+    return matches[0]
+
+
 def test_window_includes_start_and_excludes_finish(tmp_path):
     records = [
         *executed("model-call-1", 0, 100 * MS, 400 * MS),
@@ -132,7 +144,7 @@ def test_window_includes_start_and_excludes_finish(tmp_path):
     ]
     entry = steps_by_id(coverage_report(write_run(tmp_path, records)))["model-call-1"]
     assert (entry["duration_seconds"], entry["expected_rounds"]) == (pytest.approx(0.3), 3)
-    gpu = entry["context"]["gpu-1"]
+    gpu = only(entry["context"], "gpu-1")
     assert (gpu["status"], gpu["rounds_in_window"]) == ("present", 2)
     assert gpu["coverage"] == pytest.approx(2 / 3)
     assert gpu["scope"] == "fixture device"
@@ -150,7 +162,7 @@ def test_a_step_joins_only_its_own_resource(tmp_path):
         "status": "empty",
     }
     assert entry["status"] == "empty"
-    assert entry["context"]["gpu-1"]["status"] == "present"
+    assert only(entry["context"], "gpu-1")["status"] == "present"
 
 
 def test_the_join_needs_the_same_service_as_well_as_resource(tmp_path):
@@ -160,7 +172,7 @@ def test_the_join_needs_the_same_service_as_well_as_resource(tmp_path):
     ]
     entry = steps_by_id(coverage_report(write_run(tmp_path, records)))["gpu-step"]
     assert entry["own"]["status"] == "empty"
-    assert entry["context"]["gpu-1"]["service_id"] == "another-service"
+    assert only(entry["context"], "gpu-1")["service_id"] == "another-service"
 
 
 def test_own_resource_status_vocabulary(tmp_path):
@@ -178,6 +190,34 @@ def test_own_resource_status_vocabulary(tmp_path):
     assert by_id["gpu-step"]["own"]["coverage"] == 0
     # A step without a resource has nothing to join: missing, as in the service join.
     assert by_id["root"]["own"] == {"status": "missing"}
+
+
+def test_a_resource_under_two_services_stays_two_entries(tmp_path):
+    records = [
+        *executed("root", 0, 0, 300 * MS, resource_id=None, step_type="other"),
+        sample(100 * MS, GPU_UTIL, 10, service="service-a"),
+        sample(100 * MS, GPU_UTIL, 90, service="service-b"),
+    ]
+    report = coverage_report(write_run(tmp_path, records))
+    context = steps_by_id(report)["root"]["context"]
+    assert only(context, "gpu-1", service_id="service-a")["measured"][GPU_UTIL]["max"] == 10
+    assert only(context, "gpu-1", service_id="service-b")["measured"][GPU_UTIL]["max"] == 90
+    assert len(report["sampling"]) == 2
+
+
+def test_intervals_are_summarized_per_clock_domain(tmp_path):
+    # Ticks of two clock domains are never compared, even for one resource.
+    records = [
+        sample(0, GPU_UTIL, 1),
+        sample(100 * MS, GPU_UTIL, 1),
+        sample(5 * MS, GPU_UTIL, 1, clock_id="other-clock"),
+        sample(105 * MS, GPU_UTIL, 1, clock_id="other-clock"),
+    ]
+    report = coverage_report(write_run(tmp_path, records, clocks=[CLOCK, "other-clock"]))
+    for clock_id in (CLOCK, "other-clock"):
+        entry = only(report["sampling"], "gpu-1", clock_id=clock_id)
+        assert entry["sample_rounds"] == 2
+        assert entry["observed_interval_max_seconds"] == pytest.approx(0.1)
 
 
 def test_samples_in_another_domain_are_unaligned(tmp_path):
@@ -213,7 +253,7 @@ def test_unavailable_readings_count_but_do_not_aggregate(tmp_path):
         sample(100 * MS, GPU_UTIL, None, availability="unsupported"),
     ]
     entry = steps_by_id(coverage_report(write_run(tmp_path, records)))["model-call-1"]
-    gpu = entry["context"]["gpu-1"]
+    gpu = only(entry["context"], "gpu-1")
     assert gpu["availability"] == {GPU_UTIL: {"unsupported": 2}}
     # Never presented as an idle GPU.
     assert gpu["measured"] == {GPU_UTIL: {"measured": 0}}
@@ -276,10 +316,10 @@ def test_short_unexecuted_and_unsampled_steps_are_distinguished(tmp_path):
     ]
     by_id = steps_by_id(coverage_report(write_run(tmp_path, records)))
     assert by_id["short"]["shorter_than_interval"] is True
-    assert by_id["short"]["context"]["gpu-1"]["coverage"] is None
+    assert only(by_id["short"]["context"], "gpu-1")["coverage"] is None
     assert (by_id["rejected"]["status"], by_id["rejected"]["window"]) == ("missing", None)
     assert by_id["long"]["shorter_than_interval"] is False
-    assert by_id["long"]["context"]["gpu-1"]["status"] == "no_overlap"
+    assert only(by_id["long"]["context"], "gpu-1")["status"] == "no_overlap"
 
 
 def test_queue_is_kept_apart_from_service_time(tmp_path):
@@ -336,7 +376,7 @@ def test_run_level_intervals_and_unusable_lines(tmp_path):
     invalid = json.dumps({"kind": "record", "payload": {"record_type": "resource_sample"}})
     run_dir = write_run(tmp_path, records, extra_lines=(duplicate, invalid, "{not json"))
     report = coverage_report(run_dir)
-    gpu = report["sampling"]["gpu-1"]
+    gpu = only(report["sampling"], "gpu-1")
     assert gpu["sample_rounds"] == 5
     assert gpu["observed_interval_max_seconds"] == pytest.approx(0.3)
     assert (gpu["late_rounds"], gpu["missed_rounds"]) == (1, 2)
@@ -385,14 +425,14 @@ def test_report_covers_a_test_double_runner_run(mean_task, server, tmp_path):
     assert report["run_id"] == str(outcome.run_id)
     registered = server.only_run().registration.resources
     sampled_services = {"agentwatch-agent-runner", "nvidia-nvml"}
-    assert set(report["sampling"]) == {
-        r.resource_id for r in registered if r.service_id in sampled_services
+    assert {(e["resource_id"], e["service_id"]) for e in report["sampling"]} == {
+        (r.resource_id, r.service_id) for r in registered if r.service_id in sampled_services
     }
     by_id = steps_by_id(report)
     root = by_id["agent-run"]
     assert root["window"]["clock_id"] == json.loads(outcome.evidence_path.read_text())["clock_id"]
     assert root["own"] == {"status": "missing"}
-    assert all(entry["status"] == "present" for entry in root["context"].values())
+    assert all(entry["status"] == "present" for entry in root["context"])
     # Model calls run on the unsampled model server; retrieval on the unsampled docs index.
     assert by_id["model-call-1"]["own"]["status"] == "empty"
     search = by_id["tool-1-search_docs"]

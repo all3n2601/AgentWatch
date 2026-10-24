@@ -247,12 +247,13 @@ def _step_coverage(
         own = {"status": "missing"}
     else:
         own = {"resource_id": own_target[0], "service_id": own_target[1]} | resource(own_target)
-    context = {
-        resource_id: {"service_id": service_id, "scope": scopes.get(resource_id)}
+    # Entries carry their full identity: a resource sampled under two services stays two.
+    context = [
+        {"resource_id": resource_id, "service_id": service_id, "scope": scopes.get(resource_id)}
         | resource((resource_id, service_id))
-        for resource_id, service_id in rounds
+        for resource_id, service_id in sorted(rounds)
         if (resource_id, service_id) != own_target
-    }
+    ]
     return base | {
         "window": window,
         "duration_seconds": (finished - started) / 1e9,
@@ -304,12 +305,23 @@ def coverage_report(run_dir: Path) -> dict:
         for entry in sampling_summary.get("resources", [])
         if isinstance(entry, dict) and isinstance(entry.get("resource_id"), str)
     }
-    sampling = {
-        resource_id: {"service_id": service_id}
-        | interval_summary(sorted(tick for _clock, tick in by_tick), declared)
-        | {"metrics": sorted({r["metric"] for group in by_tick.values() for r in group})}
-        for (resource_id, service_id), by_tick in rounds.items()
-    }
+    # One entry per target and clock domain: ticks of different clocks are never compared.
+    sampling = [
+        {"resource_id": resource_id, "service_id": service_id, "clock_id": clock_id}
+        | interval_summary(sorted(tick for clock, tick in by_tick if clock == clock_id), declared)
+        | {
+            "metrics": sorted(
+                {
+                    r["metric"]
+                    for (clock, _), group in by_tick.items()
+                    if clock == clock_id
+                    for r in group
+                }
+            )
+        }
+        for (resource_id, service_id), by_tick in sorted(rounds.items())
+        for clock_id in sorted({clock for clock, _tick in by_tick})
+    ]
     timings = _call_timings(evidence)
     steps = [
         _step_coverage(event, rounds, scopes, declared, timings.get(event["step_id"]))

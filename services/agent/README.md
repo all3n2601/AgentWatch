@@ -91,7 +91,11 @@ URLs are excluded: the same configuration can run on different hosts.
   ([registry](../../docs/live-ingestion.md), [ADR 0003](../../docs/adr/0003-gpu-and-inference-measurement.md)).
   PSI is host-wide (in WSL2 the whole VM, including Docker), the cgroup counters cover the
   runner's whole cgroup (including its test subprocesses; in WSL2 every process in the distro)
-  and NVML covers the whole device (every process on it), so none is step-exclusive. On macOS
+  and NVML covers the whole device (every process on it), so none is step-exclusive. Tests
+  still run in-process (`run_project_tests`). When `run_tests` moves into the A03 sandbox
+  container (`run_project_tests_isolated`), test CPU and that container's throttling leave
+  the runner's cgroup: that integration must update this scope and should register the
+  sandbox container as its own resource. On macOS
   CPU metrics are `unsupported` and so are GPU metrics without NVML; a kernel without PSI or
   a cgroup without `cpu.pressure` is `unsupported`, a cpu.stat without a counter is
   `unavailable`, and a negative or unparsable value is `malformed`; a library that fails to initialize,
@@ -193,7 +197,9 @@ domain the run never registered. Each step joins only its own registered resourc
 service (`own`); other sampled resources are labeled `context`. Statuses follow the
 FeatureRow vocabulary with the service join's meanings: `missing` (not executed, or no
 resource or service), `empty` (no sample stream for the resource and service, as for the
-model server and docs index), `unaligned`, `no_overlap` and `present`. Each executed step also
+model server and docs index), `unaligned`, `no_overlap` and `present`. `sampling` and `context`
+are lists of entries carrying their resource and service (and, for `sampling`, clock), so a
+resource sampled under two services, or in two clock domains, is never merged. Each executed step also
 reports its dispatch queue apart from service time (Ollama's total, or the search alone) and
 the remainder as runner handling. It also reports, per resource, the achieved sampling
 interval (median, p90, max), late and early rounds, and missed rounds (rounds the declared
