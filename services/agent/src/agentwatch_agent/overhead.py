@@ -42,7 +42,7 @@ from agentwatch_agent.delivery import (
     is_retryable,
 )
 from agentwatch_agent.errors import RunNotStarted
-from agentwatch_agent.resources import CpuResourceSampler
+from agentwatch_agent.resources import CpuProbe, ResourceSampler
 from agentwatch_agent.session import TERMINAL_RUN_STATES, CancellationState, RunSession
 from agentwatch_agent.steps import Step, StepRecorder, new_trace_id
 from agentwatch_agent.tasks import Task
@@ -262,14 +262,13 @@ def measure_overhead(
 
     def instrumented(index: int) -> float:
         nonlocal open_step
-        sampler = CpuResourceSampler(
+        sampler = ResourceSampler(
             delivery.emit,
             run_id=session.run_id,
             task_id=task_id,
             clock=clock,
-            resource=host,
+            probes=[CpuProbe(host, proc)],
             interval_seconds=sampling_interval_seconds,
-            proc=proc,
         )
         flusher = PeriodicFlusher(delivery, FLUSH_INTERVAL_SECONDS)
         with flusher, sampler:

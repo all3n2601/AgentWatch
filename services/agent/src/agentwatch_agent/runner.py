@@ -18,6 +18,8 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from agentwatch_sdk.live import ResourceRegistration, RunCreate
+from agentwatch_worker.nvml import NvmlDevice
+from agentwatch_worker.ollama import request_timing
 
 from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.config import (
@@ -45,12 +47,20 @@ from agentwatch_agent.model import (
     ModelReply,
     ModelResponseError,
     RequestedCall,
+    chat_payload,
     parse_reply,
     wait_interruptibly,
 )
 from agentwatch_agent.prompts import SYSTEM_PROMPT, task_message
 from agentwatch_agent.redaction import redact_reason
-from agentwatch_agent.resources import CpuResourceSampler
+from agentwatch_agent.resources import (
+    CPU_METRICS,
+    GPU_METRICS,
+    CpuProbe,
+    GpuProbe,
+    Probe,
+    ResourceSampler,
+)
 from agentwatch_agent.retrieval import DocumentIndex
 from agentwatch_agent.session import (
     TERMINAL_RUN_STATES,
@@ -69,12 +79,18 @@ MAX_EVIDENCE_TEXT = 2000
 LIMITATIONS = (
     (
         "Model-call queue delay is runner-side dispatch only; waiting inside the model server "
-        "is part of execution wall time, not a measured inference queue"
+        "is part of execution wall time, not a measured inference queue. Ollama reports no "
+        "queue wait, so each call's timing breakdown records the observed queue as unavailable"
     ),
     "Model-call CPU time is not measured: inference runs in the model server's process",
     (
         "CPU PSI is host-wide and the cgroup counter covers the runner's cgroup; neither is "
         "step-exclusive, and macOS reports both as unsupported"
+    ),
+    (
+        "GPU samples are whole-device NVML gauges (every process on the device), not the model "
+        "server's own use; NVML utilization averages over the driver's sample period and does "
+        "not establish saturation"
     ),
     "Retrieval is in-process BM25 over fixed task documents, not a vector database",
     (
@@ -156,10 +172,15 @@ class AgentRunner:
         clock: MonotonicClock | None = None,
         proc: Path = Path("/proc"),
         cgroup_root: Path = Path("/sys/fs/cgroup"),
+        open_gpu: Callable[[], NvmlDevice] | None = None,
     ):
+        # Without open_gpu no GPU resource is registered or sampled.
+        self.open_gpu = open_gpu
         # Validated before anything is created, so invalid settings leave nothing behind.
         validate_sample_budget(
-            (limits or RunLimits()).run_timeout_seconds, sampling_interval_seconds
+            (limits or RunLimits()).run_timeout_seconds,
+            sampling_interval_seconds,
+            len(self._sampled_metrics()),
         )
         self.task = task
         self.model = model
@@ -286,7 +307,7 @@ class AgentRunner:
         state, reason, task_passed = "failed", None, False
         errors: list[BaseException] = []
         self._background = ()
-        sampler: CpuResourceSampler | None = None
+        sampler: ResourceSampler | None = None
         watcher: CancellationWatcher | None = None
         background = ExitStack()
         try:
@@ -294,15 +315,13 @@ class AgentRunner:
                 PeriodicFlusher(delivery, self.flush_interval_seconds)
             )
             sampler = background.enter_context(
-                CpuResourceSampler(
+                ResourceSampler(
                     delivery.emit,
                     run_id=session.run_id,
                     task_id=self.task.task_id,
                     clock=self.clock,
-                    resource=resources["tool_host"],
+                    probes=self._probes(resources),
                     interval_seconds=self.sampling_interval_seconds,
-                    proc=self.proc,
-                    cgroup_root=self.cgroup_root,
                 )
             )
             watcher = background.enter_context(
@@ -407,6 +426,7 @@ class AgentRunner:
             model=self.model.name,
             system_prompt=SYSTEM_PROMPT,
             tools=self._tools,
+            sampled_metrics=self._sampled_metrics(),
             chat_options=self.chat_options,
             limits=self.limits,
             sampling_interval_seconds=self.sampling_interval_seconds,
@@ -462,7 +482,7 @@ class AgentRunner:
         reason: str | None,
         task_passed: bool,
         delivery: LiveDelivery,
-        sampler: CpuResourceSampler | None,
+        sampler: ResourceSampler | None,
         steps: StepRecorder,
         watcher: CancellationWatcher | None,
     ) -> None:
@@ -521,7 +541,28 @@ class AgentRunner:
                 service_id="agentwatch-agent-docs-index",
                 resource_class="retrieval",
             ),
-        }
+        } | (
+            {
+                # The GPU device itself, sampled whole; model placement links it to the server.
+                "gpu": ResourceRegistration(
+                    resource_id=f"gpu-{suffix}",
+                    service_id="nvidia-nvml",
+                    resource_class="inference",
+                )
+            }
+            if self.open_gpu is not None
+            else {}
+        )
+
+    def _sampled_metrics(self) -> tuple[str, ...]:
+        metrics = CPU_METRICS + (GPU_METRICS if self.open_gpu is not None else ())
+        return tuple(metric for metric, _unit in metrics)
+
+    def _probes(self, resources: dict[str, ResourceRegistration]) -> list[Probe]:
+        probes: list[Probe] = [CpuProbe(resources["tool_host"], self.proc, self.cgroup_root)]
+        if self.open_gpu is not None:
+            probes.append(GpuProbe(resources["gpu"], self.open_gpu))
+        return probes
 
     def _close_run(
         self, session: RunSession, state: str, reason: str | None, delivered: bool
@@ -643,14 +684,7 @@ class AgentRunner:
         )
         record = {"step_id": step.step_id, "span_id": step.span_id, "request_index": index}
         self.evidence["model_calls"].append(record)
-        payload = {
-            "model": self.model.name,
-            "messages": messages,
-            "tools": list(self._tools),
-            "stream": False,
-            "think": False,
-            "options": dict(self.chat_options),
-        }
+        payload = chat_payload(self.model.name, messages, list(self._tools), self.chat_options)
         steps.start(step)
         started = time.monotonic()
         failure: RunFailure | None = None
@@ -684,6 +718,7 @@ class AgentRunner:
             raise failure
         steps.complete(step)
         record["metrics"] = reply.metrics
+        record["timing"] = request_timing(reply.metrics, record["request_wall_seconds"])
         record["requested_tool_calls"] = len(reply.calls)
         # Read after the step closed so the extra request is not timed as inference.
         record["model_placement"] = self._observe_placement(context.deadline_monotonic)

@@ -1,5 +1,9 @@
 """Command line: `run` a task, list `tasks`, measure `overhead`, or `resend` a run's journal.
 
+`sampling-overhead` measures resource sampling's effect on a real model request; it exits 1
+if the measurement did not complete (its partial evidence is kept). `coverage` reports how a
+recorded run's samples cover its steps; it exits 2 if the run directory cannot support one.
+
 Exit codes (all commands):
   0  success: the task passed (run), or all evidence was delivered and the run is closed
   1  the run failed or was cancelled; its evidence was delivered
@@ -14,6 +18,7 @@ Exit codes (all commands):
 
 import argparse
 import http.client
+import json
 import os
 import signal
 import sys
@@ -22,14 +27,17 @@ from pathlib import Path
 from types import FrameType
 
 from agentwatch_sdk import LiveClient
+from agentwatch_worker.nvml import NvmlDevice
 from agentwatch_worker.ollama import ollama_base_url
 
 from agentwatch_agent.config import DEFAULT_MODEL, RunLimits
+from agentwatch_agent.coverage import CoverageError, coverage_report
 from agentwatch_agent.delivery import LiveRejectedError, is_retryable, replay_journal
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.model import OllamaChatModel
 from agentwatch_agent.overhead import OverheadFailed, measure_overhead
 from agentwatch_agent.runner import AgentRunner, default_output_dir, write_json_atomic
+from agentwatch_agent.sampling_overhead import measure_sampling_overhead
 from agentwatch_agent.session import CancellationState
 from agentwatch_agent.tasks import TaskDefinitionError, load_task, task_names
 
@@ -94,6 +102,24 @@ def parser() -> argparse.ArgumentParser:
     )
     overhead.add_argument("--output-dir", type=Path, default=Path(".data/agent-overhead"))
 
+    sampling = commands.add_parser(
+        "sampling-overhead",
+        help="Measure resource sampling's effect on a real model request (no live API needed)",
+    )
+    sampling.add_argument("--task", default="fix-mean-empty")
+    sampling.add_argument("--model", default=os.environ.get("AGENTWATCH_LLM_MODEL", DEFAULT_MODEL))
+    sampling.add_argument(
+        "--ollama-url",
+        type=ollama_base_url,
+        default=os.environ.get("OLLAMA_URL", DEFAULT_OLLAMA_URL),
+    )
+    sampling.add_argument("--output-dir", type=Path, default=Path(".data/sampling-overhead"))
+
+    coverage = commands.add_parser(
+        "coverage", help="Report how a recorded run's resource samples cover its steps"
+    )
+    coverage.add_argument("run_dir", type=Path, help="A run's output directory")
+
     resend = commands.add_parser("resend", help="Resend a run journal with original identities")
     resend.add_argument("journal", type=Path)
     resend.add_argument(
@@ -120,6 +146,8 @@ def run_command(args: argparse.Namespace) -> int:
             transport=LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS),
             output_dir=default_output_dir(args.output_dir, task),
             limits=RunLimits(run_timeout_seconds=args.run_timeout),
+            # A host without NVML records every GPU metric as unsupported, never as zero.
+            open_gpu=NvmlDevice.open,
         )
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
@@ -322,6 +350,42 @@ def resend_command(args: argparse.Namespace) -> int:
     return EXIT_PASSED
 
 
+def sampling_overhead_command(args: argparse.Namespace) -> int:
+    try:
+        task = load_task(args.task)
+    except TaskDefinitionError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    output_dir = default_output_dir(args.output_dir, task)
+    model = OllamaChatModel(args.ollama_url, args.model)
+    report = measure_sampling_overhead(task, args.model, model.chat, output_dir)
+    path = output_dir / "sampling-overhead.json"
+    write_json_atomic(path, report)
+    if report["status"] != "completed":
+        print(
+            f"error: measurement {report['status']}: {report['error']}; kept: {path}",
+            file=sys.stderr,
+        )
+        return EXIT_FAILED
+    conditions = report["conditions"]
+    print(
+        f"Request median {conditions['unsampled']['wall_seconds']['median']:.4f} s unsampled, "
+        f"{conditions['sampled']['wall_seconds']['median']:.4f} s sampled "
+        f"({report['median_wall_difference_fraction']:+.1%}); evidence: {path}"
+    )
+    return EXIT_PASSED
+
+
+def coverage_command(args: argparse.Namespace) -> int:
+    try:
+        report = coverage_report(args.run_dir)
+    except (CoverageError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    print(json.dumps(report, indent=2, allow_nan=False))
+    return EXIT_PASSED
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.command == "run":
@@ -330,4 +394,8 @@ def main(argv: list[str] | None = None) -> int:
         return tasks_command()
     if args.command == "overhead":
         return overhead_command(args)
+    if args.command == "sampling-overhead":
+        return sampling_overhead_command(args)
+    if args.command == "coverage":
+        return coverage_command(args)
     return resend_command(args)

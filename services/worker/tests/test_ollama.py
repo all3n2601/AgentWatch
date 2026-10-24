@@ -158,3 +158,60 @@ def test_ollama_url_must_be_http(url):
 @pytest.mark.parametrize("url", ["http://127.0.0.1:11435", "https://ollama.example:443/"])
 def test_valid_ollama_urls_are_accepted(url):
     assert ollama_base_url(url) == url
+
+
+# Values below are illustrative nanosecond counts, not recorded evidence.
+REPORTED = {
+    "total_duration": 540_000_000,
+    "load_duration": 40_000_000,
+    "prompt_eval_duration": 150_000_000,
+    "eval_duration": 330_000_000,
+    "eval_count": 60,
+}
+
+
+def test_request_timing_separates_reported_service_time_from_an_unobserved_queue():
+    timing = ollama.request_timing(REPORTED, client_wall_seconds=0.6)
+    assert timing["status"] == "reported"
+    assert timing["observed_queue_seconds"] is None
+    assert timing["observed_queue_availability"] == "unavailable"
+    assert timing["server_total_seconds"] == pytest.approx(0.54)
+    assert timing["server_prompt_eval_seconds"] == pytest.approx(0.15)
+    assert timing["server_unattributed_seconds"] == pytest.approx(0.02)
+    assert timing["client_outside_server_seconds"] == pytest.approx(0.06)
+    assert timing["problems"] == []
+
+
+def test_missing_durations_leave_their_differences_null():
+    metrics = {key: value for key, value in REPORTED.items() if key != "load_duration"}
+    timing = ollama.request_timing(metrics, client_wall_seconds=0.6)
+    assert timing["status"] == "partial"
+    assert timing["server_load_seconds"] is None
+    assert timing["server_unattributed_seconds"] is None
+    # The total alone still bounds the runner's time outside the server.
+    assert timing["client_outside_server_seconds"] == pytest.approx(0.06)
+    assert timing["problems"] == ["load_duration missing"]
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True, "10", None])
+def test_invalid_durations_are_not_converted(value):
+    timing = ollama.request_timing(REPORTED | {"eval_duration": value}, client_wall_seconds=0.6)
+    assert timing["status"] == "partial"
+    assert timing["server_eval_seconds"] is None
+    assert timing["problems"] == ["eval_duration is not a nonnegative integer"]
+
+
+def test_impossible_duration_sums_are_inconsistent_not_clamped():
+    oversized = REPORTED | {"eval_duration": 900_000_000}
+    timing = ollama.request_timing(oversized, client_wall_seconds=0.5)
+    assert timing["status"] == "inconsistent"
+    assert timing["server_unattributed_seconds"] is None
+    # Ollama's 0.54 s total cannot fit inside a 0.5 s request observed by the runner.
+    assert timing["client_outside_server_seconds"] is None
+    assert len(timing["problems"]) == 2
+
+
+def test_differences_within_the_timing_tolerance_are_kept():
+    timing = ollama.request_timing(REPORTED, client_wall_seconds=0.54 - 5e-7)
+    assert timing["status"] == "reported"
+    assert timing["client_outside_server_seconds"] == pytest.approx(-5e-7)

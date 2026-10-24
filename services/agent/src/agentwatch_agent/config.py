@@ -7,7 +7,8 @@ from dataclasses import asdict, dataclass, field
 
 from agentwatch_worker.ollama import CHAT_TIMEOUT_SECONDS
 
-RUNNER_VERSION = "agent-runner-v1"
+# v2 (A04): GPU sampling, per-round sampler cost and the inference request-timing breakdown.
+RUNNER_VERSION = "agent-runner-v2"
 CONTRACT_VERSION = "live-contracts-v1"
 DEFAULT_MODEL = "qwen3:1.7b"
 # Greedy decoding with bounded output. Temperature 0 does not by itself make runs repeatable.
@@ -19,9 +20,8 @@ MODEL_SOCKET_TIMEOUT_SECONDS = CHAT_TIMEOUT_SECONDS
 DEFAULT_SAMPLING_INTERVAL_SECONDS = 0.25
 DEFAULT_CANCEL_POLL_SECONDS = 1.0
 # The live API retains at most 100,000 records per run; keep sampling well below that so step
-# events always fit. Each sampling round emits one record per CPU metric.
+# events always fit. Each sampling round emits one record per sampled metric.
 MAX_SAMPLE_RECORDS_PER_RUN = 80_000
-SAMPLE_RECORDS_PER_ROUND = 2
 
 
 def _positive_int(name: str, value: object) -> None:
@@ -39,13 +39,16 @@ def _positive_seconds(name: str, value: object) -> None:
         raise ValueError(f"{name} must be finite and positive seconds")
 
 
-def validate_sample_budget(run_timeout_seconds: float, sampling_interval_seconds: float) -> None:
+def validate_sample_budget(
+    run_timeout_seconds: float, sampling_interval_seconds: float, records_per_round: int
+) -> None:
     """Refuse settings whose resource samples could exceed the live per-run record budget."""
     _positive_seconds("run_timeout_seconds", run_timeout_seconds)
     _positive_seconds("sampling_interval_seconds", sampling_interval_seconds)
+    _positive_int("records_per_round", records_per_round)
     rounds = run_timeout_seconds / sampling_interval_seconds
-    if rounds * SAMPLE_RECORDS_PER_ROUND > MAX_SAMPLE_RECORDS_PER_RUN:
-        longest = MAX_SAMPLE_RECORDS_PER_RUN / SAMPLE_RECORDS_PER_ROUND * sampling_interval_seconds
+    if rounds * records_per_round > MAX_SAMPLE_RECORDS_PER_RUN:
+        longest = MAX_SAMPLE_RECORDS_PER_RUN / records_per_round * sampling_interval_seconds
         raise ValueError(
             f"A {run_timeout_seconds:g} s run sampled every {sampling_interval_seconds:g} s "
             f"exceeds the {MAX_SAMPLE_RECORDS_PER_RUN}-record sample budget per live run; "
@@ -84,6 +87,9 @@ class RunConfiguration:
     model: str
     system_prompt: str
     tools: tuple[dict, ...]
+    # Every metric sampled each round, in order. Which of them a host can actually measure
+    # is evidence, not configuration.
+    sampled_metrics: tuple[str, ...]
     chat_options: dict = field(default_factory=lambda: dict(DEFAULT_CHAT_OPTIONS))
     limits: RunLimits = field(default_factory=RunLimits)
     sampling_interval_seconds: float = DEFAULT_SAMPLING_INTERVAL_SECONDS
@@ -97,7 +103,11 @@ class RunConfiguration:
             raise ValueError("model must be nonblank")
         _positive_seconds("sampling_interval_seconds", self.sampling_interval_seconds)
         _positive_seconds("cancel_poll_seconds", self.cancel_poll_seconds)
-        validate_sample_budget(self.limits.run_timeout_seconds, self.sampling_interval_seconds)
+        validate_sample_budget(
+            self.limits.run_timeout_seconds,
+            self.sampling_interval_seconds,
+            len(self.sampled_metrics),
+        )
 
     def as_dict(self) -> dict:
         return asdict(self)
