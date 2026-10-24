@@ -240,7 +240,7 @@ These can be completed before adding an agent.
   rounds, and `coverage` reports per-step windows. Three GPU runs: median 0.250 s, max 0.290 s,
   no missed rounds; 0.24 s model calls were shorter than the 250 ms interval and one had no
   GPU reading. Open: other hosts, longer workloads and a choice of interval.
-  2026-10-24 (A04 CPU/retrieval): `coverage-v2` joins each step only to its own resource and
+  2026-10-24 (A04 CPU/retrieval): `coverage-v3` joins each step only to its own resource and
   never reports a counter increase from one reading. 24 runs: median 0.250 s, max 0.299 s, no
   missed rounds; every retrieval and most tool steps were shorter than one interval, and
   about half of the model-call windows held fewer than two CPU readings.
@@ -297,7 +297,7 @@ These can be completed before adding an agent.
   with a dedicated PostgreSQL 17 test database and no skips; Ruff passed. Open until B03 serves
   rows from a real run: no endpoint calls the join yet, live runs record no declared sampling
   interval (coverage stays null without one), and only synthetic fixtures have been joined.
-  2026-10-24: the producer-side `coverage-v2` report applies the contract's join rules to a
+  2026-10-24: the producer-side `coverage-v3` report applies the contract's join rules to a
   run's journal (own resource and service, registered clocks, `[started, finished)`), aligned
   with `step-features-v1`'s statuses and join key; it does not import the service join.
 - [ ] Add automatic dashboard updates, connection status, last-update time, and stale-data indicators.

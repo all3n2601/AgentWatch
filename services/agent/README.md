@@ -191,7 +191,7 @@ until model-written code gets its own review, do not add free-form edits or comm
 ## Sampling evidence
 
 `uv run --package agentwatch-agent python -m agentwatch_agent coverage <run dir>` prints a
-`coverage-v2` report from the run's journal and evidence. It refuses records of another run
+`coverage-v3` report from the run's journal and evidence. It refuses records of another run
 and conflicting records under one identity, and excludes (and counts) records in a clock
 domain the run never registered. Each step joins only its own registered resource and
 service (`own`); other sampled resources are labeled `context`. Statuses follow the

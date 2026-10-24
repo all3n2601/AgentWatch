@@ -422,6 +422,7 @@ def test_report_covers_a_test_double_runner_run(mean_task, server, tmp_path):
         open_gpu=FakeGpu,
     ).run()
     report = coverage_report(outcome.evidence_path.parent)
+    assert report["method"] == "coverage-v3"
     assert report["run_id"] == str(outcome.run_id)
     registered = server.only_run().registration.resources
     sampled_services = {"agentwatch-agent-runner", "nvidia-nvml"}

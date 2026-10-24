@@ -1,6 +1,6 @@
 """Report how one run's resource samples cover its steps, from what the runner journaled.
 
-This is producer-side evidence for checking sampling (method `coverage-v2`), not the
+This is producer-side evidence for checking sampling (method `coverage-v3`), not the
 service's window join (B02). It reads `live-journal.jsonl` and `agent-evidence.json` and
 applies the live contracts' rules:
 
@@ -42,7 +42,9 @@ from pydantic import ValidationError
 
 from agentwatch_agent.resources import COUNTER_METRICS, interval_summary
 
-COVERAGE_METHOD = "coverage-v2"
+# v3 lists `sampling` and `context` as entries carrying their full identity; v2 keyed them by
+# resource ID alone. The method names the output shape, so recorded documents stay readable.
+COVERAGE_METHOD = "coverage-v3"
 RECORD_MODELS = {"resource_sample": ResourceSample, "step_event": StepEvent}
 # The live contracts' timing-breakdown tolerance.
 TIMING_TOLERANCE_SECONDS = 1e-6
@@ -306,22 +308,19 @@ def coverage_report(run_dir: Path) -> dict:
         if isinstance(entry, dict) and isinstance(entry.get("resource_id"), str)
     }
     # One entry per target and clock domain: ticks of different clocks are never compared.
-    sampling = [
-        {"resource_id": resource_id, "service_id": service_id, "clock_id": clock_id}
-        | interval_summary(sorted(tick for clock, tick in by_tick if clock == clock_id), declared)
-        | {
-            "metrics": sorted(
-                {
-                    r["metric"]
-                    for (clock, _), group in by_tick.items()
-                    if clock == clock_id
-                    for r in group
-                }
+    sampling = []
+    for (resource_id, service_id), by_tick in sorted(rounds.items()):
+        ticks: dict[str, list[int]] = defaultdict(list)
+        metrics: dict[str, set[str]] = defaultdict(set)
+        for (clock_id, tick), readings in by_tick.items():
+            ticks[clock_id].append(tick)
+            metrics[clock_id].update(reading["metric"] for reading in readings)
+        for clock_id in sorted(ticks):
+            sampling.append(
+                {"resource_id": resource_id, "service_id": service_id, "clock_id": clock_id}
+                | interval_summary(sorted(ticks[clock_id]), declared)
+                | {"metrics": sorted(metrics[clock_id])}
             )
-        }
-        for (resource_id, service_id), by_tick in sorted(rounds.items())
-        for clock_id in sorted({clock for clock, _tick in by_tick})
-    ]
     timings = _call_timings(evidence)
     steps = [
         _step_coverage(event, rounds, scopes, declared, timings.get(event["step_id"]))
