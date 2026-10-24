@@ -178,6 +178,14 @@ export function wallSteps(payloads: readonly unknown[]): WallStep[] {
 
 const MICROSECONDS_PER_MILLISECOND = 1000;
 const BYTES_PER_MEBIBYTE = 1024 * 1024;
+/** Cumulative microsecond counters (exact versioned names), plotted as per-sample increases. */
+const MICROSECOND_COUNTER_LABELS: Record<string, string> = {
+  "cpu.cgroup.throttled_usec.v1": "CPU throttled per sample",
+  "cpu.psi.some.total_usec.v1": "CPU stall per sample (PSI some, host)",
+  "cpu.cgroup.usage_usec.v1": "Runner cgroup CPU used per sample",
+  "cpu.cgroup.psi.some.total_usec.v1":
+    "CPU stall per sample (PSI some, runner cgroup)",
+};
 /**
  * Labels for the registered whole-device NVML gauges (A04). Exact versioned names: a future
  * version may change meaning, so it keeps its raw name until it is described here.
@@ -256,14 +264,16 @@ export function liveSampleSeries(payloads: readonly unknown[]): MetricSeries[] {
   }
   for (const entry of series.values()) {
     entry.points.sort((a, b) => a.atMs - b.atMs);
-    if (entry.metric.startsWith("cpu.cgroup.throttled_usec")) {
-      // A cumulative counter: plot the increase since the previous measured reading.
-      entry.label = "CPU throttled per sample";
+    const counter = MICROSECOND_COUNTER_LABELS[entry.metric];
+    if (counter) {
+      // A cumulative counter: plot the increase since the previous measured reading. A
+      // decrease is a counter reset, shown as a gap rather than negative time.
+      entry.label = counter;
       entry.unit = "ms";
       let previous: number | null = null;
       entry.points = entry.points.map(({ atMs, value }) => {
         const delta =
-          value === null || previous === null
+          value === null || previous === null || value < previous
             ? null
             : (value - previous) / MICROSECONDS_PER_MILLISECOND;
         if (value !== null) previous = value;

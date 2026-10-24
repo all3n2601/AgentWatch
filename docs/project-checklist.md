@@ -222,14 +222,28 @@ These can be completed before adding an agent.
 - [ ] Run the sampler on actual Linux hosts with CPU pressure and cgroup v2 enabled.
   2026-10-13: PSI and cgroup v2 readings were available in WSL2 Ubuntu on the GPU laptop
   ([access record](gpu-measurement-access.md)); WSL2 measures its VM, so a non-WSL host remains.
+  2026-10-24 (A04, branch `feature/cpu-retrieval-telemetry`, not yet merged): 24 real runs
+  in two attempts sampled five CPU metrics in WSL2 and in Docker containers with their own
+  cgroup, all `measured`. The containers share the WSL2 kernel, so a separate Linux host
+  remains open ([A04 CPU record](gpu-measurement-access.md#a04-cpu-stall-cgroup-and-retrieval-timing-october-24-2026)).
 - [ ] Establish a stable CPU baseline on the GPU laptop. 2026-10-13: 6 of 16 coding experiments
   passed the unchanged 15% variability gate (CVs 10.9–42.2%); validation is inconclusive there.
 - [ ] Exercise supported and unavailable cgroup configurations, permissions, and malformed counters.
+  2026-10-24 (A04): three real configurations: the shared WSL2 cgroup without a limit, and a
+  container cgroup with `cpu.max` 1 CPU and 0.25 CPU. Throttling measured 0 where the limit
+  did not bind, and 286–437 ms in test steps at 0.25 CPU. Missing PSI, cgroup or counters and
+  malformed, negative and non-finite values are covered by fixtures in
+  `services/agent/tests/test_resources.py` only. Permission failures, cgroup v1 and systemd
+  per-service cgroups are not exercised.
 - [ ] Measure achieved sampling intervals, missed samples, and short-step coverage.
   2026-10-24 (A04, GPU laptop/WSL2 only): runs record achieved intervals, late and missed
   rounds, and `coverage` reports per-step windows. Three GPU runs: median 0.250 s, max 0.290 s,
   no missed rounds; 0.24 s model calls were shorter than the 250 ms interval and one had no
   GPU reading. Open: other hosts, longer workloads and a choice of interval.
+  2026-10-24 (A04 CPU/retrieval): `coverage-v2` joins each step only to its own resource and
+  never reports a counter increase from one reading. 24 runs: median 0.250 s, max 0.299 s, no
+  missed rounds; every retrieval and most tool steps were shorter than one interval, and
+  about half of the model-call windows held fewer than two CPU readings.
 - [ ] Compare a genuinely CPU-starved task with a busy worker queue and a naturally long clean task.
 - [ ] Verify boundaries under clock changes and specify monotonic timing for duration calculations.
 - [ ] Measure profiler and sampler overhead against uninstrumented execution.
@@ -237,6 +251,9 @@ These can be completed before adding an agent.
   sampled minus unsampled median −0.5 ms and +3.1 ms, within a 54 ms shift between attempts,
   so no effect was resolved; sampler thread 2.8–3.6 ms CPU per round. Open: live delivery
   under sustained sampling, other hosts, and a declared overhead budget (O01).
+  2026-10-24 (A04 CPU/retrieval): agent-overhead-v1 with five CPU metrics, two attempts each in
+  WSL2 and a 1-CPU container: median wall −0.4% to +4.9% (sign varies, not resolved);
+  runner CPU +4.2 to +5.3 ms per repetition; sampler thread 1.0–2.4% of a core in runs.
 - [ ] Repeat experiments across more workload sizes and host loads; establish false-positive rates.
 - [ ] Verify task timeout/cancellation cleans up worker and child processes under failure.
 
@@ -280,6 +297,9 @@ These can be completed before adding an agent.
   with a dedicated PostgreSQL 17 test database and no skips; Ruff passed. Open until B03 serves
   rows from a real run: no endpoint calls the join yet, live runs record no declared sampling
   interval (coverage stays null without one), and only synthetic fixtures have been joined.
+  2026-10-24: the producer-side `coverage-v2` report applies the contract's join rules to a
+  run's journal (own resource and service, registered clocks, `[started, finished)`), aligned
+  with `step-features-v1`'s statuses and join key; it does not import the service join.
 - [ ] Add automatic dashboard updates, connection status, last-update time, and stale-data indicators.
   Completed-history polling, source status, and last-refresh time now exist; live-run streaming and
   stale-event indicators remain unfinished.
@@ -369,8 +389,10 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   (`ollama-request-timing-v1`) on the laptop; the inference queue is recorded as unavailable
   because Ollama reports none. vLLM and DCGM are not installed there and remain open.
 - [ ] Add retrieval telemetry from Qdrant requests and queue/service latency where observable.
-  No retrieval metric is registered; retrieval is in-process BM25 (A04 CPU/retrieval support
-  is Akshayaa's).
+  No retrieval metric is registered; retrieval is in-process BM25. 2026-10-24 (A04): each
+  search records `retrieval-timing-v1` (service time apart from dispatch, index queue
+  `unsupported`); 12 real searches took 46–117 µs of service time against 0.9–12.9 ms of
+  dispatch ([A04 CPU record](gpu-measurement-access.md#a04-cpu-stall-cgroup-and-retrieval-timing-october-24-2026)). Qdrant and networked retrieval remain open.
 - [ ] Add Prometheus collection and resource/service identity correlation.
 - [ ] Extend rule attribution to CPU, inference, retrieval, none, and explicit uncertainty.
 - [ ] Add CPU hardware saturation, inference, and retrieval views to the dashboard.
@@ -557,6 +579,12 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   row hashes, and runs the contract's single-feature AUC leakage check on the training split
   (`test_dataset_splits.py`, 100% line and branch coverage). Unseen tasks still depend on a real
   `task_id`.
+- [x] Orchestrate the dataset stages with Airflow (2026-10-24): the `agentwatch_dataset` DAG in
+  `pipelines/orchestration` runs acquire → build → validate → split → version → push →
+  summarize, each in its stage's own environment, with only the DVC push retried
+  (`pipelines/orchestration/tests`). Run end to end with `make pipeline-run` on the shared
+  `steps-v1.2+5954f97ef8b2` evidence and with a new recorded run added. Alerts, committing
+  `data/*.dvc` from the DAG, and the Gantt-chart optimization are open.
 - [ ] Hold out unseen tasks and at least one injection method.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
@@ -640,6 +668,9 @@ improvement or enable adaptive control from an uncontrolled/inconclusive compari
 These are project targets, not achievements inferred from the current demo.
 
 - [ ] All three resource classes work on the chosen workload.
+  2026-10-24 (A04): CPU and GPU samples and per-call inference and retrieval timing are
+  recorded for the fixed agent tasks on one laptop. Retrieval has no sampled resource, and no
+  contention has been attributed yet (A05, rule attribution).
 - [ ] Clean evaluation steps are classified none at least 95% of the time on a declared test set.
 - [ ] Learned attribution improves the chosen mixed-contention metric over a strong rule baseline;
   the original plan targets roughly 10 percentage points, subject to honest measured results.

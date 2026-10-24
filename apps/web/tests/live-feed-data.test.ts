@@ -95,6 +95,33 @@ test("unavailable CPU readings stay gaps instead of becoming zero", () => {
   assert.equal(psi.unavailable, 1);
 });
 
+test("CPU stall and usage counters become per-sample ms, with resets as gaps", () => {
+  const counter = (metric: string, second: number, value: number | null) => ({
+    ...sample(metric, second, value),
+    unit: "microseconds",
+  });
+  const series = liveSampleSeries([
+    counter("cpu.psi.some.total_usec.v1", 1, 499_359_020),
+    counter("cpu.psi.some.total_usec.v1", 2, 499_361_020),
+    counter("cpu.psi.some.total_usec.v1", 3, 100),
+    counter("cpu.cgroup.usage_usec.v1", 1, 1_000),
+    counter("cpu.cgroup.usage_usec.v1", 2, 251_000),
+  ]);
+  const stall = series.find((s) => s.metric === "cpu.psi.some.total_usec.v1");
+  const usage = series.find((s) => s.metric === "cpu.cgroup.usage_usec.v1");
+  assert.equal(stall?.label, "CPU stall per sample (PSI some, host)");
+  assert.equal(stall?.unit, "ms");
+  // The first reading has no predecessor and the reset is a gap, never negative time.
+  assert.deepEqual(
+    stall?.points.map((p) => p.value),
+    [null, 2, null],
+  );
+  assert.deepEqual(
+    usage?.points.map((p) => p.value),
+    [null, 250],
+  );
+});
+
 test("live NVML GPU samples are labeled, converted to MiB and keep gaps", () => {
   const gpu = (
     metric: string,

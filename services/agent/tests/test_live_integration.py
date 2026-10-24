@@ -62,7 +62,7 @@ def runner(task, client, model, tmp_path):
         model=model,
         transport=client,
         output_dir=tmp_path / "run",
-        sampling_interval_seconds=0.05,
+        sampling_interval_seconds=0.06,
         cancel_poll_seconds=0.05,
         flush_interval_seconds=0.05,
         retry=NO_SLEEP,
