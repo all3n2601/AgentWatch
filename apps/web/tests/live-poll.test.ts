@@ -89,8 +89,10 @@ test("a failed read keeps the last data and retries until a read recovers", () =
 });
 
 test("retry delays grow exponentially with bounded jitter and a 30 s cap", () => {
-  assert.equal(retryDelayMs(1, 0), 800);
+  // Jitter never takes the first retry below the 1 s floor.
+  assert.equal(retryDelayMs(1, 0), 1_000);
   assert.equal(retryDelayMs(1, 0.5), 1_000);
+  assert.equal(retryDelayMs(2, 0), 1_600);
   assert.ok(retryDelayMs(1, 0.9999) <= 1_200);
   assert.equal(retryDelayMs(3, 0.5), 4_000);
   for (const attempt of [6, 10, 100, 2_000])
@@ -293,4 +295,60 @@ test("starting a check while one is in progress keeps its starting count", () =>
   );
   const checking = beginLateCheck(closed);
   assert.equal(beginLateCheck(checking), checking);
+});
+
+test("a pending record becomes applied when the snapshot applies it without redelivery", () => {
+  const queued = stepEvent("tool-1", 0, "queued");
+  const running = stepEvent("tool-1", 1, "running", { started: 1 });
+  const completed = stepEvent("tool-1", 2, "completed", {
+    started: 1,
+    finished: 2,
+  });
+  const snapshot = (records: unknown[], current: typeof queued) =>
+    runSnapshotSchema.parse(
+      runSnapshot({ steps: [stepView(current)], records }),
+    );
+  // The completion arrives before the running revision, so it waits as pending.
+  let feed = applySnapshot(
+    initialRunFeed(RUN_ID),
+    snapshot(
+      [savedRecord(queued, 1), savedRecord(completed, 2, "pending")],
+      queued,
+    ),
+    1_000,
+  );
+  assert.deepEqual(
+    feed.records.map((r) => r.disposition),
+    ["applied", "pending"],
+  );
+  // The running revision fills the gap; the completion is not delivered again.
+  feed = applySnapshot(
+    feed,
+    snapshot([savedRecord(running, 3)], completed),
+    2_000,
+  );
+  assert.deepEqual(
+    feed.records.map((r) => [r.sequence, r.disposition]),
+    [
+      [1, "applied"],
+      [2, "applied"],
+      [3, "applied"],
+    ],
+  );
+});
+
+test("records beyond the snapshot's applied step state stay pending", () => {
+  const queued = stepEvent("tool-1", 0, "queued");
+  const completed = stepEvent("tool-1", 2, "completed", { finished: 2 });
+  const feed = applySnapshot(
+    initialRunFeed(RUN_ID),
+    runSnapshotSchema.parse(
+      runSnapshot({
+        steps: [stepView(queued)],
+        records: [savedRecord(queued, 1), savedRecord(completed, 2, "pending")],
+      }),
+    ),
+    1_000,
+  );
+  assert.equal(feed.records[1].disposition, "pending");
 });

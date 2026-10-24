@@ -312,8 +312,8 @@ These can be completed before adding an agent.
   receipt; the freshness status is a polite live region so the stale transition is announced.
   Its only data source is a synthetic development replay; F02 must poll the B01 live read API
   before automatic live updates exist. Keep this open until then.
-  F02, October 24, 2026 (branch `feature/live-feed`, building on the #31 prototype; local, not
-  yet in a PR): `/live` polls the B01 live read API in the browser through validated web routes
+  F02, October 24, 2026 (PR #39, branch `feature/live-feed`, building on the #31 prototype;
+  in review): `/live` polls the B01 live read API in the browser through validated web routes
   (`apps/web/app/api/live/runs/`) instead of `router.refresh()`. The selected run is read every
   2 s after the last record sequence received; a failed read keeps the last data and selection
   and retries with backoff (1–30 s, ±20% jitter); polling stops once a closed run is drained
@@ -331,8 +331,13 @@ These can be completed before adding an agent.
   and invalid UUIDs. Final manual check on the real stack, October 24, 2026: every check was
   done first in a normal desktop browser window on a MacBook, then the live view at iPhone SE
   and 768 px widths, 200% zoom and keyboard navigation; "Check for late evidence"
-  shows that it is checking, then its result; `?replay=` no longer shows a replay. Left
-  unchecked for reviewers to confirm.
+  shows that it is checking, then its result; `?replay=` no longer shows a replay.
+  PR #39 review fixes, October 24, 2026: jittered retry delays are clamped to the 1–30 s bounds,
+  and cached record dispositions are reconciled with each snapshot's step state, so a pending
+  completion applied later without redelivery ends its step on the timeline
+  (`apps/web/tests/live-poll.test.ts`; browser regression in `apps/web/e2e/live-feed.spec.ts`).
+  After merging current `main` (#38's CPU counters keyed by metric): 72 web unit tests, 25
+  Playwright tests, lint, typecheck and build pass. Left unchecked for reviewers to confirm.
 - [ ] Display active steps, terminal failures, and incomplete telemetry without misleading totals.
   F01, October 18, 2026: `/live` renders StepEvent records through one adapter
   (`apps/web/lib/step-events.ts`) that applies each step's contiguous revision prefix and
@@ -350,7 +355,7 @@ These can be completed before adding an agent.
   Manual browser checks at commit `a355f8d`: keyboard navigation (focus visible; replay
   scenarios open with Enter) and 200% browser zoom. Real live runs are not displayed until F02 connects the B01 read API,
   so this stays open.
-  F02, October 24, 2026 (branch `feature/live-feed`): step state, timings and gaps now come from
+  F02, October 24, 2026 (PR #39, branch `feature/live-feed`): step state, timings and gaps now come from
   the service's validated snapshot (`apps/web/lib/live-snapshot.ts`), so pending and expired
   revisions are never applied and expired gaps are reported as evidence that will never be
   applied (`apps/web/tests/live-snapshot.test.ts`: pending → expired → filled prefix). Totals

@@ -83,16 +83,48 @@ export const initialRunFeed = (runId: string): RunFeed => ({
   lateCheck: null,
 });
 
-/** Exponential backoff with jitter, capped at RETRY_MAX_DELAY_MS. `random` is in [0, 1). */
+/**
+ * Exponential backoff with jitter, kept within [RETRY_BASE_DELAY_MS, RETRY_MAX_DELAY_MS].
+ * `random` is in [0, 1).
+ */
 export function retryDelayMs(attempt: number, random: number) {
   const exponential = RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1);
   const jitter = 1 + RETRY_JITTER_FRACTION * (2 * random - 1);
+  const jittered = Math.min(exponential, RETRY_MAX_DELAY_MS) * jitter;
   return Math.round(
-    Math.min(
-      RETRY_MAX_DELAY_MS,
-      Math.min(exponential, RETRY_MAX_DELAY_MS) * jitter,
-    ),
+    Math.min(RETRY_MAX_DELAY_MS, Math.max(RETRY_BASE_DELAY_MS, jittered)),
   );
+}
+
+/**
+ * Marks cached step records applied once the snapshot's step state has reached them. `after`
+ * filters immutable arrivals, so a pending record that the service applies later is never
+ * delivered again; only the snapshot shows the change. The service applies each step's
+ * revisions as a contiguous prefix, so every revision up to the step's current one is applied.
+ */
+function reconcileDispositions(
+  records: LiveSavedRecord[],
+  snapshot: LiveRunSnapshot,
+): LiveSavedRecord[] {
+  if (records.every((record) => record.disposition === "applied"))
+    return records;
+  const appliedThrough = new Map(
+    snapshot.steps.map(({ event }) => [event.step_id, event.sequence]),
+  );
+  let changed = false;
+  const reconciled = records.map((record) => {
+    const { payload } = record;
+    if (
+      record.disposition === "applied" ||
+      payload.record_type !== "step_event"
+    )
+      return record;
+    const current = appliedThrough.get(payload.step_id);
+    if (current === undefined || payload.sequence > current) return record;
+    changed = true;
+    return { ...record, disposition: "applied" as const };
+  });
+  return changed ? reconciled : records;
 }
 
 /** Applies one valid response. `nowMonotonicMs` is the browser's performance.now(). */
@@ -119,7 +151,10 @@ export function applySnapshot(
   return {
     ...feed,
     snapshot: { ...snapshot, records: [] },
-    records: added.length ? [...feed.records, ...added] : feed.records,
+    records: reconcileDispositions(
+      added.length ? [...feed.records, ...added] : feed.records,
+      snapshot,
+    ),
     cursor,
     receipt: added.length
       ? { ageAtAnchorMs: 0, anchorMonotonicMs: nowMonotonicMs }

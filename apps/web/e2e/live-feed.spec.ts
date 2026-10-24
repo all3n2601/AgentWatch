@@ -80,6 +80,53 @@ test("a run moves from active to terminal and polling stops once it closes", asy
     .toBe(readsWhenClosed + 1);
 });
 
+test("a pending completion applied later without redelivery ends the step on the timeline", async ({
+  page,
+  request,
+}) => {
+  const runId = newRunId();
+  const { queued, running, completed } = runningTool(runId);
+  const timelineRow = page
+    .getByRole("list", { name: "Step timeline" })
+    .getByRole("listitem")
+    .filter({ hasText: "tool-1" });
+  await registerRun(
+    request,
+    fixtureRun(runId, [
+      // The completion arrives before the running revision and waits as pending.
+      snapshot(runId, {
+        steps: [queued],
+        records: [queued, [completed, "pending"]],
+        gaps: [
+          {
+            step_id: "tool-1",
+            missing_sequence: 1,
+            first_pending_sequence: 2,
+            expired: false,
+          },
+        ],
+      }),
+      // The running revision fills the gap and the service applies the completion, but reads
+      // after record 2 never return it again: only the snapshot's step state shows the change.
+      snapshot(runId, {
+        state: "completed",
+        steps: [completed],
+        records: [queued, completed, running],
+      }),
+    ]),
+  );
+  await page.clock.install();
+  await page.goto(`/live?liveRun=${runId}`);
+  await expect(connection(page)).toContainText("Connected");
+  await expect(timelineRow).toContainText("in progress");
+
+  await advanceRun(request, runId);
+  await page.clock.runFor(POLL_MS);
+  await expect(page.getByText("Final step totals")).toBeVisible();
+  await expect(timelineRow).not.toContainText("in progress");
+  await expect(timelineRow).toContainText("completed");
+});
+
 test("a dropped connection retries with backoff, keeps the last data and recovers", async ({
   page,
   request,
