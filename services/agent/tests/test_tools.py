@@ -165,3 +165,36 @@ def test_interruption_before_a_request_reports_that_nothing_was_started():
     with pytest.raises(RunFailure) as expired:
         wait_interruptibly(dict, cancel=threading.Event(), deadline_monotonic=time.monotonic() - 1)
     assert expired.value.request_started is False
+
+
+def fake_result(**changes):
+    from agentwatch_sandbox.project_tests import ProjectTestResult
+
+    values = {
+        "outcome": "passed",
+        "returncode": 0,
+        "tests_run": 5,
+        "output_tail": "OK",
+        "wall_seconds": 0.5,
+        "cpu_seconds": None,
+        "isolation": "container",
+    }
+    return ProjectTestResult(**(values | changes))
+
+
+def test_a_sandbox_limit_is_a_failed_tool_not_a_failing_test(dispatcher, monkeypatch):
+    from agentwatch_agent import tools as tools_module
+
+    limited = fake_result(outcome="resource_limit", returncode=None, limit_exceeded="memory")
+    monkeypatch.setattr(tools_module, "run_project_tests", lambda *a, **k: limited)
+    with pytest.raises(ToolFailed, match=r"sandbox limit \(memory\)") as failure:
+        run(dispatcher, "run_tests", {})
+    assert failure.value.evidence["outcome"] == "resource_limit"
+
+
+def test_unmeasured_cpu_time_claims_no_cpu_scope(dispatcher, monkeypatch):
+    from agentwatch_agent import tools as tools_module
+
+    monkeypatch.setattr(tools_module, "run_project_tests", lambda *a, **k: fake_result())
+    outcome = run(dispatcher, "run_tests", {})
+    assert (outcome.cpu_seconds, outcome.cpu_scope) == (None, None)
