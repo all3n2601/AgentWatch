@@ -82,18 +82,28 @@ URLs are excluded: the same configuration can run on different hosts.
 - **Resource IDs** are opaque and new for every runner process. `model-server-*` identifies
   the model endpoint as used by this run, not an Ollama process lifetime.
 - **Resource samples:** one thread reads every probe every 250 ms, each with its own tick in
-  the runner's clock domain. The tool host gets CPU PSI `some avg10` and the runner cgroup's
-  `throttled_usec`; the GPU (`gpu-*`, service `nvidia-nvml`, class `inference`) gets five
+  the runner's clock domain. The tool host gets five CPU metrics: host PSI `some avg10`, the
+  runner cgroup's `throttled_usec`, and three cumulative counters whose increase across a step
+  window measures that window: host PSI `some total`, the cgroup's `usage_usec` and the
+  cgroup's own PSI `some total` ([ADR 0005](../../docs/adr/0005-cpu-counters-retrieval-timing-and-step-correlation.md)).
+  The GPU (`gpu-*`, service `nvidia-nvml`, class `inference`) gets five
   NVML gauges: kernel and memory utilization, memory used, power and SM clock
   ([registry](../../docs/live-ingestion.md), [ADR 0003](../../docs/adr/0003-gpu-and-inference-measurement.md)).
-  PSI is host-wide, the counter covers the runner's whole cgroup and NVML covers the whole
-  device (every process on it), so none is step-exclusive. On macOS CPU metrics are
-  `unsupported` and so are GPU metrics without NVML; a library that fails to initialize,
+  PSI is host-wide (in WSL2 the whole VM, including Docker), the cgroup counters cover the
+  runner's whole cgroup (including its test subprocesses; in WSL2 every process in the distro)
+  and NVML covers the whole device (every process on it), so none is step-exclusive. On macOS
+  CPU metrics are `unsupported` and so are GPU metrics without NVML; a kernel without PSI or
+  a cgroup without `cpu.pressure` is `unsupported`, a cpu.stat without a counter is
+  `unavailable`, and a negative or unparsable value is `malformed`; a library that fails to initialize,
   lacks an entry point the binding needs, or a missing device is `unavailable`. Because
-  `run` always samples the GPU, it needs a live API that registers the GPU metrics, and the
-  longest `--run-timeout` the sample budget allows at 250 ms is about 2,857 s. None is ever zero. `run` samples GPU index 0 and records
+  `run` always samples all 10 metrics, it needs a live API that registers them, and the
+  longest `--run-timeout` the sample budget allows at 250 ms is 2,000 s. None is ever zero. `run` samples GPU index 0 and records
   the device count, name, driver and memory size under `resource_sampling.resources`.
-  No retrieval metric exists yet: retrieval is in-process BM25.
+  No retrieval metric exists: retrieval is in-process BM25. Each `search_docs` call instead
+  records `retrieval-timing-v1` in its evidence: the search's own monotonic wall and thread
+  CPU time (service time), passages scored, and the index queue as `unsupported`, because a
+  synchronous in-process index never queues a request. The step's queue delay is runner
+  dispatch. `retrieval_index` records the index build during setup, which no step covers.
 - **`task_passed`** in the evidence reports only the runner's verification. A run can still be
   `failed` with `task_passed: true` when a runner error (listed in `background_errors` or
   `cleanup_errors`) happened after verification; the run's state and reason say which.
@@ -177,7 +187,15 @@ until model-written code gets its own review, do not add free-form edits or comm
 ## Sampling evidence
 
 `uv run --package agentwatch-agent python -m agentwatch_agent coverage <run dir>` prints a
-`coverage-v1` report built only from the run's journal: per resource, the achieved sampling
+`coverage-v2` report from the run's journal and evidence. It refuses records of another run
+and conflicting records under one identity, and excludes (and counts) records in a clock
+domain the run never registered. Each step joins only its own registered resource and
+service (`own`); other sampled resources are labeled `context`. Statuses follow the
+FeatureRow vocabulary with the service join's meanings: `missing` (not executed, or no
+resource or service), `empty` (no sample stream for the resource and service, as for the
+model server and docs index), `unaligned`, `no_overlap` and `present`. Each executed step also
+reports its dispatch queue apart from service time (Ollama's total, or the search alone) and
+the remainder as runner handling. It also reports, per resource, the achieved sampling
 interval (median, p90, max), late and early rounds, and missed rounds (rounds the declared
 cadence expects over the sampled span, minus rounds taken; after a slow round the sampler
 takes the overdue rounds back to back, so those count as late and early, not missed); p90

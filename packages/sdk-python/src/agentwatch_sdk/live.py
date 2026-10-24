@@ -177,6 +177,11 @@ class StepEvent(StepEventFields):
 METRICS = {
     "cpu.psi.some.avg10.v1": ("cpu_sandbox", "percent", 0, 100),
     "cpu.cgroup.throttled_usec.v1": ("cpu_sandbox", "microseconds", 0, None),
+    # A04: cumulative stall and usage counters, whose increase across a step window is a
+    # measurement for that window (avg10 is a 10 s moving average and cannot resolve it).
+    "cpu.psi.some.total_usec.v1": ("cpu_sandbox", "microseconds", 0, None),
+    "cpu.cgroup.usage_usec.v1": ("cpu_sandbox", "microseconds", 0, None),
+    "cpu.cgroup.psi.some.total_usec.v1": ("cpu_sandbox", "microseconds", 0, None),
     # A04: whole-device NVML gauges for the GPU serving inference, never per process.
     "gpu.nvml.utilization.gpu.v1": ("inference", "percent", 0, 100),
     "gpu.nvml.utilization.memory.v1": ("inference", "percent", 0, 100),

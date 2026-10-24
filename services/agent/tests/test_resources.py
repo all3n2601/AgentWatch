@@ -32,7 +32,7 @@ def sampler(tmp_path, proc, cgroup_root=None):
     return make_sampler([CpuProbe(RESOURCE, proc, cgroup_root or tmp_path / "cgroup")])
 
 
-def linux_fixture(tmp_path, pressure, cpu_stat):
+def linux_fixture(tmp_path, pressure, cpu_stat, cgroup_pressure=None):
     proc = tmp_path / "proc"
     (proc / "pressure").mkdir(parents=True)
     (proc / "self").mkdir()
@@ -43,6 +43,8 @@ def linux_fixture(tmp_path, pressure, cpu_stat):
     group.mkdir(parents=True)
     if cpu_stat is not None:
         (group / "cpu.stat").write_text(cpu_stat)
+    if cgroup_pressure is not None:
+        (group / "cpu.pressure").write_text(cgroup_pressure)
     return proc
 
 
@@ -65,6 +67,94 @@ def test_measured_linux_readings(tmp_path):
     # A measured zero stays a measured zero, distinct from unavailable.
     assert (throttled.availability, throttled.value) == ("measured", 0.0)
     assert psi.tick_ns == throttled.tick_ns
+
+
+def test_cumulative_cpu_counters_are_read_with_the_gauges(tmp_path):
+    proc = linux_fixture(
+        tmp_path,
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=499359020\n"
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+        "usage_usec 26795\nuser_usec 13397\nthrottled_usec 1200\n",
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=138\n",
+    )
+    instance, samples = sampler(tmp_path, proc)
+    instance.sample_once()
+    readings = by_metric(samples)
+    assert len(samples) == 5
+    assert readings["cpu.psi.some.total_usec.v1"].value == 499_359_020.0
+    assert readings["cpu.cgroup.usage_usec.v1"].value == 26_795.0
+    assert readings["cpu.cgroup.psi.some.total_usec.v1"].value == 138.0
+    counters = {s.unit for m, s in readings.items() if m != "cpu.psi.some.avg10.v1"}
+    assert counters == {"microseconds"}
+    assert len({s.tick_ns for s in samples}) == 1
+
+
+@pytest.mark.parametrize(
+    ("pressure", "cpu_stat", "cgroup_pressure", "expected"),
+    [
+        # Cgroup PSI disabled: unsupported, while every other reading is measured.
+        (
+            "some avg10=1.0 total=5\n",
+            "usage_usec 1\nthrottled_usec 0\n",
+            None,
+            {
+                "cpu.cgroup.psi.some.total_usec.v1": "unsupported",
+                "cpu.cgroup.usage_usec.v1": "measured",
+            },
+        ),
+        # A PSI line without total; a cpu.stat without usage (CPU controller counters absent).
+        (
+            "some avg10=1.0\n",
+            "throttled_usec 0\n",
+            "some total=x\n",
+            {
+                "cpu.psi.some.total_usec.v1": "malformed",
+                "cpu.psi.some.avg10.v1": "measured",
+                "cpu.cgroup.usage_usec.v1": "unavailable",
+                "cpu.cgroup.psi.some.total_usec.v1": "malformed",
+            },
+        ),
+        # Non-finite values parse as floats but are never measurements.
+        (
+            "some avg10=nan total=inf\n",
+            "usage_usec 1\nthrottled_usec 0\n",
+            "some total=nan\n",
+            {
+                "cpu.psi.some.avg10.v1": "malformed",
+                "cpu.psi.some.total_usec.v1": "malformed",
+                "cpu.cgroup.psi.some.total_usec.v1": "malformed",
+            },
+        ),
+        # A negative counter is malformed, never a measured value.
+        (
+            "some avg10=1.0 total=-5\n",
+            "usage_usec -1\nthrottled_usec 0\n",
+            "some total=3\n",
+            {"cpu.psi.some.total_usec.v1": "malformed", "cpu.cgroup.usage_usec.v1": "malformed"},
+        ),
+    ],
+)
+def test_each_cpu_counter_keeps_its_own_cause(
+    tmp_path, pressure, cpu_stat, cgroup_pressure, expected
+):
+    proc = linux_fixture(tmp_path, pressure, cpu_stat, cgroup_pressure)
+    instance, samples = sampler(tmp_path, proc)
+    instance.sample_once()
+    readings = by_metric(samples)
+    for metric, availability in expected.items():
+        assert readings[metric].availability == availability, metric
+        assert (readings[metric].value is None) == (availability != "measured")
+
+
+def test_missing_cgroup_leaves_host_psi_measured(tmp_path):
+    proc = linux_fixture(tmp_path, "some avg10=1.0 total=7\n", "usage_usec 1\n")
+    (proc / "self/cgroup").write_text("1:cpu:/legacy\n")
+    instance, samples = sampler(tmp_path, proc)
+    instance.sample_once()
+    readings = by_metric(samples)
+    assert readings["cpu.psi.some.total_usec.v1"].value == 7.0
+    for metric in ("cpu.cgroup.usage_usec.v1", "cpu.cgroup.psi.some.total_usec.v1"):
+        assert readings[metric].availability == "unavailable"
 
 
 def test_platform_without_procfs_is_unsupported_not_zero(tmp_path):
@@ -90,8 +180,9 @@ def test_unusable_readings_keep_their_cause(tmp_path, pressure, cpu_stat, psi_st
     readings = by_metric(samples)
     assert readings["cpu.psi.some.avg10.v1"].availability == psi_state
     assert readings["cpu.cgroup.throttled_usec.v1"].availability == cgroup_state
-    assert all(sample.value is None and sample.reason for sample in samples)
-    assert all(str(tmp_path) not in sample.reason for sample in samples), "host paths leaked"
+    original = ("cpu.psi.some.avg10.v1", "cpu.cgroup.throttled_usec.v1")
+    assert all(readings[m].value is None and readings[m].reason for m in original)
+    assert all(str(tmp_path) not in (sample.reason or "") for sample in samples), "paths leaked"
 
 
 def test_missing_cgroup_membership_is_unavailable(tmp_path):
@@ -105,7 +196,7 @@ def test_missing_cgroup_membership_is_unavailable(tmp_path):
 def test_background_sampling_reports_achieved_intervals(tmp_path):
     instance, samples = sampler(tmp_path, tmp_path / "no-proc")
     with instance:
-        while len(samples) < 10:
+        while len(samples) < 25:
             pass
     summary = instance.summary()
     assert summary["sample_rounds"] >= 5
@@ -196,7 +287,7 @@ def test_one_round_reads_every_probe_with_its_own_tick(tmp_path):
     cpu = CpuProbe(RESOURCE, tmp_path / "no-proc", tmp_path / "cgroup")
     instance, samples = make_sampler([cpu, GpuProbe(GPU_RESOURCE, lambda: device)])
     instance.sample_once()
-    assert len(samples) == 7
+    assert len(samples) == 10
     cpu_tick = {s.tick_ns for s in samples if s.resource_id == "tool-host-1"}
     gpu_tick = {s.tick_ns for s in samples if s.resource_id == "gpu-1"}
     assert len(cpu_tick) == len(gpu_tick) == 1

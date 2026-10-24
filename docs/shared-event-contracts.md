@@ -143,8 +143,10 @@ entries map existing PSI `some avg10` to percent `[0,100]` and cgroup throttled 
 nonnegative microsecond counter. Counter resets are unavailable deltas, never negative load.
 Inference/GPU and retrieval entries require their owners' measured definitions under A04;
 they are not assumed available because an enum exists. A04 registered five whole-device NVML
-GPU gauges for `inference` resources ([the registry](live-ingestion.md)); no retrieval
-metric is registered yet. Cumulative counters and host-wide
+GPU gauges for `inference` resources and three cumulative CPU stall and usage counters for
+`cpu_sandbox` resources ([the registry](live-ingestion.md)). No retrieval metric is
+registered: the in-process index has nothing to sample, and its per-request service time is
+local evidence (`retrieval-timing-v1`). Cumulative counters and host-wide
 PSI must not be presented as step-exclusive duration. Sampling configuration records both
 declared interval and observed gaps; duplicates must not inflate coverage.
 

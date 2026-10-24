@@ -22,6 +22,9 @@ from agentwatch_agent.retrieval import RETRIEVAL_METHOD, DocumentIndex
 from agentwatch_agent.tasks import Task, task_files
 from agentwatch_agent.workspace import Workspace, WorkspaceError
 
+RETRIEVAL_TIMING_METHOD = "retrieval-timing-v1"
+# The index is searched synchronously in the runner's own thread: no request ever waits at it.
+INDEX_QUEUE_REASON = "In-process synchronous index: requests are never queued at the index"
 MAX_QUERY_CHARS = 200
 MAX_PASSAGE_CHARS = 800
 SEARCH_RESULTS = 3
@@ -156,7 +159,10 @@ class ToolDispatcher:
         return self.run_tests(cancel=cancel, deadline_monotonic=deadline_monotonic)
 
     def _search(self, query: str) -> ToolOutcome:
+        wall_started, cpu_started = time.monotonic_ns(), time.thread_time_ns()
         hits = self.index.search(query, limit=SEARCH_RESULTS)
+        service_wall_ns = time.monotonic_ns() - wall_started
+        service_cpu_ns = time.thread_time_ns() - cpu_started
         results = [
             {
                 "document": hit.passage.document,
@@ -176,6 +182,17 @@ class ToolDispatcher:
                 }
                 for hit in hits
             ],
+            # Service time is the search alone; the step's queue delay is runner dispatch, and
+            # step execution minus service time is the runner's own handling of the call.
+            "timing": {
+                "method": RETRIEVAL_TIMING_METHOD,
+                "service_wall_seconds": service_wall_ns / 1e9,
+                "service_thread_cpu_seconds": service_cpu_ns / 1e9,
+                "index_queue_seconds": None,
+                "index_queue_availability": "unsupported",
+                "index_queue_reason": INDEX_QUEUE_REASON,
+                "passages_scored": len(self.index.passages),
+            },
         }
         return ToolOutcome({"results": results}, evidence)
 

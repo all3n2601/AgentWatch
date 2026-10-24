@@ -64,7 +64,7 @@ def test_conditions_alternate_and_sampling_is_journaled(mean_task, tmp_path):
         "measured": sampling["rounds"]
     }
     journal = (tmp_path / "out/sampling-journal.jsonl").read_text().splitlines()
-    assert len(journal) == 7 * sampling["rounds"]
+    assert len(journal) == 10 * sampling["rounds"]
     assert {json.loads(line)["kind"] for line in journal} == {"record"}
 
 
