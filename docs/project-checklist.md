@@ -296,8 +296,10 @@ These can be completed before adding an agent.
   failures, ±60 s skew, late-evidence checks; `live-scenarios.spec.ts`), lint, typecheck and build. Manual checks
   against the real stack (`make infra-up`, `dev-worker`, `dev-web`, `agent-overhead`): run
   selection, active to Completed with final totals, reconnect after a worker restart, not-found
-  and invalid UUIDs. Keep open until the F02 viewport (360–1440 px), 200% zoom and keyboard
-  checks are recorded.
+  and invalid UUIDs. Final manual check on the real stack, October 24, 2026: the live view at
+  iPhone SE and 768 px widths, 200% zoom and keyboard navigation; "Check for late evidence"
+  shows that it is checking, then its result; `?replay=` no longer shows a replay. Left
+  unchecked for reviewers to confirm.
 - [ ] Display active steps, terminal failures, and incomplete telemetry without misleading totals.
   F01, October 18, 2026: `/live` renders StepEvent records through one adapter
   (`apps/web/lib/step-events.ts`) that applies each step's contiguous revision prefix and
@@ -329,8 +331,9 @@ These can be completed before adding an agent.
   live records, read page by page with gaps and pending/expired records unchanged and labeled
   with its read time (`apps/web/tests/live-export.test.ts`). Browser tests in
   `apps/web/e2e/live-feed.spec.ts` cover unavailable samples, a multi-page UUID-correct export
-  after switching runs mid-read, and a run outside the newest 50. Keep open until the F02
-  viewport, zoom and keyboard checks are recorded.
+  after switching runs mid-read, and a run outside the newest 50. Final manual check on the
+  real stack, October 24, 2026: the downloaded JSON carries the selected run's UUID, and the
+  saved-evidence unavailable state is shown. Left unchecked for reviewers to confirm.
 - [ ] Link live runs to saved evidence. Live records are kept apart from saved run history
   (ADR 0001) and agent runs report only to the live API (ADR 0002), so a live UUID has no
   saved-run counterpart; F02 shows that as unavailable. Linking them needs its own API task.
