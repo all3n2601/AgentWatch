@@ -6,6 +6,7 @@ requires-python = ">=3.13, <3.15"
 members = [
     "agentwatch-agent",
     "agentwatch-data",
+    "agentwatch-features",
     "agentwatch-python-workspace",
     "agentwatch-sandbox",
     "agentwatch-sdk",
@@ -34,14 +35,31 @@ name = "agentwatch-data"
 version = "0.1.0"
 source = { editable = "pipelines/data" }
 dependencies = [
+    { name = "agentwatch-features" },
     { name = "agentwatch-worker" },
     { name = "pyarrow" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "agentwatch-features", editable = "packages/features" },
     { name = "agentwatch-worker", editable = "services/worker" },
     { name = "pyarrow", specifier = ">=21,<23" },
+]
+
+[[package]]
+name = "agentwatch-features"
+version = "0.1.0"
+source = { editable = "packages/features" }
+dependencies = [
+    { name = "agentwatch-sdk" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agentwatch-sdk", editable = "packages/sdk-python" },
+    { name = "pydantic", specifier = ">=2.11,<3" },
 ]
 
 [[package]]
@@ -92,6 +110,7 @@ name = "agentwatch-worker"
 version = "0.1.0"
 source = { editable = "services/worker" }
 dependencies = [
+    { name = "agentwatch-features" },
     { name = "agentwatch-sandbox" },
     { name = "agentwatch-sdk" },
     { name = "fastapi" },
@@ -102,6 +121,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agentwatch-features", editable = "packages/features" },
     { name = "agentwatch-sandbox", editable = "services/sandbox" },
     { name = "agentwatch-sdk", editable = "packages/sdk-python" },
     { name = "fastapi", specifier = ">=0.116,<1" },

@@ -133,8 +133,10 @@ GPU and reports it as `unsupported` where NVML is missing (macOS, CPU-only hosts
 service first; a runner reporting to an older service ends every run with refused records
 (exit 5). With 7 records per round, the longest `--run-timeout` the per-run sample budget
 allows at 250 ms falls from 10,000 s to about 2,857 s on every host. All five availability
-states survive history; absent readings never become measured zero. Alignment, deltas and
-coverage are B02 work; no predictions or host-saturation diagnosis are produced here.
+states survive history; absent readings never become measured zero. B02 alignment, deltas and
+coverage are defined in [shared step features](step-features.md); `step-features-v1` reads only
+the two CPU metrics, so GPU readings need a new feature version. No predictions or
+host-saturation diagnosis are produced here.
 
 ## Producer and frontend handoff
 
