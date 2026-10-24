@@ -4,11 +4,14 @@ import { gpuEvidenceSchema, type GpuEvidence } from "@/lib/live-feed-data";
 import {
   applyFailure,
   applySnapshot,
+  beginLateCheck,
   connectionAfterFailure,
   initialRunFeed,
   initialRunList,
   nextListPollDelayMs,
   nextPollDelayMs,
+  runClosed,
+  settleLateCheck,
   type RunFeed,
   type RunListFeed,
 } from "@/lib/live-poll";
@@ -73,7 +76,7 @@ function startPolling(step: PollStep) {
 /** Polls the selected run; retry state is independent of the last valid snapshot. */
 export function useRunFeed(runId: string | null) {
   const [feed, setFeed] = useState<RunFeed | null>(null);
-  const poller = useRef<ReturnType<typeof startPolling> | null>(null);
+  const readNow = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (!runId) return;
     let current = initialRunFeed(runId);
@@ -85,16 +88,24 @@ export function useRunFeed(runId: string | null) {
       current = result.ok
         ? applySnapshot(current, result.data, performance.now())
         : applyFailure(current, result, Math.random());
+      current = settleLateCheck(current, result.ok ? null : result, Date.now());
       setFeed(current);
       return nextPollDelayMs(current);
     });
-    poller.current = polling;
+    readNow.current = () => {
+      // On a closed run, an explicit read is a late-evidence check the viewer sees settle.
+      if (runClosed(current)) {
+        current = beginLateCheck(current);
+        setFeed(current);
+      }
+      polling.now();
+    };
     return () => {
       polling.stop();
-      poller.current = null;
+      readNow.current = null;
     };
   }, [runId]);
-  const readAgain = useCallback(() => poller.current?.now(), []);
+  const readAgain = useCallback(() => readNow.current?.(), []);
   // State from a previous selection is never shown for a new one.
   const visible = useMemo(
     () =>

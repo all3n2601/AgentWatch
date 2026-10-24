@@ -44,6 +44,7 @@ import {
   LIVE_POLL_INTERVAL_MS,
   runClosed,
   type FeedConnection,
+  type LateCheck,
   type RunFeed,
   type RunListFeed,
 } from "@/lib/live-poll";
@@ -439,6 +440,7 @@ function ConnectionStatus({
       : connection.status === "connecting"
         ? LoaderCircle
         : RadioTower;
+  const checking = feed.lateCheck?.status === "checking";
   const canReadAgain =
     connection.status === "retrying" ||
     (connection.status === "connected" && closed);
@@ -476,12 +478,57 @@ function ConnectionStatus({
           size="sm"
           className="min-h-11"
           onClick={onReadAgain}
+          disabled={checking}
         >
-          <RefreshCw className="size-3.5" aria-hidden />
-          {closed ? "Check for late evidence" : "Retry now"}
+          {checking ? (
+            <LoaderCircle
+              className="size-3.5 motion-safe:animate-spin"
+              aria-hidden
+            />
+          ) : (
+            <RefreshCw className="size-3.5" aria-hidden />
+          )}
+          {checking
+            ? "Checking…"
+            : closed
+              ? "Check for late evidence"
+              : "Retry now"}
         </Button>
       )}
+      <LateCheckResult check={feed.lateCheck} />
     </Card>
+  );
+}
+
+function lateCheckText(check: LateCheck) {
+  switch (check.status) {
+    case "checking":
+      return "Checking the live API for late evidence…";
+    case "checked": {
+      const at = new Date(check.checkedAtWallMs).toLocaleTimeString();
+      return check.newRecords === 0
+        ? `Checked at ${at}: no new evidence.`
+        : `Checked at ${at}: ${check.newRecords} new record${check.newRecords === 1 ? "" : "s"} received.`;
+    }
+    case "failed":
+      return `Check failed at ${new Date(check.checkedAtWallMs).toLocaleTimeString()}: ${check.message}`;
+  }
+}
+
+/** The outcome of the last late-evidence check, announced when it changes. */
+function LateCheckResult({ check }: { check: LateCheck | null }) {
+  return (
+    <p
+      className={cn(
+        "basis-full text-xs break-words empty:sr-only",
+        check?.status === "failed" ? "text-amber-200" : "text-muted-foreground",
+      )}
+      role="status"
+      aria-live="polite"
+      aria-label="Late evidence check"
+    >
+      {check && lateCheckText(check)}
+    </p>
   );
 }
 

@@ -285,14 +285,15 @@ These can be completed before adding an agent.
   (`apps/web/app/api/live/runs/`) instead of `router.refresh()`. The selected run is read every
   2 s after the last record sequence received; a failed read keeps the last data and selection
   and retries with backoff (1–30 s, ±20% jitter); polling stops once a closed run is drained
-  (with a check for late evidence) and pauses while the tab is hidden. A connection status
+  (with a check for late evidence that shows it is checking, then when it checked and how many
+  new records it found, or its error) and pauses while the tab is hidden. A connection status
   shows connected, reconnecting (attempt, delay, cause) and stopped states. Feed age is anchored
   on the browser's monotonic clock when new records arrive, never on `received_at`. The
   `?replay=` path is removed; its scenarios are labeled synthetic browser-test fixtures
-  (`apps/web/e2e/fixtures/live-scenarios.ts`). Verification: 66 web unit tests
+  (`apps/web/e2e/fixtures/live-scenarios.ts`). Verification: 69 web unit tests
   (`apps/web/tests/live-poll.test.ts` covers failure then recovery, backoff bounds and ±60 s
-  skew), 21 Playwright tests (`apps/web/e2e/live-feed.spec.ts`: active to terminal, reconnect,
-  failures, ±60 s skew; `live-scenarios.spec.ts`), lint, typecheck and build. Manual checks
+  skew), 24 Playwright tests (`apps/web/e2e/live-feed.spec.ts`: active to terminal, reconnect,
+  failures, ±60 s skew, late-evidence checks; `live-scenarios.spec.ts`), lint, typecheck and build. Manual checks
   against the real stack (`make infra-up`, `dev-worker`, `dev-web`, `agent-overhead`): run
   selection, active to Completed with final totals, reconnect after a worker restart, not-found
   and invalid UUIDs. Keep open until the F02 viewport (360–1440 px), 200% zoom and keyboard

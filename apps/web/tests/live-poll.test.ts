@@ -4,6 +4,7 @@ import { runSnapshotSchema } from "../lib/live-api-schema";
 import {
   applyFailure,
   applySnapshot,
+  beginLateCheck,
   initialRunFeed,
   initialRunList,
   LIVE_POLL_INTERVAL_MS,
@@ -12,6 +13,7 @@ import {
   nextPollDelayMs,
   retryDelayMs,
   RETRY_MAX_DELAY_MS,
+  settleLateCheck,
   type RunFeed,
 } from "../lib/live-poll";
 import { feedDisplay, LIVE_FEED_STALE_AFTER_MS } from "../lib/live-status";
@@ -203,4 +205,92 @@ test("the run list polls on its own interval and backs off after failures", () =
     }),
     2_000,
   );
+});
+
+test("a late-evidence check reports how many records it found, once drained", () => {
+  const CHECKED_AT = Date.UTC(2026, 9, 24, 18, 0, 0);
+  const closed = applySnapshot(
+    initialRunFeed(RUN_ID),
+    page([1, 2], { state: "completed" }),
+    1_000,
+  );
+  assert.equal(
+    settleLateCheck(closed, null, CHECKED_AT),
+    closed,
+    "no check, no change",
+  );
+
+  // No new records.
+  let feed = beginLateCheck(closed);
+  assert.deepEqual(feed.lateCheck, { status: "checking", recordsBefore: 2 });
+  feed = settleLateCheck(
+    applySnapshot(feed, page([1, 2], { state: "completed" }), 2_000),
+    null,
+    CHECKED_AT,
+  );
+  assert.deepEqual(feed.lateCheck, {
+    status: "checked",
+    checkedAtWallMs: CHECKED_AT,
+    newRecords: 0,
+  });
+
+  // New records over two pages: still checking until the last page arrives.
+  feed = beginLateCheck(feed);
+  feed = settleLateCheck(
+    applySnapshot(
+      feed,
+      page([3], { state: "completed", next_cursor: 3 }),
+      3_000,
+    ),
+    null,
+    CHECKED_AT,
+  );
+  assert.equal(feed.lateCheck?.status, "checking");
+  feed = settleLateCheck(
+    applySnapshot(feed, page([4], { state: "completed" }), 3_100),
+    null,
+    CHECKED_AT,
+  );
+  assert.deepEqual(feed.lateCheck, {
+    status: "checked",
+    checkedAtWallMs: CHECKED_AT,
+    newRecords: 2,
+  });
+});
+
+test("a failed late-evidence check reports the error; a later successful retry settles it", () => {
+  const closed = applySnapshot(
+    initialRunFeed(RUN_ID),
+    page([1], { state: "completed" }),
+    1_000,
+  );
+  let feed = beginLateCheck(closed);
+  feed = settleLateCheck(applyFailure(feed, unavailable, 0.5), unavailable, 10);
+  assert.deepEqual(feed.lateCheck, {
+    status: "failed",
+    checkedAtWallMs: 10,
+    message: unavailable.message,
+    recordsBefore: 1,
+  });
+  // The automatic retry succeeds with one new record.
+  feed = settleLateCheck(
+    applySnapshot(feed, page([1, 2], { state: "completed" }), 2_000),
+    null,
+    20,
+  );
+  assert.deepEqual(feed.lateCheck, {
+    status: "checked",
+    checkedAtWallMs: 20,
+    newRecords: 1,
+  });
+});
+
+test("starting a check while one is in progress keeps its starting count", () => {
+  const closed = applySnapshot(
+    initialRunFeed(RUN_ID),
+    page([1], { state: "completed" }),
+    1_000,
+  );
+  const checking = beginLateCheck(closed);
+  assert.equal(beginLateCheck(checking), checking);
 });

@@ -438,3 +438,101 @@ for (const skewMs of [-60_000, 60_000])
     await expect(feedTile(page)).toContainText("Receiving");
     await expect(tile(page, "Last record received")).toContainText("Just now");
   });
+
+test.describe("checking a completed run for late evidence", () => {
+  const lateCheck = (page: Page) =>
+    page.getByRole("status", { name: "Late evidence check" });
+  const checkButton = (page: Page) =>
+    page.getByRole("button", { name: /Check for late evidence|Checking/ });
+
+  function completedRun(runId: string, extra: unknown[] = []) {
+    const { queued, running, completed } = runningTool(runId);
+    return snapshot(runId, {
+      state: "completed",
+      steps: [completed],
+      records: [queued, running, completed, ...(extra as (typeof queued)[])],
+    });
+  }
+
+  test("shows that it is checking, then that no new evidence arrived", async ({
+    page,
+    request,
+  }) => {
+    const runId = newRunId();
+    const slowRepeat = { ...completedRun(runId), delayMs: 1_500 };
+    await registerRun(
+      request,
+      fixtureRun(runId, [completedRun(runId), slowRepeat], {
+        state: "completed",
+      }),
+    );
+    await page.goto(`/live?liveRun=${runId}`);
+    await expect(connection(page)).toContainText("Polling stopped");
+    await expect(lateCheck(page)).toBeEmpty();
+
+    await advanceRun(request, runId);
+    await checkButton(page).click();
+    await expect(checkButton(page)).toHaveText("Checking…");
+    await expect(checkButton(page)).toBeDisabled();
+    await expect(lateCheck(page)).toHaveText(
+      "Checking the live API for late evidence…",
+    );
+
+    await expect(lateCheck(page)).toHaveText(
+      /^Checked at .+: no new evidence\.$/,
+    );
+    await expect(checkButton(page)).toHaveText("Check for late evidence");
+    await expect(checkButton(page)).toBeEnabled();
+    await expect(page.getByText("3 records received for run")).toBeVisible();
+  });
+
+  test("reports how many new records the check found", async ({
+    page,
+    request,
+  }) => {
+    const runId = newRunId();
+    const lateSample = resourceSample("late-1", { runId, second: 9 });
+    await registerRun(
+      request,
+      fixtureRun(
+        runId,
+        [completedRun(runId), completedRun(runId, [lateSample])],
+        { state: "completed" },
+      ),
+    );
+    await page.goto(`/live?liveRun=${runId}`);
+    await expect(connection(page)).toContainText("Polling stopped");
+
+    await advanceRun(request, runId);
+    await checkButton(page).click();
+    await expect(lateCheck(page)).toHaveText(
+      /^Checked at .+: 1 new record received\.$/,
+    );
+    await expect(page.getByText("4 records received for run")).toBeVisible();
+  });
+
+  test("shows the error when the check fails", async ({ page, request }) => {
+    const runId = newRunId();
+    await registerRun(
+      request,
+      fixtureRun(
+        runId,
+        [
+          completedRun(runId),
+          { status: 503, body: { detail: "Database unavailable" } },
+        ],
+        { state: "completed" },
+      ),
+    );
+    await page.goto(`/live?liveRun=${runId}`);
+    await expect(connection(page)).toContainText("Polling stopped");
+
+    await advanceRun(request, runId);
+    await checkButton(page).click();
+    await expect(lateCheck(page)).toHaveText(
+      /^Check failed at .+: The live API responded with HTTP 503\.$/,
+    );
+    // The run's last valid data stays shown.
+    await expect(page.getByText("Final step totals")).toBeVisible();
+  });
+});

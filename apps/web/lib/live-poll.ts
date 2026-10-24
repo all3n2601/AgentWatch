@@ -53,7 +53,24 @@ export type RunFeed = {
   connection: FeedConnection;
   /** More record pages were waiting when the last response arrived. */
   draining: boolean;
+  /** A viewer's explicit check of a closed run for late evidence; null before any. */
+  lateCheck: LateCheck | null;
 };
+
+/**
+ * `recordsBefore` is the record count when the check started, so the result counts only
+ * records that arrived because of it. A failed check keeps it: a later automatic retry that
+ * succeeds settles the same check.
+ */
+export type LateCheck =
+  | { status: "checking"; recordsBefore: number }
+  | { status: "checked"; checkedAtWallMs: number; newRecords: number }
+  | {
+      status: "failed";
+      checkedAtWallMs: number;
+      message: string;
+      recordsBefore: number;
+    };
 
 export const initialRunFeed = (runId: string): RunFeed => ({
   runId,
@@ -63,6 +80,7 @@ export const initialRunFeed = (runId: string): RunFeed => ({
   receipt: null,
   connection: { status: "connecting" },
   draining: false,
+  lateCheck: null,
 });
 
 /** Exponential backoff with jitter, capped at RETRY_MAX_DELAY_MS. `random` is in [0, 1). */
@@ -139,6 +157,49 @@ export function applyFailure(
     ...feed,
     connection,
     draining: connection.status === "stopped" ? false : feed.draining,
+  };
+}
+
+/** Starts a late-evidence check; a check already in progress keeps its starting count. */
+export const beginLateCheck = (feed: RunFeed): RunFeed =>
+  feed.lateCheck?.status === "checking"
+    ? feed
+    : {
+        ...feed,
+        lateCheck: { status: "checking", recordsBefore: feed.records.length },
+      };
+
+/**
+ * Settles a pending late-evidence check after a read, once its pages are drained.
+ * `nowWallMs` is the browser's wall clock, used only to tell the viewer when it was checked.
+ */
+export function settleLateCheck(
+  feed: RunFeed,
+  failure: LiveApiFailure | null,
+  nowWallMs: number,
+): RunFeed {
+  const check = feed.lateCheck;
+  if (check === null || check.status === "checked") return feed;
+  if (failure)
+    return check.status === "failed"
+      ? feed
+      : {
+          ...feed,
+          lateCheck: {
+            status: "failed",
+            checkedAtWallMs: nowWallMs,
+            message: failure.message,
+            recordsBefore: check.recordsBefore,
+          },
+        };
+  if (feed.draining) return feed;
+  return {
+    ...feed,
+    lateCheck: {
+      status: "checked",
+      checkedAtWallMs: nowWallMs,
+      newRecords: feed.records.length - check.recordsBefore,
+    },
   };
 }
 
