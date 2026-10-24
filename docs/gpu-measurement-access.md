@@ -235,6 +235,86 @@ evidence is in `.data/a04-20261024/` on the GPU laptop and in
 `C:\Users\benoy\AgentWatch-evidence\a04-2026-10-24\`, with the protocol, host conditions,
 driver scripts, journals, coverage reports, live read-backs and `SHA256SUMS`.
 
+## A04: CPU stall, cgroup and retrieval timing (October 24, 2026)
+
+[ADR 0004](adr/0004-cpu-counters-retrieval-timing-and-step-correlation.md) added three
+cumulative CPU counters (host PSI `some` total, the runner cgroup's usage and its own PSI
+`some` total), retrieval service timing and `coverage-v2`, which joins a step only to its own
+resource. Protocol `a04-cpu-retrieval-evidence-v1` was declared in writing before measuring
+and run twice. Every attempt is kept.
+
+Configurations (one live API container on the Compose network, GPU Ollama 0.35.1,
+`qwen3:1.7b`, tasks `fix-mean-empty` and `fix-window-count`, two runs each, round-robin):
+
+| Name | Runner | cgroup and limit | GPU |
+|---|---|---|---|
+| `wsl` | WSL2 Ubuntu 26.04 | `/non-systemd`, shared by the whole distro; `cpu.max max` | NVML |
+| `container-cpus1` | Docker, pinned `python:3.13-slim` | the container's own cgroup; `cpu.max 100000 100000` | none passed through |
+| `container-cpus0.25` | same image | own cgroup; `cpu.max 25000 100000` | none passed through |
+
+The containers run on the same WSL2 kernel and VM: they are a second cgroup configuration,
+not a separate Linux host. Host PSI there covers the whole VM.
+
+**Attempt 2** (`2d221de`, 17:43 UTC, no code edits during it), the reference result:
+
+| | `wsl` | `container-cpus1` | `container-cpus0.25` |
+|---|---|---|---|
+| Runs completed, verification passed | 4/4 | 4/4 | 4/4 |
+| Sampling rounds; interval median / max | 66; 0.250 / 0.254 s | 45; 0.250 / 0.256 s | 51; 0.250 / 0.299 s |
+| Late, early, missed rounds | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 |
+| GPU metrics | `measured` in all 66 rounds | `unsupported` in all 45 | `unsupported` in all 51 |
+| Throttled during the whole run (root step) | 0 ms in all 4 | 0 ms in all 4 | 0–901 ms (median 427) |
+| Throttled during test steps (windows with 2+ readings) | none had 2 readings | none had 2 readings | 286–437 ms (4 of 6 windows) |
+| Cgroup PSI stall, root step | 2–18 ms | 6–37 ms | 10–633 ms |
+| Sampler thread: CPU per round (median); share of a core | 3.3–3.7 ms; 1.5–1.6% | 2.5–3.1 ms; 1.5–1.7% | 2.5–2.9 ms; 1.0–1.2% |
+
+- Every CPU reading was `measured` (162 rounds × 5 metrics). Throttling is a measured
+  zero where the limit did not bind and hundreds of milliseconds where it did; the cgroup's
+  own stall rose with it. Host PSI and the cgroup counters are not step-exclusive: in WSL2
+  the cgroup is the whole distro, and host PSI includes Docker.
+- Delivery was complete in all 12 runs with nothing refused, and the live API returned
+  exactly the journaled records and per-metric sample counts.
+- **Correlation:** model calls (63) and retrievals (12) report their own telemetry as
+  `missing`, because the model server and docs index have no registered metric; host CPU
+  and the GPU are context. Root steps have no resource.
+- **Retrieval:** all 12 `search_docs` calls had a service time (the search itself) of
+  46–117 µs, a dispatch queue of 0.9–12.9 ms and 0.5–8.9 ms of runner handling. The index
+  queue is `unsupported`: an in-process search never queues. Each retrieval step took 2–19 ms
+  from submission to finish, shorter than one sampling interval, so its CPU context is
+  `no_overlap`.
+- **Model calls:** Ollama's service time was 0.18–5.14 s (the longest was a first request
+  after the model unloaded), dispatch 0.25–15.3 ms, and runner time outside Ollama's total
+  2.3–42 ms. The inference queue is `unavailable`. About half of the model-call windows held
+  fewer than two CPU readings, so their counter increase is null rather than zero.
+- **agent-overhead-v1** (30 + 30 repetitions of the patched test suite, with live
+  delivery): median 0.1515 → 0.1558 s (+2.9%) in `wsl` and 0.2026 → 0.2018 s (−0.4%) in
+  `container-cpus1`. Runner CPU rose from 2.2 to 6.5 ms and from 3.1 to 8.4 ms per repetition.
+  Each instrumented repetition starts its own sampler, and the suite is shorter than one
+  interval, so `wsl` took one round per repetition and recorded no interval.
+
+**Attempt 1** (17:34 UTC) agreed. 12 of 12 runs completed, with no missed rounds and a
+maximum interval of 0.280 s. `container-cpus0.25` alone throttled (root 24–1,022 ms). Search
+service took 39–232 µs. Overhead medians were −0.01% (`wsl`) and +4.9% (`container-cpus1`),
+with runner CPU +4.4 and +4.2 ms per repetition. Its deviations are recorded with it:
+- `resources.py` was edited at 17:35:34 to classify non-finite values. The runners import
+  the working tree, so five runs and both overhead runs used that uncommitted change; every
+  reading was finite.
+- The Windows host conditions failed to record.
+- Container runs had to be post-processed inside the runner image.
+- A coverage defect, an increase of 0 from a single counter reading, was found in its
+  analysis and fixed before attempt 2.
+
+Across both attempts the sampled-minus-unsampled wall difference changes sign. It is not a
+resolved overhead, while the added runner CPU (+4.2 to +5.3 ms per repetition) is consistent.
+
+Not established: a non-WSL Linux host, systemd per-service cgroups, cgroup v1, retrieval
+over a network (Qdrant), longer workloads where steps span several intervals, and CPU
+contention from anything but the runner's own limit. Evidence is in `.data/a04-cpu-20261024/`
+(attempt 1) and `.data/a04-cpu-20261024-attempt2/` on the GPU laptop, and in
+`C:\Users\benoy\AgentWatch-evidence\a04-cpu-2026-10-24\`, with protocols, host and cgroup
+conditions, driver scripts, the runner Dockerfile, journals, coverage reports, read-backs,
+summaries and `SHA256SUMS`.
+
 ## Evidence locations
 
 Raw evidence is kept out of Git on the GPU laptop, in `.data/` and copied to
