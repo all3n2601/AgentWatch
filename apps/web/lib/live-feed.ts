@@ -13,7 +13,7 @@ import {
   type LiveFeedData,
   type LiveRunSummary,
 } from "./live-feed-data";
-import { readStepEvents } from "./step-events";
+import { readRunSnapshot, runStatusOf } from "./live-snapshot";
 
 // Prototype reader for recorded live runs: the B01 read API plus, when present, the A01
 // nvidia-smi diagnostic files under the local data directory.
@@ -137,9 +137,12 @@ export async function loadLiveFeed(requested?: string): Promise<LiveFeedData> {
   if (!runId) return { ...base, runs, error: null };
   try {
     const { detail, records } = await loadRunRecords(api, runId);
-    const payloads = records.map((r) => r.payload);
-    const steps = payloads.filter((p) => p.record_type === "step_event");
-    const samples = payloads.filter((p) => p.record_type === "resource_sample");
+    // Only applied revisions are drawn; pending and expired ones are reported as gaps.
+    const applied = records.flatMap((r) =>
+      r.disposition === "applied" ? [r.payload] : [],
+    );
+    const steps = applied.filter((p) => p.record_type === "step_event");
+    const samples = applied.filter((p) => p.record_type === "resource_sample");
     return {
       ...base,
       runs,
@@ -149,9 +152,9 @@ export async function loadLiveFeed(requested?: string): Promise<LiveFeedData> {
           id: runId,
           title: detail.registration.task_id,
           description: "",
-          run: { state: detail.state, reason: detail.reason },
+          run: runStatusOf(detail),
           receivedAgoMs: latestReceiptAgeMs(records, Date.now()),
-          view: readStepEvents(runId, steps),
+          view: readRunSnapshot(detail, records),
         },
         resources: detail.registration.resources.map((r) => ({
           resourceId: r.resource_id,

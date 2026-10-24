@@ -62,7 +62,13 @@ test("holds a future terminal revision as pending behind a gap", () => {
   assert.equal(step.state, "queued");
   assert.equal(step.timings, null);
   assert.deepEqual(view.gaps, [
-    { stepId: "a", missingSequence: 1, pendingRevisions: 1 },
+    {
+      stepId: "a",
+      missingSequence: 1,
+      firstPendingSequence: 2,
+      expired: false,
+      pendingRevisions: 1,
+    },
   ]);
 });
 
@@ -78,7 +84,13 @@ test("reports a step whose queued revision has not arrived as a gap only", () =>
   ]);
   assert.deepEqual(view.steps, []);
   assert.deepEqual(view.gaps, [
-    { stepId: "late", missingSequence: 0, pendingRevisions: 1 },
+    {
+      stepId: "late",
+      missingSequence: 0,
+      firstPendingSequence: 1,
+      expired: false,
+      pendingRevisions: 1,
+    },
   ]);
 });
 

@@ -29,7 +29,7 @@ import {
   type FeedFreshness,
   type TimingTotal,
 } from "@/lib/live-status";
-import type { LiveStep, StepState } from "@/lib/step-events";
+import type { LiveStep, SequenceGap, StepState } from "@/lib/step-events";
 import { cn } from "@/lib/utils";
 
 const FRESHNESS_CHECK_INTERVAL_MS = 5_000;
@@ -302,7 +302,19 @@ function Totals({ replay }: { replay: LiveReplay }) {
 }
 
 function unfinishedText(step: LiveStep) {
-  return step.state === "queued" ? "Not started" : "In progress";
+  if (step.state === "queued") return "Not started";
+  return step.state === "running" ? "In progress" : "Not reported";
+}
+
+function gapText(gap: SequenceGap) {
+  const held = `${gap.pendingRevisions} later revision${gap.pendingRevisions === 1 ? "" : "s"}`;
+  const subject =
+    gap.missingSequence === 0
+      ? `Step ${gap.stepId} has no applied state: revision 0 has not arrived`
+      : `Step ${gap.stepId} is applied through revision ${gap.missingSequence - 1}`;
+  return gap.expired
+    ? `${subject}. Revisions from ${gap.firstPendingSequence} expired unapplied (${held}) and will never be applied; this run cannot complete with them.`
+    : `${subject} and is waiting for revision ${gap.missingSequence}; ${held} from ${gap.firstPendingSequence} ${gap.pendingRevisions === 1 ? "is" : "are"} held as pending and not shown.`;
 }
 
 function stepTiming(
@@ -334,6 +346,8 @@ function StepRow({ step }: { step: LiveStep }) {
           <dd className="mt-0.5">
             {step.startedObservedAt ? (
               <Timestamp iso={step.startedObservedAt} />
+            ) : step.started ? (
+              "Not received"
             ) : (
               "Not started"
             )}
@@ -483,10 +497,7 @@ export function ReplayView({ replay }: { replay: LiveReplay }) {
         >
           {view.gaps.map((gap) => (
             <p key={gap.stepId} className="break-words">
-              Step {gap.stepId} is waiting for revision {gap.missingSequence};{" "}
-              {gap.pendingRevisions} later revision
-              {gap.pendingRevisions === 1 ? " is" : "s are"} held as pending and
-              not shown.
+              {gapText(gap)}
             </p>
           ))}
           {view.unreadableRecords > 0 && (

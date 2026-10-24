@@ -203,6 +203,8 @@ function cpuTotalOf(steps: LiveStep[]): CpuTotal {
 export function stepTotals(view: LiveRunView, run: RunStatus): StepTotals {
   const outcome = runOutcome(run);
   const unfinished = activeSteps(view).length;
+  const expired = view.gaps.filter((gap) => gap.expired).length;
+  const waiting = view.gaps.length - expired;
   const reasons = [
     outcome === "unknown" && "Run state has not been reported",
     outcome === "active" && "Run is still active",
@@ -211,8 +213,10 @@ export function stepTotals(view: LiveRunView, run: RunStatus): StepTotals {
       "No steps have been reported",
     unfinished > 0 &&
       `${plural(unfinished, "step")} ${isAre(unfinished)} still queued or running`,
-    view.gaps.length > 0 &&
-      `${plural(view.gaps.length, "step")} ${isAre(view.gaps.length)} waiting for a missing revision`,
+    waiting > 0 &&
+      `${plural(waiting, "step")} ${isAre(waiting)} waiting for a missing revision`,
+    expired > 0 &&
+      `${plural(expired, "step")} ${expired === 1 ? "has" : "have"} expired revisions that will never be applied`,
     view.unreadableRecords > 0 &&
       `${plural(view.unreadableRecords, "record")} could not be read`,
   ].filter((reason): reason is string => !!reason);

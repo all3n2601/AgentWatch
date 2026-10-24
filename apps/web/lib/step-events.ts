@@ -71,7 +71,9 @@ export type LiveStep = {
   state: StepState;
   appliedSequence: number;
   clockId: string;
-  /** Producer wall time of the applied running revision, if one exists. */
+  /** Whether the applied revision records a start tick. */
+  started: boolean;
+  /** Producer wall time of the applied running revision, if one was received. */
   startedObservedAt: string | null;
   lastObservedAt: string;
   /** Present only for terminal steps; running steps never get a computed duration. */
@@ -83,7 +85,11 @@ export type LiveStep = {
 
 export type SequenceGap = {
   stepId: string;
+  /** Next revision the step needs; 0 when it has no applied state. */
   missingSequence: number;
+  firstPendingSequence: number;
+  /** Held revisions expired unapplied; they are never applied, even if the gap fills. */
+  expired: boolean;
   pendingRevisions: number;
 };
 
@@ -166,6 +172,10 @@ export function readStepEvents(
       gaps.push({
         stepId,
         missingSequence: next,
+        firstPendingSequence: Math.min(
+          ...[...revisions.keys()].filter((sequence) => sequence > next),
+        ),
+        expired: false,
         pendingRevisions: revisions.size - next,
       });
     }
@@ -177,6 +187,7 @@ export function readStepEvents(
       state: applied.state,
       appliedSequence: applied.sequence,
       clockId: applied.clock_id,
+      started: applied.started_tick_ns !== null,
       startedObservedAt,
       lastObservedAt: applied.observed_at,
       timings: timingsOf(applied),

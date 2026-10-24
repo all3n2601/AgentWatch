@@ -126,7 +126,13 @@ test("out-of-order holds the early completion behind a gap", () => {
     "queued",
   );
   assert.deepEqual(view.gaps, [
-    { stepId: "run-tests", missingSequence: 1, pendingRevisions: 1 },
+    {
+      stepId: "run-tests",
+      missingSequence: 1,
+      firstPendingSequence: 2,
+      expired: false,
+      pendingRevisions: 1,
+    },
   ]);
   assert.equal(totals.final, false);
 });
