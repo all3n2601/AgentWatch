@@ -54,7 +54,7 @@ export async function advanceRun(request: APIRequestContext, runId: string) {
   if (!response.ok()) throw new Error(`Advancing ${runId} failed`);
 }
 
-/** The `after` cursor of every read of a run, in order. */
+/** The `after` cursor of every answered read of a run, in order. */
 export async function runReads(
   request: APIRequestContext,
   runId: string,

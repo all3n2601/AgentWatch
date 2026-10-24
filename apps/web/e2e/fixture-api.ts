@@ -90,9 +90,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     if (!run) return send(res, 404, { detail: "Live run not found" });
     const after = Number(url.searchParams.get("after") ?? 0);
     const limit = Number(url.searchParams.get("limit") ?? 256);
-    run.reads.push(after);
     const state = run.states[run.index];
     if (state.delayMs) await wait(state.delayMs);
+    // Logged when answered, so a test can wait for a delayed response to be delivered.
+    run.reads.push(after);
     if ("status" in state)
       return send(
         res,

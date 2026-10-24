@@ -257,7 +257,15 @@ function MetricChart({
   }));
   const measured = data.filter((p) => p.value !== null).length;
   return (
-    <Card className="min-w-0 gap-0 p-4">
+    <Card
+      className="min-w-0 gap-0 p-4"
+      role="group"
+      aria-label={
+        series.resource
+          ? `${series.label}, resource ${series.resource.resourceId}`
+          : series.label
+      }
+    >
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-2">
         <h3 className="text-xs font-semibold">
           {series.label}{" "}
