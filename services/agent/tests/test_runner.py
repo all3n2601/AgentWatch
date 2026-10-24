@@ -24,7 +24,8 @@ def make_runner(task, server, model, tmp_path, **overrides):
         "model": model,
         "transport": server,
         "output_dir": tmp_path / "run",
-        "sampling_interval_seconds": 0.05,
+        # 900 s / 0.06 s x 5 CPU metrics = 75,000 records, inside the 80,000 sample budget.
+        "sampling_interval_seconds": 0.06,
         "cancel_poll_seconds": 0.05,
         "flush_interval_seconds": 0.05,
         "retry": NO_SLEEP,
@@ -83,7 +84,7 @@ def test_successful_task_produces_one_correlated_run(mean_task, server, tmp_path
         assert call["metrics"]["eval_count"] == 7
     samples = [r for r in run.records.values() if r["record_type"] == "resource_sample"]
     assert samples and all(s["availability"] == "unsupported" for s in samples)
-    assert saved["resource_sampling"]["sample_rounds"] * 2 == len(samples)
+    assert saved["resource_sampling"]["sample_rounds"] * 5 == len(samples)
 
 
 def test_model_receives_tool_results_and_allowlisted_definitions(mean_task, server, tmp_path):
@@ -736,9 +737,9 @@ def test_gpu_is_registered_and_sampled_with_the_run(mean_task, server, tmp_path)
     assert {(s["availability"], s["value"]) for s in utilization} == {("measured", 64.0)}
     saved = evidence(outcome)
     sampling = saved["resource_sampling"]
-    assert sampling["sample_rounds"] * 7 == len(samples)
+    assert sampling["sample_rounds"] * 10 == len(samples)
     assert sampling["resources"][1]["device"]["name"] == "Test GPU"
-    assert saved["configuration"]["sampled_metrics"][2:] == [
+    assert saved["configuration"]["sampled_metrics"][5:] == [
         "gpu.nvml.utilization.gpu.v1",
         "gpu.nvml.utilization.memory.v1",
         "gpu.nvml.memory.used_bytes.v1",
@@ -757,10 +758,20 @@ def test_runs_without_a_gpu_opener_register_no_gpu(mean_task, server, tmp_path):
     outcome = make_runner(mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path).run()
     run = server.only_run()
     assert "nvidia-nvml" not in {r.service_id for r in run.registration.resources}
-    assert evidence(outcome)["configuration"]["sampled_metrics"] == [
+    saved = evidence(outcome)
+    assert saved["configuration"]["sampled_metrics"] == [
         "cpu.psi.some.avg10.v1",
         "cpu.cgroup.throttled_usec.v1",
+        "cpu.psi.some.total_usec.v1",
+        "cpu.cgroup.usage_usec.v1",
+        "cpu.cgroup.psi.some.total_usec.v1",
     ]
+    index = saved["retrieval_index"]
+    assert (index["method"], index["passages"] > 0, index["build_wall_seconds"] >= 0) == (
+        "bm25-markdown-sections-v1",
+        True,
+        True,
+    )
 
 
 def test_gpu_sampling_changes_the_configuration_digest(mean_task, server, tmp_path):
@@ -772,9 +783,9 @@ def test_gpu_sampling_changes_the_configuration_digest(mean_task, server, tmp_pa
 
 
 def test_sample_budget_counts_gpu_metrics(mean_task, server, tmp_path):
-    # 900 s at 0.025 s is 36,000 rounds: 72,000 CPU records fit, 252,000 with the GPU do not.
+    # 900 s at 0.07 s is 12,857 rounds: 64,285 CPU records fit, 128,571 with the GPU do not.
     make_runner(
-        mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path, sampling_interval_seconds=0.025
+        mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path, sampling_interval_seconds=0.07
     )
     with pytest.raises(ValueError, match="sample budget"):
         make_runner(
@@ -782,7 +793,7 @@ def test_sample_budget_counts_gpu_metrics(mean_task, server, tmp_path):
             server,
             ScriptedModel(SOLVE_MEAN),
             tmp_path,
-            sampling_interval_seconds=0.025,
+            sampling_interval_seconds=0.07,
             open_gpu=FakeGpu,
         )
 

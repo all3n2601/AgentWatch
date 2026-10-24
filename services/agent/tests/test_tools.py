@@ -78,6 +78,19 @@ def test_search_ranks_the_contract_section_first_and_is_deterministic(dispatcher
     assert first.cpu_seconds is None
 
 
+def test_search_records_its_service_time_and_an_unsupported_index_queue(dispatcher):
+    timing = run(dispatcher, "search_docs", {"query": "mean of an empty input"}).evidence["timing"]
+    assert timing["method"] == "retrieval-timing-v1"
+    assert timing["service_wall_seconds"] > 0
+    assert timing["service_thread_cpu_seconds"] >= 0
+    assert timing["passages_scored"] == len(dispatcher.index.passages)
+    # The in-process index has no request queue: never reported as a measured zero.
+    assert (timing["index_queue_seconds"], timing["index_queue_availability"]) == (
+        None,
+        "unsupported",
+    )
+
+
 def test_search_without_matching_terms_returns_no_results(dispatcher):
     assert run(dispatcher, "search_docs", {"query": "kubernetes"}).content == {"results": []}
 
