@@ -427,6 +427,22 @@ lint/typecheck/13 tests/build, Go, and both Compose configurations. Real Qwen3 C
   Task inputs are pinned by content hash and the configuration digest is registered; replay
   state and repeated clean runs are not implemented.
 - [ ] Add actual container isolation and resource limits for executed code.
+  A03 (2026-10-24), [ADR 0004](adr/0004-container-isolation-for-tool-execution.md) and the
+  [sandbox README](../services/sandbox/README.md): `run_project_tests_isolated` runs a suite in a
+  disposable Docker container. It has a private read-only staging copy and a read-only root, a
+  bounded `noexec` `/tmp`, no `/dev/shm`, no network, uid 65534 with an empty capability
+  bounding set and `no-new-privileges`, and memory/CPU/process/file and output limits. A host
+  deadline is enforced from creation onward, plus a backstop in a PID 1, non-dumpable wrapper the
+  suite cannot signal or read. Leftovers are swept by a deadline label, and the image is
+  digest-pinned and never pulled implicitly. Probe suites in
+  `services/sandbox/tests/test_container.py` (47 tests) verify each boundary from inside the
+  container. Each of 18 controls was also checked by removing it and confirming its probe fails.
+  Every outcome (passed, failed, timed out, cancelled, resource limit, rejected request, start
+  failure) is tested to remove its container and staging copy; a failed removal raises.
+  Verified locally on Docker Desktop for macOS (arm64); the Linux CI run is pending the PR.
+  Known limitation: a suite can exit 0 itself and appear to pass (see the threat model). Open
+  until the agent runner switches to this executor (Benoy's integration); the agent still uses
+  the trusted-fixture subprocess runner.
 - [x] Bound task duration and preserve failure/cancellation evidence.
   Model-call, tool-call, test and run limits are enforced (real run `301307b7…` closed at the
   900 s limit), and cancellation ends every step with recorded cleanup. Service-confirmed

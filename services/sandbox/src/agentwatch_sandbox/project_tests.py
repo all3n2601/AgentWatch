@@ -16,7 +16,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -24,7 +24,8 @@ MAX_OUTPUT_CHARS = 4000
 DEFAULT_POLL_SECONDS = 0.05
 _TESTS_RAN = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
 
-Outcome = Literal["passed", "failed", "timed_out", "cancelled"]
+# `resource_limit` is produced only by the isolated (container) runner.
+Outcome = Literal["passed", "failed", "timed_out", "cancelled", "resource_limit"]
 
 
 @dataclass(frozen=True)
@@ -33,9 +34,24 @@ class ProjectTestResult:
     returncode: int | None
     tests_run: int | None
     output_tail: str
+    # Host-measured elapsed time; for a container it includes container start-up.
     wall_seconds: float
-    # Resource usage of the terminated test process and the descendants it waited for.
-    cpu_seconds: float
+    # CPU time of the test process and the descendants it waited for. None when unmeasured,
+    # e.g. a container killed on timeout before its in-sandbox report: never a fabricated zero.
+    cpu_seconds: float | None
+    isolation: Literal["process", "container"] = "process"
+    # Which limit ended the suite, for `resource_limit` outcomes ("memory" or "output").
+    limit_exceeded: str | None = None
+    # The suite's own wall time measured inside the container, excluding start-up.
+    in_sandbox_wall_seconds: float | None = None
+    # Resources released and verified gone after the run (container runner only).
+    cleanup: dict[str, bool] = field(default_factory=dict)
+
+
+def tests_run_from_output(text: str) -> int | None:
+    """The `Ran N tests` count unittest prints, or None when it printed none."""
+    counts = _TESTS_RAN.findall(text)
+    return int(counts[-1]) if counts else None
 
 
 def _children_cpu_seconds() -> float:
@@ -122,11 +138,10 @@ def run_project_tests(
         text = output.read().decode("utf-8", errors="replace")
     if outcome is None:
         outcome = "passed" if process.returncode == 0 else "failed"
-    counts = _TESTS_RAN.findall(text)
     return ProjectTestResult(
         outcome=outcome,
         returncode=process.returncode if outcome in {"passed", "failed"} else None,
-        tests_run=int(counts[-1]) if counts else None,
+        tests_run=tests_run_from_output(text),
         output_tail=_redact(text, project)[-MAX_OUTPUT_CHARS:],
         wall_seconds=wall_seconds,
         cpu_seconds=cpu_seconds,

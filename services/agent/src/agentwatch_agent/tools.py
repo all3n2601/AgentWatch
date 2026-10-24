@@ -217,12 +217,19 @@ class ToolDispatcher:
             raise RunCancelled("Cancelled while the test suite was running")
         if result.outcome == "timed_out":
             raise ToolFailed(f"The test suite exceeded its {timeout:g} s timeout", evidence)
+        if result.outcome == "resource_limit":
+            # Only the isolated runner reports this; it is a limit, not a failing test.
+            raise ToolFailed(
+                f"The test suite exceeded a sandbox limit ({result.limit_exceeded})", evidence
+            )
         content = {
             "outcome": result.outcome,
             "tests_run": result.tests_run,
             "output": _truncate(result.output_tail, self.limits.max_tool_output_chars),
         }
-        return ToolOutcome(content, evidence, result.cpu_seconds, "process_and_children")
+        # CPU scope is only claimed with a measurement; an unmeasured CPU time stays None.
+        scope = "process_and_children" if result.cpu_seconds is not None else None
+        return ToolOutcome(content, evidence, result.cpu_seconds, scope)
 
 
 def tool_message(name: str, content: dict) -> dict:
