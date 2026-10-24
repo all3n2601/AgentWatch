@@ -21,7 +21,8 @@ A sampling round is one probe reading of one resource (one tick). Expected round
 window's duration over the declared interval, rounded down; a step shorter than one interval
 is flagged and has no coverage fraction rather than a misleading 0 or 1. Aggregates use
 measured readings only: gauges report min/mean/max, and cumulative counters report their
-increase across the window, or null if they decreased anywhere in it (a reset).
+increase from the first to the last reading inside the window, with the span it covers, or
+null when the window holds fewer than two readings or the counter decreased in it (a reset).
 
 Each executed step also reports its observed dispatch queue (submission to start, runner
 side) apart from service time where one was measured: Ollama's reported total for model
@@ -96,14 +97,24 @@ def read_journal(path: Path) -> tuple[dict | None, list[dict], int]:
     return registration, list(records.values()), unusable
 
 
-def _aggregate(metric: str, values: list[float]) -> dict:
-    if not values:
+def _aggregate(metric: str, readings: list[tuple[int, float]]) -> dict:
+    """Measured readings (tick, value) inside one window, in tick order."""
+    if not readings:
         return {"measured": 0}
+    values = [value for _tick, value in readings]
     if metric in COUNTER_METRICS:
+        if len(readings) < 2:
+            # One reading has nothing to subtract from: an increase of 0 would be invented.
+            return {"measured": 1, "increase": None, "increase_span_seconds": None}
         # A counter that went down anywhere in the window was reset: no delta, even if it
         # later climbed back above its first value, and never negative load.
         reset = any(later < earlier for earlier, later in pairwise(values))
-        return {"measured": len(values), "increase": None if reset else values[-1] - values[0]}
+        return {
+            "measured": len(readings),
+            "increase": None if reset else values[-1] - values[0],
+            # The increase covers first to last reading, not the whole step window.
+            "increase_span_seconds": (readings[-1][0] - readings[0][0]) / 1e9,
+        }
     return {
         "measured": len(values),
         "min": min(values),
@@ -134,13 +145,13 @@ def _resource_window(
     inside = sorted(
         (tick, readings) for tick, readings in in_domain.items() if started <= tick < finished
     )
-    by_metric: dict[str, list[float]] = defaultdict(list)
+    by_metric: dict[str, list[tuple[int, float]]] = defaultdict(list)
     availability: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for _tick, readings in inside:
+    for tick, readings in inside:
         for reading in readings:
             availability[reading["metric"]][reading["availability"]] += 1
             if reading["availability"] == "measured":
-                by_metric[reading["metric"]].append(reading["value"])
+                by_metric[reading["metric"]].append((tick, reading["value"]))
     return {
         "status": "present" if inside else "no_overlap",
         "rounds_in_window": len(inside),

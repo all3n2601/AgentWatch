@@ -206,8 +206,22 @@ def test_counter_reports_increase_and_null_after_reset(tmp_path):
         sample(500 * MS, THROTTLED, 20, resource="host-1"),
     ]
     by_id = steps_by_id(coverage_report(write_run(tmp_path, records)))
-    assert by_id["a"]["own"]["measured"][THROTTLED]["increase"] == 60
+    counter = by_id["a"]["own"]["measured"][THROTTLED]
+    assert (counter["increase"], counter["increase_span_seconds"]) == (60, pytest.approx(0.2))
     assert by_id["b"]["own"]["measured"][THROTTLED]["increase"] is None
+
+
+def test_one_counter_reading_has_no_increase_rather_than_zero(tmp_path):
+    records = [
+        *executed("short-tool", 0, 0, 300 * MS, resource_id="host-1", step_type="tool"),
+        sample(100 * MS, THROTTLED, 5_000, resource="host-1"),
+    ]
+    entry = steps_by_id(coverage_report(write_run(tmp_path, records)))["short-tool"]
+    assert entry["own"]["measured"][THROTTLED] == {
+        "measured": 1,
+        "increase": None,
+        "increase_span_seconds": None,
+    }
 
 
 def test_counter_reset_inside_the_window_has_no_increase(tmp_path):
