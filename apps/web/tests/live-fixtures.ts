@@ -118,6 +118,7 @@ export function stepView(event: Event) {
 export function resourceSample(
   sampleId: string,
   options: {
+    runId?: string;
     resourceId?: string;
     serviceId?: string;
     metric?: string;
@@ -130,7 +131,7 @@ export function resourceSample(
   const availability = options.availability ?? "measured";
   return {
     contract_version: "live-contracts-v1",
-    run_id: RUN_ID,
+    run_id: options.runId ?? RUN_ID,
     task_id: TASK_ID,
     observed_at: at(options.second ?? 0),
     clock_id: CLOCK_ID,
