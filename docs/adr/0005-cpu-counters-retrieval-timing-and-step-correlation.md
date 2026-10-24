@@ -1,4 +1,4 @@
-# 0004: Measure CPU per step with counters, time retrieval service, join steps to their own resource
+# 0005: Measure CPU per step with counters, time retrieval service, join steps to their own resource
 
 Date: October 24, 2026. Status: proposed for A04 review.
 
@@ -28,11 +28,14 @@ handling, an estimate. The index is searched synchronously in-process, so its re
 does not exist. It is recorded as `unsupported`, never as a measured zero. A networked
 retrieval service (Qdrant) would report its queue and service time under new method versions.
 
-**Correlation.** `coverage-v2` joins each step to its own registered resource (`own`) and
-lists the other sampled resources as labeled `context`. Statuses use the FeatureRow telemetry
-vocabulary: `present`, `no_overlap`, `unaligned`, `empty` and `missing`. The model server and
-the docs index have no registered metric, so model calls and retrievals report their own
-telemetry as `missing`, with host CPU and the GPU as context. The report refuses records of
+**Correlation.** `coverage-v2` joins each step to its own registered resource and service
+(`own`) and lists the other sampled resources as labeled `context`. Statuses use the
+FeatureRow telemetry vocabulary with the meanings of the service join (`step-features-v1`,
+open PR #36), so a producer report and the service never disagree: `missing` (not executed,
+or no resource or service), `empty` (no sample stream for the resource and service in the
+run), `unaligned`, `no_overlap` and `present`. The model server and the docs index have no
+registered metric, so model calls and retrievals report their own telemetry as `empty`, with
+host CPU and the GPU as context. The report refuses records of
 another run and conflicting records under one identity. It excludes and counts records in an
 unregistered clock domain. For every executed step it reports the observed dispatch queue
 apart from service time: Ollama's reported total (queue unavailable) or the search alone

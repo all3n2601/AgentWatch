@@ -65,7 +65,16 @@ def executed(step_id, submitted, started, finished, **fields):
     ]
 
 
-def sample(tick, metric, value, *, resource="gpu-1", clock_id=CLOCK, availability="measured"):
+def sample(
+    tick,
+    metric,
+    value,
+    *,
+    resource="gpu-1",
+    service="fixture",
+    clock_id=CLOCK,
+    availability="measured",
+):
     unit, resource_class = {
         GPU_UTIL: ("percent", "inference"),
         THROTTLED: ("microseconds", "cpu_sandbox"),
@@ -77,7 +86,7 @@ def sample(tick, metric, value, *, resource="gpu-1", clock_id=CLOCK, availabilit
         task_id="fixture-r1",
         sample_id=uuid4(),
         resource_id=resource,
-        service_id="fixture",
+        service_id=service,
         resource_class=resource_class,
         observed_at="2026-10-24T00:00:00Z",
         clock_id=clock_id,
@@ -131,13 +140,27 @@ def test_window_includes_start_and_excludes_finish(tmp_path):
 
 
 def test_a_step_joins_only_its_own_resource(tmp_path):
-    # The model server has no registered metric: its own telemetry is missing, and the GPU
-    # readings during the call are context, not a measurement of the call.
+    # The model server has no sample stream (its telemetry is empty, as in the service join),
+    # and the GPU readings during the call are context, not a measurement of the call.
     records = [*executed("model-call-1", 0, 0, 300 * MS), sample(100 * MS, GPU_UTIL, 40)]
     entry = steps_by_id(coverage_report(write_run(tmp_path, records)))["model-call-1"]
-    assert entry["own"] == {"resource_id": "model-server-1", "status": "missing"}
-    assert entry["status"] == "missing"
+    assert entry["own"] == {
+        "resource_id": "model-server-1",
+        "service_id": "fixture",
+        "status": "empty",
+    }
+    assert entry["status"] == "empty"
     assert entry["context"]["gpu-1"]["status"] == "present"
+
+
+def test_the_join_needs_the_same_service_as_well_as_resource(tmp_path):
+    records = [
+        *executed("gpu-step", 0, 0, 300 * MS, resource_id="gpu-1"),
+        sample(100 * MS, GPU_UTIL, 40, service="another-service"),
+    ]
+    entry = steps_by_id(coverage_report(write_run(tmp_path, records)))["gpu-step"]
+    assert entry["own"]["status"] == "empty"
+    assert entry["context"]["gpu-1"]["service_id"] == "another-service"
 
 
 def test_own_resource_status_vocabulary(tmp_path):
@@ -148,12 +171,13 @@ def test_own_resource_status_vocabulary(tmp_path):
         sample(100 * MS, GPU_UTIL, 5),
     ]
     by_id = steps_by_id(coverage_report(write_run(tmp_path, records)))
-    # host-1 is sampled according to the evidence, but no rounds were journaled.
+    # host-1 has no sample stream in this run.
     assert by_id["on-host"]["own"]["status"] == "empty"
     # gpu-1 has rounds in the domain, but none inside this window.
     assert by_id["gpu-step"]["own"]["status"] == "no_overlap"
     assert by_id["gpu-step"]["own"]["coverage"] == 0
-    assert by_id["root"]["own"] == {"status": "no_resource"}
+    # A step without a resource has nothing to join: missing, as in the service join.
+    assert by_id["root"]["own"] == {"status": "missing"}
 
 
 def test_samples_in_another_domain_are_unaligned(tmp_path):
@@ -253,7 +277,7 @@ def test_short_unexecuted_and_unsampled_steps_are_distinguished(tmp_path):
     by_id = steps_by_id(coverage_report(write_run(tmp_path, records)))
     assert by_id["short"]["shorter_than_interval"] is True
     assert by_id["short"]["context"]["gpu-1"]["coverage"] is None
-    assert (by_id["rejected"]["status"], by_id["rejected"]["window"]) == ("not_executed", None)
+    assert (by_id["rejected"]["status"], by_id["rejected"]["window"]) == ("missing", None)
     assert by_id["long"]["shorter_than_interval"] is False
     assert by_id["long"]["context"]["gpu-1"]["status"] == "no_overlap"
 
@@ -367,12 +391,12 @@ def test_report_covers_a_test_double_runner_run(mean_task, server, tmp_path):
     by_id = steps_by_id(report)
     root = by_id["agent-run"]
     assert root["window"]["clock_id"] == json.loads(outcome.evidence_path.read_text())["clock_id"]
-    assert root["own"] == {"status": "no_resource"}
+    assert root["own"] == {"status": "missing"}
     assert all(entry["status"] == "present" for entry in root["context"].values())
     # Model calls run on the unsampled model server; retrieval on the unsampled docs index.
-    assert by_id["model-call-1"]["own"]["status"] == "missing"
+    assert by_id["model-call-1"]["own"]["status"] == "empty"
     search = by_id["tool-1-search_docs"]
-    assert search["own"]["status"] == "missing"
+    assert search["own"]["status"] == "empty"
     assert search["timing"]["service_method"] == "retrieval-timing-v1"
     assert search["timing"]["service_queue_availability"] == "unsupported"
     assert search["timing"]["service_seconds"] > 0

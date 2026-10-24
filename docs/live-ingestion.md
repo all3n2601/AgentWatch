@@ -127,7 +127,7 @@ The metric registry (`METRICS` in `agentwatch_sdk.live`) accepts:
 | `gpu.nvml.power.usage_watts.v1` | `inference` | watts ≥ 0 | Device power draw gauge |
 | `gpu.nvml.clock.sm_mhz.v1` | `inference` | megahertz ≥ 0 | Current SM clock |
 
-The three cumulative CPU counters (A04, [ADR 0004](adr/0004-cpu-counters-retrieval-timing-and-step-correlation.md))
+The three cumulative CPU counters (A04, [ADR 0005](adr/0005-cpu-counters-retrieval-timing-and-step-correlation.md))
 measure a window by their increase across it; any decrease is a reset with no delta. Host PSI
 covers the whole kernel (in WSL2 the whole VM, including Docker) and the cgroup counters cover
 the producer's whole cgroup, so none is step-exclusive. GPU entries (A04,

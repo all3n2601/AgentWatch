@@ -8,14 +8,15 @@ applies the live contracts' rules:
   and records in a clock domain the run never registered are excluded and counted.
 - A step's window is `[started_tick_ns, finished_tick_ns)` in its own clock domain; a sample
   exactly at the finish tick is outside it, and samples in another domain never join.
-- A step joins only its own registered resource (`own`). Other sampled resources are
-  reported as `context`: host-wide PSI, the runner's whole cgroup and the whole GPU describe
-  what else was happening, never the step's exclusive use.
+- A step joins only its own registered resource and service (`own`). Other sampled
+  resources are reported as `context`: host-wide PSI, the runner's whole cgroup and the whole
+  GPU describe what else was happening, never the step's exclusive use.
 
-Per resource, `status` uses the FeatureRow telemetry vocabulary: `present` (a round inside
-the window), `no_overlap` (rounds in the domain, none inside), `unaligned` (rounds only in
-another domain), `empty` (sampled by the runner, but no rounds were journaled) and `missing`
-(the resource has no registered metric, such as the model server or the docs index).
+Statuses use the FeatureRow telemetry vocabulary with the same meanings as the service join
+(`step-features-v1`): `missing` (the step never executed, or has no resource or service),
+`empty` (no sample stream exists for its resource and service in this run, as for the model
+server and the docs index), `unaligned` (streams only in another clock domain), `no_overlap`
+(rounds in the domain, none inside the window) and `present`.
 
 A sampling round is one probe reading of one resource (one tick). Expected rounds are the
 window's duration over the declared interval, rounded down; a step shorter than one interval
@@ -46,6 +47,7 @@ RECORD_MODELS = {"resource_sample": ResourceSample, "step_event": StepEvent}
 # The live contracts' timing-breakdown tolerance.
 TIMING_TOLERANCE_SECONDS = 1e-6
 Rounds = dict[tuple[str, int], list[dict]]
+Target = tuple[str, str]  # (resource_id, service_id), the contract's join identity
 
 
 class CoverageError(ValueError):
@@ -135,10 +137,10 @@ def _latest_events(records: list[dict]) -> dict[str, dict]:
 
 
 def _resource_window(
-    rounds: Rounds | None, sampled: bool, clock_id: str, started: int, finished: int, expected: int
+    rounds: Rounds | None, clock_id: str, started: int, finished: int, expected: int
 ) -> dict:
     if not rounds:
-        return {"status": "empty" if sampled else "missing"}
+        return {"status": "empty"}
     in_domain = {tick: readings for (clock, tick), readings in rounds.items() if clock == clock_id}
     if not in_domain:
         return {"status": "unaligned"}
@@ -215,8 +217,8 @@ def _call_timings(evidence: dict) -> dict[str, dict]:
 
 def _step_coverage(
     event: dict,
-    rounds: dict[str, Rounds],
-    sampled: dict[str, str],
+    rounds: dict[Target, Rounds],
+    scopes: dict[str, str | None],
     declared: float,
     call_timing: dict | None,
 ) -> dict:
@@ -228,7 +230,7 @@ def _step_coverage(
         "resource_id": event.get("resource_id"),
     }
     if started is None or finished is None:
-        return base | {"window": None, "status": "not_executed"}
+        return base | {"window": None, "status": "missing", "own": {"status": "missing"}}
     # Integer nanoseconds: float floor division would expect 2 rounds in 0.3 s at 0.1 s.
     expected = (finished - started) // round(declared * 1e9)
     window = {
@@ -237,24 +239,19 @@ def _step_coverage(
         "finished_tick_ns": finished,
     }
 
-    def resource(resource_id: str) -> dict:
-        return _resource_window(
-            rounds.get(resource_id),
-            resource_id in sampled,
-            event["clock_id"],
-            started,
-            finished,
-            expected,
-        )
+    def resource(target: Target) -> dict:
+        return _resource_window(rounds.get(target), event["clock_id"], started, finished, expected)
 
-    own_id = event.get("resource_id")
-    own = (
-        {"status": "no_resource"} if own_id is None else {"resource_id": own_id} | resource(own_id)
-    )
+    own_target = (event.get("resource_id"), event.get("service_id"))
+    if None in own_target:
+        own = {"status": "missing"}
+    else:
+        own = {"resource_id": own_target[0], "service_id": own_target[1]} | resource(own_target)
     context = {
-        resource_id: {"scope": scope} | resource(resource_id)
-        for resource_id, scope in sampled.items()
-        if resource_id != own_id
+        resource_id: {"service_id": service_id, "scope": scopes.get(resource_id)}
+        | resource((resource_id, service_id))
+        for resource_id, service_id in rounds
+        if (resource_id, service_id) != own_target
     }
     return base | {
         "window": window,
@@ -296,26 +293,26 @@ def coverage_report(run_dir: Path) -> dict:
     unregistered = [record for record in records if record["clock_id"] not in clocks]
     records = [record for record in records if record["clock_id"] in clocks]
 
-    rounds: dict[str, Rounds] = defaultdict(lambda: defaultdict(list))
+    rounds: dict[Target, Rounds] = defaultdict(lambda: defaultdict(list))
     for record in records:
         if record.get("record_type") == "resource_sample":
-            rounds[record["resource_id"]][(record["clock_id"], record["tick_ns"])].append(record)
+            target = (record["resource_id"], record["service_id"])
+            rounds[target][(record["clock_id"], record["tick_ns"])].append(record)
     sampling_summary = evidence.get("resource_sampling") or {}
-    sampled = {
+    scopes = {
         entry["resource_id"]: entry.get("scope")
         for entry in sampling_summary.get("resources", [])
         if isinstance(entry, dict) and isinstance(entry.get("resource_id"), str)
     }
-    # A resource with journaled samples counts as sampled even if the evidence omits it.
-    sampled |= {resource_id: sampled.get(resource_id) for resource_id in rounds}
     sampling = {
-        resource_id: interval_summary(sorted(tick for _clock, tick in by_tick), declared)
+        resource_id: {"service_id": service_id}
+        | interval_summary(sorted(tick for _clock, tick in by_tick), declared)
         | {"metrics": sorted({r["metric"] for group in by_tick.values() for r in group})}
-        for resource_id, by_tick in rounds.items()
+        for (resource_id, service_id), by_tick in rounds.items()
     }
     timings = _call_timings(evidence)
     steps = [
-        _step_coverage(event, rounds, sampled, declared, timings.get(event["step_id"]))
+        _step_coverage(event, rounds, scopes, declared, timings.get(event["step_id"]))
         for event in sorted(_latest_events(records).values(), key=lambda e: e["submitted_tick_ns"])
     ]
     return {

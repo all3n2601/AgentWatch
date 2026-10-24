@@ -237,7 +237,7 @@ driver scripts, journals, coverage reports, live read-backs and `SHA256SUMS`.
 
 ## A04: CPU stall, cgroup and retrieval timing (October 24, 2026)
 
-[ADR 0004](adr/0004-cpu-counters-retrieval-timing-and-step-correlation.md) added three
+[ADR 0005](adr/0005-cpu-counters-retrieval-timing-and-step-correlation.md) added three
 cumulative CPU counters (host PSI `some` total, the runner cgroup's usage and its own PSI
 `some` total), retrieval service timing and `coverage-v2`, which joins a step only to its own
 resource. Protocol `a04-cpu-retrieval-evidence-v1` was declared in writing before measuring
@@ -275,8 +275,8 @@ not a separate Linux host. Host PSI there covers the whole VM.
 - Delivery was complete in all 12 runs with nothing refused, and the live API returned
   exactly the journaled records and per-metric sample counts.
 - **Correlation:** model calls (63) and retrievals (12) report their own telemetry as
-  `missing`, because the model server and docs index have no registered metric; host CPU
-  and the GPU are context. Root steps have no resource.
+  `empty`, because the model server and docs index have no sample stream; host CPU and the
+  GPU are context. Root steps have no resource (`missing`), as in the service join.
 - **Retrieval:** all 12 `search_docs` calls had a service time (the search itself) of
   46–117 µs, a dispatch queue of 0.9–12.9 ms and 0.5–8.9 ms of runner handling. The index
   queue is `unsupported`: an in-process search never queues. Each retrieval step took 2–19 ms

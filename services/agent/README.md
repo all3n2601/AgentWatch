@@ -85,7 +85,7 @@ URLs are excluded: the same configuration can run on different hosts.
   the runner's clock domain. The tool host gets five CPU metrics: host PSI `some avg10`, the
   runner cgroup's `throttled_usec`, and three cumulative counters whose increase across a step
   window measures that window: host PSI `some total`, the cgroup's `usage_usec` and the
-  cgroup's own PSI `some total` ([ADR 0004](../../docs/adr/0004-cpu-counters-retrieval-timing-and-step-correlation.md)).
+  cgroup's own PSI `some total` ([ADR 0005](../../docs/adr/0005-cpu-counters-retrieval-timing-and-step-correlation.md)).
   The GPU (`gpu-*`, service `nvidia-nvml`, class `inference`) gets five
   NVML gauges: kernel and memory utilization, memory used, power and SM clock
   ([registry](../../docs/live-ingestion.md), [ADR 0003](../../docs/adr/0003-gpu-and-inference-measurement.md)).
@@ -187,10 +187,11 @@ isolation sandbox**: do not add free-form edits or commands without the A03 isol
 `uv run --package agentwatch-agent python -m agentwatch_agent coverage <run dir>` prints a
 `coverage-v2` report from the run's journal and evidence. It refuses records of another run
 and conflicting records under one identity, and excludes (and counts) records in a clock
-domain the run never registered. Each step joins only its own registered resource (`own`);
-other sampled resources are labeled `context`. Statuses follow the FeatureRow vocabulary:
-`present`, `no_overlap`, `unaligned`, `empty` (sampled, but nothing journaled) and `missing`
-(no registered metric, as for the model server and docs index). Each executed step also
+domain the run never registered. Each step joins only its own registered resource and
+service (`own`); other sampled resources are labeled `context`. Statuses follow the
+FeatureRow vocabulary with the service join's meanings: `missing` (not executed, or no
+resource or service), `empty` (no sample stream for the resource and service, as for the
+model server and docs index), `unaligned`, `no_overlap` and `present`. Each executed step also
 reports its dispatch queue apart from service time (Ollama's total, or the search alone) and
 the remainder as runner handling. It also reports, per resource, the achieved sampling
 interval (median, p90, max), late and early rounds, and missed rounds (rounds the declared
