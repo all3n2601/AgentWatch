@@ -3,13 +3,15 @@ import {
   type LiveRunView,
   type LiveStep,
   type StepState,
-} from "./step-events";
+} from "./live-view";
 
 /** Server-owned run state; distinct from step states and unknown when null. */
 export type RunStatus = { state: StepState; reason: string | null } | null;
 export type RunOutcome =
   "active" | "completed" | "failed" | "cancelled" | "unknown";
 export type FeedFreshness = "never" | "fresh" | "stale" | "closed";
+
+const NS_PER_SECOND = 1e9;
 
 /** How long an open run may go without a newly received record before it is stale. */
 export const LIVE_FEED_STALE_AFTER_MS = 30_000;
@@ -158,14 +160,26 @@ export type CpuTotal = {
   measuredSteps: number;
   unmeasuredSteps: number;
 };
+export type SpanTotal = {
+  /**
+   * Wall time covered by at least one terminal step, so overlapping parent and child windows
+   * count once. Null when the steps use more than one clock domain.
+   */
+  seconds: number | null;
+  measuredSteps: number;
+  clockDomains: number;
+};
 export type StepTotals = {
   /** True only when the sums below are final run totals. */
   final: boolean;
   reasons: string[];
+  /** Queue, execution and CPU sums cover leaf steps; a parent's window contains its children. */
   queue: TimingTotal;
   execution: TimingTotal;
-  duration: TimingTotal;
   cpu: CpuTotal;
+  /** Terminal parent steps left out of the sums because their children are counted. */
+  parentSteps: number;
+  duration: SpanTotal;
 };
 
 function sumOf(values: (number | null)[]): TimingTotal {
@@ -194,15 +208,49 @@ function cpuTotalOf(steps: LiveStep[]): CpuTotal {
   };
 }
 
+/** Length of the union of [submitted, finished] windows; every step is in one clock domain. */
+function coveredSeconds(steps: LiveStep[]) {
+  const windows = steps
+    .flatMap((step) =>
+      step.finishedTickNs === null
+        ? []
+        : [[step.submittedTickNs, step.finishedTickNs] as const],
+    )
+    .sort((a, b) => a[0] - b[0]);
+  let coveredNs = 0;
+  let open: [number, number] | null = null;
+  for (const [start, end] of windows) {
+    if (open && start <= open[1]) open[1] = Math.max(open[1], end);
+    else {
+      if (open) coveredNs += open[1] - open[0];
+      open = [start, end];
+    }
+  }
+  if (open) coveredNs += open[1] - open[0];
+  return coveredNs / NS_PER_SECOND;
+}
+
+function spanOf(steps: LiveStep[]): SpanTotal {
+  const clockDomains = new Set(steps.map((step) => step.clockId)).size;
+  return {
+    seconds: clockDomains > 1 ? null : coveredSeconds(steps),
+    measuredSteps: steps.length,
+    clockDomains,
+  };
+}
+
 /**
- * Sums the timings of terminal steps. The sums are partial unless the run is
+ * Totals the timings of terminal steps. The totals are partial unless the run is
  * closed, every reported step is terminal, and no revision or record is missing.
- * Per-step durations are summed (each is within one clock domain); ticks from
- * different steps are never subtracted from each other.
+ * Queue, execution and CPU time are summed over leaf steps only, because a
+ * parent's window already contains its children's. The duration is the wall
+ * time covered by any step, compared only within one clock domain.
  */
 export function stepTotals(view: LiveRunView, run: RunStatus): StepTotals {
   const outcome = runOutcome(run);
   const unfinished = activeSteps(view).length;
+  const expired = view.gaps.filter((gap) => gap.expired).length;
+  const waiting = view.gaps.length - expired;
   const reasons = [
     outcome === "unknown" && "Run state has not been reported",
     outcome === "active" && "Run is still active",
@@ -211,18 +259,23 @@ export function stepTotals(view: LiveRunView, run: RunStatus): StepTotals {
       "No steps have been reported",
     unfinished > 0 &&
       `${plural(unfinished, "step")} ${isAre(unfinished)} still queued or running`,
-    view.gaps.length > 0 &&
-      `${plural(view.gaps.length, "step")} ${isAre(view.gaps.length)} waiting for a missing revision`,
-    view.unreadableRecords > 0 &&
-      `${plural(view.unreadableRecords, "record")} could not be read`,
+    waiting > 0 &&
+      `${plural(waiting, "step")} ${isAre(waiting)} waiting for a missing revision`,
+    expired > 0 &&
+      `${plural(expired, "step")} ${expired === 1 ? "has" : "have"} expired revisions that will never be applied`,
+    view.otherRunRecords > 0 &&
+      `${plural(view.otherRunRecords, "record")} belong${view.otherRunRecords === 1 ? "s" : ""} to another run`,
   ].filter((reason): reason is string => !!reason);
   const terminal = view.steps.filter(isTerminal);
+  const parents = new Set(view.steps.map((step) => step.parentStepId));
+  const leaves = terminal.filter((step) => !parents.has(step.stepId));
   return {
     final: reasons.length === 0,
     reasons,
-    queue: sumOf(terminal.map((s) => s.timings?.queueSeconds ?? null)),
-    execution: sumOf(terminal.map((s) => s.timings?.executionSeconds ?? null)),
-    duration: sumOf(terminal.map((s) => s.timings?.durationSeconds ?? null)),
-    cpu: cpuTotalOf(terminal),
+    queue: sumOf(leaves.map((s) => s.timings?.queueSeconds ?? null)),
+    execution: sumOf(leaves.map((s) => s.timings?.executionSeconds ?? null)),
+    cpu: cpuTotalOf(leaves),
+    parentSteps: terminal.length - leaves.length,
+    duration: spanOf(terminal),
   };
 }

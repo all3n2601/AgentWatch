@@ -13,6 +13,8 @@ export function dataDirectory() {
 export function apiUrl() {
   return process.env.AGENTWATCH_API_URL || "http://127.0.0.1:8090";
 }
+/** The B01 live runs collection; live runs are not part of saved run history. */
+export const liveRunsUrl = () => `${apiUrl()}/v1/live/runs`;
 const historySchema = z.object({
   runs: z.array(
     z.object({

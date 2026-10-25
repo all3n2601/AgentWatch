@@ -37,8 +37,8 @@ models/client live in `agentwatch_sdk`; generated TypeScript types are exported 
    out-of-range cursors return `422` and the SDK rejects them before sending a request.
 
 The integration transport is polling, not SSE/WebSocket delivery. Producer instrumentation
-and the dashboard's live consumer are A02/F02 follow-ups. Poll intervals are caller choices;
-B01 makes no live-latency or instrumentation-overhead claim.
+is an A02 follow-up; the dashboard's live consumer (F02) now polls the live read API. Poll
+intervals are caller choices; B01 makes no live-latency or instrumentation-overhead claim.
 
 ## Bounds, retries and gaps
 
