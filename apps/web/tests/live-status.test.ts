@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  SYNTHETIC_RUN_ID,
-  syntheticStepEvent as event,
-} from "../fixtures/step-event-replays";
+import { runSnapshotSchema } from "../lib/live-api-schema";
+import { readRunSnapshot } from "../lib/live-snapshot";
 import {
   activeSteps,
   failedSteps,
@@ -14,37 +12,40 @@ import {
   runOutcome,
   stepTotals,
 } from "../lib/live-status";
-import { readStepEvents } from "../lib/step-events";
+import {
+  OTHER_RUN_ID,
+  runSnapshot,
+  savedRecord,
+  stepEvent,
+  stepView,
+} from "./live-fixtures";
 
-const at = (second: number) =>
-  `2026-10-14T12:00:${String(second).padStart(2, "0")}Z`;
-const queued = (step_id: string) =>
-  event({ step_id, sequence: 0, state: "queued", observed_at: at(0) });
-const running = (step_id: string, started_s = 1) =>
-  event({
-    step_id,
-    sequence: 1,
-    state: "running",
-    observed_at: at(1),
-    started_s,
-  });
+type Event = ReturnType<typeof stepEvent>;
+const queued = (stepId: string) => stepEvent(stepId, 0, "queued");
+const running = (stepId: string, started = 1) =>
+  stepEvent(stepId, 1, "running", { started });
 const completed = (
-  step_id: string,
-  started_s: number,
-  finished_s: number,
-  cpu_seconds: number | null = null,
-) =>
-  event({
-    step_id,
-    sequence: 2,
-    state: "completed",
-    observed_at: at(5),
-    started_s,
-    finished_s,
-    cpu_seconds,
-    cpu_scope: cpu_seconds === null ? null : "process",
-  });
-const view = (records: unknown[]) => readStepEvents(SYNTHETIC_RUN_ID, records);
+  stepId: string,
+  started: number,
+  finished: number,
+  cpu: number | null = null,
+  cpuScope?: "process" | "process_and_children",
+) => stepEvent(stepId, 2, "completed", { started, finished, cpu, cpuScope });
+
+/** The view of a snapshot whose applied state is each step's highest listed revision. */
+function view(events: Event[]) {
+  const applied = new Map<string, Event>();
+  for (const event of events)
+    if ((applied.get(event.step_id)?.sequence ?? -1) < event.sequence)
+      applied.set(event.step_id, event);
+  const snapshot = runSnapshotSchema.parse(
+    runSnapshot({
+      steps: [...applied.values()].map(stepView),
+      records: events.map((event, index) => savedRecord(event, index + 1)),
+    }),
+  );
+  return readRunSnapshot(snapshot, snapshot.records);
+}
 const done = { state: "completed" as const, reason: null };
 
 test("active and failed steps are selected by applied state", () => {
@@ -53,14 +54,7 @@ test("active and failed steps are selected by applied state", () => {
     queued("r"),
     running("r"),
     queued("f"),
-    event({
-      step_id: "f",
-      sequence: 1,
-      state: "failed",
-      observed_at: at(2),
-      finished_s: 1,
-      reason: "Tool timed out",
-    }),
+    stepEvent("f", 1, "failed", { finished: 1, reason: "Tool timed out" }),
   ]);
   assert.deepEqual(
     activeSteps(live).map((s) => s.stepId),
@@ -132,7 +126,8 @@ test("totals are final only for a closed run with every step terminal", () => {
     unmeasuredSteps: 0,
   });
   assert.equal(totals.execution.seconds, 3);
-  assert.equal(totals.duration.seconds, 4.5);
+  // Both steps are submitted at tick 0, so their windows overlap: [0, 3] and [0, 1.5].
+  assert.equal(totals.duration.seconds, 3);
   assert.deepEqual(totals.cpu, {
     seconds: 1.75,
     scope: "process",
@@ -159,24 +154,31 @@ test("an active step keeps totals partial and excludes it from sums", () => {
   assert.equal(totals.duration.measuredSteps, 1);
 });
 
-test("gaps, unread records and unknown run state block final totals", () => {
-  const live = view([
-    queued("a"),
-    running("a", 1),
-    completed("a", 1, 3),
-    { record_type: "step_event" },
-    event({
-      step_id: "b",
-      sequence: 1,
-      state: "running",
-      observed_at: at(1),
-      started_s: 1,
+test("gaps, other runs' records and unknown run state block final totals", () => {
+  const early = stepEvent("b", 1, "running", { started: 1 });
+  const snapshot = runSnapshotSchema.parse(
+    runSnapshot({
+      steps: [stepView(completed("a", 1, 3))],
+      gaps: [
+        {
+          step_id: "b",
+          missing_sequence: 0,
+          first_pending_sequence: 1,
+          expired: false,
+        },
+      ],
+      records: [
+        savedRecord(completed("a", 1, 3), 1),
+        savedRecord(early, 2, "pending"),
+        savedRecord(stepEvent("x", 0, "queued", { runId: OTHER_RUN_ID }), 3),
+      ],
     }),
-  ]);
+  );
+  const live = readRunSnapshot(snapshot, snapshot.records);
   assert.deepEqual(stepTotals(live, null).reasons, [
     "Run state has not been reported",
     "1 step is waiting for a missing revision",
-    "1 record could not be read",
+    "1 record belongs to another run",
   ]);
 });
 
@@ -220,10 +222,7 @@ test("missing CPU or mixed CPU scopes leave CPU totals unmeasured", () => {
       completed("a", 1, 2, 0.5),
       queued("b"),
       running("b", 1),
-      {
-        ...completed("b", 1, 2, 0.5),
-        cpu_scope: "process_and_children",
-      },
+      completed("b", 1, 2, 0.5, "process_and_children"),
     ]),
     done,
   );
@@ -235,12 +234,8 @@ test("never-started steps count toward duration but not queue or execution", () 
   const totals = stepTotals(
     view([
       queued("a"),
-      event({
-        step_id: "a",
-        sequence: 1,
-        state: "cancelled",
-        observed_at: at(1),
-        finished_s: 0.5,
+      stepEvent("a", 1, "cancelled", {
+        finished: 0.5,
         reason: "Cancelled before a worker started",
       }),
     ]),

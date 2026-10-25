@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runSnapshotSchema } from "../lib/live-api-schema";
 import {
-  latestReceiptAgeMs,
+  resourceSample,
+  runSnapshot,
+  savedRecord,
+  stepEvent,
+  stepView as fixtureStepView,
+} from "./live-fixtures";
+import {
+  liveFeedRun,
   liveSampleSeries,
   parseGpuSamples,
   summarizeSeries,
   wallSteps,
-  type LiveRecord,
 } from "../lib/live-feed-data";
 
 const at = (second: number) =>
@@ -63,8 +70,11 @@ const sample = (
   second: number,
   value: number | null,
   availability = "measured",
+  resource_id = "tool-host-a",
 ) => ({
   observed_at: at(second),
+  resource_id,
+  service_id: `${resource_id}-service`,
   resource_class: "cpu_sandbox",
   metric,
   unit: metric.includes("psi") ? "percent" : "microseconds",
@@ -97,8 +107,8 @@ test("CPU stall and usage counters become per-sample ms, with resets as gaps", (
     counter("cpu.cgroup.usage_usec.v1", 1, 1_000),
     counter("cpu.cgroup.usage_usec.v1", 2, 251_000),
   ]);
-  const stall = series.find((s) => s.key === "cpu.psi.some.total_usec.v1");
-  const usage = series.find((s) => s.key === "cpu.cgroup.usage_usec.v1");
+  const stall = series.find((s) => s.metric === "cpu.psi.some.total_usec.v1");
+  const usage = series.find((s) => s.metric === "cpu.cgroup.usage_usec.v1");
   assert.equal(stall?.label, "CPU stall per sample (PSI some, host)");
   assert.equal(stall?.unit, "ms");
   // The first reading has no predecessor and the reset is a gap, never negative time.
@@ -133,9 +143,11 @@ test("live NVML GPU samples are labeled, converted to MiB and keep gaps", () => 
     gpu("gpu.nvml.memory.used_bytes.v1", 2, null, "bytes"),
     gpu("gpu.nvml.utilization.gpu.v1", 1, 0, "percent"),
   ]);
-  const memory = series.find((s) => s.key === "gpu.nvml.memory.used_bytes.v1");
+  const memory = series.find(
+    (s) => s.metric === "gpu.nvml.memory.used_bytes.v1",
+  );
   const utilization = series.find(
-    (s) => s.key === "gpu.nvml.utilization.gpu.v1",
+    (s) => s.metric === "gpu.nvml.utilization.gpu.v1",
   );
   assert.equal(memory?.label, "GPU memory used (NVML)");
   assert.equal(memory?.unit, "MiB");
@@ -163,6 +175,68 @@ test("cumulative throttling becomes per-sample milliseconds and skips gaps", () 
   assert.deepEqual(
     throttled.points.map((p) => p.value),
     [null, null, 4],
+  );
+});
+
+test("two resources with interleaved samples stay separate, labeled series", () => {
+  const THROTTLED = "cpu.cgroup.throttled_usec.v1";
+  const PSI = "cpu.psi.some.avg10.v1";
+  const series = liveSampleSeries([
+    sample(THROTTLED, 1, 1_000, "measured", "host-a"),
+    sample(THROTTLED, 2, 50_000, "measured", "host-b"),
+    sample(PSI, 2, 0.5, "measured", "host-a"),
+    sample(THROTTLED, 3, 3_000, "measured", "host-a"),
+    sample(PSI, 3, null, "unsupported", "host-b"),
+    sample(THROTTLED, 4, 51_000, "measured", "host-b"),
+  ]);
+  const find = (metric: string, resource: string) =>
+    series.find(
+      (s) => s.metric === metric && s.resource?.resourceId === resource,
+    );
+  assert.equal(series.length, 4);
+  assert.equal(new Set(series.map((s) => s.key)).size, 4);
+
+  // Each counter is differenced only against its own resource's previous reading.
+  assert.deepEqual(
+    find(THROTTLED, "host-a")?.points.map((p) => p.value),
+    [null, 2],
+  );
+  assert.deepEqual(
+    find(THROTTLED, "host-b")?.points.map((p) => p.value),
+    [null, 1],
+  );
+  assert.deepEqual(find(THROTTLED, "host-b")?.resource, {
+    resourceId: "host-b",
+    serviceId: "host-b-service",
+  });
+
+  // Availability is counted per resource; one host's unsupported reading is not another's.
+  assert.equal(find(PSI, "host-a")?.unavailable, 0);
+  assert.deepEqual(find(PSI, "host-a")?.notMeasured, {});
+  assert.deepEqual(find(PSI, "host-b")?.notMeasured, {
+    unsupported: { count: 1, reason: null },
+  });
+  assert.equal(find(PSI, "host-b")?.label, "CPU pressure (PSI some, avg10)");
+});
+
+test("not-measured readings are counted by state with the latest reason", () => {
+  const [psi] = liveSampleSeries([
+    { ...sample("cpu.psi.some.avg10.v1", 1, null, "missing"), reason: "late" },
+    { ...sample("cpu.psi.some.avg10.v1", 2, null, "missing"), reason: null },
+    {
+      ...sample("cpu.psi.some.avg10.v1", 3, null, "unsupported"),
+      reason: "no PSI on macOS",
+    },
+    sample("cpu.psi.some.avg10.v1", 4, 2),
+  ]);
+  assert.deepEqual(psi.notMeasured, {
+    missing: { count: 2, reason: "late" },
+    unsupported: { count: 1, reason: "no PSI on macOS" },
+  });
+  assert.equal(psi.unavailable, 3);
+  assert.deepEqual(
+    psi.points.map((p) => p.value),
+    [null, null, null, 2],
   );
 });
 
@@ -210,25 +284,16 @@ test("GPU samples are refused when the offset is missing or changed", () => {
   );
 });
 
-test("receipt age uses the newest record and is null with none", () => {
-  const record = (second: number): LiveRecord => ({
-    sequence: second,
-    disposition: "applied",
-    received_at: at(second),
-    payload: { record_type: "step_event" },
-  });
-  assert.equal(latestReceiptAgeMs([], ms(10)), null);
-  assert.equal(latestReceiptAgeMs([record(2), record(5)], ms(10)), 5_000);
-  assert.equal(latestReceiptAgeMs([record(5)], ms(1)), 0);
-});
-
 test("series summaries ignore gaps and report nothing when unmeasured", () => {
   const series = {
     key: "k",
+    metric: "m",
     label: "l",
+    resource: null,
     unit: "%",
     source: "s",
     unavailable: 1,
+    notMeasured: null,
     points: [
       { atMs: 0, value: 2 },
       { atMs: 1, value: null },
@@ -245,4 +310,34 @@ test("series summaries ignore gaps and report nothing when unmeasured", () => {
     summarizeSeries({ ...series, points: [{ atMs: 0, value: null }] }),
     null,
   );
+});
+
+test("the live view draws applied records only and counts every record received", () => {
+  const queued = stepEvent("tool-1", 0, "queued", { second: 1 });
+  const early = stepEvent("tool-1", 2, "completed", {
+    started: 2,
+    finished: 3,
+    second: 3,
+  });
+  const snapshot = runSnapshotSchema.parse(
+    runSnapshot({
+      steps: [fixtureStepView(queued)],
+      records: [
+        savedRecord(queued, 1),
+        savedRecord(early, 2, "pending"),
+        savedRecord(resourceSample("s-1", { second: 2 }), 3),
+      ],
+    }),
+  );
+  const run = liveFeedRun(snapshot, snapshot.records, null);
+  assert.equal(run.recordCount, 3);
+  assert.deepEqual(
+    run.wallSteps.map((s) => [s.stepId, s.state, s.endMs]),
+    [["tool-1", "queued", null]],
+    "the pending completion is not drawn",
+  );
+  assert.equal(run.liveSeries.length, 1);
+  assert.equal(run.view.gaps.length, 0);
+  assert.equal(run.title, "synthetic-task-r1");
+  assert.equal(run.gpu, null);
 });

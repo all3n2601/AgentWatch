@@ -25,6 +25,9 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      # Browser tests of the live view run the build above against a scripted live API.
+      - run: pnpm --filter @agentwatch/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @agentwatch/web test:e2e
 
   python:
     runs-on: ubuntu-latest

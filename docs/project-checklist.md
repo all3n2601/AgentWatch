@@ -312,6 +312,32 @@ These can be completed before adding an agent.
   receipt; the freshness status is a polite live region so the stale transition is announced.
   Its only data source is a synthetic development replay; F02 must poll the B01 live read API
   before automatic live updates exist. Keep this open until then.
+  F02, October 24, 2026 (PR #39, branch `feature/live-feed`, building on the #31 prototype;
+  in review): `/live` polls the B01 live read API in the browser through validated web routes
+  (`apps/web/app/api/live/runs/`) instead of `router.refresh()`. The selected run is read every
+  2 s after the last record sequence received; a failed read keeps the last data and selection
+  and retries with backoff (1–30 s, ±20% jitter); polling stops once a closed run is drained
+  (with a check for late evidence that shows it is checking, then when it checked and how many
+  new records it found, or its error) and pauses while the tab is hidden. A connection status
+  shows connected, reconnecting (attempt, delay, cause) and stopped states. Feed age is anchored
+  on the browser's monotonic clock when new records arrive, never on `received_at`. The
+  `?replay=` path is removed; its scenarios are labeled synthetic browser-test fixtures
+  (`apps/web/e2e/fixtures/live-scenarios.ts`). Verification: 69 web unit tests
+  (`apps/web/tests/live-poll.test.ts` covers failure then recovery, backoff bounds and ±60 s
+  skew), 24 Playwright tests (`apps/web/e2e/live-feed.spec.ts`: active to terminal, reconnect,
+  failures, ±60 s skew, late-evidence checks; `live-scenarios.spec.ts`), lint, typecheck and build. Manual checks
+  against the real stack (`make infra-up`, `dev-worker`, `dev-web`, `agent-overhead`): run
+  selection, active to Completed with final totals, reconnect after a worker restart, not-found
+  and invalid UUIDs. Final manual check on the real stack, October 24, 2026: every check was
+  done first in a normal desktop browser window on a MacBook, then the live view at iPhone SE
+  and 768 px widths, 200% zoom and keyboard navigation; "Check for late evidence"
+  shows that it is checking, then its result; `?replay=` no longer shows a replay.
+  PR #39 review fixes, October 24, 2026: jittered retry delays are clamped to the 1–30 s bounds,
+  and cached record dispositions are reconciled with each snapshot's step state, so a pending
+  completion applied later without redelivery ends its step on the timeline
+  (`apps/web/tests/live-poll.test.ts`; browser regression in `apps/web/e2e/live-feed.spec.ts`).
+  After merging current `main` (#38's CPU counters keyed by metric): 72 web unit tests, 25
+  Playwright tests, lint, typecheck and build pass. Left unchecked for reviewers to confirm.
 - [ ] Display active steps, terminal failures, and incomplete telemetry without misleading totals.
   F01, October 18, 2026: `/live` renders StepEvent records through one adapter
   (`apps/web/lib/step-events.ts`) that applies each step's contiguous revision prefix and
@@ -329,6 +355,26 @@ These can be completed before adding an agent.
   Manual browser checks at commit `a355f8d`: keyboard navigation (focus visible; replay
   scenarios open with Enter) and 200% browser zoom. Real live runs are not displayed until F02 connects the B01 read API,
   so this stays open.
+  F02, October 24, 2026 (PR #39, branch `feature/live-feed`): step state, timings and gaps now come from
+  the service's validated snapshot (`apps/web/lib/live-snapshot.ts`), so pending and expired
+  revisions are never applied and expired gaps are reported as evidence that will never be
+  applied (`apps/web/tests/live-snapshot.test.ts`: pending → expired → filled prefix). Totals
+  no longer add a parent step to the children it contains: the span is the wall time covered
+  by any step within one clock domain, and queue/execution/CPU sums cover leaf steps
+  (`apps/web/tests/live-totals.test.ts`; a 5.44 s nested run no longer shows ~10.9 s). Live
+  samples are charted per resource, service and metric, with not-measured readings counted by
+  availability state and shown as gaps (`apps/web/tests/live-feed-data.test.ts`). A selected
+  UUID is read directly, so runs older than the newest 50 are selectable. The view states that
+  saved evidence is unavailable for live runs and offers a JSON export of the selected UUID's
+  live records, read page by page with gaps and pending/expired records unchanged and labeled
+  with its read time (`apps/web/tests/live-export.test.ts`). Browser tests in
+  `apps/web/e2e/live-feed.spec.ts` cover unavailable samples, a multi-page UUID-correct export
+  after switching runs mid-read, and a run outside the newest 50. Final manual check on the
+  real stack, October 24, 2026: the downloaded JSON carries the selected run's UUID, and the
+  saved-evidence unavailable state is shown. Left unchecked for reviewers to confirm.
+- [ ] Link live runs to saved evidence. Live records are kept apart from saved run history
+  (ADR 0001) and agent runs report only to the live API (ADR 0002), so a live UUID has no
+  saved-run counterpart; F02 shows that as unavailable. Linking them needs its own API task.
 - [x] Provide an instrumentation client for controlled test workloads.
   A02, October 16, 2026: [`services/agent`](../services/agent/README.md) records model,
   tool and retrieval steps through the B01 SDK with background batched delivery, bounded
