@@ -272,9 +272,11 @@ verification passed.
   from its baseline mean, ratio and difference in baseline stdevs. They are observations, not
   labels.
 - **Checks:** `baseline_replays_complete`, `stable_baseline`, `contended_replays_complete`,
-  `same_steps_every_replay`, `injectors_cleaned_up`, `injectors_active` (each injector
-  measured work: hash rounds, completed competing requests or searches) and
-  `evidence_delivered`. The command exits 0 only when the experiment completed and every check
+  `same_steps_every_replay`, `injectors_cleaned_up`, `injectors_active` and
+  `evidence_delivered`. `injectors_active` requires sustained, measured load from every
+  injector until the replay stopped it: no duration-bound or backstop stop, a report from
+  every CPU worker, the inference child's report, and no retrieval thread that errored or
+  ended early, plus hash rounds, completed competing requests or searches above zero. The command exits 0 only when the experiment completed and every check
   passed, 1 otherwise (evidence is kept), 3 when a replay's journal needs `resend`, and 2 for
   invalid settings or a source that cannot be replayed.
 - **Stopping.** Ctrl-C or SIGTERM cancels the current replay and any ramp, and runs nothing

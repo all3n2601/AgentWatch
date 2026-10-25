@@ -21,7 +21,11 @@ Every injector also has `max_duration_seconds` (at most 1,800 s).
 - A watchdog stops the injector `max_duration_seconds` after `active_tick_ns`
   (`stop_reason: duration_bound`), even if the caller never does.
 - Child processes stop themselves at a backstop of the bound plus 20 s, counted from their
-  own start, so load ends even if the supervising process is killed.
+  own start, so load ends even if the supervising process is killed. Retrieval threads have
+  the same backstop, so one that ends before the stop request (recorded as
+  `threads_running_at_stop` below `threads_started`) really stopped contending early.
+- A failed start halts every worker it started and reports them in `cleanup`; if that cleanup
+  is not confirmed, `start()` raises `InjectorCleanupError` instead of the start error.
 - `stop()` is idempotent. It sets the stop event and waits 2 s for reports and exits,
   then terminates, then kills (2 s each). A thread cannot be killed, so a retrieval thread
   still running is reported, never assumed stopped.

@@ -29,7 +29,24 @@ from agentwatch_injectors.inference import CompetingInferenceInjector
 from agentwatch_injectors.retrieval import IndexQueryFloodInjector
 from test_replay import record_source, runner_settings
 
-ACTIVITY = {"cpu": "hash_rounds", "inference": "requests_completed", "retrieval": "searches"}
+
+def sustained_activity(kind: str, work: int) -> dict:
+    """Activity shaped like each real injector's report after `work` units of load."""
+    if kind == "cpu":
+        return {
+            "workers_started": 1,
+            "workers_reported": 1,
+            "workers_stopped_by_backstop": 0,
+            "hash_rounds": work,
+        }
+    if kind == "inference":
+        return {"report": "received", "stopped_by_backstop": False, "requests_completed": work}
+    return {
+        "threads_started": 1,
+        "threads_running_at_stop": 1,
+        "search_errors": [],
+        "searches": work,
+    }
 
 
 class FakeInjector(BoundedInjector):
@@ -54,7 +71,7 @@ class FakeInjector(BoundedInjector):
         pass
 
     def _halt(self):
-        return {ACTIVITY[self.kind]: int(self.active)}, {"confirmed": self.confirm}
+        return sustained_activity(self.kind, int(self.active)), {"confirmed": self.confirm}
 
 
 @pytest.fixture
@@ -334,12 +351,58 @@ def test_baseline_variability_uses_steps_completed_in_every_baseline():
     assert baseline_variability([]) == {}
 
 
-def test_injection_activity_must_be_measured():
+def injection(kind, stop_reason="requested", **activity):
+    return {
+        "injector": kind,
+        "stop_reason": stop_reason,
+        "activity": sustained_activity(kind, 4) | activity,
+    }
+
+
+@pytest.mark.parametrize("kind", ["cpu", "inference", "retrieval"])
+def test_sustained_measured_load_counts_as_active(kind):
+    assert injection_active({"injections": [injection(kind)]}) is True
+
+
+@pytest.mark.parametrize(
+    "unsound",
+    [
+        injection("cpu", workers_reported=0),  # 15 of 16 missing must not pass either
+        injection("cpu", workers_started=16, workers_reported=15),
+        injection("cpu", workers_stopped_by_backstop=1),
+        injection("cpu", hash_rounds=0),
+        injection("inference", report="missing"),
+        injection("inference", stopped_by_backstop=True),
+        injection("inference", requests_completed=0),
+        injection("retrieval", search_errors=["KeyError: 'x'"]),
+        injection("retrieval", threads_started=2, threads_running_at_stop=1),
+        injection("retrieval", searches=0),
+        injection("cpu", stop_reason="duration_bound"),
+        {"injector": "gpu", "stop_reason": "requested", "activity": {"work": 1}},
+    ],
+    ids=[
+        "cpu-no-reports",
+        "cpu-missing-report",
+        "cpu-backstop",
+        "cpu-no-work",
+        "inference-no-report",
+        "inference-backstop",
+        "inference-no-completions",
+        "retrieval-errors",
+        "retrieval-thread-died",
+        "retrieval-no-searches",
+        "stopped-by-bound",
+        "unknown-kind",
+    ],
+)
+def test_partial_or_early_ending_load_is_not_active(unsound):
+    assert injection_active({"injections": [unsound]}) is False
+    mixed = {"injections": [injection("inference"), unsound]}
+    assert injection_active(mixed) is False
+
+
+def test_an_empty_injection_set_is_not_active():
     assert injection_active({"injections": []}) is False
-    cpu = {"injector": "cpu", "activity": {"hash_rounds": 4}}
-    assert injection_active({"injections": [cpu]}) is True
-    idle = {"injector": "inference", "activity": {"report": "missing"}}
-    assert injection_active({"injections": [cpu, idle]}) is False
 
 
 def test_experiment_cli_refuses_invalid_settings(tmp_path, capsys):

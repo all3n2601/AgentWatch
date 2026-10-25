@@ -17,7 +17,13 @@ from agentwatch_injectors.base import (
     InjectionClock,
     require_count,
 )
-from agentwatch_injectors.processes import ChildGroup, finished, halt_children, spawn_children
+from agentwatch_injectors.processes import (
+    ChildGroup,
+    finished,
+    halt_children,
+    new_group,
+    start_children,
+)
 
 CPU_METHOD = "cpu-spin-processes-v1"
 # Hashes between stop checks: about a millisecond of work, so a worker stops promptly.
@@ -85,8 +91,14 @@ class CpuSpinInjector(BoundedInjector):
         return self.max_duration_seconds + BACKSTOP_GRACE_SECONDS
 
     def _launch(self) -> None:
-        self._group = spawn_children(
-            _spin, [()] * self.workers, self._backstop_seconds(), "agentwatch-cpu-injector"
+        # Owned before any child starts, so a failed start halts and reports every child.
+        self._group = new_group()
+        start_children(
+            self._group,
+            _spin,
+            [()] * self.workers,
+            self._backstop_seconds(),
+            "agentwatch-cpu-injector",
         )
 
     def _halt(self) -> tuple[dict, dict]:

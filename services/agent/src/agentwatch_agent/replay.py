@@ -158,7 +158,7 @@ def _turns(messages: list, model_calls: list) -> tuple[ReplayTurn, ...]:
         len(model_calls) == len(turns)
         and all(
             isinstance(call, dict) and call.get("requested_tool_calls") == len(turn.calls)
-            for call, turn in zip(model_calls, turns, strict=False)
+            for call, turn in zip(model_calls, turns, strict=True)
         ),
         "Recorded model calls do not match the recorded conversation",
     )

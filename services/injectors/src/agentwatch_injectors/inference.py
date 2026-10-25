@@ -30,7 +30,13 @@ from agentwatch_injectors.base import (
     require_count,
     require_seconds,
 )
-from agentwatch_injectors.processes import ChildGroup, finished, halt_children, spawn_children
+from agentwatch_injectors.processes import (
+    ChildGroup,
+    finished,
+    halt_children,
+    new_group,
+    start_children,
+)
 
 INFERENCE_METHOD = "competing-ollama-generate-v1"
 MAX_CONCURRENCY = 4
@@ -206,7 +212,10 @@ class CompetingInferenceInjector(BoundedInjector):
         }
 
     def _launch(self) -> None:
-        self._group = spawn_children(
+        # Owned before the child starts, so a failed start halts and reports it.
+        self._group = new_group()
+        start_children(
+            self._group,
             _compete,
             [(self.url, self.payload(), self.concurrency, self.request_timeout_seconds)],
             self._backstop_seconds(),
@@ -217,7 +226,7 @@ class CompetingInferenceInjector(BoundedInjector):
         if self._group is None:
             return {"requests_started": 0}, {"confirmed": True, "children": []}
         reports, cleanup = halt_children(self._group)
-        report = reports[0]
+        report = reports[0] if reports else None
         if report is None:
             # The child was stopped before it reported: its counts are unknown, not zero.
             return {"report": "missing"}, cleanup

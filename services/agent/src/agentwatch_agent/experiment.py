@@ -293,18 +293,45 @@ def compare_with_baseline(steps: dict[str, dict], baseline: dict[str, dict]) -> 
     return comparison
 
 
+def _sustained(injection: dict) -> bool:
+    """Whether one injector measurably applied load until the replay asked it to stop.
+
+    Every worker must have reported, none may have ended early (backstop, error or its own
+    bound), and it must have done measurable work: a missing or partial report never counts.
+    """
+    activity = injection.get("activity") or {}
+    if injection.get("stop_reason") != "requested":
+        return False  # stopped by its duration bound or a failure, not after the replay
+    kind = injection.get("injector")
+    if kind == "cpu":
+        started = activity.get("workers_started", 0)
+        return (
+            started > 0
+            and activity.get("workers_reported") == started
+            and activity.get("workers_stopped_by_backstop") == 0
+            and activity.get("hash_rounds", 0) > 0
+        )
+    if kind == "inference":
+        return (
+            activity.get("report") == "received"
+            and activity.get("stopped_by_backstop") is False
+            and activity.get("requests_completed", 0) > 0
+        )
+    if kind == "retrieval":
+        started = activity.get("threads_started", 0)
+        return (
+            started > 0
+            and activity.get("threads_running_at_stop") == started
+            and activity.get("search_errors") == []
+            and activity.get("searches", 0) > 0
+        )
+    return False
+
+
 def injection_active(log: dict) -> bool:
-    """Whether every injector of a set measurably did work while it ran."""
-    measures = {
-        "cpu": "hash_rounds",
-        "inference": "requests_completed",
-        "retrieval": "searches",
-    }
+    """Whether every injector of a set applied sustained, measured load (see `_sustained`)."""
     injections = log.get("injections") or []
-    return bool(injections) and all(
-        (injection.get("activity") or {}).get(measures[injection["injector"]], 0) > 0
-        for injection in injections
-    )
+    return bool(injections) and all(_sustained(injection) for injection in injections)
 
 
 class ReplayExperiment:

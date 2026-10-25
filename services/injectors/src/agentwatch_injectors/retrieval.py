@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Sequence
 
 from agentwatch_injectors.base import (
+    BACKSTOP_GRACE_SECONDS,
     STOP_GRACE_SECONDS,
     BoundedInjector,
     InjectionClock,
@@ -71,7 +72,9 @@ class IndexQueryFloodInjector(BoundedInjector):
         }
 
     def _flood(self, offset: int) -> None:
-        deadline = time.monotonic() + self.max_duration_seconds
+        # A backstop only: the watchdog stops the flood at its bound first, so a thread that
+        # ended before the stop request really did stop contending early.
+        deadline = time.monotonic() + self.max_duration_seconds + BACKSTOP_GRACE_SECONDS
         position = offset
         while not self._stop.is_set() and time.monotonic() < deadline:
             try:
@@ -94,6 +97,9 @@ class IndexQueryFloodInjector(BoundedInjector):
             worker.start()
 
     def _halt(self) -> tuple[dict, dict]:
+        # A thread that ended before the stop request (a search error, or its own deadline)
+        # stopped contending early; consumers must not treat the injection as sustained.
+        running_at_stop = sum(1 for worker in self._workers if worker.is_alive())
         self._stop.set()
         deadline = time.monotonic() + STOP_GRACE_SECONDS
         for worker in self._workers:
@@ -102,6 +108,7 @@ class IndexQueryFloodInjector(BoundedInjector):
         with self._counts_lock:
             activity = {
                 "threads_started": len(self._workers),
+                "threads_running_at_stop": running_at_stop,
                 "searches": self._searches,
                 "search_errors": list(self._errors),
             }

@@ -17,7 +17,7 @@ from agentwatch_injectors.base import (
 from agentwatch_injectors.cpu import CpuSpinInjector, _spin, available_cpus
 from agentwatch_injectors.inference import CompetingInferenceInjector, loopback_url
 from agentwatch_injectors.injection_set import InjectionCancelled, InjectionSet
-from agentwatch_injectors.processes import halt_children, spawn_children
+from agentwatch_injectors.processes import halt_children, new_group, start_children
 from agentwatch_injectors.retrieval import IndexQueryFloodInjector
 from injector_test_targets import FakeOllama, TestClock, ignore_stop, never_ready, wait_until
 
@@ -102,8 +102,14 @@ def test_context_manager_stops_on_failure(clock):
     assert log["cleanup"]["confirmed"] is True
 
 
+def spawned(target, backstop_seconds, name):
+    group = new_group()
+    start_children(group, target, [()], backstop_seconds, name)
+    return group
+
+
 def test_a_child_stops_itself_at_its_backstop_without_a_supervisor():
-    group = spawn_children(_spin, [()], 0.3, "backstop-test")
+    group = spawned(_spin, 0.3, "backstop-test")
     child = group.children[0].process
     child.join(15)
     assert not child.is_alive()
@@ -116,7 +122,7 @@ def test_a_child_stops_itself_at_its_backstop_without_a_supervisor():
 
 
 def test_a_child_that_ignores_stop_and_sigterm_is_killed(quick_grace):
-    group = spawn_children(ignore_stop, [()], 30, "stubborn-test")
+    group = spawned(ignore_stop, 30, "stubborn-test")
     reports, cleanup = halt_children(group)
     assert reports == [None]  # missing, never an invented report
     assert cleanup["confirmed"] is True
@@ -126,8 +132,47 @@ def test_a_child_that_ignores_stop_and_sigterm_is_killed(quick_grace):
 
 def test_workers_that_never_apply_load_fail_the_start(monkeypatch):
     monkeypatch.setattr(processes, "READY_TIMEOUT_SECONDS", 1.0)
+    group = new_group()
     with pytest.raises(InjectorError, match="did not start within 1 s"):
-        spawn_children(never_ready, [()], 30, "never-ready-test")
+        start_children(group, never_ready, [()], 30, "never-ready-test")
+    # The started child stays in the group, so halting it reports it.
+    _reports, cleanup = halt_children(group)
+    assert cleanup["confirmed"] is True
+    [child] = cleanup["children"]
+    # Under load the child may still be exiting when it is halted.
+    assert child["stopped_by"] in {"exited", "exited_before_stop"}
+
+
+def test_a_start_that_times_out_reports_every_worker_it_started(clock, monkeypatch):
+    # Regression: a failed start once discarded its children's cleanup and logged an empty,
+    # confirmed cleanup even when a worker had been started.
+    monkeypatch.setattr(processes, "READY_TIMEOUT_SECONDS", 0.0)
+    injector = CpuSpinInjector(clock, 30, workers=1)
+    with pytest.raises(InjectorError, match="did not start"):
+        injector.start()
+    log = injector.log()
+    assert log["stop_reason"] == "failure"
+    assert len(log["cleanup"]["children"]) == 1
+    assert log["cleanup"]["children"][0]["stopped_by"] in {"exited", "exited_before_stop"}
+    assert log["cleanup"]["confirmed"] is True
+
+
+def test_a_failed_start_whose_cleanup_is_unconfirmed_raises_cleanup_error(clock, monkeypatch):
+    def failing_start(group, *_args):
+        group.children.append(object())  # a worker that was started, then not ready
+        raise InjectorError("workers did not start")
+
+    def cannot_confirm(group):
+        return [None], {"confirmed": False, "children": [{"stopped_by": "still_running"}]}
+
+    monkeypatch.setattr("agentwatch_injectors.cpu.start_children", failing_start)
+    monkeypatch.setattr("agentwatch_injectors.cpu.halt_children", cannot_confirm)
+    injector = CpuSpinInjector(clock, 30, workers=1)
+    with pytest.raises(InjectorCleanupError) as raised:
+        injector.start()
+    assert isinstance(raised.value.__cause__, InjectorError)
+    with pytest.raises(InjectorCleanupError):
+        injector.stop()
 
 
 def test_the_bound_counts_from_when_load_is_applied(clock):
@@ -156,10 +201,10 @@ def test_unconfirmed_cleanup_raises_on_every_stop(clock, monkeypatch):
 
 
 def test_a_failed_launch_is_cleaned_up_and_raised(clock, monkeypatch):
-    def failing_spawn(*_args):
+    def failing_start(*_args):
         raise OSError("cannot spawn")
 
-    monkeypatch.setattr("agentwatch_injectors.cpu.spawn_children", failing_spawn)
+    monkeypatch.setattr("agentwatch_injectors.cpu.start_children", failing_start)
     injector = CpuSpinInjector(clock, 30, workers=1)
     with pytest.raises(OSError, match="cannot spawn"):
         injector.start()
@@ -277,6 +322,7 @@ def test_retrieval_flood_searches_until_its_bound(clock):
     assert log["stop_reason"] == "duration_bound"
     assert log["activity"]["searches"] > 0
     assert log["activity"]["search_errors"] == []
+    assert log["activity"]["threads_running_at_stop"] == 2
     assert set(searched) == {"mean", "median"}
     assert log["cleanup"] == {"confirmed": True, "threads_still_running": 0}
 
@@ -290,6 +336,7 @@ def test_retrieval_search_errors_are_recorded(clock):
     assert wait_until(lambda: not any(w.is_alive() for w in injector._workers))
     log = injector.stop()
     assert log["activity"]["search_errors"] == ["KeyError: 'index gone'"]
+    assert log["activity"]["threads_running_at_stop"] == 0  # it died before the stop request
     assert log["activity"]["searches"] == 0
 
 

@@ -129,7 +129,11 @@ class BoundedInjector(ABC):
                 self._log["errors"].append(f"start: {type(error).__name__}: {error}"[:500])
                 self._shutdown("failure")
                 if not self._log["cleanup"]["confirmed"]:
-                    error.add_note(f"Cleanup after the failed start was not confirmed: {self._log}")
+                    # Load may still be running: that outranks the start failure itself.
+                    raise InjectorCleanupError(
+                        f"{self.kind} injector failed to start and its cleanup was not "
+                        f"confirmed: {self._log['cleanup']}"
+                    ) from error
                 raise
             self._log["active_tick_ns"] = self.clock.tick()
             self._watchdog = threading.Timer(self.max_duration_seconds, self._bound_reached)

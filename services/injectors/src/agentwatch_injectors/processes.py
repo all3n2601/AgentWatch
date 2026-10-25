@@ -5,6 +5,9 @@ pipe and a backstop in seconds. It must release the semaphore once it applies lo
 one report through the pipe and exit when the event is set or its backstop passes. Starting
 waits for every child to be ready. Halting escalates: set the event and wait for reports, then
 terminate, then kill. Cleanup is confirmed only when every child has exited.
+
+The caller creates the group before starting children into it and halts it on every path,
+including a failed start, so the cleanup it reports always covers every child started.
 """
 
 import multiprocessing
@@ -36,44 +39,48 @@ class Child:
 @dataclass
 class ChildGroup:
     stop_event: Event
+    ready: Semaphore
     children: list[Child]
 
 
-def spawn_children(
-    target: Callable[..., None], arguments: Sequence[tuple], backstop_seconds: float, name: str
-) -> ChildGroup:
-    """Start one daemon child per argument tuple and wait until each applies load.
+def new_group() -> ChildGroup:
+    return ChildGroup(CONTEXT.Event(), CONTEXT.Semaphore(0), [])
 
-    On any failure, including a child not ready in time, every started child is halted.
+
+def start_children(
+    group: ChildGroup,
+    target: Callable[..., None],
+    arguments: Sequence[tuple],
+    backstop_seconds: float,
+    name: str,
+) -> None:
+    """Start one daemon child per argument tuple into `group`; wait until each applies load.
+
+    Raises if a child cannot start or is not ready in time. Children already started stay in
+    the group, and the caller halts it, so their cleanup is reported, never assumed.
     """
-    stop_event = CONTEXT.Event()
-    ready = CONTEXT.Semaphore(0)
-    group = ChildGroup(stop_event, [])
-    try:
-        for index, extra in enumerate(arguments):
-            receiver, sender = CONTEXT.Pipe(duplex=False)
-            process = CONTEXT.Process(
-                target=target,
-                args=(stop_event, ready, sender, backstop_seconds, *extra),
-                name=f"{name}-{index}",
-                # A daemon child is also terminated when the parent exits normally.
-                daemon=True,
-            )
-            group.children.append(Child(process, receiver))
+    for index, extra in enumerate(arguments):
+        receiver, sender = CONTEXT.Pipe(duplex=False)
+        process = CONTEXT.Process(
+            target=target,
+            args=(group.stop_event, group.ready, sender, backstop_seconds, *extra),
+            name=f"{name}-{index}",
+            # A daemon child is also terminated when the parent exits normally.
+            daemon=True,
+        )
+        group.children.append(Child(process, receiver))
+        try:
             process.start()
+        finally:
             # The child holds its own copy; closing ours lets recv() see EOF if it dies.
             sender.close()
-        _wait_ready(group, ready)
-    except BaseException:
-        halt_children(group)
-        raise
-    return group
+    _wait_ready(group)
 
 
-def _wait_ready(group: ChildGroup, ready: Semaphore) -> None:
+def _wait_ready(group: ChildGroup) -> None:
     deadline = time.monotonic() + READY_TIMEOUT_SECONDS
     for _ in group.children:
-        if not ready.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        if not group.ready.acquire(timeout=max(0.0, deadline - time.monotonic())):
             exited = [c.process.exitcode for c in group.children if not c.process.is_alive()]
             raise InjectorError(
                 f"Injector workers did not start within {READY_TIMEOUT_SECONDS:g} s "
