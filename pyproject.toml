@@ -8,6 +8,7 @@ members = [
   "services/worker",
   "services/sandbox",
   "services/agent",
+  "services/injectors",
   "packages/sdk-python",
   "packages/features",
   "pipelines/data",
@@ -25,5 +26,5 @@ target-version = "py313"
 line-length = 100
 
 [tool.pytest.ini_options]
-testpaths = ["packages/features/tests", "services/worker/tests", "services/sandbox/tests", "services/agent/tests", "pipelines/data/tests", "deploy/diagnostics/tests"]
+testpaths = ["packages/features/tests", "services/worker/tests", "services/sandbox/tests", "services/agent/tests", "services/injectors/tests", "pipelines/data/tests", "deploy/diagnostics/tests"]
 

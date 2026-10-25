@@ -1,0 +1,10 @@
+[project]
+name = "agentwatch-injectors"
+version = "0.1.0"
+description = "Bounded contention injectors for AgentWatch replay experiments"
+requires-python = ">=3.13,<3.15"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

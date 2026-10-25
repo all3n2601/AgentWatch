@@ -14,6 +14,7 @@ make dev-worker        # live API on :8090, in its own terminal
 make llm-up            # Ollama with qwen3:1.7b (CPU by default)
 make agent-tasks       # list tasks and their pinned identities
 make agent-run AGENT_TASK=fix-mean-empty
+make agent-experiment AGENT_TASK=fix-mean-empty   # clean and contended replays (below)
 ```
 
 Settings come from the same variables as the Docker LLM setup: `OLLAMA_URL`, `AGENTWATCH_LLM_MODEL`
@@ -235,6 +236,56 @@ training datasets. They are recognizable without runner internals: their single 
 resource uses `service_id` `agentwatch-agent-overhead`, there is no `agent-run` root step, and
 their steps are named `overhead-<n>`. Their configuration digest also covers the
 `agent-overhead-v1` protocol.
+
+## Replay experiments
+
+`make agent-experiment AGENT_TASK=fix-mean-empty` (or `... python -m agentwatch_agent
+experiment --task <name>`) runs protocol `agent-replay-experiment-v1`
+([ADR 0006](../../docs/adr/0006-bounded-injectors-and-agent-replay.md)) with the live API and
+model server running. It records a source run first, or replays `--source <run dir>`
+(`SOURCE=` for make), which must be a completed run of the same task content and model whose
+verification passed.
+
+- **Replay (`agent-replay-v1`).** Each model call receives the source's exact input, and the
+  source's requested tool calls run in order, whatever the model replies, so every replay has
+  the source's step IDs and tool work. The model really generates each time; each replay's
+  evidence records under `replay` whether every reply and tool result matched the source
+  (test results compare outcome and test count only, since their text includes timings).
+  Its configuration digest covers the plan's content (`replay.plan_sha256`), so clean and
+  contended replays of one plan register one digest.
+- **Schedule.** 1 discarded warm-up, 5 clean baselines, then `cpu`, `inference`, `retrieval`
+  and `mixed` (`cpu` + `inference`), each followed by a clean control: 14 replays. Each
+  condition's injectors start and ramp for 2 s before its replay and stop after it, bounded to
+  the replay's run limit plus 32 s. `--baseline-replays` (at least 3), `--warmup-replays`,
+  `--conditions`, `--mixed`, `--ramp-seconds`, `--cpu-workers` (default: every available CPU),
+  `--inference-concurrency` (2), `--inference-num-predict` (128) and `--retrieval-threads`
+  (2) adjust it; the [injectors](../injectors/README.md) refuse values beyond their bounds.
+- **Evidence** in `.data/agent-experiments/<task>-<UTC time>-<id>/`: `experiment.json` (the
+  declared protocol, source, every replay's role, condition, run ID, state and step timings,
+  baseline variability, per-step comparisons with the baseline, and checks, rewritten after
+  every replay), `source/`, `replays/<NN>/` (each replay's evidence and journal, named by
+  order only) and `injections/<NN>.json` (each contended replay's injection log, with ticks in
+  that replay's clock domain).
+- **Variability.** For every step completed in all baselines: count, mean, sample stdev,
+  coefficient of variation, min and max of its total duration (submission to finish). The
+  declared gate is the `agent-run` CV at most 0.15. Comparisons give each step's difference
+  from its baseline mean, ratio and difference in baseline stdevs. They are observations, not
+  labels.
+- **Checks:** `baseline_replays_complete`, `stable_baseline`, `contended_replays_complete`,
+  `same_steps_every_replay`, `injectors_cleaned_up`, `injectors_active` (each injector
+  measured work: hash rounds, completed competing requests or searches) and
+  `evidence_delivered`. The command exits 0 only when the experiment completed and every check
+  passed, 1 otherwise (evidence is kept), 3 when a replay's journal needs `resend`, and 2 for
+  invalid settings or a source that cannot be replayed.
+- **Stopping.** Ctrl-C or SIGTERM cancels the current replay and any ramp, and runs nothing
+  further. A replay the live API did not register stops the experiment. An injector whose
+  cleanup is not confirmed stops it too (`stopped_injector_cleanup_unconfirmed`); check the
+  host for leftover load.
+
+Conditions, roles and injection logs exist only in `experiment.json` and `injections/`. They
+are labeling metadata and must never become features. On WSL2, CPU contention also loads the
+model server's container, and retrieval contention slows every runner thread (see the
+[injector limitations](../injectors/README.md#limitations)).
 
 ## Tests
 

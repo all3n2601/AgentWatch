@@ -317,6 +317,73 @@ contention from anything but the runner's own limit. Evidence is in `.data/a04-c
 conditions, driver scripts, the runner Dockerfile, journals, coverage reports, read-backs,
 summaries and `SHA256SUMS`.
 
+## A05: Bounded injectors and replay experiment (October 25, 2026)
+
+Protocol `agent-replay-experiment-v1` ([ADR 0006](adr/0006-bounded-injectors-and-agent-replay.md))
+ran on the GPU laptop: a WSL2 Ubuntu runner with 16 CPUs, Docker GPU Ollama 0.35.1 on
+`127.0.0.1:11435` with `qwen3:1.7b`, and the live API in Ubuntu. The command was
+`experiment --task fix-mean-empty --run-timeout 300`, with the defaults: 1 warm-up, 5
+baselines, then `cpu` (16 workers), `inference` (2 concurrent, `num_predict` 128), `retrieval`
+(2 threads) and `mixed` (`cpu` + `inference`), each followed by a clean control. The 2 s ramp
+and the 332 s injection bound were declared before measuring. The code was the `feature/bounded-injectors-replay` working tree
+on `2b94cfa`; no code changed after the runs, only documentation.
+
+**Attempt 1** (04:14 UTC, source `5b8ee6a3-3a2c-417b-ac35-3d3b89edc049`) is kept as failed
+evidence. The live API on `:8090` had been running since October 22 from code that predates
+the CPU counter metrics, so it refused those samples with 422 on every run. 96 of 158
+records were refused in a baseline replay, and `evidence_delivered` failed (exit 1). Every
+other check passed, with a baseline `agent-run` CV of 4.2%. This is the documented
+"deploy the API before newer runners" constraint. That API was left running. A second API
+from the current code on `:8091`, against the same database (no pending migrations), served
+attempt 2.
+
+**Attempt 2** (04:17 UTC, source `748ce583-b089-4814-b789-893c89b6948a`) passed every
+declared check (exit 0). 15 runs completed with verification passing and 0 records refused.
+The source took 3 model calls and 3 tool calls; attempt 1's source took 6 and 5, so replay is
+what holds a path fixed. All three replies matched the source in every replay. In attempt 1,
+`model-call-1` differed in every replay (5 of 6 matched): the source's first call was the
+model's first request after loading.
+
+| Baseline step (5 replays) | Mean | CV |
+| --- | --- | --- |
+| `agent-run` | 1.658 s | 4.3% (gate ≤ 15%: pass) |
+| `model-call-1` / `-2` / `-3` | 0.537 / 0.338 / 0.584 s | 5.7% / 12.7% / 6.6% |
+| `verify-tests` | 0.150 s | 16.9% |
+| `search_docs`, `read_file`, `apply_patch` | 2.3–4.9 ms | 43–71% |
+
+| Replay | `agent-run` ratio | `model-call-2` ratio | `search_docs` ratio | `verify-tests` ratio |
+| --- | --- | --- | --- | --- |
+| `cpu` | 1.22 | 1.00 | 1.65 | 1.36 |
+| clean control | 0.93 | 0.91 | 0.81 | 1.36 |
+| `inference` | 4.01 | 6.42 | 3.55 | 0.93 |
+| clean control | 0.99 | 0.99 | 4.70 | 0.91 |
+| `retrieval` | 1.83 | 1.16 | 25.05 | 2.03 |
+| clean control | 0.98 | 0.96 | 3.75 | 1.25 |
+| `mixed` | 5.74 | 9.90 | 0.94 | 1.26 |
+| clean control | 1.03 | 0.94 | 0.52 | 1.47 |
+
+Ratios are a replay's step duration over the baseline mean. They are observations on one host,
+not labels. Millisecond steps vary widely even in clean controls: `search_docs` reached 4.7×
+there, so a single ratio for those steps is not evidence of contention. `verify-tests` was
+also 1.25–1.47× in three of four controls, above its baseline CV.
+
+Injectors. Every worker reported and exited on the stop request, with no terminate, kill or
+backstop stop. Load was running 0.03–0.56 s after `start()`. Activity was 16 CPU workers using
+61 and 145 CPU-seconds; 8 and 7 completed competing requests, with 2 abandoned in flight at
+each stop; and 1.8 million in-process searches.
+
+Sampling (`coverage-v3`, 250 ms declared). Under `cpu`, `inference` and `mixed`, both sampled
+resources held a 0.250–0.253 s median with no missed rounds. Under `retrieval`, the median was
+0.350 s (GPU) and 0.387 s (CPU host), with 3–4 missed rounds and a 0.62 s maximum. The
+in-process flood also delays the runner's sampler, as ADR 0006 states, so the readings of the
+retrieval condition are less complete.
+
+Not established: repeats of the whole protocol, the second task, any host other than this
+laptop, overhead of the injectors themselves, contention labels (D02), and retrieval contention
+that does not also contend the runner process. Evidence is in `.data/agent-experiments/` on
+the GPU laptop and in `C:\Users\benoy\AgentWatch-evidence\a05-2026-10-25\`
+(`attempt1-api-without-cpu-counters/`, `attempt2/`), with `SHA256SUMS`.
+
 ## Evidence locations
 
 Raw evidence is kept out of Git on the GPU laptop, in `.data/` and copied to
