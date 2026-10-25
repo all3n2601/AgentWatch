@@ -120,13 +120,17 @@ test("transport failures and timeouts are reported as unavailable", async () => 
   assert.ok(!unreachable.ok);
   assert.equal(unreachable.kind, "unavailable");
 
-  // Never answers; rejects only when the client's timeout aborts the request.
+  // Never answers; rejects only when the client's timeout aborts the request. AbortSignal
+  // timers do not keep Node's event loop alive, so a held timer stands in for the open
+  // connection a real server would keep; without it the test can end before the abort.
   const silent: typeof fetch = (_input, init) =>
-    new Promise((_, reject) =>
-      init?.signal?.addEventListener("abort", () =>
-        reject(init.signal?.reason),
-      ),
-    );
+    new Promise((_, reject) => {
+      const connection = setInterval(() => {}, 1_000);
+      init?.signal?.addEventListener("abort", () => {
+        clearInterval(connection);
+        reject(init.signal?.reason);
+      });
+    });
   const timedOut = await createLiveApi(RUNS_URL, {
     fetchImpl: silent,
     timeoutMs: 20,
