@@ -302,6 +302,7 @@ def coverage_report(run_dir: Path) -> dict:
             target = (record["resource_id"], record["service_id"])
             rounds[target][(record["clock_id"], record["tick_ns"])].append(record)
     sampling_summary = evidence.get("resource_sampling") or {}
+    # Scope describes what the resource measures, so every service of a resource shares it.
     scopes = {
         entry["resource_id"]: entry.get("scope")
         for entry in sampling_summary.get("resources", [])
