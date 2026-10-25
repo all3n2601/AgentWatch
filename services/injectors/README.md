@@ -17,7 +17,12 @@ Every injector also has `max_duration_seconds` (at most 1,800 s).
 
 - `start()` launches the workers and returns once every one applies load (at most 15 s,
   or the start fails and everything it started is stopped). The log records `started_tick_ns`
-  and `active_tick_ns`.
+  and `active_tick_ns`. "Applies load" means:
+  - CPU: a worker has finished its first batch of hashes.
+  - Inference: every worker has sent its first request, so an unreachable model server fails
+    the start (`requests_sent` counts sent requests; a non-200 or unusable reply is a
+    `GenerateRejected` failure).
+  - Retrieval: every flood thread has completed a search; a search error fails the start.
 - A watchdog stops the injector `max_duration_seconds` after `active_tick_ns`
   (`stop_reason: duration_bound`), even if the caller never does.
 - Child processes stop themselves at a backstop of the bound plus 20 s, counted from their

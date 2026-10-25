@@ -4,7 +4,9 @@ A child process keeps `concurrency` non-streaming `/api/generate` requests in fl
 the same Ollama endpoint and model the run uses, so they compete for the server's request slots
 and its device. Only loopback endpoints are accepted: the injector loads designated local
 capacity, never a shared or remote server. Each request is bounded by `num_predict` and a socket
-timeout no longer than the time left. Stopping ends the child, which closes its connections;
+timeout no longer than the time left. The child is ready once every worker has sent its first
+request, so an unreachable server fails the start. Stopping ends the child, which closes its
+connections;
 requests still in flight are counted as abandoned, and Ollama stops generating for a closed
 connection.
 
@@ -18,8 +20,8 @@ import json
 import threading
 import time
 import urllib.parse
-import urllib.request
 from collections import Counter
+from collections.abc import Callable
 from multiprocessing.connection import Connection
 from multiprocessing.synchronize import Event, Semaphore
 
@@ -72,17 +74,34 @@ def loopback_url(value: str) -> str:
     return value.rstrip("/")
 
 
-def _generate(url: str, payload: dict, timeout_seconds: float) -> dict:
-    request = urllib.request.Request(
-        url + "/api/generate",
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+class GenerateRejected(ValueError):
+    """The model server answered, but not with a completed generation."""
+
+
+def _generate(url: str, payload: dict, timeout_seconds: float, on_sent: Callable[[], None]) -> dict:
+    """Send one generate request, call `on_sent` once it is on the wire, and await the reply."""
+    parsed = urllib.parse.urlsplit(url)
+    connection_type = (
+        http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-        result = json.load(response)
+    connection = connection_type(parsed.hostname, parsed.port, timeout=timeout_seconds)
+    try:
+        connection.request(
+            "POST",
+            parsed.path.rstrip("/") + "/api/generate",
+            body=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        on_sent()
+        response = connection.getresponse()
+        body = response.read()
+    finally:
+        connection.close()
+    if response.status != 200:
+        raise GenerateRejected(f"model server answered HTTP {response.status}")
+    result = json.loads(body)
     if not isinstance(result, dict) or result.get("error") or result.get("done") is not True:
-        raise ValueError("model server returned an unusable generate response")
+        raise GenerateRejected("model server returned an unusable generate response")
     return result
 
 
@@ -101,8 +120,18 @@ def _compete(
     counts: Counter = Counter()
     failures: Counter = Counter()
     eval_counts: list[int] = []
+    workers_sent: set[int] = set()
 
-    def worker() -> None:
+    def sent(index: int) -> None:
+        with lock:
+            counts["sent"] += 1
+            first = index not in workers_sent
+            workers_sent.add(index)
+            # Ready (once) when every worker has a request on the wire: load is running.
+            if first and len(workers_sent) == concurrency:
+                ready.release()
+
+    def worker(index: int) -> None:
         while not finished(stop_event, deadline):
             timeout = min(request_timeout_seconds, deadline - time.monotonic())
             if timeout <= 0:
@@ -111,7 +140,7 @@ def _compete(
                 counts["started"] += 1
                 counts["in_flight"] += 1
             try:
-                result = _generate(url, payload, timeout)
+                result = _generate(url, payload, timeout, lambda: sent(index))
             except (OSError, http.client.HTTPException, ValueError) as error:
                 with lock:
                     counts["failed"] += 1
@@ -127,8 +156,9 @@ def _compete(
 
     for index in range(concurrency):
         # Daemon threads: a request blocked on its socket must not keep the child alive.
-        threading.Thread(target=worker, name=f"competing-request-{index}", daemon=True).start()
-    ready.release()
+        threading.Thread(
+            target=worker, args=(index,), name=f"competing-request-{index}", daemon=True
+        ).start()
     while not stop_event.wait(STATUS_POLL_SECONDS):
         if time.monotonic() >= deadline:
             break
@@ -136,6 +166,7 @@ def _compete(
         reports.send(
             {
                 "requests_started": counts["started"],
+                "requests_sent": counts["sent"],
                 "requests_completed": counts["completed"],
                 "requests_failed": counts["failed"],
                 "failures_by_type": dict(failures),

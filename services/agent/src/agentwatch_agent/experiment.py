@@ -70,6 +70,8 @@ MAX_REPLAYS_PER_ROLE = 20
 # taking its upper end, as the CPU demo's stable-baseline check does.
 STABLE_CV_MAX = 0.15
 ROOT_STEP = "agent-run"
+# Every replay of these roles must succeed with readable, matching steps for a pass.
+MEASURED_ROLES = ("baseline", "contended", "clean_control")
 ReplayRunnerFactory = Callable[[Path, MonotonicClock], ReplayRunner]
 InjectorFactory = Callable[[Sequence[str], MonotonicClock, float], list[BoundedInjector]]
 
@@ -146,6 +148,8 @@ class ExperimentSettings:
                 "warm-up (discarded), clean baselines, then each condition followed by a clean "
                 "control"
             ),
+            "gated_roles": list(MEASURED_ROLES),
+            "warmup": "recorded but never gated: a failed warm-up fails no check",
             "ramp_seconds": self.ramp_seconds,
             "run_timeout_seconds": run_timeout_seconds,
             "injection_bound_seconds": self.injection_bound_seconds(run_timeout_seconds),
@@ -312,10 +316,16 @@ def _sustained(injection: dict) -> bool:
             and activity.get("hash_rounds", 0) > 0
         )
     if kind == "inference":
+        # A request still generating at the stop request loaded the server too, so a slow or
+        # cold server is not mistaken for idle; any failed request means load had gaps.
+        loaded = activity.get("requests_completed", 0) + activity.get(
+            "requests_abandoned_in_flight", 0
+        )
         return (
             activity.get("report") == "received"
             and activity.get("stopped_by_backstop") is False
-            and activity.get("requests_completed", 0) > 0
+            and activity.get("requests_failed") == 0
+            and loaded > 0
         )
     if kind == "retrieval":
         started = activity.get("threads_started", 0)
@@ -473,6 +483,9 @@ class ReplayExperiment:
             "resend_needed": outcome.resend_needed,
             "records_refused": outcome.records_refused,
         }
+        if cleanup_error is not None:
+            # The run's own state is kept, but the replay's state must stay the alarming one.
+            entry |= {"run_state": outcome.state, "state": "injector_cleanup_unconfirmed"}
         try:
             entry["steps"] = step_timings(replay_dir)
         except (CoverageError, OSError) as error:
@@ -494,17 +507,27 @@ class ReplayExperiment:
             if entry["role"] in ("contended", "clean_control") and entry.get("steps"):
                 entry["comparison_with_baseline"] = compare_with_baseline(entry["steps"], reference)
         contended = [r for r in replays if r["role"] == "contended"]
-        reference_steps = [s["steps"] for s in baselines if s.get("steps")]
-        expected_steps = sorted(reference_steps[0]) if reference_steps else None
-        executed = [r for r in replays if r.get("steps")]
+        controls = [r for r in replays if r["role"] == "clean_control"]
+        measured = [r for r in replays if r["role"] in MEASURED_ROLES]
+        # The first baseline defines the workload; a missing or unreadable one fails the check.
+        expected_steps = (
+            sorted(baselines[0]["steps"]) if baselines and baselines[0].get("steps") else None
+        )
+        conditions = len(self.settings.conditions)
         self.manifest["checks"] = {
             "baseline_replays_complete": len(baselines) == self.settings.baseline_replays
             and all(_succeeded(r) for r in baselines),
-            "stable_baseline": root.get("cv") is not None and root["cv"] <= STABLE_CV_MAX,
-            "contended_replays_complete": len(contended) == len(self.settings.conditions)
+            # Every baseline must contribute to the statistic, not just enough of them.
+            "stable_baseline": root.get("cv") is not None
+            and root["count"] == self.settings.baseline_replays
+            and root["cv"] <= STABLE_CV_MAX,
+            "contended_replays_complete": len(contended) == conditions
             and all(_succeeded(r) for r in contended),
+            "clean_controls_complete": len(controls) == conditions
+            and all(_succeeded(r) for r in controls),
+            # Every gated replay needs readable steps equal to the first baseline's.
             "same_steps_every_replay": expected_steps is not None
-            and all(sorted(r["steps"]) == expected_steps for r in executed),
+            and all(r.get("steps") and sorted(r["steps"]) == expected_steps for r in measured),
             "injectors_cleaned_up": all(
                 r.get("injection_cleanup_confirmed") is True for r in contended
             ),

@@ -152,8 +152,9 @@ def test_a_start_that_times_out_reports_every_worker_it_started(clock, monkeypat
         injector.start()
     log = injector.log()
     assert log["stop_reason"] == "failure"
-    assert len(log["cleanup"]["children"]) == 1
-    assert log["cleanup"]["children"][0]["stopped_by"] in {"exited", "exited_before_stop"}
+    [child] = log["cleanup"]["children"]  # the started worker is reported, not dropped
+    # A worker still booting when the start gave up is terminated: also a confirmed stop.
+    assert child["stopped_by"] in {"exited", "exited_before_stop", "terminated", "killed"}
     assert log["cleanup"]["confirmed"] is True
 
 
@@ -289,7 +290,23 @@ def test_failed_requests_are_counted_not_hidden(clock):
     activity = log["activity"]
     assert activity["requests_completed"] == 0
     assert activity["requests_failed"] >= 1
-    assert activity["failures_by_type"] == {"HTTPError": activity["requests_failed"]}
+    assert activity["failures_by_type"] == {"GenerateRejected": activity["requests_failed"]}
+    assert activity["requests_sent"] >= activity["requests_failed"]
+
+
+def test_an_unreachable_model_server_fails_the_start(clock, monkeypatch):
+    # Ready means a request is on the wire, so a refused connection is never "active" load.
+    monkeypatch.setattr(processes, "READY_TIMEOUT_SECONDS", 1.0)
+    injector = CompetingInferenceInjector(
+        clock, 30, url="http://127.0.0.1:1", model="m", num_ctx=None, concurrency=1
+    )
+    with pytest.raises(InjectorError, match="did not start"):
+        injector.start()
+    log = injector.log()
+    assert log["stop_reason"] == "failure"
+    assert log["cleanup"]["confirmed"] is True
+    assert len(log["cleanup"]["children"]) == 1
+    assert log["activity"].get("requests_sent", 0) == 0  # nothing ever reached a server
 
 
 def test_stopping_abandons_in_flight_requests_and_ends_the_child(clock):
@@ -332,9 +349,10 @@ def test_retrieval_search_errors_are_recorded(clock):
         raise KeyError("index gone")
 
     injector = IndexQueryFloodInjector(clock, 30, search=failing, queries=["q"], threads=1)
-    injector.start()
-    assert wait_until(lambda: not any(w.is_alive() for w in injector._workers))
-    log = injector.stop()
+    with pytest.raises(InjectorError, match="searches failed"):
+        injector.start()  # load never ran, so the start fails
+    log = injector.log()
+    assert log["stop_reason"] == "failure"
     assert log["activity"]["search_errors"] == ["KeyError: 'index gone'"]
     assert log["activity"]["threads_running_at_stop"] == 0  # it died before the stop request
     assert log["activity"]["searches"] == 0
@@ -344,9 +362,13 @@ def test_a_retrieval_thread_that_cannot_stop_is_never_reported_stopped(clock, qu
     release = threading.Event()
     entered = threading.Event()
 
-    def blocking(_query):
-        entered.set()
-        release.wait(30)
+    calls = []
+
+    def blocking(query):
+        calls.append(query)
+        if len(calls) > 1:  # the first search completes, so the start succeeds
+            entered.set()
+            release.wait(30)
 
     injector = IndexQueryFloodInjector(clock, 30, search=blocking, queries=["q"], threads=1)
     injector.start()
@@ -354,6 +376,22 @@ def test_a_retrieval_thread_that_cannot_stop_is_never_reported_stopped(clock, qu
         assert entered.wait(10)
         with pytest.raises(InjectorCleanupError):
             injector.stop()
+        assert injector.log()["cleanup"] == {"confirmed": False, "threads_still_running": 1}
+    finally:
+        release.set()
+
+
+def test_a_retrieval_start_whose_first_search_hangs_raises_cleanup_error(clock, monkeypatch):
+    monkeypatch.setattr(retrieval, "READY_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(retrieval, "STOP_GRACE_SECONDS", 0.2)
+    release = threading.Event()
+    injector = IndexQueryFloodInjector(
+        clock, 30, search=lambda _query: release.wait(30), queries=["q"], threads=1
+    )
+    try:
+        with pytest.raises(InjectorCleanupError) as raised:
+            injector.start()
+        assert isinstance(raised.value.__cause__, InjectorError)
         assert injector.log()["cleanup"] == {"confirmed": False, "threads_still_running": 1}
     finally:
         release.set()

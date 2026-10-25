@@ -40,7 +40,13 @@ def sustained_activity(kind: str, work: int) -> dict:
             "hash_rounds": work,
         }
     if kind == "inference":
-        return {"report": "received", "stopped_by_backstop": False, "requests_completed": work}
+        return {
+            "report": "received",
+            "stopped_by_backstop": False,
+            "requests_failed": 0,
+            "requests_abandoned_in_flight": 0,
+            "requests_completed": work,
+        }
     return {
         "threads_started": 1,
         "threads_running_at_stop": 1,
@@ -203,11 +209,14 @@ def test_unconfirmed_cleanup_stops_the_experiment(mean_task, server, plan, tmp_p
     # The contended replay itself is kept; nothing ran after it.
     assert len(manifest["replays"]) == 5
     last = manifest["replays"][-1]
-    assert (last["role"], last["state"], last["injection_cleanup_confirmed"]) == (
+    # The alarming state survives; the run's own state is kept beside it.
+    assert (last["role"], last["state"], last["run_state"]) == (
         "contended",
+        "injector_cleanup_unconfirmed",
         "completed",
-        False,
     )
+    assert last["injection_cleanup_confirmed"] is False
+    assert manifest["checks"]["contended_replays_complete"] is False
     assert "cleanup was not confirmed" in last["error"]
     assert read(tmp_path / "experiment/injections/04.json")["cleanup_confirmed"] is False
     assert manifest["passed"] is False
@@ -374,6 +383,7 @@ def test_sustained_measured_load_counts_as_active(kind):
         injection("inference", report="missing"),
         injection("inference", stopped_by_backstop=True),
         injection("inference", requests_completed=0),
+        injection("inference", requests_failed=1),
         injection("retrieval", search_errors=["KeyError: 'x'"]),
         injection("retrieval", threads_started=2, threads_running_at_stop=1),
         injection("retrieval", searches=0),
@@ -388,6 +398,7 @@ def test_sustained_measured_load_counts_as_active(kind):
         "inference-no-report",
         "inference-backstop",
         "inference-no-completions",
+        "inference-failed-request",
         "retrieval-errors",
         "retrieval-thread-died",
         "retrieval-no-searches",
@@ -399,6 +410,107 @@ def test_partial_or_early_ending_load_is_not_active(unsound):
     assert injection_active({"injections": [unsound]}) is False
     mixed = {"injections": [injection("inference"), unsound]}
     assert injection_active(mixed) is False
+
+
+def test_requests_still_generating_at_stop_count_as_load():
+    slow = injection("inference", requests_completed=0, requests_abandoned_in_flight=2)
+    assert injection_active({"injections": [slow]}) is True
+
+
+def replay_entry(index, role, steps=("agent-run", "model-call-1"), **overrides):
+    timing = {"state": "completed", "total_seconds": 1.0 + index / 100}
+    entry = {
+        "index": index,
+        "role": role,
+        "condition": "cpu" if role == "contended" else "clean",
+        "run_id": f"run-{index}",
+        "state": "completed",
+        "task_passed": True,
+        "delivery_complete": True,
+        "steps": {step: dict(timing) for step in steps} if steps is not None else None,
+    }
+    if role == "contended":
+        entry |= {"injection_cleanup_confirmed": True, "injection_active": True}
+    return entry | overrides
+
+
+def summarized(mean_task, server, plan, tmp_path, replays):
+    settings = ExperimentSettings(
+        baseline_replays=3, warmup_replays=0, conditions=("cpu",), ramp_seconds=0, cpu_workers=1
+    )
+    experiment, _ = make_experiment(mean_task, server, plan, tmp_path, settings=settings)
+    experiment.manifest = {"status": "completed", "replays": replays}
+    experiment._summarize()
+    return experiment.manifest
+
+
+def healthy_replays():
+    return [
+        replay_entry(0, "baseline"),
+        replay_entry(1, "baseline"),
+        replay_entry(2, "baseline"),
+        replay_entry(3, "contended"),
+        replay_entry(4, "clean_control"),
+    ]
+
+
+def test_a_complete_schedule_passes_the_summary(mean_task, server, plan, tmp_path):
+    manifest = summarized(mean_task, server, plan, tmp_path, healthy_replays())
+    assert manifest["passed"] is True, manifest["checks"]
+
+
+def test_a_failed_clean_control_fails_the_experiment(mean_task, server, plan, tmp_path):
+    # Regression: a failed drift control once left every check true.
+    replays = healthy_replays()
+    replays[4] |= {"state": "failed", "task_passed": False}
+    manifest = summarized(mean_task, server, plan, tmp_path, replays)
+    assert manifest["checks"]["clean_controls_complete"] is False
+    assert manifest["passed"] is False
+
+
+def test_a_missing_clean_control_fails_the_experiment(mean_task, server, plan, tmp_path):
+    manifest = summarized(mean_task, server, plan, tmp_path, healthy_replays()[:4])
+    assert manifest["checks"]["clean_controls_complete"] is False
+    assert manifest["passed"] is False
+
+
+@pytest.mark.parametrize(
+    "index", [0, 2, 3, 4], ids=["first-baseline", "baseline", "contended", "control"]
+)
+def test_unreadable_steps_in_any_gated_replay_fail_the_experiment(
+    mean_task, server, plan, tmp_path, index
+):
+    # Regression: replays whose journal could not be read were once skipped by the check.
+    replays = healthy_replays()
+    replays[index] |= {"steps": None, "steps_error": "CoverageError: conflicting records"}
+    manifest = summarized(mean_task, server, plan, tmp_path, replays)
+    assert manifest["checks"]["same_steps_every_replay"] is False
+    assert manifest["passed"] is False
+
+
+def test_a_baseline_missing_a_step_fails_the_experiment(mean_task, server, plan, tmp_path):
+    replays = healthy_replays()
+    replays[1] = replay_entry(1, "baseline", steps=("agent-run",))
+    manifest = summarized(mean_task, server, plan, tmp_path, replays)
+    assert manifest["checks"]["same_steps_every_replay"] is False
+    assert manifest["passed"] is False
+
+
+def test_the_baseline_gate_needs_every_baseline(mean_task, server, plan, tmp_path):
+    replays = healthy_replays()
+    replays[2] |= {"steps": None}
+    manifest = summarized(mean_task, server, plan, tmp_path, replays)
+    assert manifest["baseline_variability"]["agent-run"]["count"] == 2
+    assert manifest["checks"]["stable_baseline"] is False
+
+
+def test_a_failed_warmup_is_recorded_not_gated(mean_task, server, plan, tmp_path):
+    replays = [replay_entry(9, "warmup", state="failed", task_passed=False), *healthy_replays()]
+    manifest = summarized(mean_task, server, plan, tmp_path, replays)
+    assert manifest["passed"] is True
+    protocol = ExperimentSettings(cpu_workers=1).protocol(60)
+    assert protocol["gated_roles"] == ["baseline", "contended", "clean_control"]
+    assert "never gated" in protocol["warmup"]
 
 
 def test_an_empty_injection_set_is_not_active():

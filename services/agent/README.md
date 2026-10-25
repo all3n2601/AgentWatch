@@ -271,14 +271,26 @@ verification passed.
   declared gate is the `agent-run` CV at most 0.15. Comparisons give each step's difference
   from its baseline mean, ratio and difference in baseline stdevs. They are observations, not
   labels.
-- **Checks:** `baseline_replays_complete`, `stable_baseline`, `contended_replays_complete`,
-  `same_steps_every_replay`, `injectors_cleaned_up`, `injectors_active` and
-  `evidence_delivered`. `injectors_active` requires sustained, measured load from every
-  injector until the replay stopped it: no duration-bound or backstop stop, a report from
-  every CPU worker, the inference child's report, and no retrieval thread that errored or
-  ended early, plus hash rounds, completed competing requests or searches above zero. The command exits 0 only when the experiment completed and every check
-  passed, 1 otherwise (evidence is kept), 3 when a replay's journal needs `resend`, and 2 for
-  invalid settings or a source that cannot be replayed.
+- **Checks.** Every baseline, contended replay and clean control is gated. Warm-ups are
+  recorded but never gated.
+  - `baseline_replays_complete`, `contended_replays_complete` and `clean_controls_complete`:
+    each scheduled replay of that role ran and passed verification.
+  - `stable_baseline`: every baseline contributed to the CV, which is at most 0.15.
+  - `same_steps_every_replay`: each gated replay has readable steps equal to the first
+    baseline's.
+  - `injectors_cleaned_up`.
+  - `injectors_active`: sustained, measured load from every injector until the replay stopped
+    it. No injector may stop at its duration bound or backstop. Every CPU worker must report
+    and hash rounds must be above zero. The inference child must report no failed request,
+    with at least one request completed or still generating at the stop. Retrieval needs
+    searches above zero and no thread that errored or ended early.
+  - `evidence_delivered`.
+
+  A replay whose injector cleanup was not confirmed keeps the state
+  `injector_cleanup_unconfirmed` (its run's own state is in `run_state`). The command exits 0
+  only when the experiment completed and every check passed, 1 otherwise (evidence is kept),
+  3 when a replay's journal needs `resend`, and 2 for invalid settings or a source that cannot
+  be replayed.
 - **Stopping.** Ctrl-C or SIGTERM cancels the current replay and any ramp, and runs nothing
   further. A replay the live API did not register stops the experiment. An injector whose
   cleanup is not confirmed stops it too (`stopped_injector_cleanup_unconfirmed`); check the

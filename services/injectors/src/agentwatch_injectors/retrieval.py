@@ -15,9 +15,11 @@ from collections.abc import Callable, Sequence
 
 from agentwatch_injectors.base import (
     BACKSTOP_GRACE_SECONDS,
+    READY_TIMEOUT_SECONDS,
     STOP_GRACE_SECONDS,
     BoundedInjector,
     InjectionClock,
+    InjectorError,
     require_count,
 )
 
@@ -60,6 +62,8 @@ class IndexQueryFloodInjector(BoundedInjector):
         self._counts_lock = threading.Lock()
         self._searches = 0
         self._errors: list[str] = []
+        # Released once per thread when its first search finishes (or fails).
+        self._first_attempts = threading.Semaphore(0)
 
     def bounds(self) -> dict:
         return {"threads": self.threads, "queries": len(self.queries)}
@@ -76,6 +80,7 @@ class IndexQueryFloodInjector(BoundedInjector):
         # ended before the stop request really did stop contending early.
         deadline = time.monotonic() + self.max_duration_seconds + BACKSTOP_GRACE_SECONDS
         position = offset
+        first = True
         while not self._stop.is_set() and time.monotonic() < deadline:
             try:
                 self.search(self.queries[position % len(self.queries)])
@@ -83,10 +88,15 @@ class IndexQueryFloodInjector(BoundedInjector):
             except Exception as error:  # noqa: BLE001
                 with self._counts_lock:
                     self._errors.append(f"{type(error).__name__}: {error}"[:500])
+                if first:
+                    self._first_attempts.release()
                 return
             position += 1
             with self._counts_lock:
                 self._searches += 1
+            if first:
+                first = False
+                self._first_attempts.release()
 
     def _launch(self) -> None:
         for index in range(self.threads):
@@ -95,6 +105,18 @@ class IndexQueryFloodInjector(BoundedInjector):
             )
             self._workers.append(worker)
             worker.start()
+        # Load is running only once every thread has completed a search.
+        deadline = time.monotonic() + READY_TIMEOUT_SECONDS
+        for _ in self._workers:
+            if not self._first_attempts.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                raise InjectorError(
+                    f"Retrieval flood threads did not complete a search within "
+                    f"{READY_TIMEOUT_SECONDS:g} s"
+                )
+        with self._counts_lock:
+            errors = list(self._errors)
+        if errors:
+            raise InjectorError(f"Retrieval flood searches failed: {errors[0]}")
 
     def _halt(self) -> tuple[dict, dict]:
         # A thread that ended before the stop request (a search error, or its own deadline)
