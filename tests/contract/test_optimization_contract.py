@@ -3,6 +3,7 @@
 import math
 import re
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ def percent(share: float) -> str:
     return f"{share * 100:g}%"
 
 
-def spoken_list(values: list[int]) -> str:
+def spoken_list(values: Sequence[int | str]) -> str:
     if len(values) == 1:
         return str(values[0])
     return ", ".join(str(value) for value in values[:-1]) + f" and {values[-1]}"
@@ -61,7 +62,9 @@ def test_version_and_status_are_declared():
 
 
 def test_accepted_status_requires_every_team_to_have_accepted():
-    accepted = [ROWS[team][2] != "" and ISO_DATE.fullmatch(ROWS[team][3]) for team in TEAMS]
+    accepted = [
+        bool(ROWS[team][2]) and ISO_DATE.fullmatch(ROWS[team][3]) is not None for team in TEAMS
+    ]
     assert all(accepted) if CONTRACT["status"] == "accepted" else not any(accepted)
 
 
@@ -156,6 +159,40 @@ WORKLOAD = CONTRACT["workload"]
 )
 def test_each_contract_page_row_states_the_toml_value(row, text):
     assert text in ROWS[row][1]
+
+
+def spoken_conditions(conditions: list[str]) -> str:
+    return spoken_list(conditions).capitalize()
+
+
+@pytest.mark.parametrize(
+    ("row", "conditions"),
+    [
+        ("Improvement", GATES["improvement_conditions"]),
+        ("Improvement uncertainty", GATES["improvement_conditions"]),
+        ("Throughput", GATES["guardrail_conditions"]),
+        ("Tail latency", GATES["guardrail_conditions"]),
+        ("Failures and timeouts", GATES["guardrail_conditions"]),
+        ("Quality", GATES["guardrail_conditions"]),
+        ("Starvation and leaks", GATES["guardrail_conditions"]),
+        ("Baseline stability (`max_baseline_root_step_cv`)", WORKLOAD["conditions"]),
+    ],
+)
+def test_each_gate_row_states_the_toml_conditions(row, conditions):
+    assert ROWS[row][2] == spoken_conditions(conditions)
+
+
+@pytest.mark.parametrize(
+    ("row", "keys", "opening"),
+    [
+        ("Failures and timeouts", ("max_new_failures", "max_new_timeouts"), "No new failures"),
+        ("Quality", ("max_tasks_newly_failing_acceptance",), "No frozen task"),
+        ("Starvation and leaks", ("max_starved_admissions", "max_leaked_permits"), "No admission"),
+    ],
+)
+def test_zero_tolerance_rows_match_zero_counts_in_the_toml(row, keys, opening):
+    # The page states these gates as "no ..."; that wording is only true while every count is 0.
+    assert all(GATES[key] == 0 for key in keys) and ROWS[row][1].startswith(opening)
 
 
 @pytest.mark.parametrize(

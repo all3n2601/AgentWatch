@@ -94,9 +94,11 @@ preserved. The baseline also stays when:
 
 ## Acceptance
 
-`status` moves to `accepted` only when every team has accepted this version; the contract test
-fails if `status` is `accepted` while any row below lacks a name and an ISO date, or if a row is
-filled while it is still `proposed`. Repository merge still requires owner approval as usual.
+`status` moves to `accepted` only when every team has accepted this version. Teams accept on the
+pull request; once all three have, one commit fills every row below and sets `status` to
+`accepted` together. The contract test enforces that: it fails if `status` is `accepted` while
+any row lacks a name and an ISO date, or if a row is filled while it is still `proposed`.
+Repository merge still requires owner approval as usual.
 
 | Team | Members | Accepted by | Date |
 |---|---|---|---|
