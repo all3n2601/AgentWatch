@@ -38,6 +38,12 @@ def config() -> stages.PipelineConfig:
     return stages.PipelineConfig.from_env(os.environ)
 
 
+def alert_config() -> alerts.AlertConfig:
+    """Alert settings from the environment, falling back to the checkout's .env file."""
+    root = stages.PipelineConfig.from_env(os.environ).root
+    return alerts.AlertConfig.from_env(alerts.alert_environment(root, os.environ))
+
+
 def alert_on_failure(context) -> None:
     """Tell Slack that a task failed for good (after its retries), with its error and log link.
 
@@ -46,8 +52,8 @@ def alert_on_failure(context) -> None:
     """
     ti = context["ti"]
     try:
-        alert_config = alerts.AlertConfig.from_env(os.environ)
-        if alert_config.webhook_url is None:
+        settings = alert_config()
+        if settings.webhook_url is None:
             logger.warning(
                 "Task %s failed; no Slack alert sent because %s is not set",
                 ti.task_id,
@@ -57,8 +63,8 @@ def alert_on_failure(context) -> None:
         message = alerts.failure_message(
             ti.dag_id, ti.run_id, ti.task_id, context.get("exception"), ti.log_url
         )
-        alerts.send_slack(alert_config.webhook_url, message)
-    except alerts.AlertError as error:
+        alerts.send_slack(settings.webhook_url, message)
+    except (alerts.AlertError, stages.StageError) as error:
         logger.error("Slack alert for failed task %s was not sent: %s", ti.task_id, error)
 
 
@@ -161,24 +167,22 @@ def agentwatch_dataset():
 
     @task(retries=ALERT_RETRIES, retry_delay=ALERT_RETRY_DELAY)
     def alert(summary: dict[str, object]) -> list[str]:
-        alert_config = alerts.AlertConfig.from_env(os.environ)
+        settings = alert_config()
         drift = summary["drift"]
         if not isinstance(drift, list):
             raise alerts.AlertError(f"run summary drift must be a list, got {drift!r}")
-        found = alerts.findings(
-            summary, [str(line) for line in drift], alert_config.max_rejected_share
-        )
+        found = alerts.findings(summary, [str(line) for line in drift], settings.max_rejected_share)
         if not found:
             logger.info("No findings to alert on")
             return found
         for line in found:
             logger.warning("Finding: %s", line)
-        if alert_config.webhook_url is None:
+        if settings.webhook_url is None:
             raise AirflowSkipException(
                 f"{len(found)} finding(s) not sent to Slack because {alerts.SLACK_WEBHOOK_ENV} "
                 "is not set; they are listed in this task's log"
             )
-        alerts.send_slack(alert_config.webhook_url, alerts.findings_message(summary, found))
+        alerts.send_slack(settings.webhook_url, alerts.findings_message(summary, found))
         return found
 
     added = acquire()

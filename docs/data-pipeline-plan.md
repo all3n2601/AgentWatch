@@ -123,7 +123,7 @@ export, and the report task.
     - the leakage check is blocked or inconclusive.
 - **Thresholds:** declared before data is collected, never tuned to silence an alert.
 - **Where:** a Slack incoming webhook, read from `AGENTWATCH_ALERT_SLACK_WEBHOOK_URL` in
-  Airflow's environment (built 2026-10-25). An environment variable rather than an Airflow
+  Airflow's environment or the checkout's git-ignored `.env` (built 2026-10-25). An environment variable rather than an Airflow
   connection, because a connection would need the Slack provider package and the stages
   already read their settings from the environment. The URL stays out of the repository and
   the logs. Gate anomalies and integrity refusals fail their task, so they arrive as failure

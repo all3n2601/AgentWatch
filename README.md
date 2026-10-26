@@ -172,12 +172,16 @@ skipped, so nothing looks delivered when it was not.
 
 1. In Slack, create an app at <https://api.slack.com/apps> → **Incoming Webhooks** → turn on →
    **Add New Webhook to Workspace** → pick the alerts channel, and copy the URL.
-2. Export it where Airflow runs; never commit it:
+2. Put it in the repository's `.env` (git-ignored; copy `.env.example` if you have none). The
+   DAG reads only the two `AGENTWATCH_ALERT_*` keys from it, and a variable exported in the
+   shell or Airflow's environment overrides the file:
 
    ```bash
-   export AGENTWATCH_ALERT_SLACK_WEBHOOK_URL='https://hooks.slack.com/services/…'
-   make pipeline-run
+   AGENTWATCH_ALERT_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/…
+   AGENTWATCH_ALERT_MAX_REJECTED_SHARE=0.10
    ```
+
+3. Run `make pipeline-run`.
 
 Stage details
 are in [the data card](docs/data-card.md) and [the data pipeline plan](docs/data-pipeline-plan.md).

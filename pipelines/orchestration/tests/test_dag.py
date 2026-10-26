@@ -161,3 +161,19 @@ def test_a_failed_task_alerts_slack_and_stops_the_run(
     (message,) = slack
     assert "task `validate` failed" in message
     assert "anomaly rows: missing" in message
+
+
+def test_the_webhook_can_come_from_the_checkouts_env_file(
+    dag, metadata_database, stubbed_stages, monkeypatch, tmp_path
+):
+    from agentwatch_orchestration import alerts
+
+    monkeypatch.delenv(alerts.SLACK_WEBHOOK_ENV, raising=False)
+    # stubbed_stages makes tmp_path the checkout (AGENTWATCH_ROOT).
+    (tmp_path / ".env").write_text(f"{alerts.SLACK_WEBHOOK_ENV}=https://hooks.slack.invalid/x\n")
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(alerts, "send_slack", lambda url, text: sent.append((url, text)))
+    run = dag.test(run_conf={"run_dirs": []})
+    assert run.get_task_instance("alert").state == "success"
+    ((url, _text),) = sent
+    assert url == "https://hooks.slack.invalid/x"

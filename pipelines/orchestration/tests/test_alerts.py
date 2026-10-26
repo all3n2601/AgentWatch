@@ -141,3 +141,43 @@ def test_send_slack_raises_when_slack_cannot_be_reached():
     # Port 9 on loopback has no listener, so the connection is refused immediately.
     with pytest.raises(alerts.AlertError, match="could not be reached"):
         alerts.send_slack("http://127.0.0.1:9/services/x", "hello", timeout_seconds=2)
+
+
+def test_the_env_file_supplies_only_the_alert_keys(tmp_path):
+    (tmp_path / ".env").write_text(
+        "# local settings\n"
+        "AGENTWATCH_LLM_MODEL=qwen3:1.7b\n"
+        f"{alerts.SLACK_WEBHOOK_ENV}='https://hooks.slack.invalid/T000/B000/x'\n"
+        f'export {alerts.MAX_REJECTED_SHARE_ENV}="0.2"\n'
+        "\n"
+        "not a setting\n"
+    )
+    assert alerts.read_env_file(tmp_path / ".env", alerts.ALERT_ENV_KEYS) == {
+        alerts.SLACK_WEBHOOK_ENV: "https://hooks.slack.invalid/T000/B000/x",
+        alerts.MAX_REJECTED_SHARE_ENV: "0.2",
+    }
+
+
+def test_a_missing_env_file_has_no_settings(tmp_path):
+    assert alerts.read_env_file(tmp_path / ".env", alerts.ALERT_ENV_KEYS) == {}
+
+
+def test_an_unreadable_env_file_is_an_error(tmp_path):
+    (tmp_path / ".env").mkdir()  # a directory where the file should be
+    with pytest.raises(alerts.AlertError, match="could not be read"):
+        alerts.read_env_file(tmp_path / ".env", alerts.ALERT_ENV_KEYS)
+
+
+def test_the_environment_overrides_the_env_file(tmp_path):
+    (tmp_path / ".env").write_text(
+        f"{alerts.SLACK_WEBHOOK_ENV}=https://from-file.invalid/x\n"
+        f"{alerts.MAX_REJECTED_SHARE_ENV}=0.2\n"
+    )
+    env = {
+        alerts.SLACK_WEBHOOK_ENV: "https://from-env.invalid/x",
+        alerts.MAX_REJECTED_SHARE_ENV: "",
+    }
+    assert alerts.alert_environment(tmp_path, env) == {
+        alerts.SLACK_WEBHOOK_ENV: "https://from-env.invalid/x",
+        alerts.MAX_REJECTED_SHARE_ENV: "0.2",  # an empty variable does not override the file
+    }

@@ -1,7 +1,7 @@
 """Slack alerts for the dataset pipeline: task failures and findings that end a run cleanly.
 
-Alerts go to a Slack incoming webhook. Its URL is a secret: it is read from the environment
-(set it in Airflow's environment or secret backend, never in the repository) and never logged.
+Alerts go to a Slack incoming webhook. Its URL is a secret: it is read from the environment,
+or from the checkout's git-ignored .env file, and never logged or committed.
 Without it, alerts are not sent and the pipeline logs that they were not, so a missing
 configuration is visible rather than silently treated as "nothing to report".
 
@@ -19,12 +19,15 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
 SLACK_WEBHOOK_ENV = "AGENTWATCH_ALERT_SLACK_WEBHOOK_URL"
 MAX_REJECTED_SHARE_ENV = "AGENTWATCH_ALERT_MAX_REJECTED_SHARE"
+ALERT_ENV_KEYS = (SLACK_WEBHOOK_ENV, MAX_REJECTED_SHARE_ENV)
+ENV_FILE = Path(".env")  # relative to the repository root; git-ignored
 # Declared 2026-10-25, before collection: more than 1 in 10 runs rejected means the evidence or
 # the recorder needs a look, even though the build itself succeeded.
 DEFAULT_MAX_REJECTED_SHARE = 0.10
@@ -64,6 +67,38 @@ class AlertConfig:
                     f"{MAX_REJECTED_SHARE_ENV} must be from 0 to 1, got {max_rejected_share}"
                 )
         return cls(webhook_url=webhook_url, max_rejected_share=max_rejected_share)
+
+
+def read_env_file(path: Path, keys: Sequence[str]) -> dict[str, str]:
+    """The given keys' values from a KEY=VALUE file such as .env; a missing file has none.
+
+    Only the alert keys are read, so the rest of .env (database passwords, model settings)
+    never reaches Airflow's environment through this. Values may be wrapped in one pair of
+    single or double quotes; comments and blank lines are skipped.
+    """
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return {}
+    except OSError as error:
+        raise AlertError(f"{path} could not be read: {error}") from error
+    values = {}
+    for line in text.splitlines():
+        name, separator, value = line.strip().removeprefix("export ").partition("=")
+        name, value = name.strip(), value.strip()
+        if not separator or name not in keys:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        values[name] = value
+    return values
+
+
+def alert_environment(root: Path, env: Mapping[str, str]) -> dict[str, str]:
+    """The alert settings from root/.env, overridden by any set in the environment itself."""
+    values = read_env_file(root / ENV_FILE, ALERT_ENV_KEYS)
+    values.update({key: env[key] for key in ALERT_ENV_KEYS if env.get(key)})
+    return values
 
 
 def findings(
