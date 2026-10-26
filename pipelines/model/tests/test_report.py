@@ -77,6 +77,17 @@ def test_too_few_clean_steps_make_the_clean_gates_inconclusive(rules, contract):
     assert report["gates"]["baseline_and_clean_none_rate"]["outcome"] == "inconclusive"
 
 
+def test_the_baseline_and_clean_gate_records_both_populations(rules, contract):
+    test = [row(condition="clean") for _ in range(3)] + [
+        row(condition="baseline") for _ in range(2)
+    ]
+    gate = report_for(rules, contract, test)["gates"]["baseline_and_clean_none_rate"]
+    # The rate covers all five steps; sufficiency is judged on the three clean ones only.
+    assert gate["steps"] == 5 and gate["value"] == 1.0
+    assert gate["clean_steps"] == 3 and gate["min_clean_steps"] == contract.min_clean_steps
+    assert gate["outcome"] == "inconclusive"
+
+
 def test_macro_f1_is_inconclusive_while_a_class_lacks_test_steps(rules, contract):
     test = [row(condition="clean") for _ in range(4)] + [
         row("cpu_sandbox", "contended", queue_fraction=0.9)
@@ -135,7 +146,10 @@ def test_a_blocked_split_reports_the_reason_and_no_metrics(rules, contract):
     assert report["status"] == "blocked" and report["evaluation"] is False
     assert report["reason"] == "leakage check is failed"
     assert report["metrics"] is None and report["gates"] == {}
-    assert report["summary"]["blocks_promotion"] is True
+    assert report["summary"] == {
+        "outcomes": {"pass": 0, "fail": 0, "inconclusive": 0, "not_evaluated": 0},
+        "blocks_promotion": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -145,6 +159,8 @@ def test_a_blocked_split_reports_the_reason_and_no_metrics(rules, contract):
         ("min_none_rate_clean = 0.95", "min_none_rate_clean = 1.5", "from 0 to 1"),
         ("max_mae = 0.10", "max_mae = true", "from 0 to 1"),
         ('classes = ["none"', 'classes = [1, "none"', "list of names"),
+        ('"retrieval"]', '"gpu"]', "dataset's classes"),
+        ('"retrieval"]', '"retrieval", "none"]', "dataset's classes"),
         ("[clean_runs]", "clean_runs = 1\n[unused]", r"\[clean_runs\] table"),
     ],
 )

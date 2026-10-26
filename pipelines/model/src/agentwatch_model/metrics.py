@@ -47,17 +47,17 @@ def class_scores(matrix: dict[str, dict[str, int]]) -> dict[str, dict]:
             "predicted": predicted,
             "precision": precision,
             "recall": recall,
-            "f1": f1_score(hits, support, predicted, precision, recall),
+            "f1": f1_score(hits, precision, recall),
         }
     return scores
 
 
-def f1_score(
-    hits: int, support: int, predicted: int, precision: float | None, recall: float | None
-) -> float | None:
-    if not support and not predicted:
-        return None  # nothing to measure for this class
-    if hits == 0 or precision is None or recall is None:
+def f1_score(hits: int, precision: float | None, recall: float | None) -> float | None:
+    if recall is None:
+        # Absent from the split: F1 is undefined even when the class was predicted, so false
+        # positives on it count against precision elsewhere, not as a measured zero here.
+        return None
+    if hits == 0 or precision is None:
         return 0.0
     return 2 * precision * recall / (precision + recall)
 

@@ -42,8 +42,19 @@ EXPLORATORY_REASON = (
 )
 
 
+OUTCOMES = ("pass", "fail", "inconclusive", "not_evaluated")
+
+
 def none_rate_gate(rate: dict, threshold: float, clean_steps: int, minimum: int) -> dict:
-    gate = {"value": rate["rate"], "threshold": threshold, "steps": rate["steps"]}
+    # steps is the population the rate is measured on; clean_steps is what sufficiency is
+    # judged on. They differ for the baseline-and-clean gate, so both are recorded.
+    gate = {
+        "value": rate["rate"],
+        "threshold": threshold,
+        "steps": rate["steps"],
+        "clean_steps": clean_steps,
+        "min_clean_steps": minimum,
+    }
     if clean_steps < minimum or rate["rate"] is None:
         reason = f"{clean_steps} clean steps; the contract needs at least {max(minimum, 1)}"
         return gate | {"outcome": "inconclusive", "reason": reason}
@@ -122,9 +133,7 @@ def slices(contract: Contract, rows: list[dict], predictions: list[str]) -> dict
 def summary(gates: dict) -> dict:
     outcomes = Counter(gate["outcome"] for gate in gates.values())
     return {
-        "outcomes": {
-            name: outcomes[name] for name in ("pass", "fail", "inconclusive", "not_evaluated")
-        },
+        "outcomes": {name: outcomes[name] for name in OUTCOMES},
         "blocks_promotion": any(gate["outcome"] != "pass" for gate in gates.values()),
     }
 
@@ -174,5 +183,5 @@ def blocked_report(contract: Contract, rules: Rules, reason: str) -> dict:
         "reason": reason,
         "metrics": None,
         "gates": {},
-        "summary": {"outcomes": {}, "blocks_promotion": True},
+        "summary": summary({}) | {"blocks_promotion": True},
     }

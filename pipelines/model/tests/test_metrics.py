@@ -48,6 +48,19 @@ def test_class_scores_leave_undefined_values_null_instead_of_zero():
     }
 
 
+def test_a_class_absent_from_the_split_has_no_f1_even_when_predicted():
+    scores = class_scores(confusion_matrix(["none", "none"], ["none", "inference"]))
+    assert scores["inference"] == {
+        "support": 0,
+        "predicted": 1,
+        "precision": 0.0,
+        "recall": None,
+        "f1": None,
+    }
+    # The false positive lowers none's recall instead of adding a zero to the average.
+    assert macro_f1(scores) == pytest.approx(scores["none"]["f1"])
+
+
 def test_macro_f1_averages_only_classes_with_a_defined_f1():
     labels = ["cpu_sandbox", "cpu_sandbox", "none", "none"]
     predictions = ["cpu_sandbox", "none", "none", "cpu_sandbox"]

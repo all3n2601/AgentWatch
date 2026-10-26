@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agentwatch_data.extract import canonical_sha256
+from agentwatch_data.schema import RESOURCE_CLASSES
 
 from agentwatch_model.metrics import is_number
 
@@ -58,6 +59,12 @@ def classes(parsed: dict) -> tuple[str, ...]:
     if not isinstance(value, list) or not value or not all(isinstance(c, str) for c in value):
         raise ContractError(
             "Evaluation contract [dataset] classes must be a non-empty list of names"
+        )
+    # Metrics are computed over the dataset's classes, so the two lists must name the same set.
+    if len(value) != len(set(value)) or set(value) != set(RESOURCE_CLASSES):
+        raise ContractError(
+            f"Evaluation contract [dataset] classes {value} must name each of the dataset's "
+            f"classes {list(RESOURCE_CLASSES)} once"
         )
     return tuple(value)
 

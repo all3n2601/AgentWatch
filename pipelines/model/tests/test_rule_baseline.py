@@ -110,3 +110,27 @@ def test_main_exits_two_on_a_configuration_error(tmp_path, capsys):
     assert main(args) == 2
     assert "Rule baseline error" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"label_excess_fraction": None}, "not a number from 0 to 1"),
+        ({"label_excess_fraction": "0.2"}, "not a number from 0 to 1"),
+        ({"label_excess_fraction": 1.5}, "not a number from 0 to 1"),
+        ({"label_resource": "gpu"}, "unknown label"),
+        ({"dataset_version": "steps-v1.3+other"}, "more than one dataset version"),
+    ],
+)
+def test_rows_with_unusable_labels_or_versions_are_refused(tmp_path, change, message):
+    loader = fake_loader([], {"train": TRAIN, "test": [row() | change]})
+    with pytest.raises(RowError, match=message):
+        run(tmp_path / "split.json", tmp_path / "out", loader=loader)
+
+
+def test_main_exits_two_on_unusable_rows(tmp_path, monkeypatch, capsys):
+    loader = fake_loader([], {"train": TRAIN, "test": [row(label="gpu")]})
+    monkeypatch.setattr("agentwatch_model.rule_baseline.load_split", loader)
+    args = ["--split", str(tmp_path / "split.json"), "--output", str(tmp_path / "out")]
+    assert main(args) == 2
+    assert "unknown label 'gpu'" in capsys.readouterr().err

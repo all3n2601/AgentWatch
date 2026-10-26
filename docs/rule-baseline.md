@@ -47,13 +47,17 @@ leakage check does not pass. The command writes to `.data/rule-baseline/`:
 | `blocked` | `load_split` refused the split; the reason is recorded, with no metrics or predictions; exit code 1 |
 | `exploratory` | Run with `--explore`, which skips only the leakage check and scores the validation split, so test results cannot steer later threshold changes; no gate is evaluated |
 
-A malformed rules or contract file, or a split row missing a required field, exits with code 2
-and an error message instead of a report.
+A malformed rules or contract file (including contract classes that differ from the dataset's),
+or a split row that is missing a required field, repeats a step, has an unknown label or an
+excess fraction outside 0 to 1, or comes from a different dataset version than the other rows,
+exits with code 2 and an error message instead of a report. `make rule-baseline` without
+`SPLIT` also exits with code 2.
 
 ## Report contents
 
 - Confusion matrix and per-class support, precision, recall and F1. A value that cannot be
-  measured, such as the precision of a class never predicted, is null rather than zero.
+  measured, such as the precision of a class never predicted, or the recall and F1 of a class
+  absent from the split even if it was predicted, is null rather than zero.
 - Macro F1 two ways: the contract's four-class value, null while any class's F1 is undefined,
   and the mean over the classes with a defined F1. It is marked inconclusive while any class
   has fewer test steps than the contract's minimum. The defined-class value has a 95%
@@ -62,11 +66,14 @@ and an error message instead of a report.
 - Slices: a confusion matrix per experiment condition, and the mixed-contention slice reported
   as unavailable, with its reason, until labels define mixed contention.
 - Clean-step gates: at least 95% of `clean` steps, and of `baseline` and `clean` steps
-  together, predicted `none`; inconclusive below the contract's minimum clean steps.
+  together, predicted `none`; inconclusive below the contract's minimum clean steps. Each gate
+  records the steps its rate covers (`steps`) and, separately, the clean steps sufficiency is
+  judged on (`clean_steps`, `min_clean_steps`); baseline steps never count toward the minimum.
 - MAE of the contract's constant references (training mean and zero) for the excess-latency
   fraction, beside the contract's MAE limit. `rules-v1` predicts no fraction, so it has no
   regression error of its own.
-- A summary counting each gate outcome. Any outcome other than pass blocks promotion.
+- A summary counting each gate outcome, with all four counts present (zeros on a blocked
+  report). Any outcome other than pass blocks promotion.
 - Every other contract gate as `not_evaluated`, with the reason: the rules are the reference
   for gain over rules, mixed contention is undefined in `labels-v1.1`, the rules give no
   confidence or abstention, task identity is interim, only one injection method exists, and

@@ -69,6 +69,7 @@ split-dataset: ## Freeze train/validation/test splits of the newest release (ref
 RULE_BASELINE_OUTPUT ?= .data/rule-baseline
 
 rule-baseline: ## Evaluate rules-v1 on a frozen split against the evaluation contract (SPLIT=split file; a blocked split exits 1)
+	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make rule-baseline SPLIT=<split.json>" >&2; exit 2; }
 	uv run --package agentwatch-model python -m agentwatch_model.rule_baseline --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(RULE_BASELINE_OUTPUT)
 
 freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest release; review the diff in a PR
