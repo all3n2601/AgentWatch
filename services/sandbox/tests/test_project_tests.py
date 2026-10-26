@@ -64,11 +64,21 @@ def process_gone(pid: int, timeout: float = 5) -> bool:
     return False
 
 
+# The suite must start an interpreter, discover tests and start the grandchild before the
+# deadline, or there is no grandchild for cleanup to reach. That takes about 0.1 s locally but
+# exceeded a 1 s deadline under full-suite load on WSL2 /mnt/c (#42).
+GRANDCHILD_STARTUP_BUDGET_SECONDS = 5
+
+
 def test_timeout_kills_the_whole_process_group(tmp_path):
     pid_file = tmp_path / "grandchild.pid"
     grandchild = tmp_path / "grandchild.py"
+    # Write then rename, so the test never reads a created-but-empty PID file.
     grandchild.write_text(
-        f"import os, pathlib, time\npathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        "import os, pathlib, time\n"
+        f"partial = pathlib.Path({str(pid_file)!r} + '.partial')\n"
+        "partial.write_text(str(os.getpid()))\n"
+        f"partial.rename({str(pid_file)!r})\n"
         "time.sleep(60)\n"
     )
     project = write_project(
@@ -81,10 +91,14 @@ def test_timeout_kills_the_whole_process_group(tmp_path):
         "        time.sleep(60)\n",
     )
     started = time.monotonic()
-    result = run_project_tests(project, timeout_seconds=1)
+    result = run_project_tests(project, timeout_seconds=GRANDCHILD_STARTUP_BUDGET_SECONDS)
     assert result.outcome == "timed_out"
     assert result.returncode is None
-    assert time.monotonic() - started < 10
+    assert time.monotonic() - started < GRANDCHILD_STARTUP_BUDGET_SECONDS + 10
+    assert pid_file.exists(), (
+        f"the grandchild did not start within {GRANDCHILD_STARTUP_BUDGET_SECONDS} s, "
+        "so process-group cleanup was not exercised"
+    )
     assert process_gone(int(pid_file.read_text())), "a grandchild survived process-group cleanup"
 
 
