@@ -146,6 +146,24 @@ def test_validate_checks_the_given_release_not_the_newest(config, fake_run):
     assert argv[argv.index("--project") + 1] == str(config.root / "pipelines/validation")
 
 
+def test_validate_returns_the_gates_drift_findings(config, fake_run):
+    printed = (
+        "passed: data/datasets/r (data/datasets/r/gate/result.json)\n"
+        "  drift condition: L-infinity distance 0.4 exceeds 0.25\n"
+        "  drift kind: L-infinity distance 0.3 exceeds 0.25\n"
+    )
+    fake_run.responses = [(0, printed, "")]
+    assert stages.validate(config, "data/datasets/r") == [
+        "condition: L-infinity distance 0.4 exceeds 0.25",
+        "kind: L-infinity distance 0.3 exceeds 0.25",
+    ]
+
+
+def test_validate_without_drift_returns_no_findings(config, fake_run):
+    fake_run.responses = [(0, "passed: data/datasets/r (result.json)\n", "")]
+    assert stages.validate(config, "data/datasets/r") == []
+
+
 def test_a_timed_out_command_raises(config, monkeypatch):
     def timeout(argv, **kwargs):
         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])

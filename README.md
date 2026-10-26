@@ -141,7 +141,7 @@ Each language uses its native toolchain. The root `Makefile` only coordinates co
 
 The Airflow DAG `agentwatch_dataset` in `pipelines/orchestration/dags/` runs the dataset commands
 in order: acquire (add recorded runs to the evidence store) → build → validate (TFDV gate) →
-split → version (integrity check, then DVC) → push → summarize. Each task runs the same command
+split → version (integrity check, then DVC) → push → summarize → alert. Each task runs the same command
 as its `make` target, in that stage's own environment. Refused run directories, gate anomalies,
 or a failed integrity check fail the task and stop the run. Runs the build rejects do not: each is
 recorded with its reason in the build report, and the run continues with the rest. Only the push
@@ -159,7 +159,27 @@ make pipeline-ui                                          # scheduler and UI on 
 Airflow's home (metadata database and task logs) is `.data/airflow`. Tasks read
 `AGENTWATCH_ROOT` (default: this checkout), `AGENTWATCH_DATASET_API_URL` (also build from runs
 saved through the ingestion API), and `AGENTWATCH_STAGE_TIMEOUT_SECONDS` (default 1800). The DAG
-does not commit the updated `data/*.dvc` files; commit them yourself after a run. Stage details
+does not commit the updated `data/*.dvc` files; commit them yourself after a run.
+
+### Slack alerts
+
+The DAG posts to a Slack incoming webhook when any task fails for good (with its error tail and
+log link), and when a run that succeeded still has findings: drift against the previous passing
+release, more than `AGENTWATCH_ALERT_MAX_REJECTED_SHARE` of runs rejected by the build (default
+0.10, declared before collection), or a leakage check that did not pass. Without a webhook, a
+failure only logs a warning, and the `alert` task lists its findings in its log and is marked
+skipped, so nothing looks delivered when it was not.
+
+1. In Slack, create an app at <https://api.slack.com/apps> → **Incoming Webhooks** → turn on →
+   **Add New Webhook to Workspace** → pick the alerts channel, and copy the URL.
+2. Export it where Airflow runs; never commit it:
+
+   ```bash
+   export AGENTWATCH_ALERT_SLACK_WEBHOOK_URL='https://hooks.slack.com/services/…'
+   make pipeline-run
+   ```
+
+Stage details
 are in [the data card](docs/data-card.md) and [the data pipeline plan](docs/data-pipeline-plan.md).
 
 ## Prerequisites

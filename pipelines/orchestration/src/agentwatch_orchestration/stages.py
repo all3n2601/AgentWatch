@@ -34,6 +34,7 @@ RELEASE_PREFIX = "release: "
 REPORT_PREFIX = "report: "
 SPLIT_PREFIX = "split: "
 LEAKAGE_PREFIX = "leakage: "
+DRIFT_PREFIX = "drift "  # the gate prints each drift finding indented, as "  drift <feature>: ..."
 REUSED_SUFFIX = " (reused)"
 # dvc remote default exits 1 with this message when no default remote is set; any other failure
 # is a broken configuration or environment, which must fail the push rather than skip it.
@@ -113,6 +114,7 @@ class RunSummary:
     evidence_added: int
     split: str
     leakage: str
+    drift: list[str]  # the gate's drift findings against the previous passing release
     versioned: bool
     pushed: bool
 
@@ -229,14 +231,24 @@ def read_build_report(path: Path) -> dict[str, int]:
     return counts
 
 
-def validate(config: PipelineConfig, release: str) -> None:
-    """Run the TFDV quality gate; anomalies fail the stage and stop the run."""
+def validate(config: PipelineConfig, release: str) -> list[str]:
+    """Run the TFDV quality gate; anomalies fail the stage and stop the run.
+
+    Drift does not fail the gate. Its findings are returned, one per line, for the run summary
+    and alerts.
+    """
     schema = str(config.path(config.schema))
-    run_command(
+    output = run_command(
         config,
         "validate",
         validation_command(config, "validate", "--release", release, "--schema", schema),
-    )
+    ).stdout
+    drift = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(DRIFT_PREFIX):
+            drift.append(stripped.removeprefix(DRIFT_PREFIX))
+    return drift
 
 
 def split(config: PipelineConfig, release: str) -> SplitOutcome:

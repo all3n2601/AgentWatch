@@ -1,6 +1,6 @@
 """The AgentWatch dataset pipeline as an Airflow DAG.
 
-    acquire -> build -> validate -> split -> version -> push -> summarize
+    acquire -> build -> validate -> split -> version -> push -> summarize -> alert
 
 Each task runs one existing dataset command in its own environment through
 agentwatch_orchestration.stages; the DAG owns ordering, retries, and task logs only. The DAG is
@@ -10,6 +10,10 @@ add as the run_dirs parameter; with none, it rebuilds from the evidence already 
 Only pushing to the DVC remote is retried: every other stage is deterministic, so a retry
 would repeat the same failure, and the gate's anomalies must stop the run rather than be
 retried away. One run at a time, because versioning snapshots the whole stores.
+
+Alerts go to Slack (agentwatch_orchestration.alerts): every task's final failure, and, after
+the summary, findings of a run that otherwise succeeded (drift, too many rejected runs, a
+leakage check that did not pass). Posting an alert is retried; Slack is a network service.
 """
 
 import logging
@@ -17,7 +21,7 @@ import os
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
-from agentwatch_orchestration import stages
+from agentwatch_orchestration import alerts, stages
 from airflow.sdk import Param, dag, task
 from airflow.sdk.exceptions import AirflowSkipException
 
@@ -26,10 +30,36 @@ logger = logging.getLogger(__name__)
 PUSH_RETRIES = 3
 PUSH_RETRY_DELAY = timedelta(seconds=30)
 PUSH_MAX_RETRY_DELAY = timedelta(minutes=5)
+ALERT_RETRIES = 3
+ALERT_RETRY_DELAY = timedelta(seconds=30)
 
 
 def config() -> stages.PipelineConfig:
     return stages.PipelineConfig.from_env(os.environ)
+
+
+def alert_on_failure(context) -> None:
+    """Tell Slack that a task failed for good (after its retries), with its error and log link.
+
+    A callback cannot fail the task any further, so an alert that cannot be sent is logged as
+    an error in the task log instead.
+    """
+    ti = context["ti"]
+    try:
+        alert_config = alerts.AlertConfig.from_env(os.environ)
+        if alert_config.webhook_url is None:
+            logger.warning(
+                "Task %s failed; no Slack alert sent because %s is not set",
+                ti.task_id,
+                alerts.SLACK_WEBHOOK_ENV,
+            )
+            return
+        message = alerts.failure_message(
+            ti.dag_id, ti.run_id, ti.task_id, context.get("exception"), ti.log_url
+        )
+        alerts.send_slack(alert_config.webhook_url, message)
+    except alerts.AlertError as error:
+        logger.error("Slack alert for failed task %s was not sent: %s", ti.task_id, error)
 
 
 @dag(
@@ -39,7 +69,7 @@ def config() -> stages.PipelineConfig:
     start_date=datetime(2026, 10, 1, tzinfo=UTC),
     catchup=False,
     max_active_runs=1,
-    default_args={"retries": 0},
+    default_args={"retries": 0, "on_failure_callback": alert_on_failure},
     params={
         "run_dirs": Param(
             [],
@@ -70,14 +100,16 @@ def agentwatch_dataset():
         return asdict(outcome)
 
     @task
-    def validate(built: dict[str, object]) -> str:
+    def validate(built: dict[str, object]) -> dict[str, object]:
         release = str(built["release"])
-        stages.validate(config(), release)
-        return release
+        drift = stages.validate(config(), release)
+        for line in drift:
+            logger.warning("Drift against the previous passing release: %s", line)
+        return {"release": release, "drift": drift}
 
     @task
-    def split(release: str) -> dict[str, object]:
-        outcome = stages.split(config(), release)
+    def split(validated: dict[str, object]) -> dict[str, object]:
+        outcome = stages.split(config(), str(validated["release"]))
         if outcome.leakage != "passed":
             logger.warning("Leakage check %s: evaluation must not use this split", outcome.leakage)
         return {"path": outcome.path, "reused": outcome.reused, "leakage": outcome.leakage}
@@ -104,7 +136,7 @@ def agentwatch_dataset():
     def summarize(
         added: int,
         built: dict[str, object],
-        release: str,
+        validated: dict[str, object],
         split_outcome: dict[str, object],
         versioned: bool,
     ) -> dict[str, object]:
@@ -112,7 +144,7 @@ def agentwatch_dataset():
 
         pushed = get_current_context()["ti"].xcom_pull(task_ids="push") is True
         summary = stages.RunSummary(
-            release=release,
+            release=str(validated["release"]),
             build_report=str(built["report"]),
             rows=int(built["rows"]),
             runs=int(built["runs"]),
@@ -120,11 +152,34 @@ def agentwatch_dataset():
             evidence_added=added,
             split=str(split_outcome["path"]),
             leakage=str(split_outcome["leakage"]),
+            drift=[str(line) for line in validated["drift"]],
             versioned=versioned,
             pushed=pushed,
         )
         logger.info("Run summary: %s", summary.as_dict())
         return summary.as_dict()
+
+    @task(retries=ALERT_RETRIES, retry_delay=ALERT_RETRY_DELAY)
+    def alert(summary: dict[str, object]) -> list[str]:
+        alert_config = alerts.AlertConfig.from_env(os.environ)
+        drift = summary["drift"]
+        if not isinstance(drift, list):
+            raise alerts.AlertError(f"run summary drift must be a list, got {drift!r}")
+        found = alerts.findings(
+            summary, [str(line) for line in drift], alert_config.max_rejected_share
+        )
+        if not found:
+            logger.info("No findings to alert on")
+            return found
+        for line in found:
+            logger.warning("Finding: %s", line)
+        if alert_config.webhook_url is None:
+            raise AirflowSkipException(
+                f"{len(found)} finding(s) not sent to Slack because {alerts.SLACK_WEBHOOK_ENV} "
+                "is not set; they are listed in this task's log"
+            )
+        alerts.send_slack(alert_config.webhook_url, alerts.findings_message(summary, found))
+        return found
 
     added = acquire()
     built = build(added)
@@ -134,6 +189,7 @@ def agentwatch_dataset():
     pushed = push(versioned)
     summary = summarize(added, built, validated, split_outcome, versioned)
     pushed >> summary
+    alert(summary)
 
 
 agentwatch_dataset()

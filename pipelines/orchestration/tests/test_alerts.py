@@ -1,0 +1,143 @@
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import ClassVar
+
+import pytest
+from agentwatch_orchestration import alerts
+
+
+def summary(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "release": "data/datasets/steps-v1.2+abc",
+        "build_report": "data/datasets/reports/b.json",
+        "runs": 9,
+        "runs_rejected": 1,
+        "split": "s.json",
+        "leakage": "passed",
+    }
+    return base | overrides
+
+
+def test_alerts_are_off_without_a_webhook():
+    config = alerts.AlertConfig.from_env({})
+    assert config.webhook_url is None
+    assert config.max_rejected_share == alerts.DEFAULT_MAX_REJECTED_SHARE
+
+
+def test_a_webhook_that_is_not_https_is_refused_without_echoing_it():
+    with pytest.raises(alerts.AlertError) as raised:
+        alerts.AlertConfig.from_env({alerts.SLACK_WEBHOOK_ENV: "http://hooks.example/secret"})
+    assert "secret" not in str(raised.value)
+
+
+@pytest.mark.parametrize("share", ["lots", "-0.1", "1.5", "nan"])
+def test_an_invalid_rejected_share_is_refused(share):
+    with pytest.raises(alerts.AlertError, match=alerts.MAX_REJECTED_SHARE_ENV):
+        alerts.AlertConfig.from_env({alerts.MAX_REJECTED_SHARE_ENV: share})
+
+
+def test_a_clean_run_has_no_findings():
+    assert alerts.findings(summary(), [], max_rejected_share=0.10) == []
+
+
+def test_rejections_at_the_declared_share_are_not_a_finding():
+    # 1 of 10 runs considered is exactly 10%: only more than the declared share alerts.
+    assert alerts.findings(summary(runs=9, runs_rejected=1), [], 0.10) == []
+
+
+def test_rejections_over_the_declared_share_are_a_finding():
+    (finding,) = alerts.findings(summary(runs=8, runs_rejected=2), [], 0.10)
+    assert "rejected 2 of 10 runs" in finding
+    assert "data/datasets/reports/b.json" in finding
+
+
+def test_an_empty_build_is_not_a_rejection_finding():
+    assert alerts.findings(summary(runs=0, runs_rejected=0), [], 0.0) == []
+
+
+def test_invalid_run_counts_are_refused():
+    with pytest.raises(alerts.AlertError, match="invalid run counts"):
+        alerts.findings(summary(runs="9"), [], 0.10)
+
+
+def test_a_leakage_check_that_did_not_pass_is_a_finding():
+    (finding,) = alerts.findings(summary(leakage="blocked: test split is empty"), [], 0.10)
+    assert "blocked: test split is empty" in finding
+    assert "s.json" in finding
+
+
+def test_each_drift_line_is_a_finding():
+    found = alerts.findings(summary(), ["kind: 0.3 > 0.25", "condition: 0.4 > 0.25"], 0.10)
+    assert found == [
+        "Drift against the previous passing release: kind: 0.3 > 0.25",
+        "Drift against the previous passing release: condition: 0.4 > 0.25",
+    ]
+
+
+def test_the_findings_message_names_the_release_and_every_finding():
+    message = alerts.findings_message(summary(), ["first", "second"])
+    assert "2 finding(s)" in message
+    assert "Release: data/datasets/steps-v1.2+abc" in message
+    assert "• first" in message and "• second" in message
+
+
+def test_a_failure_message_keeps_only_the_errors_tail_and_links_the_log():
+    error = RuntimeError("start " + "x" * 5000 + " end")
+    message = alerts.failure_message("dag", "run-1", "validate", error, "http://airflow/log")
+    assert "task `validate` failed" in message
+    assert "end" in message and "start" not in message
+    assert message.endswith("Log: http://airflow/log")
+
+
+def test_a_failure_without_a_recorded_error_says_so():
+    message = alerts.failure_message("dag", "run-1", "build", None, None)
+    assert "no error was recorded" in message
+    assert "Log:" not in message
+
+
+class Webhook(BaseHTTPRequestHandler):
+    """A local stand-in for Slack's incoming webhook; it answers with the class's status."""
+
+    status: ClassVar[int] = 200
+    received: ClassVar[list[dict[str, object]]] = []
+
+    def do_POST(self):
+        length = int(self.headers["Content-Length"])
+        type(self).received.append(json.loads(self.rfile.read(length)))
+        body = b"ok" if self.status == 200 else b"invalid_token"
+        self.send_response(self.status)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+
+@pytest.fixture
+def webhook():
+    Webhook.status = 200
+    Webhook.received = []
+    server = HTTPServer(("127.0.0.1", 0), Webhook)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_port}/services/x"
+    server.shutdown()
+    server.server_close()
+
+
+def test_send_slack_posts_the_text_as_json(webhook):
+    alerts.send_slack(webhook, "hello")
+    assert Webhook.received == [{"text": "hello"}]
+
+
+def test_send_slack_raises_with_slacks_reason_when_rejected(webhook):
+    Webhook.status = 403
+    with pytest.raises(alerts.AlertError, match="HTTP 403: invalid_token"):
+        alerts.send_slack(webhook, "hello")
+
+
+def test_send_slack_raises_when_slack_cannot_be_reached():
+    # Port 9 on loopback has no listener, so the connection is refused immediately.
+    with pytest.raises(alerts.AlertError, match="could not be reached"):
+        alerts.send_slack("http://127.0.0.1:9/services/x", "hello", timeout_seconds=2)
