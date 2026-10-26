@@ -194,6 +194,30 @@ def test_explore_writes_apart_from_evaluated_results_and_marks_the_run(tmp_path)
     assert statuses == ["evaluated", "exploratory"]
 
 
+def test_an_evaluated_run_logs_none_of_the_exploratory_files(tmp_path):
+    output = tmp_path / "out"
+    loader = loader_for([], SPLITS)
+    run(tmp_path / "split.json", output, explore=True, loader=loader, **tracking(tmp_path))
+    outcome = run(tmp_path / "split.json", output, loader=loader, **tracking(tmp_path))
+    logged_runs(tmp_path)  # points mlflow at this test's tracking database
+    names = {item.path for item in mlflow.MlflowClient().list_artifacts(outcome.run_id)}
+    assert "report.json" in names and "classifier.txt" in names
+    assert not any(name.startswith("exploratory") for name in names)
+
+
+def test_a_blocked_run_that_was_not_tracked_exits_three(tmp_path, monkeypatch):
+    from mlflow.exceptions import MlflowException
+
+    def broken_tracking(*args, **kwargs):
+        raise MlflowException("tracking server unavailable")
+
+    monkeypatch.setattr("agentwatch_model.train_candidates.log_run", broken_tracking)
+    monkeypatch.setattr("agentwatch_model.train_candidates.load_split", blocked)
+    output = tmp_path / "out"
+    assert main(["--split", str(tmp_path / "split.json"), "--output", str(output)]) == 3
+    assert read(output / "report.json")["status"] == "blocked"
+
+
 def test_a_tracking_failure_keeps_the_report_and_exits_three(tmp_path, monkeypatch):
     from mlflow.exceptions import MlflowException
 

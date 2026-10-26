@@ -22,8 +22,10 @@ reproducible on the same LightGBM version and platform; both versions are record
 
 - Both train on the training split only. The validation split is used only for early stopping;
   without usable validation rows the fixed number of rounds is used and recorded.
-- Inputs are exactly the schema's feature columns. Missing readings go to LightGBM as NaN and are
-  never imputed; booleans become 1.0 and 0.0. The only learned preprocessing is the class order
+- Inputs are exactly the schema's feature columns. Missing readings (null in the dataset) go to
+  LightGBM as NaN and are never imputed. A NaN or infinite value already stored in a feature is
+  not treated as missing: it is a `FeatureError` and the attempt fails, since recorded data keeps
+  missing readings null; booleans become 1.0 and 0.0. The only learned preprocessing is the class order
   from the training split.
 - A training split with fewer than two classes fails the run rather than producing a model.
 

@@ -31,7 +31,7 @@ class Contract:
     min_none_rate_clean: float
     min_none_rate_baseline_and_clean: float
     max_mae: float
-    min_gain_over_rules_overall: float = 0.0
+    min_gain_over_rules_overall: float
 
 
 def section(parsed: dict, name: str) -> dict:

@@ -44,6 +44,7 @@ from agentwatch_model.rule_baseline import (
     EXIT_BLOCKED,
     EXIT_ERROR,
     RowError,
+    output_directory,
     split_identity,
     validate_dataset_version,
     validate_rows,
@@ -57,7 +58,6 @@ from agentwatch_model.tracking import (
 )
 
 DEFAULT_OUTPUT = Path(".data/candidates")
-EXPLORATORY_DIRECTORY = "exploratory"  # never shares files with an evaluated attempt
 TASK = "M03"
 REPORT = "report.json"
 PREDICTIONS = "predictions.jsonl"
@@ -281,6 +281,20 @@ def finish(report: dict, directory: Path, tracking_uri: str, artifact_root: Path
     return Outcome(report["status"], run_id)
 
 
+def load_configuration(
+    contract_path: Path, rules_path: Path, training_path: Path
+) -> tuple[Contract, Rules, TrainingConfig]:
+    """The three configuration files; one that cannot be read is a configuration error."""
+    try:
+        return (
+            load_contract(contract_path),
+            load_rules(rules_path),
+            load_training_config(training_path),
+        )
+    except OSError as error:
+        raise TrainingError(f"Cannot read configuration: {error}") from error
+
+
 def run(
     split: Path,
     output: Path,
@@ -297,12 +311,11 @@ def run(
     seed: int = BOOTSTRAP_SEED,
 ) -> Outcome:
     """Train, score and track one attempt."""
-    contract, rules = load_contract(contract_path), load_rules(rules_path)
-    config = load_training_config(training_path)
+    contract, rules, config = load_configuration(contract_path, rules_path, training_path)
     # An environment that cannot train is a setup error, not a failed attempt.
     check_lightgbm()
     scored_split = "validation" if explore else "test"
-    directory = output / EXPLORATORY_DIRECTORY if explore else output
+    directory = output_directory(output, explore)
     directory.mkdir(parents=True, exist_ok=True)
     clear_artifacts(directory)
     base = {"split": split_identity(split), "scored_split": scored_split}
@@ -360,7 +373,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    config_errors = (ContractError, RulesError, TrainingError, tomllib.TOMLDecodeError, OSError)
+    # Only configuration problems exit 2; an I/O failure while writing results crashes loudly.
+    config_errors = (ContractError, RulesError, TrainingError, tomllib.TOMLDecodeError)
     try:
         outcome = run(
             args.split,
@@ -377,9 +391,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Training error: {error}", file=sys.stderr)
         return EXIT_ERROR
     print(f"Candidates {outcome.status}; MLflow run {outcome.run_id or 'not logged'}")
-    if outcome.status in STOPPED:
-        return EXIT_BLOCKED
-    return 0 if outcome.run_id else EXIT_UNTRACKED
+    # Untracked comes first: a blocked or failed attempt that never reached MLflow must be
+    # distinguishable from one that was recorded.
+    if not outcome.run_id:
+        return EXIT_UNTRACKED
+    return EXIT_BLOCKED if outcome.status in STOPPED else 0
 
 
 if __name__ == "__main__":

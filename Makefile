@@ -75,6 +75,7 @@ rule-baseline: ## Evaluate rules-v1 on a frozen split against the evaluation con
 CANDIDATES_OUTPUT ?= .data/candidates
 
 train-candidates: ## Train LightGBM candidates on a frozen split, compare with rules-v1, and track the run in MLflow (SPLIT=split file; blocked or failed runs exit 1)
+	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make train-candidates SPLIT=<split.json>" >&2; exit 2; }
 	uv run --package agentwatch-model python -m agentwatch_model.train_candidates --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(CANDIDATES_OUTPUT)
 
 freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest release; review the diff in a PR

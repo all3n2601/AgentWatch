@@ -117,5 +117,9 @@ def log_run(
         metrics = run_metrics(report)
         if metrics:
             mlflow.log_metrics(metrics)
-        mlflow.log_artifacts(str(output))
+        # The attempt's own files only: log_artifacts would recurse into an evaluated run's
+        # exploratory/ subdirectory and file an exploratory model under an evaluated run.
+        for path in sorted(output.iterdir()):
+            if path.is_file():
+                mlflow.log_artifact(str(path))
         return active.info.run_id
