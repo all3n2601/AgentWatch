@@ -21,6 +21,7 @@ or changed before first use).
 | Each admission queue has a maximum length and a maximum wait, declared in the experiment manifest before the run | Plan, metric chosen here |
 | Permits are released on every terminal path: completion, failure, timeout and cancellation | Plan |
 | The baseline is no admission limit, as the runner behaves today; the manifest records the baseline limits used, and disable restores them | Plan, metric chosen here |
+| A policy version encodes "no limit" for a control by omitting that control's limit; a limit that is present must be an integer of at least 1, and zero, negative, null or sentinel values are rejected | Proposed |
 
 Policy versions are immutable. Each records the effective limits, the operator and reason,
 resource and service identity, and run/step correlation. Admission wait, inference-service
@@ -43,7 +44,7 @@ seed, queue bounds and the frozen evaluation tasks. Anything not preregistered i
 | Repetitions | At least 5 pairs and 20 completed tasks per configuration | Plan |
 | Warm-up and cold requests | Declared warm-up; cold requests reported separately and excluded from warm comparisons | Plan |
 | Tasks | Settings chosen on development tasks; frozen evaluation tasks are disjoint and used once | Plan |
-| Minimum frozen evaluation tasks | 2 | Proposed |
+| Minimum frozen evaluation tasks | 2, a placeholder that must be revisited before first use: with the agent's two fixed tasks, disjoint development and evaluation tasks cannot both exist yet | Proposed |
 
 ## Gates
 
@@ -58,7 +59,7 @@ seed, queue bounds and the frozen evaluation tasks. Anything not preregistered i
 | Starvation and leaks | No admission waits longer than the declared maximum; no permit still held after its batch ends | Clean and contended | Plan, metric chosen here |
 | Admission overhead | Median wall-time increase at most 5% with unchanged limits, measured separately from instrumentation | Clean | Plan |
 | Instrumentation overhead | Median wall-time increase at most 5%, shared with [the evaluation contract](evaluation-contract.md) | Clean | Proposed |
-| Baseline stability | Coefficient of variation of the root step's total duration across baseline batches at most 15%, the existing gate in `services/agent`; otherwise every comparison on that baseline is inconclusive | Clean and contended | Plan |
+| Baseline stability (`max_baseline_root_step_cv`) | Coefficient of variation of the root step's total duration across baseline batches at most 15%, the existing gate in `services/agent`; otherwise every comparison on that baseline is inconclusive | Clean and contended | Plan |
 
 With 5 pairs, the bootstrap interval excludes zero only when every pair shows a reduction, so a
 small or noisy sample stays inconclusive. Reports include paired effect estimates and intervals
@@ -105,6 +106,9 @@ still requires owner approval as usual.
 Change thresholds only before an evaluation uses them, and bump `version` with every change.
 Reports record the version and the first 8 hex digits of the SHA-256 of the parsed TOML as
 canonical JSON. Earlier versions and their reports are kept.
+`tests/contract/test_optimization_contract.py` validates the TOML's types and ranges and checks
+that its thresholds match this page, the optimization plan, the evaluation contract and the
+agent's existing stability gate, so a threshold edit cannot drift silently.
 
 ## Known limitations
 

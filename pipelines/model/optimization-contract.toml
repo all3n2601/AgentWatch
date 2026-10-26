@@ -19,6 +19,10 @@ lowering_cancels_in_flight = false
 require_declared_queue_bounds = true
 # The runner has no admission limit today; the manifest records the baseline limits used.
 baseline = "unlimited"
+# How a policy version encodes "no limit" for a control: the control's limit key is absent.
+# A limit that is present must be an integer of at least min_limit; zero, negative, null or
+# sentinel values such as -1 are rejected.
+unlimited_encoding = "absent"
 
 [workload]
 # A batch is a set of tasks submitted together to one runner; batch completion time runs
@@ -26,7 +30,8 @@ baseline = "unlimited"
 unit = "batch"
 # Development tasks choose settings; frozen evaluation tasks are disjoint and used once.
 require_disjoint_evaluation_tasks = true
-# Proposed.
+# Proposed placeholder, to be revisited before first use: the agent has two fixed tasks, so
+# disjoint development and evaluation tasks cannot both exist until more tasks land.
 min_evaluation_tasks = 2
 conditions = ["clean", "contended"]
 # The contended condition's injector set and intensity, the arrival schedule, and the
@@ -79,7 +84,7 @@ max_median_instrumentation_overhead = 0.05
 # The existing gate in services/agent experiment.py: coefficient of variation of the root
 # step's total duration across baseline batches, at most this value; otherwise every
 # comparison on that baseline is inconclusive.
-max_baseline_cpu_variability = 0.15
+max_baseline_root_step_cv = 0.15
 
 [outcomes]
 values = ["pass", "fail", "inconclusive", "not_evaluated"]
