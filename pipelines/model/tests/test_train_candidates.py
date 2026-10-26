@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from agentwatch_data.files import file_sha256
 from agentwatch_data.splits import SplitError
 from training_fixtures import dataset, featured_row, require_lightgbm
@@ -136,6 +137,31 @@ def test_bad_rows_are_kept_as_a_failed_run_not_a_crash(tmp_path):
     assert "RowError" in read(output / "report.json")["reason"]
     [logged] = logged_runs(tmp_path)
     assert logged.data.tags["status"] == "failed"
+
+
+def test_rows_from_mixed_dataset_versions_are_a_failed_run(tmp_path):
+    other = featured_row("none", 0) | {"dataset_version": "steps-v1.3+other"}
+    mixed = dict(SPLITS) | {"test": SPLITS["test"] + [other]}
+    output = tmp_path / "out"
+    outcome = run(
+        tmp_path / "split.json", output, loader=loader_for([], mixed), **tracking(tmp_path)
+    )
+    assert outcome.status == "failed"
+    assert "more than one dataset version" in read(output / "report.json")["reason"]
+
+
+def test_an_unexpected_error_crashes_instead_of_becoming_a_failed_run(tmp_path, monkeypatch):
+    def broken(*args, **kwargs):
+        raise ValueError("a programming error, not a data problem")
+
+    monkeypatch.setattr("agentwatch_model.train_candidates.fit_candidate", broken)
+    with pytest.raises(ValueError, match="programming error"):
+        run(
+            tmp_path / "split.json",
+            tmp_path / "out",
+            loader=loader_for([], SPLITS),
+            **tracking(tmp_path),
+        )
 
 
 def test_a_failure_removes_an_earlier_attempts_models(tmp_path):

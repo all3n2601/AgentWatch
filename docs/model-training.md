@@ -82,3 +82,9 @@ parameters, measured metrics (unmeasured values are omitted, not logged as zero)
 output files as artifacts. The default backend is local SQLite at `.data/mlflow/mlflow.db`
 with artifacts in `.data/mlflow/artifacts`; `--tracking-uri` points elsewhere. Failed,
 blocked and exploratory runs are kept.
+
+For a `sqlite:///` URI the database's parent directory is created if missing, and MLflow
+applies its own schema migrations to that file. Every file in the output directory is logged as
+an artifact, including `predictions.jsonl` and `validation_predictions.jsonl` with per-step
+labels and probabilities, so a `--tracking-uri` on a remote server uploads them there. Keep
+the default local backend unless that server is meant to hold this data.

@@ -24,6 +24,7 @@ from agentwatch_data.splits import SplitError, load_split
 from agentwatch_model.candidates import (
     DEFAULT_TRAINING,
     Candidate,
+    CandidateError,
     Prediction,
     TrainingConfig,
     TrainingError,
@@ -33,15 +34,17 @@ from agentwatch_model.candidates import (
 )
 from agentwatch_model.comparison import build_model_report
 from agentwatch_model.contract import DEFAULT_CONTRACT, Contract, ContractError, load_contract
-from agentwatch_model.features import preprocessing_contract
-from agentwatch_model.report import blocked_report, dataset_version, identity
+from agentwatch_model.features import FeatureError, preprocessing_contract
+from agentwatch_model.report import blocked_report, identity
 from agentwatch_model.rule_baseline import (
     BOOTSTRAP_RESAMPLES,
     BOOTSTRAP_SEED,
     DEFAULT_SCHEMA,
     EXIT_BLOCKED,
     EXIT_ERROR,
+    RowError,
     split_identity,
+    validate_dataset_version,
     validate_rows,
 )
 from agentwatch_model.rules import DEFAULT_RULES, Rules, RulesError, load_rules
@@ -86,10 +89,18 @@ class Outcome:
 def attempt_errors() -> tuple[type[BaseException], ...]:
     """Data and training failures that end an attempt as a recorded failed run.
 
-    RowError, FeatureError and CandidateError are ValueErrors. OSError and ImportError cover a
-    missing OpenMP runtime; LightGBMError is added when LightGBM itself can load.
+    Only this package's own data errors are listed, so any other ValueError is a programming
+    error and crashes instead of being recorded as a plausible-looking failed attempt. OSError
+    and ImportError cover a missing OpenMP runtime; LightGBMError is added when LightGBM itself
+    can load.
     """
-    errors: list[type[BaseException]] = [ValueError, OSError, ImportError]
+    errors: list[type[BaseException]] = [
+        RowError,
+        FeatureError,
+        CandidateError,
+        OSError,
+        ImportError,
+    ]
     try:
         from lightgbm.basic import LightGBMError
 
@@ -218,7 +229,7 @@ def attempt(
     train, validation, scored = splits["train"], splits["validation"], splits[scored_split]
     for name, rows in splits.items():
         validate_rows(rows, name)
-    dataset_version(train + validation + scored)  # refuses rows from mixed releases
+    validate_dataset_version(train + validation + scored)
     candidate = fit_candidate(train, validation, config)
     model = model_identity(config, candidate, label_version(train + validation + scored))
     predictions = predict(candidate, scored)
