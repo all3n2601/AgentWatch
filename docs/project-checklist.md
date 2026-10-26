@@ -605,8 +605,14 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   `pipelines/orchestration` runs acquire → build → validate → split → version → push →
   summarize, each in its stage's own environment, with only the DVC push retried
   (`pipelines/orchestration/tests`). Run end to end with `make pipeline-run` on the shared
-  `steps-v1.2+5954f97ef8b2` evidence and with a new recorded run added. Alerts, committing
-  `data/*.dvc` from the DAG, and the Gantt-chart optimization are open.
+  `steps-v1.2+5954f97ef8b2` evidence and with a new recorded run added. Committing
+  `data/*.dvc` from the DAG and the Gantt-chart optimization are open.
+- [x] Alert Slack from the dataset DAG (2026-10-25): every task's final failure, and findings of
+  a successful run (drift, rejected-run share over a declared 10%, leakage check not passed,
+  version not pushed), posted with every successful run's summary, through an incoming webhook
+  read from `AGENTWATCH_ALERT_SLACK_WEBHOOK_URL` or the checkout's `.env`
+  (`pipelines/orchestration/tests/test_alerts.py`, `test_dag.py`). Delivered to a real Slack
+  channel on 2026-10-26 from `make pipeline-run`: a findings summary and a failed-task alert.
 - [ ] Hold out unseen tasks and at least one injection method.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
