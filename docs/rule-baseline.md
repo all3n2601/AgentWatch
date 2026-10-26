@@ -41,6 +41,10 @@ leakage check does not pass. The command writes to `.data/rule-baseline/`:
   `evaluation`), kept for comparison with the learned model on identical rows. The report
   records this file's SHA-256, and `(run_id, step_id)` must be unique.
 
+`--explore` writes the same two files to `.data/rule-baseline/exploratory/`, so it never
+replaces an evaluated result. Each run first removes its directory's earlier report and
+predictions, so files from different runs never sit side by side.
+
 | Status | Meaning |
 |---|---|
 | `evaluated` | Metrics and gate outcomes on the test split of a split that passed every check |

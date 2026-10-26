@@ -70,11 +70,30 @@ def test_a_blocked_split_writes_a_blocked_report_and_no_predictions(tmp_path):
 def test_explore_scores_validation_not_test_and_marks_every_output(tmp_path):
     calls = []
     run(tmp_path / "split.json", tmp_path / "out", explore=True, loader=fake_loader(calls))
-    report = read_report(tmp_path / "out")
-    line = (tmp_path / "out" / "predictions.jsonl").read_text().splitlines()[0]
+    report = read_report(tmp_path / "out" / "exploratory")
+    line = (tmp_path / "out" / "exploratory" / "predictions.jsonl").read_text().splitlines()[0]
     assert calls == [("train", True), ("validation", True)]
     assert report["evaluation"] is False and report["scored_split"] == "validation"
     assert json.loads(line)["evaluation"] is False and json.loads(line)["split"] == "validation"
+
+
+def test_an_exploratory_run_leaves_the_evaluated_result_in_place(tmp_path):
+    output = tmp_path / "out"
+    run(tmp_path / "split.json", output, loader=fake_loader([]))
+    evaluated = (output / "report.json").read_text()
+    run(tmp_path / "split.json", output, explore=True, loader=fake_loader([]))
+    assert (output / "report.json").read_text() == evaluated
+    assert read_report(output / "exploratory")["status"] == "exploratory"
+
+
+def test_a_run_that_stops_on_bad_rows_leaves_no_earlier_outputs(tmp_path):
+    output = tmp_path / "out"
+    run(tmp_path / "split.json", output, loader=fake_loader([]))
+    loader = fake_loader([], {"train": TRAIN, "test": [row(label="gpu")]})
+    with pytest.raises(RowError):
+        run(tmp_path / "split.json", output, loader=loader)
+    assert not (output / "report.json").exists()
+    assert not (output / "predictions.jsonl").exists()
 
 
 def test_rows_missing_a_required_field_are_refused(tmp_path):
