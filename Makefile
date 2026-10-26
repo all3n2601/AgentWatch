@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver pipeline-run pipeline-ui llm-up llm-down agent-tasks agent-run agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset rule-baseline train-candidates freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver pipeline-run pipeline-ui llm-up llm-down agent-tasks agent-run agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -68,6 +68,18 @@ split-dataset: ## Freeze train/validation/test splits of the newest release (ref
 
 slice-dataset: ## Slice the newest release for bias (with its newest split, if any): flags, mitigations, and balancing weights under .data/reports/<release>
 	release=$$($(LATEST_RELEASE)) && $(DATA).slices --release "$$release" --newest-split
+
+RULE_BASELINE_OUTPUT ?= .data/rule-baseline
+
+rule-baseline: ## Evaluate rules-v1 on a frozen split against the evaluation contract (SPLIT=split file; a blocked split exits 1)
+	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make rule-baseline SPLIT=<split.json>" >&2; exit 2; }
+	uv run --package agentwatch-model python -m agentwatch_model.rule_baseline --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(RULE_BASELINE_OUTPUT)
+
+CANDIDATES_OUTPUT ?= .data/candidates
+
+train-candidates: ## Train LightGBM candidates on a frozen split, compare with rules-v1, and track the run in MLflow (SPLIT=split file; blocked or failed runs exit 1)
+	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make train-candidates SPLIT=<split.json>" >&2; exit 2; }
+	uv run --package agentwatch-model python -m agentwatch_model.train_candidates --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(CANDIDATES_OUTPUT)
 
 freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest release; review the diff in a PR
 	release=$$($(LATEST_RELEASE)) && uv run --project pipelines/validation python -m agentwatch_validation freeze-schema --release "$$release" --schema $(VALIDATION_SCHEMA)
