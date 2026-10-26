@@ -644,6 +644,20 @@ class AgentRunner:
         return f"Run exceeded its {self.limits.run_timeout_seconds:g} s time limit"
 
     def _execute(self, context: _RunContext) -> bool:
+        self._converse(context)
+        passed = self._verify(context)
+        # A background thread that died during verification must not let the run complete.
+        self._raise_background_errors()
+        if passed:
+            context.steps.complete(context.root)
+        else:
+            # The root step carries the verification outcome, so it fails with that reason. A
+            # runner error after the root completed is reported on the run and in evidence.
+            context.steps.fail(context.root, VERIFICATION_FAILED)
+        return passed
+
+    def _converse(self, context: _RunContext) -> None:
+        """The agent loop: model calls and the tool calls they request, until an answer."""
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": task_message(self.task)},
@@ -670,16 +684,6 @@ class AgentRunner:
                     raise RunFailure(f"Tool-call limit ({self.limits.max_tool_calls}) reached")
                 tool_calls += 1
                 messages.append(self._tool_step(context, call, tool_calls))
-        passed = self._verify(context)
-        # A background thread that died during verification must not let the run complete.
-        self._raise_background_errors()
-        if passed:
-            context.steps.complete(context.root)
-        else:
-            # The root step carries the verification outcome, so it fails with that reason. A
-            # runner error after the root completed is reported on the run and in evidence.
-            context.steps.fail(context.root, VERIFICATION_FAILED)
-        return passed
 
     def _model_step(self, context: _RunContext, messages: list[dict], index: int) -> ModelReply:
         steps = context.steps

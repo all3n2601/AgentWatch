@@ -7,6 +7,7 @@ members = [
     "agentwatch-agent",
     "agentwatch-data",
     "agentwatch-features",
+    "agentwatch-injectors",
     "agentwatch-python-workspace",
     "agentwatch-sandbox",
     "agentwatch-sdk",
@@ -18,6 +19,7 @@ name = "agentwatch-agent"
 version = "0.1.0"
 source = { editable = "services/agent" }
 dependencies = [
+    { name = "agentwatch-injectors" },
     { name = "agentwatch-sandbox" },
     { name = "agentwatch-sdk" },
     { name = "agentwatch-worker" },
@@ -25,6 +27,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agentwatch-injectors", editable = "services/injectors" },
     { name = "agentwatch-sandbox", editable = "services/sandbox" },
     { name = "agentwatch-sdk", editable = "packages/sdk-python" },
     { name = "agentwatch-worker", editable = "services/worker" },
@@ -61,6 +64,11 @@ requires-dist = [
     { name = "agentwatch-sdk", editable = "packages/sdk-python" },
     { name = "pydantic", specifier = ">=2.11,<3" },
 ]
+
+[[package]]
+name = "agentwatch-injectors"
+version = "0.1.0"
+source = { editable = "services/injectors" }
 
 [[package]]
 name = "agentwatch-python-workspace"

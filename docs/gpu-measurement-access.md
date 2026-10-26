@@ -317,6 +317,87 @@ contention from anything but the runner's own limit. Evidence is in `.data/a04-c
 conditions, driver scripts, the runner Dockerfile, journals, coverage reports, read-backs,
 summaries and `SHA256SUMS`.
 
+## A05: Bounded injectors and replay experiment (October 25, 2026)
+
+Protocol `agent-replay-experiment-v1` ([ADR 0006](adr/0006-bounded-injectors-and-agent-replay.md))
+ran four times on the GPU laptop: a WSL2 Ubuntu runner with 16 CPUs, Docker GPU Ollama 0.35.1
+on `127.0.0.1:11435` with `qwen3:1.7b`, and the live API in Ubuntu. The command was
+`experiment --task fix-mean-empty --run-timeout 300`, with the defaults: 1 warm-up, 5
+baselines, then `cpu` (16 workers), `inference` (2 concurrent, `num_predict` 128), `retrieval`
+(2 threads) and `mixed` (`cpu` + `inference`), each followed by a clean control. The 2 s ramp
+and the 332 s injection bound were declared before measuring.
+
+| Attempt (UTC, Oct 25) | Code | Result |
+| --- | --- | --- |
+| 1 (04:14) | `7b4fe55` | `evidence_delivered` failed: the API refused CPU counter samples |
+| 2 (04:17) | `7b4fe55` | every check passed, CV 4.3% |
+| 3 (05:10) | `b94f3e7`, first review fixes | every check passed, CV 3.4% |
+| 4 (23:26) | final, second review fixes | every check passed, CV 2.9% |
+
+**Attempt 1** (source `5b8ee6a3-3a2c-417b-ac35-3d3b89edc049`) is kept as failed evidence. The
+live API on `:8090` had been running since October 22 from code that predates the CPU counter
+metrics, so it refused those samples with 422 on every run. 96 of 158 records were refused in
+a baseline replay, and `evidence_delivered` failed (exit 1); every other check passed. This is
+the documented "deploy the API before newer runners" constraint. That API was left running;
+attempts 2–4 used a temporary second API from the current code on `:8091`, against the same
+database (no pending migrations), stopped afterwards. Before attempt 4 the laptop had
+restarted, so the Postgres and Ollama containers were restarted with their existing
+configuration. An attempt made while they were down registered nothing and is not counted.
+
+**Attempt 4, final code** (source `5b9d57a0-4afc-4338-855b-c53f5b3d3b86`) passed all eight
+declared checks, including `clean_controls_complete` (exit 0). 15 runs completed with
+verification passing and 0 records refused. Its source took 6 model calls and 5 tool calls (one
+a rejected `read_file`, replayed as rejected), so replay is what holds a path fixed; attempt 2's
+source took 3 and 3. In every replay `model-call-1` differed from the source and the other 5
+replies matched, as in attempts 1 and 3: the source's first call was the model's first request
+after loading. In attempt 2 every reply matched.
+
+| Attempt 4 baseline step (5 replays) | Mean | CV |
+| --- | --- | --- |
+| `agent-run` | 2.750 s | 2.9% (gate ≤ 15%: pass) |
+| `model-call-1` … `-6` | 0.23–0.57 s | 3.7–9.9% |
+| `tool-5-run_tests`, `verify-tests` | 0.164, 0.173 s | 24.4%, 22.9% |
+| `search_docs`, `read_file`, `apply_patch` | 1.9–6.6 ms | 12–76% |
+
+| Attempt 4 replay | `agent-run` ratio | `model-call-2` ratio | `search_docs` ratio | `verify-tests` ratio |
+| --- | --- | --- | --- | --- |
+| `cpu` | 1.12 | 1.14 | 0.17 | 0.75 |
+| clean control | 0.95 | 0.92 | 0.19 | 0.89 |
+| `inference` | 4.60 | 7.28 | 2.62 | 0.60 |
+| clean control | 0.71 | 0.75 | 0.81 | 0.69 |
+| `retrieval` | 1.79 | 1.49 | 8.90 | 1.45 |
+| clean control | 1.00 | 1.06 | 3.17 | 0.89 |
+| `mixed` | 7.76 | 12.53 | 0.39 | 1.23 |
+| clean control | 0.93 | 0.88 | 5.27 | 0.78 |
+
+Ratios are a replay's step duration over the baseline mean. They are observations on one host,
+not labels. `agent-run` ratios across attempts 2–4: `cpu` 1.22 / 1.43 / 1.12, `inference`
+4.01 / 3.37 / 4.60, `retrieval` 1.83 / 1.89 / 1.79, `mixed` 5.74 / 6.72 / 7.76. Clean controls
+ran 0.71–1.03× of the baseline, so the host drifted between the baselines and the controls,
+and a ratio against the baseline is not a pure contention effect. The CPU effect is small and
+inconsistent: in attempt 4 `verify-tests` ran faster under `cpu` (0.75×) than its baseline.
+Millisecond steps vary widely even when clean (`search_docs` reached 5.3× in a control), so a
+single ratio for those steps is not evidence of contention.
+
+Injectors (attempt 4). Every worker reported and exited on the stop request, with no terminate,
+kill or backstop stop. Load was running 0.02–0.46 s after `start()`: for inference, that is
+once both workers had sent a request. Activity: all 16 CPU workers reported, using 70 and 280
+CPU-seconds; 16 and 15 competing requests sent, 14 and 13 completed, none failed, 2 still
+generating at each stop; 2.7 million in-process searches, with both flood threads still
+running at the stop request and no search errors.
+
+Sampling (`coverage-v3`, 250 ms declared). Under `cpu`, `inference` and `mixed`, both sampled
+resources held a 0.250–0.251 s median with no missed rounds. Under `retrieval`, the median was
+0.297 s (GPU) and 0.328 s (CPU host), with 4 missed rounds and a 0.52 s maximum (attempts 2
+and 3: 0.32–0.39 s, 3–4 missed). The in-process flood also delays the runner's sampler, as
+ADR 0006 states, so the readings of the retrieval condition are less complete.
+
+Not established: the second task, any host other than this laptop, overhead of the injectors
+themselves, contention labels (D02), and retrieval contention that does not also contend the
+runner process. Evidence is in `.data/agent-experiments/` on the GPU laptop and in
+`C:\Users\benoy\AgentWatch-evidence\a05-2026-10-25\` (`attempt1-api-without-cpu-counters/`,
+`attempt2/`, `attempt3-first-review-fixes/`, `attempt4-final-code/`), with `SHA256SUMS`.
+
 ## Evidence locations
 
 Raw evidence is kept out of Git on the GPU laptop, in `.data/` and copied to

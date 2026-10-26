@@ -402,6 +402,15 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
 - [ ] Extend rule attribution to CPU, inference, retrieval, none, and explicit uncertainty.
 - [ ] Add CPU hardware saturation, inference, and retrieval views to the dashboard.
 - [ ] Create bounded CPU, inference, retrieval, and mixed-contention injectors.
+  2026-10-25 (A05, [ADR 0006](adr/0006-bounded-injectors-and-agent-replay.md),
+  [injectors README](../services/injectors/README.md)): `services/injectors` has CPU spin
+  processes, competing loopback-only Ollama requests, and an in-process retrieval index flood,
+  run alone or mixed. Each has validated duration and resource caps, a watchdog, a child
+  backstop, terminate/kill escalation, and confirmed cleanup that raises when unconfirmed
+  (57 tests with real processes and threads). A real GPU experiment had every injector active
+  and cleaned up on request ([A05 record](gpu-measurement-access.md#a05-bounded-injectors-and-replay-experiment-october-25-2026)).
+  The retrieval flood also slows the runner's other threads, including its sampler (0.30–0.39 s
+  median instead of 0.25 s), so it is not retrieval-exclusive. Open until review and merge.
 
 **Exit test:** Known isolated workloads exercise each resource and a clean control. Measurements
 and attribution identify the affected class. Real GPU validation uses real inference hardware;
@@ -504,8 +513,12 @@ lint/typecheck/13 tests/build, Go, and both Compose configurations. Real Qwen3 C
   Steps share run, trace and parent context inside the runner; trace context is not
   propagated into the Ollama server or the test subprocess.
 - [ ] Freeze task inputs, model configuration, and replay state for repeatability.
-  Task inputs are pinned by content hash and the configuration digest is registered; replay
-  state and repeated clean runs are not implemented.
+  Task inputs are pinned by content hash and the configuration digest is registered. 2026-10-25
+  (A05): `agent-replay-v1` replays a verified run's exact model inputs and tool calls, so the
+  step path is fixed. Replays of one plan register one digest. On the GPU laptop, 5 clean
+  baselines had an `agent-run` CV of 2.9% on the final code (3.4–4.3% earlier; gate ≤ 15%).
+  Three of four source runs' first reply differed in every replay; the other replies matched. Only `fix-mean-empty` was
+  replayed.
 - [ ] Add actual container isolation and resource limits for executed code.
   A03 (2026-10-24), [ADR 0004](adr/0004-container-isolation-for-tool-execution.md) and the
   [sandbox README](../services/sandbox/README.md): `run_project_tests_isolated` runs a suite in a
@@ -567,6 +580,10 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   contention and ties are not yet defined and fail labeling.
 - [ ] Choose whether the regression target is observed queue time or estimated excess latency.
 - [ ] Generate clean, isolated-contention, and mixed-contention replays over fixed tasks.
+  2026-10-25 (A05): `make agent-experiment` writes clean, `cpu`, `inference`, `retrieval` and
+  `mixed` replays, plus an `experiment.json` manifest and `injections/` logs that keep the
+  conditions out of replay evidence. Four real runs of the protocol on one task are recorded; the second task,
+  repeats and labels for these replays (D02) are open.
 - [ ] Store versioned Parquet datasets with GCS/DVC or an explicitly chosen equivalent.
   DVC versioning is in place (2026-10-18): `make add-evidence` curates runs into an immutable
   evidence store, `make version-dataset` verifies and snapshots the evidence and dataset stores,

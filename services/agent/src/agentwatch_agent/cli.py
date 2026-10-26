@@ -3,6 +3,9 @@
 `sampling-overhead` measures resource sampling's effect on a real model request; it exits 1
 if the measurement did not complete (its partial evidence is kept). `coverage` reports how a
 recorded run's samples cover its steps; it exits 2 if the run directory cannot support one.
+`experiment` replays one verified run cleanly and under bounded contention; it exits 1 when
+it stopped early or a declared check failed (its evidence is kept), and 3 when a replay's live
+evidence needs `resend`.
 
 Exit codes (all commands):
   0  success: the task passed (run), or all evidence was delivered and the run is closed
@@ -17,6 +20,7 @@ Exit codes (all commands):
 """
 
 import argparse
+import functools
 import http.client
 import json
 import os
@@ -26,20 +30,37 @@ import urllib.parse
 from pathlib import Path
 from types import FrameType
 
+from agentwatch_injectors.base import InjectorCleanupError
+from agentwatch_injectors.inference import loopback_url
 from agentwatch_sdk import LiveClient
 from agentwatch_worker.nvml import NvmlDevice
 from agentwatch_worker.ollama import ollama_base_url
 
+from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.config import DEFAULT_MODEL, RunLimits
 from agentwatch_agent.coverage import CoverageError, coverage_report
 from agentwatch_agent.delivery import LiveRejectedError, is_retryable, replay_journal
 from agentwatch_agent.errors import RunNotStarted
-from agentwatch_agent.model import OllamaChatModel
+from agentwatch_agent.experiment import (
+    CONDITIONS,
+    INJECTOR_KINDS,
+    MANIFEST_FILE,
+    ExperimentSettings,
+    ReplayExperiment,
+    build_injectors,
+)
+from agentwatch_agent.model import ChatModel, OllamaChatModel
 from agentwatch_agent.overhead import OverheadFailed, measure_overhead
-from agentwatch_agent.runner import AgentRunner, default_output_dir, write_json_atomic
+from agentwatch_agent.replay import ReplayPlanError, ReplayRunner, load_replay_plan
+from agentwatch_agent.runner import (
+    JOURNAL_FILE,
+    AgentRunner,
+    default_output_dir,
+    write_json_atomic,
+)
 from agentwatch_agent.sampling_overhead import measure_sampling_overhead
 from agentwatch_agent.session import CancellationState
-from agentwatch_agent.tasks import TaskDefinitionError, load_task, task_names
+from agentwatch_agent.tasks import Task, TaskDefinitionError, load_task, task_names
 
 EXIT_PASSED, EXIT_FAILED, EXIT_INCOMPLETE_DELIVERY, EXIT_LIVE_UNAVAILABLE = 0, 1, 3, 4
 EXIT_RECORDS_REFUSED = 5
@@ -67,6 +88,50 @@ def positive_seconds(value: str) -> float:
     return seconds
 
 
+def positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
+def nonnegative_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be a nonnegative integer")
+    return number
+
+
+def nonnegative_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected seconds, got {value!r}") from None
+    if not 0 <= seconds < float("inf"):
+        raise argparse.ArgumentTypeError("seconds must be finite and nonnegative")
+    return seconds
+
+
+def choice_list(choices: tuple[str, ...]):
+    """Parse a comma-separated subset of `choices`, keeping the given order."""
+
+    def parse(value: str) -> tuple[str, ...]:
+        items = tuple(item.strip() for item in value.split(",") if item.strip())
+        if not items or not set(items) <= set(choices):
+            raise argparse.ArgumentTypeError(
+                f"expected a comma-separated list of {', '.join(choices)}; got {value!r}"
+            )
+        return items
+
+    return parse
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="agentwatch-agent", description=__doc__.split("\n")[0])
     commands = root.add_subparsers(dest="command", required=True)
@@ -91,6 +156,76 @@ def parser() -> argparse.ArgumentParser:
     )
 
     commands.add_parser("tasks", help="List runnable tasks and their identities")
+
+    experiment = commands.add_parser(
+        "experiment",
+        help="Replay one verified run cleanly and under bounded CPU, inference, retrieval and "
+        "mixed contention",
+    )
+    experiment.add_argument("--task", required=True, help="Task name; see the `tasks` command")
+    experiment.add_argument(
+        "--source",
+        type=Path,
+        help="Recorded run directory to replay; by default a new run is recorded first",
+    )
+    experiment.add_argument(
+        "--model", default=os.environ.get("AGENTWATCH_LLM_MODEL", DEFAULT_MODEL)
+    )
+    experiment.add_argument(
+        "--ollama-url",
+        type=ollama_base_url,
+        default=os.environ.get("OLLAMA_URL", DEFAULT_OLLAMA_URL),
+    )
+    experiment.add_argument(
+        "--api-url", type=http_url, default=os.environ.get("AGENTWATCH_API_URL", DEFAULT_API_URL)
+    )
+    experiment.add_argument("--output-dir", type=Path, default=Path(".data/agent-experiments"))
+    experiment.add_argument(
+        "--run-timeout",
+        type=positive_seconds,
+        default=RunLimits().run_timeout_seconds,
+        help="Time limit of the source run and of each replay, in seconds",
+    )
+    defaults = ExperimentSettings()
+    experiment.add_argument(
+        "--baseline-replays", type=positive_int, default=defaults.baseline_replays
+    )
+    experiment.add_argument(
+        "--warmup-replays",
+        type=nonnegative_int,
+        default=defaults.warmup_replays,
+        help="Replays run first and excluded from the baseline",
+    )
+    experiment.add_argument(
+        "--conditions",
+        type=choice_list(CONDITIONS),
+        default=defaults.conditions,
+        help=f"Comma-separated contention conditions (default: {','.join(CONDITIONS)})",
+    )
+    experiment.add_argument(
+        "--mixed",
+        type=choice_list(INJECTOR_KINDS),
+        default=defaults.mixed,
+        help=f"Injectors a mixed replay runs together (default: {','.join(defaults.mixed)})",
+    )
+    experiment.add_argument(
+        "--ramp-seconds", type=nonnegative_seconds, default=defaults.ramp_seconds
+    )
+    experiment.add_argument(
+        "--cpu-workers",
+        type=positive_int,
+        default=defaults.cpu_workers,
+        help="Busy CPU processes (at most the CPUs available; default: all of them)",
+    )
+    experiment.add_argument(
+        "--inference-concurrency", type=positive_int, default=defaults.inference_concurrency
+    )
+    experiment.add_argument(
+        "--inference-num-predict", type=positive_int, default=defaults.inference_num_predict
+    )
+    experiment.add_argument(
+        "--retrieval-threads", type=positive_int, default=defaults.retrieval_threads
+    )
 
     overhead = commands.add_parser(
         "overhead", help="Measure instrumentation overhead on a task's test workload"
@@ -219,6 +354,158 @@ def delivery_exit(
         )
         return EXIT_RECORDS_REFUSED
     return None
+
+
+def experiment_command(args: argparse.Namespace) -> int:
+    try:
+        task = load_task(args.task)
+        settings = ExperimentSettings(
+            baseline_replays=args.baseline_replays,
+            warmup_replays=args.warmup_replays,
+            conditions=args.conditions,
+            mixed=args.mixed,
+            ramp_seconds=args.ramp_seconds,
+            cpu_workers=args.cpu_workers,
+            inference_concurrency=args.inference_concurrency,
+            inference_num_predict=args.inference_num_predict,
+            retrieval_threads=args.retrieval_threads,
+        )
+        limits = RunLimits(run_timeout_seconds=args.run_timeout)
+        settings.injection_bound_seconds(limits.run_timeout_seconds)
+        if any("inference" in settings.kinds(c) for c in settings.conditions):
+            loopback_url(args.ollama_url)  # contention only ever targets local capacity
+    except (TaskDefinitionError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    output_dir = default_output_dir(args.output_dir, task)
+    model = OllamaChatModel(args.ollama_url, args.model)
+    transport = LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS)
+    # What a signal cancels: the source run while it records, then the experiment.
+    cancellable: list = []
+
+    def handle_signal(number: int, _frame: FrameType | None) -> None:
+        # Lock-free and print-free, as for `run`.
+        if cancellable:
+            reason = f"Cancelled by operator signal {signal.Signals(number).name}"
+            cancellable[-1].request_cancel_from_signal("signal", reason)
+
+    previous = {sig: signal.signal(sig, handle_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        source_dir = args.source
+        if source_dir is None:
+            source_dir = output_dir / "source"
+            code = record_source(task, model, transport, source_dir, limits, args, cancellable)
+            if code is not None:
+                return code
+        try:
+            plan = load_replay_plan(source_dir, task)
+        except ReplayPlanError as error:
+            print(f"error: cannot replay {source_dir}: {error}", file=sys.stderr)
+            return EXIT_USAGE
+
+        def make_runner(replay_dir: Path, clock: MonotonicClock) -> ReplayRunner:
+            return ReplayRunner(
+                plan=plan,
+                task=task,
+                model=model,
+                transport=transport,
+                output_dir=replay_dir,
+                limits=limits,
+                clock=clock,
+                open_gpu=NvmlDevice.open,
+            )
+
+        try:
+            make_runner(output_dir / "replays", MonotonicClock())  # validates; creates nothing
+        except ValueError as error:
+            print(f"error: cannot replay {source_dir}: {error}", file=sys.stderr)
+            return EXIT_USAGE
+        experiment = ReplayExperiment(
+            plan=plan,
+            settings=settings,
+            output_dir=output_dir,
+            run_timeout_seconds=limits.run_timeout_seconds,
+            make_runner=make_runner,
+            make_injectors=functools.partial(
+                build_injectors, settings=settings, plan=plan, task=task, ollama_url=args.ollama_url
+            ),
+            source={
+                "run_dir": str(source_dir),
+                "run_id": plan.source_run_id,
+                "evidence_sha256": plan.source_evidence_sha256,
+                "recorded_by_experiment": args.source is None,
+            },
+        )
+        cancellable.append(experiment)
+        try:
+            manifest = experiment.run()
+        except InjectorCleanupError as error:
+            print(
+                f"error: an injector could not be confirmed stopped ({error}); check the host "
+                f"for leftover load. Evidence: {output_dir / MANIFEST_FILE}",
+                file=sys.stderr,
+            )
+            return EXIT_FAILED
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    return report_experiment(manifest, output_dir)
+
+
+def record_source(
+    task: Task,
+    model: ChatModel,
+    transport: LiveClient,
+    source_dir: Path,
+    limits: RunLimits,
+    args: argparse.Namespace,
+    cancellable: list,
+) -> int | None:
+    """Record the run to replay; an exit code when it cannot be replayed, otherwise None."""
+    runner = AgentRunner(
+        task=task,
+        model=model,
+        transport=transport,
+        output_dir=source_dir,
+        limits=limits,
+        open_gpu=NvmlDevice.open,
+    )
+    cancellable.append(runner)
+    try:
+        outcome = runner.run()
+    except RunNotStarted as error:
+        return not_started_exit(error, args.api_url, source_dir / JOURNAL_FILE)
+    print(f"Source run {outcome.run_id}: {outcome.state}; evidence: {outcome.evidence_path}")
+    if outcome.state != "completed" or not outcome.task_passed:
+        print(
+            "error: the source run did not complete with passing verification, so it cannot be "
+            "replayed; its evidence is kept",
+            file=sys.stderr,
+        )
+        return EXIT_FAILED
+    return None
+
+
+def report_experiment(manifest: dict, output_dir: Path) -> int:
+    cv = manifest.get("baseline_variability", {}).get("agent-run", {}).get("cv")
+    print(
+        f"Experiment {manifest['status']}: {len(manifest['replays'])} replays; baseline "
+        f"agent-run CV {'unavailable' if cv is None else f'{cv:.1%}'}"
+    )
+    for name, passed in manifest.get("checks", {}).items():
+        print(f"  {'pass' if passed else 'FAIL'}  {name}")
+    print(f"Evidence: {output_dir / MANIFEST_FILE}")
+    pending = [replay for replay in manifest["replays"] if replay.get("resend_needed")]
+    for replay in pending:
+        journal = output_dir / replay["evidence_dir"] / JOURNAL_FILE
+        print(
+            "Live evidence is incomplete; resend it with:\n"
+            f"  uv run --package agentwatch-agent python -m agentwatch_agent resend {journal}",
+            file=sys.stderr,
+        )
+    if pending:
+        return EXIT_INCOMPLETE_DELIVERY
+    return EXIT_PASSED if manifest.get("passed") else EXIT_FAILED
 
 
 def tasks_command() -> int:
@@ -392,6 +679,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_command(args)
     if args.command == "tasks":
         return tasks_command()
+    if args.command == "experiment":
+        return experiment_command(args)
     if args.command == "overhead":
         return overhead_command(args)
     if args.command == "sampling-overhead":
