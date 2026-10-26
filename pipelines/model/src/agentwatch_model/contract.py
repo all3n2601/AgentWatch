@@ -31,6 +31,7 @@ class Contract:
     min_none_rate_clean: float
     min_none_rate_baseline_and_clean: float
     max_mae: float
+    min_gain_over_rules_overall: float
 
 
 def section(parsed: dict, name: str) -> dict:
@@ -87,4 +88,5 @@ def load_contract(path: Path = DEFAULT_CONTRACT) -> Contract:
             parsed, "clean_runs", "min_none_rate_baseline_and_clean"
         ),
         max_mae=share(parsed, "regression", "max_mae"),
+        min_gain_over_rules_overall=share(parsed, "classification", "min_gain_over_rules_overall"),
     )
