@@ -41,7 +41,7 @@ branch coverage, and exercised against real recorded runs and the live ingestion
 | 9. More resources | Prometheus reader; `steps-v2` inference and retrieval features; `labels-v2` with mixed contention. Split follow-ups: force at least one injection method wholly into test, and check that mixed-contention cases reach test | Waits on B |
 | 10. Real collection | Scheduled runs over a task suite on a Linux GCP VM, where PSI and cgroup readings exist. Split follow-up: rebuild and re-split once step events carry a real `task_id`, so the test split holds unseen tasks and training is no longer empty. Before any collection, run the extractor end to end against the live ingestion API and Postgres (deferred from the audit), and add an export of API-saved runs into the evidence store that keeps their saved time, so releases built from them stay reproducible | Waits on A, B, F |
 | 11. Airflow DAG | collect → extract → validate → build → split → version, with retries and alerts. A version is only findable through committed pointer files, so the DAG needs an identity allowed to commit `data/*.dvc` (or a data branch), the DVC merge driver for versions committed alongside people's, and a service account for the bucket | DAG done (2026-10-24, `pipelines/orchestration`, `make pipeline-run`); Slack alerts done (2026-10-25); committing pointer files and the bucket account are open |
-| 12. Reports | Quality, slice, label-sanity, and drift statistics per release | After 11 |
+| 12. Reports | Quality, slice, label-sanity, and drift statistics per release | Slices done (2026-10-26, `make slice-dataset`); the rest after 11 |
 | 13. Shared features | `window_readings` moved to `agentwatch_features.legacy`; live `step-features-v1` rows in `agentwatch_features.live` ([shared step features](step-features.md)). Serving them is B03 | B02 done 2026-10-24 |
 | 14. Demo | Corrupted evidence rejected live; lineage from model to dataset to raw run | Last |
 
@@ -86,7 +86,7 @@ one to the pipeline and plans what is missing; the roadmap steps above own the w
 | Airflow DAG for the whole workflow | `agentwatch_dataset`: acquire → build → validate → split → version → push → summarize, run end to end on the shared 50-run release and with new recorded runs | Done (2026-10-24) |
 | Alerts (email or Slack) for errors and anomalies | Slack incoming webhook: every task's final failure, and each successful run's summary with its drift, rejected-run share, leakage, and unpushed-version findings (`agentwatch_orchestration.alerts`) | Done (2026-10-25); delivered to a real channel 2026-10-26 |
 | Pipeline flow optimization with Airflow's Gantt chart | Not built | Step 11, once the DAG runs |
-| Bias detection and mitigation through data slicing | Not built | Step 12 |
+| Bias detection and mitigation through data slicing | `make slice-dataset`: data-level slices with declared thresholds, per-flag mitigations, and balancing weights; findings and mitigation in the data card's "Slices and bias" | Data level done (2026-10-26); model-level slicing waits on a model |
 | README: setup, run, structure, DVC | The README has an Airflow section (setup, `make pipeline-run`, configuration); the course-layout mapping and DVC pull steps are not written yet | Partial |
 
 ### Airflow DAG (step 11)
