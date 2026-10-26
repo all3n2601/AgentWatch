@@ -68,6 +68,12 @@ def validate_rows(rows: list[dict], split: str) -> None:
             raise RowError(f"{split} row {index} label_excess_fraction is not a number from 0 to 1")
 
 
+def validate_dataset_version(rows: list[dict]) -> None:
+    versions = sorted({row["dataset_version"] for row in rows})
+    if len(versions) > 1:
+        raise RowError(f"Rows come from more than one dataset version: {versions}")
+
+
 def prediction_records(
     rules: Rules, rows: list[dict], predictions: list[str], split: str, evaluation: bool
 ) -> str:
@@ -129,6 +135,7 @@ def run(
         return report["status"]
     validate_rows(train, "train")
     validate_rows(scored, scored_split)
+    validate_dataset_version(train + scored)
     predictions = [rules.predict(row) for row in scored]
     report = build_report(
         contract,
