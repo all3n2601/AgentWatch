@@ -61,8 +61,10 @@ seed, queue bounds and the frozen evaluation tasks. Anything not preregistered i
 | Instrumentation overhead | Median wall-time increase at most 5%, shared with [the evaluation contract](evaluation-contract.md) | Clean | Proposed |
 | Baseline stability (`max_baseline_root_step_cv`) | Coefficient of variation of the root step's total duration across baseline batches at most 15%, the existing gate in `services/agent`; otherwise every comparison on that baseline is inconclusive | Clean and contended | Plan |
 
-With 5 pairs, the bootstrap interval excludes zero only when every pair shows a reduction, so a
-small or noisy sample stays inconclusive. Reports include paired effect estimates and intervals
+With 5 pairs, the bootstrap interval excludes zero only when every pair shows a reduction, so at
+the minimum the uncertainty gate is in effect a sign test on the pairs: the 10,000 resamples make
+the interval reproducible, not more precise, and a small or noisy sample stays inconclusive. No
+multiplicity correction is applied across candidates in v1 (see below). Reports include paired effect estimates and intervals
 for median batch time, median and p95 task latency, throughput, admission wait, service queue
 when observable, failures, timeouts and variability. Passing does not establish a general
 causal improvement beyond the declared workload and hardware.
@@ -92,8 +94,9 @@ preserved. The baseline also stays when:
 
 ## Acceptance
 
-`status` moves to `accepted` only when every team has accepted this version. Repository merge
-still requires owner approval as usual.
+`status` moves to `accepted` only when every team has accepted this version; the contract test
+fails if `status` is `accepted` while any row below lacks a name and an ISO date, or if a row is
+filled while it is still `proposed`. Repository merge still requires owner approval as usual.
 
 | Team | Members | Accepted by | Date |
 |---|---|---|---|
@@ -107,8 +110,8 @@ Change thresholds only before an evaluation uses them, and bump `version` with e
 Reports record the version and the first 8 hex digits of the SHA-256 of the parsed TOML as
 canonical JSON. Earlier versions and their reports are kept.
 `tests/contract/test_optimization_contract.py` validates the TOML's types and ranges and checks
-that its thresholds match this page, the optimization plan, the evaluation contract and the
-agent's existing stability gate, so a threshold edit cannot drift silently.
+that its thresholds match this page's table rows, the optimization plan, the evaluation contract
+and the agent's existing stability gate, so a threshold edit cannot drift silently.
 
 ## Known limitations
 

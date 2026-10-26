@@ -99,7 +99,8 @@ performance or accepted team policy:
   results, with no new failures/timeouts, no leaks or starvation, and no quality regression.
 - Measure controller/admission overhead independently from existing instrumentation overhead;
   proposed median wall-time increase at most 5% for unchanged limits. Preserve the existing
-  CPU baseline variability gate of less than 15%; noisy baselines make comparisons inconclusive.
+  baseline stability gate, a root-step coefficient of variation of at most 15%; noisy baselines
+  make comparisons inconclusive.
 - Report paired effect estimates and uncertainty; small or noisy samples do not establish
   general causal improvement. Fail, inconclusive, and not-evaluated gates block optimization
   promotion. Keep the current baseline setting and preserve every attempted result.
