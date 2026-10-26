@@ -21,6 +21,7 @@ from agentwatch_data.slices import (
     load_rows,
     main,
     markdown,
+    newest_split,
     slice_release,
 )
 
@@ -76,10 +77,17 @@ def write_release(tmp_path, rows: list[dict[str, object]]):
     return release
 
 
-def write_split(tmp_path, groups: dict[str, str], excluded: list[str] = (), release=RELEASE):
+def write_split(
+    tmp_path,
+    groups: dict[str, str],
+    excluded: list[str] = (),
+    release=RELEASE,
+    group_key="task_id",
+):
     path = tmp_path / "split.json"
     document = {
         "release": release,
+        "contract": {"group_key": group_key},
         "groups": groups,
         "excluded_runs": [{"run_id": run, "source": "simulated"} for run in excluded],
     }
@@ -164,6 +172,16 @@ def test_a_missing_readings_gap_is_flagged_and_missing_is_not_zero():
     assert missing["cgroup_throttled_usec_delta"] == 0.0  # a measured zero is not missing
 
 
+def test_label_defining_attributes_do_not_repeat_the_labels_missing_readings_gap():
+    rows = balanced()
+    for row in rows:
+        if row["label_resource"] == "none":
+            row["telemetry_coverage"] = None
+    report = analyze(rows, RELEASE, None)
+    gaps = [f["attribute"] for f in report["flags"] if f["kind"] == MISSING_READINGS_GAP]
+    assert gaps == ["label_resource"]
+
+
 def test_an_availability_flag_is_not_compared_with_its_own_reading():
     rows = balanced()
     for row in rows[:60]:
@@ -221,6 +239,19 @@ def test_the_markdown_lists_flags_and_one_table_per_attribute():
     assert "Train / test" in text
 
 
+def test_the_markdown_keeps_an_empty_value_and_a_pipe_inside_their_cells():
+    rows = balanced()
+    for row in rows[:60]:
+        row["task_id"] = "a|b"
+    report = analyze(rows, RELEASE, None)
+    report["flags"].append(
+        {"attribute": "source", "value": "", "kind": "k", "detail": "d", "mitigation": "m"}
+    )
+    text = markdown(report)
+    assert "| a\\|b | 60 |" in text
+    assert "- **k** — source = : d. m" in text
+
+
 def test_the_markdown_says_when_nothing_was_flagged():
     text = markdown(analyze(balanced(), RELEASE, None))
     assert "No slice crossed a declared threshold." in text
@@ -234,6 +265,25 @@ def test_slice_release_writes_both_reports(tmp_path):
     result = slice_release(release, split, tmp_path / "reports")
     assert json.loads(result.json_path.read_text()) == result.report
     assert result.markdown_path.read_text() == markdown(result.report)
+
+
+def test_a_report_that_cannot_be_written_is_refused_without_a_lone_json(tmp_path, monkeypatch):
+    from agentwatch_data import slices
+
+    release = write_release(tmp_path, balanced())
+    written = []
+
+    def write_json_then_fail(path, text):
+        if path.suffix == ".md":
+            raise OSError("disk full")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        written.append(path)
+
+    monkeypatch.setattr(slices, "write_atomic", write_json_then_fail)
+    with pytest.raises(SliceError, match="could not be written.*disk full"):
+        slice_release(release, None, tmp_path / "reports")
+    assert written and not written[0].exists()
 
 
 def test_an_unreadable_release_is_refused(tmp_path):
@@ -272,10 +322,43 @@ def test_an_unreadable_split_is_refused(tmp_path, content):
         load_assignment(split, tmp_path / RELEASE)
 
 
-@pytest.mark.parametrize("groups", [[], {CPU_TASK: "holdout"}])
+@pytest.mark.parametrize("groups", [[], {}, {CPU_TASK: "holdout"}])
 def test_a_split_with_an_invalid_assignment_is_refused(tmp_path, groups):
     with pytest.raises(SliceError, match="invalid task assignment"):
         load_assignment(write_split(tmp_path, groups), tmp_path / RELEASE)
+
+
+def test_a_split_grouped_by_an_unknown_key_is_refused(tmp_path):
+    split = write_split(tmp_path, {CPU_TASK: "train"}, group_key="agent_model")
+    with pytest.raises(SliceError, match="groups by 'agent_model'"):
+        load_assignment(split, tmp_path / RELEASE)
+
+
+def test_newest_split_picks_the_latest_split_file_of_the_release(tmp_path):
+    import os
+
+    release = write_release(tmp_path, balanced())
+    assert newest_split(release) is None
+    directory = tmp_path / "datasets" / "splits" / RELEASE
+    directory.mkdir(parents=True)
+    older, newer = directory / "split-v1+old.json", directory / "split-v1+new.json"
+    for moment, path in ((1_000, older), (2_000, newer)):
+        path.write_text("{}")
+        os.utime(path, (moment, moment))
+    assert newest_split(release) == newer
+
+
+def test_main_slices_with_the_newest_split_when_asked(tmp_path, capsys):
+    release = write_release(tmp_path, balanced())
+    directory = tmp_path / "datasets" / "splits" / RELEASE
+    directory.mkdir(parents=True)
+    write_split(tmp_path, {CPU_TASK: "train", CODING_TASK: "test"}).rename(directory / "s.json")
+    output = tmp_path / "reports"
+    assert main(["--release", str(release), "--newest-split", "--output", str(output)]) == 0
+    assert json.loads((output / "slices.json").read_text())["split_rows"] == {
+        "test": 60,
+        "train": 60,
+    }
 
 
 def test_load_assignment_reads_groups_and_excluded_runs(tmp_path):

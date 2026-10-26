@@ -67,7 +67,7 @@ split-dataset: ## Freeze train/validation/test splits of the newest release (ref
 	release=$$($(LATEST_RELEASE)) && $(DATA).splits --release "$$release" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA)
 
 slice-dataset: ## Slice the newest release for bias (with its newest split, if any): flags, mitigations, and balancing weights under .data/reports/<release>
-	release=$$($(LATEST_RELEASE)) && split=$$(ls -t "$(DATASET_OUTPUT)/splits/$$(basename "$$release")"/*.json 2>/dev/null | head -n 1) && $(DATA).slices --release "$$release" $${split:+--split "$$split"}
+	release=$$($(LATEST_RELEASE)) && $(DATA).slices --release "$$release" --newest-split
 
 freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest release; review the diff in a PR
 	release=$$($(LATEST_RELEASE)) && uv run --project pipelines/validation python -m agentwatch_validation freeze-schema --release "$$release" --schema $(VALIDATION_SCHEMA)
