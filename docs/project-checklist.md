@@ -675,6 +675,8 @@ task titles on the Team Planner; its generated card IDs are separate. The board 
 from M3 through M6 and do not renumber the implementation milestones above.
 
 - [ ] O01 — Rohit: accept policy/evaluation contracts and numerical gates after C01/A04/M01.
+  Proposed as `opt-contract-v1` (2026-10-26): [the optimization contract](optimization-contract.md)
+  and `pipelines/model/optimization-contract.toml`. Open until all three teams accept it.
 - [ ] O02 — Allen: validated versioned manual controls and audit history after O01/B01/B02.
 - [ ] O03 — Akshayaa: bounded runner admission and cleanup after O02/A02/A03.
 - [ ] O04 — Akshay: paired-run manifests and comparison validation after O01/D02.
