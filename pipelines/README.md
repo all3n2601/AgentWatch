@@ -14,7 +14,9 @@ recorded runs (results.json + samples.jsonl)
   slices    bias report per slice (runs beside version)                  .data/reports/<release>/
   version   integrity check, then a DVC snapshot of both stores          data/evidence.dvc, data/datasets.dvc
   push      upload to the DVC remote (skipped when none is configured)
-  summarize run summary → alert (Slack)
+  summarize run summary
+  alert     run summary and findings to Slack, with the slice report's flag count
+  finish    fails the run if the slice report failed
 ```
 
 Column meanings, label rules and known limitations are in [the data card](../docs/data-card.md).
@@ -98,7 +100,7 @@ Airflow, precompiles their bytecode, and imports TensorFlow once, so the first p
 does not pay for it. Every version is pinned in a `uv.lock` file, so the environments are the
 same on every machine.
 
-**Without uv.** The pinned `requirements.txt` files are exported from the same lockfiles
+**Installing stages without uv.** The pinned `requirements.txt` files are exported from the same lockfiles
 (`make requirements`; CI fails if they drift). Use one virtual environment per file, because
 the four environments' pins conflict:
 
@@ -189,7 +191,7 @@ Each stage also has its own `make` target, which runs the newest release:
 **Expected result on the shared archive.** The run succeeds in about 6 s once warm (10 s on the
 first run after `make pipeline-setup`). It reuses release `steps-v1.2+5954f97ef8b2`, the gate
 passes, the leakage check is `blocked` (expected for this data; see the data card), the slice
-report raises 21 flags, `push` is skipped because no DVC remote is configured, and the summary
+report raises 17 flags, `push` is skipped because no DVC remote is configured, and the summary
 lists both findings. With a webhook set, the same summary arrives in Slack.
 
 ## Pipeline components

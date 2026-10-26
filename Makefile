@@ -111,6 +111,7 @@ comma := ,
 space := $(subst ,, )
 PIPELINE_RUN_DIRS_JSON = [$(subst $(space),$(comma),$(foreach dir,$(PIPELINE_RUN_DIRS),"$(dir)"))]
 
+# Run from the repository root (as make does by default): the cd paths are relative to it.
 requirements: ## Export pinned requirements.txt files from the uv lockfiles, for pip users (CI checks they match)
 	uv export --frozen --package agentwatch-data --no-dev --no-hashes --quiet -o requirements.txt
 	cd pipelines/validation && uv export --frozen --no-dev --no-hashes --quiet -o requirements.txt

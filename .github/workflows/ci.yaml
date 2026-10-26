@@ -51,12 +51,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
+          # Pinned because uv export's output can change between uv releases, which would fail
+          # the requirements check below on every PR; bump it with a fresh make requirements.
+          version: "0.13.1"
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --all-packages --frozen
       - run: uv run ruff check .
       # The requirements.txt files are exported from the lockfiles for pip users; they must match.
-      - run: make requirements && git diff --exit-code -- requirements.txt pipelines/*/requirements.txt
+      # git status also catches an export that is new and so untracked, which git diff ignores.
+      - run: |
+          make requirements
+          changed=$(git status --porcelain -- requirements.txt ':(glob)pipelines/*/requirements.txt')
+          if [ -n "$changed" ]; then
+            echo "requirements.txt files differ from the lockfiles; run make requirements:"
+            echo "$changed"
+            git diff -- requirements.txt ':(glob)pipelines/*/requirements.txt'
+            exit 1
+          fi
       # The digest comes from the code, so CI cannot drift from the pinned image.
       - run: make sandbox-image
       - run: uv run pytest
