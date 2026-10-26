@@ -174,18 +174,30 @@ Changes:
 
 1. **Prepared environments** (`make pipeline-setup`): syncs the four environments with
    precompiled bytecode and imports TFDV once, before the first run. The first run drops from
-   35.1 s to 10.5 s; the setup itself takes about 26 s, once per checkout or worker image.
+   35.1 s to 10.5 s; the setup itself takes about 26 s, so a single cold run costs about the
+   same in total (about 36 s either way). The saving holds only when the environment is reused
+   across runs, once per checkout or worker image.
    Precompiling alone brought the first import from 24.5 s to 18.0 s; the warm import does the
    rest.
 2. **The bias slice report runs beside versioning.** It reads only the release and its split,
-   so it depends on `split` and feeds `summarize`, not `version`. Under the scheduler (`airflow
-   standalone`, LocalExecutor) it ran from 44.85 s to 45.74 s while `version` ran from 44.83 s
-   to 46.71 s, so the report adds no time to the critical path. `make pipeline-run` (`airflow
-   dags test`) runs tasks one at a time and does not show this overlap.
+   so it depends on `split` and feeds `alert`, not `version` or `summarize`: a failed report
+   fails the run and is alerted, but the run summary is still posted. In one scheduler run
+   (`airflow standalone`, LocalExecutor) it ran from 44.85 s to 45.74 s while `version` ran from
+   44.83 s to 46.71 s, so the report added no time to the critical path. That is one observed
+   overlap; the DAG allows it but does not guarantee it. `make pipeline-run` (`airflow dags
+   test`) runs tasks one at a time and does not show this overlap. Reading the release while
+   `version` runs `dvc add` is safe with DVC 3.67.1's default cache type: on this APFS disk,
+   adding a tracked store with new and changed files left every workspace file's inode in place
+   (checked 2026-10-26). A hardlink or symlink cache type would relink the files, and the report
+   would then have to finish before `version`.
 
-Limits: 350 rows is small, so stage work is a minor share; scheduler runs add about 0.6 s of
-process start per task (16.2 s for the same run under `airflow standalone`). Remeasure at step
-10 volume, where reading evidence and computing statistics will matter.
+Limits: each configuration was measured cold once, and warm as the mean of two runs, on one
+MacBook, so no spread is reported. The 18–25 s first TFDV import may come from macOS's
+first-load checks of native libraries or from a cold page cache, so it may be smaller on the
+Linux target or return after a reboot. 350 rows is small, so stage work is a minor share;
+scheduler runs add about 0.6 s of process start per task (16.2 s for the same run under `airflow
+standalone`). Remeasure at step 10 volume, on Linux, where reading evidence and computing
+statistics will matter.
 
 ### Bias detection and mitigation (step 12)
 
@@ -200,8 +212,8 @@ model could be skewed:
 - agent model;
 - source;
 - telemetry status;
-- availability of PSI and cgroup readings, which also stands in for the host platform: macOS
-  has neither.
+- availability of PSI and cgroup readings. This is not the host platform: Linux hosts can lack
+  cgroup readings too.
 
 - **Data level, from the first release:** for each slice, its share of rows, its label balance,
   its missing readings and telemetry coverage, and its counts in each split. Slices below

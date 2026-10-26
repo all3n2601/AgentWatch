@@ -531,8 +531,8 @@ release, so it lives outside the versioned stores.
 - **Slices.** The dataset has no demographic attributes. It is sliced by the attributes along
   which the data or a model could be skewed: `task_id`, `kind`, `label_resource`, `condition`,
   `injection_method`, `agent_model`, `source`, `telemetry_status`, and the availability of PSI
-  (`cpu_pressure_available`) and cgroup readings (`cgroup_available`), which also stands in for
-  the host platform.
+  (`cpu_pressure_available`) and cgroup readings (`cgroup_available`). Availability is not the
+  host platform: Linux hosts can lack cgroup readings too.
 - **Per slice:** rows, runs, share of the release, label balance, positive (non-`none`) rate,
   how often each nullable reading is missing (missing is never counted as zero), rows per split
   (train, validation, test, excluded, unassigned), and agreement with the rule baseline. Rule
@@ -545,22 +545,26 @@ release, so it lives outside the versioned stores.
   - absent from the train or test split while that split has rows.
 
   `condition` and `injection_method` decide the label by design, so they are not checked for
-  single-class slices or label-rate gaps, and an availability flag is not compared with its own
-  reading.
+  single-class slices or label-rate gaps. They also split the rows as the label does, so their
+  missing-readings gaps are reported once, under `label_resource`. An availability flag is not
+  compared with its own reading.
 - **Mitigation.** Each flag carries its mitigation, and each attribute carries balancing
   weights (`total / (values × slice rows)`) that give every value the same total weight for
   re-weighted training.
 
 ### Findings on `steps-v1.2+5954f97ef8b2`
 
-The shared release (350 rows, 50 runs) raises 21 flags. The main ones:
+The shared release (350 rows, 50 runs) raises 17 flags. To reproduce, unzip
+`data/shared/agentwatch-dataset-steps-v1.2-5954f97ef8b2.zip` and run
+`uv run --package agentwatch-data python -m agentwatch_data.slices --release <unzipped>/data/datasets/steps-v1.2+5954f97ef8b2 --newest-split`.
+The main ones:
 
 | Bias | Evidence | Effect |
 |---|---|---|
 | Task and kind confounded with the split | Train holds only the CPU task (175 rows), test only the coding task (175); validation is empty | A model would be trained on one workload and tested on another; per-slice evaluation is impossible |
 | Missing readings track the label | Negatives miss `telemetry_coverage` on 48% of rows and `cgroup_throttled_usec_delta` on 62%; positives miss neither | A model can learn "reading missing → no contention", a shortcut, not a resource signal |
 | Missing readings track the workload | `telemetry_coverage` missing on 81% of CPU rows, 1% of coding rows; cgroup delta on 85% vs 21% | Errors would concentrate on the CPU workload |
-| Platform slices with one class | All 186 rows without cgroup readings and all 32 without PSI are `none`; positive rate 0% vs 30.5% by cgroup availability | Hosts without cgroups (macOS) never show contention, so a model cannot be judged there |
+| Platform slices with one class | All 186 rows without cgroup readings and all 32 without PSI are `none`; positive rate 0% vs 30.5% by cgroup availability | Hosts without cgroup readings never show contention, so a model cannot be judged there. At least 154 of the 186 rows have PSI readings, which only Linux produces, so this is not only macOS |
 | Class imbalance | 50 `cpu_sandbox` rows (14.3%) against 300 `none` | Balancing weights: 3.5 for `cpu_sandbox`, 0.583 for `none` |
 
 ### What was done, and the trade-offs

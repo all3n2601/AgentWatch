@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Quality gate could not run: {error}", file=sys.stderr)
         return 1
     print(f"{outcome.status}: {outcome.result['release']} ({outcome.result_path})")
+    print(f"result: {outcome.result_path}")  # read by the orchestrated validate stage
     for anomaly in outcome.result["anomalies"]:
         print(f"  anomaly {anomaly['feature']}: {anomaly['description']}", file=sys.stderr)
     for drift in outcome.result["drift"]:

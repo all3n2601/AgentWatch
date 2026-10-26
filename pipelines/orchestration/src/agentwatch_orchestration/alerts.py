@@ -8,14 +8,20 @@ configuration is visible rather than silently treated as "nothing to report".
 A run can succeed and still need a person's attention: drift against the previous passing
 release, too many runs rejected by the build, a leakage check that did not pass, or a version
 that was not pushed to a DVC remote. These are findings, reported with the run summary; a run
-without findings still posts its summary, so a quiet channel never stands in for a clean run. Thresholds are declared here, before data is
-collected; they must not be tuned to silence an alert.
+without findings still posts its summary, so a quiet channel never stands in for a clean run.
+Thresholds are declared here, before data is collected; they must not be tuned to silence an
+alert.
+
+What is posted leaves this machine: a failure message carries the failing command's stderr tail,
+so stages must not print secrets when they fail. Delivery is at least once: a retried post whose
+first attempt reached Slack but timed out is posted twice.
 
 This module does not import Airflow, so it is tested without it.
 """
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
@@ -35,10 +41,17 @@ DEFAULT_MAX_REJECTED_SHARE = 0.10
 SLACK_TIMEOUT_SECONDS = 10
 ERROR_TAIL_CHARACTERS = 1500  # Slack messages stay readable; the full error is in the task log
 LEAKAGE_PASSED = "passed"
+INLINE_COMMENT = re.compile(r"\s#")  # KEY=value # note, as in shell and docker compose .env files
+# Slack reads <...> as links and mentions (a traceback's <module> included) and & as an entity.
+SLACK_ESCAPES = str.maketrans({"&": "&amp;", "<": "&lt;", ">": "&gt;"})
 
 
 class AlertError(RuntimeError):
     """Alerts are misconfigured, or Slack did not accept a message."""
+
+
+class AlertConfigError(AlertError):
+    """The alert settings are invalid; every attempt would fail the same way, so none retries."""
 
 
 @dataclass(frozen=True)
@@ -53,18 +66,18 @@ class AlertConfig:
             parts = urlsplit(webhook_url)
             if parts.scheme != "https" or not parts.netloc:
                 # The URL itself is a secret, so the error names the variable, not its value.
-                raise AlertError(f"{SLACK_WEBHOOK_ENV} must be an https:// Slack webhook URL")
+                raise AlertConfigError(f"{SLACK_WEBHOOK_ENV} must be an https:// Slack webhook URL")
         share_text = env.get(MAX_REJECTED_SHARE_ENV)
         max_rejected_share = DEFAULT_MAX_REJECTED_SHARE
         if share_text:
             try:
                 max_rejected_share = float(share_text)
             except ValueError as error:
-                raise AlertError(
+                raise AlertConfigError(
                     f"{MAX_REJECTED_SHARE_ENV} must be a number from 0 to 1, got {share_text!r}"
                 ) from error
             if not 0 <= max_rejected_share <= 1:
-                raise AlertError(
+                raise AlertConfigError(
                     f"{MAX_REJECTED_SHARE_ENV} must be from 0 to 1, got {max_rejected_share}"
                 )
         return cls(webhook_url=webhook_url, max_rejected_share=max_rejected_share)
@@ -75,22 +88,27 @@ def read_env_file(path: Path, keys: Sequence[str]) -> dict[str, str]:
 
     Only the alert keys are read, so the rest of .env (database passwords, model settings)
     never reaches Airflow's environment through this. Values may be wrapped in one pair of
-    single or double quotes; comments and blank lines are skipped.
+    single or double quotes; comments, blank lines, and an unquoted value's trailing " # note"
+    are skipped.
     """
     try:
         text = path.read_text()
     except FileNotFoundError:
         return {}
     except OSError as error:
-        raise AlertError(f"{path} could not be read: {error}") from error
+        raise AlertConfigError(f"{path} could not be read: {error}") from error
     values = {}
     for line in text.splitlines():
         name, separator, value = line.strip().removeprefix("export ").partition("=")
         name, value = name.strip(), value.strip()
         if not separator or name not in keys:
             continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            value = value[1:-1]
+        if value[:1] in ("'", '"'):
+            closing = value.find(value[0], 1)
+            if closing > 0:
+                value = value[1:closing]
+        else:
+            value = INLINE_COMMENT.split(value, maxsplit=1)[0].rstrip()
         values[name] = value
     return values
 
@@ -133,25 +151,49 @@ def findings(
     return found
 
 
-def run_message(summary: Mapping[str, object], found: Sequence[str]) -> str:
-    """The run summary, headed by its outcome, with one bullet per finding."""
+def slack_text(value: object) -> str:
+    """A value as literal Slack text: its &, <, and > escaped as Slack asks senders to."""
+    return str(value).translate(SLACK_ESCAPES)
+
+
+def run_message(
+    summary: Mapping[str, object],
+    found: Sequence[str],
+    slices: Mapping[str, object] | None = None,
+) -> str:
+    """The run summary, headed by its outcome, with one bullet per finding.
+
+    The bias slice report is listed but its flags are not findings: they describe the release's
+    composition, which a run does not change, so they would head every run on today's data
+    with the same warning. slices is None when the report task did not finish; its failure is
+    alerted on its own.
+    """
     if found:
         heading = f":warning: AgentWatch dataset run finished with {len(found)} finding(s)"
     else:
         heading = ":white_check_mark: AgentWatch dataset run finished cleanly"
+    text = {key: slack_text(value) for key, value in summary.items()}
     lines = [
         heading,
-        f"Release: {summary['release']}",
+        f"Release: {text['release']}",
         (
-            f"Rows: {summary['rows']}, runs: {summary['runs']}, "
-            f"rejected: {summary['runs_rejected']}, new evidence: {summary['evidence_added']}"
+            f"Rows: {text['rows']}, runs: {text['runs']}, "
+            f"rejected: {text['runs_rejected']}, new evidence: {text['evidence_added']}"
         ),
-        f"Split: {summary['split']} (leakage check: {summary['leakage']})",
-        f"Bias slices: {summary['slice_flags']} flag(s), report {summary['slice_report']}",
+        f"Split: {text['split']} (leakage check: {text['leakage']})",
+        slice_line(slices),
         f"Versioned: {_yes_no(summary['versioned'])}, pushed: {_yes_no(summary['pushed'])}",
-        *(f"• {line}" for line in found),
+        *(f"• {slack_text(line)}" for line in found),
     ]
     return "\n".join(lines)
+
+
+def slice_line(slices: Mapping[str, object] | None) -> str:
+    if slices is None:
+        return "Bias slices: no report; the slices task did not finish (see its failure alert)"
+    return (
+        f"Bias slices: {slack_text(slices['flags'])} flag(s), report {slack_text(slices['report'])}"
+    )
 
 
 def _yes_no(value: object) -> str:
@@ -165,12 +207,12 @@ def failure_message(
     if len(detail) > ERROR_TAIL_CHARACTERS:
         detail = "…" + detail[-ERROR_TAIL_CHARACTERS:]
     lines = [
-        f":rotating_light: AgentWatch dataset task `{task_id}` failed",
-        f"DAG: {dag_id}, run: {run_id}",
-        f"```{detail}```",
+        f":rotating_light: AgentWatch dataset task `{slack_text(task_id)}` failed",
+        f"DAG: {slack_text(dag_id)}, run: {slack_text(run_id)}",
+        f"```{slack_text(detail)}```",
     ]
     if log_url:
-        lines.append(f"Log: {log_url}")
+        lines.append(f"Log: {slack_text(log_url)}")
     return "\n".join(lines)
 
 

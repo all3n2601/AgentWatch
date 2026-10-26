@@ -19,8 +19,6 @@ def summary(**overrides: object) -> dict[str, object]:
         "leakage": "passed",
         "versioned": True,
         "pushed": True,
-        "slice_report": ".data/reports/r/slices.json",
-        "slice_flags": 4,
     }
     return base | overrides
 
@@ -32,14 +30,14 @@ def test_alerts_are_off_without_a_webhook():
 
 
 def test_a_webhook_that_is_not_https_is_refused_without_echoing_it():
-    with pytest.raises(alerts.AlertError) as raised:
+    with pytest.raises(alerts.AlertConfigError) as raised:
         alerts.AlertConfig.from_env({alerts.SLACK_WEBHOOK_ENV: "http://hooks.example/secret"})
     assert "secret" not in str(raised.value)
 
 
 @pytest.mark.parametrize("share", ["lots", "-0.1", "1.5", "nan"])
 def test_an_invalid_rejected_share_is_refused(share):
-    with pytest.raises(alerts.AlertError, match=alerts.MAX_REJECTED_SHARE_ENV):
+    with pytest.raises(alerts.AlertConfigError, match=alerts.MAX_REJECTED_SHARE_ENV):
         alerts.AlertConfig.from_env({alerts.MAX_REJECTED_SHARE_ENV: share})
 
 
@@ -87,7 +85,8 @@ def test_a_version_that_was_not_pushed_is_a_finding():
 
 
 def test_the_run_message_lists_the_summary_and_every_finding():
-    message = alerts.run_message(summary(pushed=False), ["first", "second"])
+    slices = {"report": ".data/reports/r/slices.json", "flags": 4}
+    message = alerts.run_message(summary(pushed=False), ["first", "second"], slices)
     assert message.startswith(":warning:")
     assert "2 finding(s)" in message
     assert "Release: data/datasets/steps-v1.2+abc" in message
@@ -96,6 +95,17 @@ def test_the_run_message_lists_the_summary_and_every_finding():
     assert "Versioned: yes, pushed: no" in message
     assert "Bias slices: 4 flag(s), report .data/reports/r/slices.json" in message
     assert "• first" in message and "• second" in message
+
+
+def test_slice_flags_are_listed_but_do_not_make_a_run_a_finding():
+    message = alerts.run_message(summary(), [], {"report": "slices.json", "flags": 17})
+    assert message.startswith(":white_check_mark:")
+    assert "Bias slices: 17 flag(s), report slices.json" in message
+
+
+def test_a_run_message_without_a_slice_report_says_so():
+    message = alerts.run_message(summary(), [], None)
+    assert "Bias slices: no report; the slices task did not finish" in message
 
 
 def test_a_clean_run_message_says_so_without_bullets():
@@ -111,6 +121,16 @@ def test_a_failure_message_keeps_only_the_errors_tail_and_links_the_log():
     assert "task `validate` failed" in message
     assert "end" in message and "start" not in message
     assert message.endswith("Log: http://airflow/log")
+
+
+def test_slack_control_characters_are_escaped_in_both_messages():
+    error = RuntimeError('File "<module>", line 1 & more')
+    failure = alerts.failure_message("dag", "run-1", "validate", error, None)
+    assert "&lt;module&gt;" in failure and "&amp; more" in failure and "<module>" not in failure
+    found = ["Drift against the previous passing release: kind: <b> & c"]
+    message = alerts.run_message(summary(release="data/datasets/<r>"), found)
+    assert "Release: data/datasets/&lt;r&gt;" in message
+    assert "kind: &lt;b&gt; &amp; c" in message
 
 
 def test_a_failure_without_a_recorded_error_says_so():
@@ -181,13 +201,24 @@ def test_the_env_file_supplies_only_the_alert_keys(tmp_path):
     }
 
 
+def test_an_unquoted_values_trailing_comment_is_dropped(tmp_path):
+    (tmp_path / ".env").write_text(
+        f"{alerts.SLACK_WEBHOOK_ENV}=https://hooks.slack.invalid/x#frag # prod channel\n"
+        f"{alerts.MAX_REJECTED_SHARE_ENV}='0.2 # kept, inside quotes' # dropped\n"
+    )
+    assert alerts.read_env_file(tmp_path / ".env", alerts.ALERT_ENV_KEYS) == {
+        alerts.SLACK_WEBHOOK_ENV: "https://hooks.slack.invalid/x#frag",
+        alerts.MAX_REJECTED_SHARE_ENV: "0.2 # kept, inside quotes",
+    }
+
+
 def test_a_missing_env_file_has_no_settings(tmp_path):
     assert alerts.read_env_file(tmp_path / ".env", alerts.ALERT_ENV_KEYS) == {}
 
 
 def test_an_unreadable_env_file_is_an_error(tmp_path):
     (tmp_path / ".env").mkdir()  # a directory where the file should be
-    with pytest.raises(alerts.AlertError, match="could not be read"):
+    with pytest.raises(alerts.AlertConfigError, match="could not be read"):
         alerts.read_env_file(tmp_path / ".env", alerts.ALERT_ENV_KEYS)
 
 

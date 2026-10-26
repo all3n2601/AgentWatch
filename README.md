@@ -144,8 +144,9 @@ tests, and how each requirement is met) is [`pipelines/README.md`](pipelines/REA
 
 The Airflow DAG `agentwatch_dataset` in `pipelines/orchestration/dags/` runs the dataset commands
 in order: acquire (add recorded runs to the evidence store) → build → validate (TFDV gate) →
-split → version (integrity check, then DVC) → push → summarize → alert, with the bias slice
-report running beside versioning. Each task runs the same command
+split → version (integrity check, then DVC) → push → summarize → alert → finish, with the bias
+slice report running beside versioning. A failed slice report fails the run and is alerted, but
+the run summary is still posted. Each task runs the same command
 as its `make` target, in that stage's own environment. Refused run directories, gate anomalies,
 or a failed integrity check fail the task and stop the run. Runs the build rejects do not: each is
 recorded with its reason in the build report, and the run continues with the rest. Only the push
@@ -172,9 +173,18 @@ log link), and posts every successful run's summary (release, rows, runs, reject
 versioned and pushed). The summary is marked ✅ when clean, or ⚠️ with its findings: drift
 against the previous passing release, more than `AGENTWATCH_ALERT_MAX_REJECTED_SHARE` of runs
 rejected by the build (default 0.10, declared before collection), a leakage check that did not
-pass, or a version not pushed because no DVC remote is configured. Without a webhook, a failure
-only logs a warning, and the `alert` task lists its findings in its log and is marked skipped,
-so nothing looks delivered when it was not.
+pass, or a version not pushed because no DVC remote is configured. The summary also lists the
+bias slice report's flag count, but slice flags are not findings: they describe the release's
+composition, which a run does not change, so on today's data every run would carry the same
+warning. Without a webhook, a failure
+only logs a warning, and the `alert` task lists any findings in its log and is marked skipped,
+so nothing looks delivered when it was not. Invalid alert settings fail the `alert` task without
+retries. Drift is read from the gate's result file, not its printout.
+
+Failure messages include the failing command's stderr tail, so stages must not print secrets
+when they fail. A post is retried up to three times, so a timeout after Slack accepted it can
+show the same message twice. If Slack itself is unreachable, the only record is an error in the
+task log; there is no second channel.
 
 1. In Slack, create an app at <https://api.slack.com/apps> → **Incoming Webhooks** → turn on →
    **Add New Webhook to Workspace** → pick the alerts channel, and copy the URL.

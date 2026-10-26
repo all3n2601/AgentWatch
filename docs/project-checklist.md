@@ -620,7 +620,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
 - [x] Slice each release for bias at the data level (2026-10-26): `make slice-dataset` reports
   per-slice rows, label balance, missing readings, split coverage, and rule agreement, flags
   slices against thresholds declared before evaluation, and lists mitigations and balancing
-  weights (`pipelines/data/tests/test_dataset_slices.py`). Run on `steps-v1.2+5954f97ef8b2`: 21
+  weights (`pipelines/data/tests/test_dataset_slices.py`). Run on `steps-v1.2+5954f97ef8b2`: 17
   flags, summarized in the data card's "Slices and bias". Model-level slicing is open.
 - [ ] Hold out unseen tasks and at least one injection method.
 - [x] Exclude injection configuration and label-generation metadata from model features
