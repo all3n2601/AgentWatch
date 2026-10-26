@@ -61,11 +61,23 @@ def test_version_and_status_are_declared():
     assert CONTRACT["status"] in {"proposed", "accepted"}
 
 
+def test_each_acceptance_row_has_team_members_name_and_date_cells():
+    # A reflowed or truncated table would otherwise surface as an IndexError below.
+    assert all(len(ROWS[team]) == 4 for team in TEAMS), [ROWS[team] for team in TEAMS]
+
+
 def test_accepted_status_requires_every_team_to_have_accepted():
     accepted = [
         bool(ROWS[team][2]) and ISO_DATE.fullmatch(ROWS[team][3]) is not None for team in TEAMS
     ]
     assert all(accepted) if CONTRACT["status"] == "accepted" else not any(accepted)
+
+
+def test_acceptance_rows_are_never_half_filled():
+    # A name without a date, or a date without a name, is the state the one-commit rule rules out.
+    for team in TEAMS:
+        name, date = ROWS[team][2], ROWS[team][3]
+        assert bool(name) == bool(date), team
 
 
 @pytest.mark.parametrize(
@@ -162,6 +174,9 @@ def test_each_contract_page_row_states_the_toml_value(row, text):
 
 
 def spoken_conditions(conditions: list[str]) -> str:
+    # The page writes conditions in sentence case ("Clean and contended"), and capitalize()
+    # lowercases everything after the first letter, so a condition name needing other capitals
+    # would need this helper changed.
     return spoken_list(conditions).capitalize()
 
 
