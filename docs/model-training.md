@@ -81,7 +81,9 @@ A malformed contract, rules or training file exits with code 2 before any attemp
 Every attempt is an MLflow run in the `agentwatch-attribution` experiment, tagged with its
 status and reason, with the training, rules, contract, dataset and label versions as
 parameters, measured metrics (unmeasured values are omitted, not logged as zero), and the
-output files as artifacts. The default backend is local SQLite at `.data/mlflow/mlflow.db`
+output files as artifacts. Only the named output files are logged, never other files in the
+directory or the `exploratory/` subdirectory; `tracking.json` is written after logging, since it
+records the outcome, so it is never an artifact. The default backend is local SQLite at `.data/mlflow/mlflow.db`
 with artifacts in `.data/mlflow/artifacts`; `--tracking-uri` points elsewhere. Failed,
 blocked and exploratory runs are kept.
 

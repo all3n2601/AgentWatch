@@ -73,6 +73,8 @@ ARTIFACTS = (
     REPORT,
     TRACKING,
 )
+# tracking.json records the logging outcome, so it is written after logging and never logged.
+LOGGED_ARTIFACTS = tuple(name for name in ARTIFACTS if name != TRACKING)
 STOPPED = ("blocked", "failed")
 EXIT_UNTRACKED = 3
 OBJECTIVES = {"classifier": "multiclass", "regressor": "regression_l1"}
@@ -160,8 +162,13 @@ def save_models(candidate: Candidate, directory: Path) -> dict[str, str]:
         target = directory / MODEL_FILES[key]
         descriptor, staging = tempfile.mkstemp(prefix=f".{target.name}.", dir=directory)
         os.close(descriptor)
-        booster.save_model(staging, num_iteration=candidate.best_iterations[key])
-        os.replace(staging, target)
+        try:
+            booster.save_model(staging, num_iteration=candidate.best_iterations[key])
+            os.replace(staging, target)
+        except BaseException:
+            # A half-written staging file must not outlive the attempt or reach MLflow.
+            Path(staging).unlink(missing_ok=True)
+            raise
         hashes[key] = file_sha256(target)
     return hashes
 
@@ -271,7 +278,12 @@ def finish(report: dict, directory: Path, tracking_uri: str, artifact_root: Path
     write_atomic(directory / REPORT, json_text(report))
     try:
         run_id = log_run(
-            report, directory, tracking_uri=tracking_uri, artifact_root=artifact_root, task=TASK
+            report,
+            directory,
+            artifacts=LOGGED_ARTIFACTS,
+            tracking_uri=tracking_uri,
+            artifact_root=artifact_root,
+            task=TASK,
         )
     except tracking_errors() as error:
         write_atomic(directory / TRACKING, json_text({"logged": False, "error": str(error)}))
@@ -315,6 +327,9 @@ def run(
     # An environment that cannot train is a setup error, not a failed attempt.
     check_lightgbm()
     scored_split = "validation" if explore else "test"
+    # Resolved once, before any attempt, so an exception in flight is never replaced by an
+    # import error while the handler's tuple is being built.
+    recorded_failures = attempt_errors()
     directory = output_directory(output, explore)
     directory.mkdir(parents=True, exist_ok=True)
     clear_artifacts(directory)
@@ -343,7 +358,7 @@ def run(
             resamples=resamples,
             seed=seed,
         )
-    except attempt_errors() as error:
+    except recorded_failures as error:
         clear_artifacts(directory)
         model = {"version": config.version}
         reason = f"{type(error).__name__}: {error}"

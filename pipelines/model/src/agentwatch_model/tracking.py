@@ -96,9 +96,15 @@ def experiment_id(artifact_root: Path) -> str:
 
 
 def log_run(
-    report: dict, output: Path, *, tracking_uri: str, artifact_root: Path, task: str
+    report: dict,
+    output: Path,
+    *,
+    artifacts: tuple[str, ...],
+    tracking_uri: str,
+    artifact_root: Path,
+    task: str,
 ) -> str:
-    """Log one attempt with its report and artifacts; return the MLflow run id."""
+    """Log one attempt with its report and the named artifacts; return the MLflow run id."""
     import mlflow
 
     if tracking_uri.startswith(SQLITE_PREFIX):
@@ -117,9 +123,10 @@ def log_run(
         metrics = run_metrics(report)
         if metrics:
             mlflow.log_metrics(metrics)
-        # The attempt's own files only: log_artifacts would recurse into an evaluated run's
-        # exploratory/ subdirectory and file an exploratory model under an evaluated run.
-        for path in sorted(output.iterdir()):
-            if path.is_file():
-                mlflow.log_artifact(str(path))
+        # Only the named files the attempt wrote: not an exploratory/ subdirectory beneath an
+        # evaluated run, and not whatever else sits in the directory, which a remote tracking
+        # server would otherwise receive.
+        for name in artifacts:
+            if (output / name).is_file():
+                mlflow.log_artifact(str(output / name))
         return active.info.run_id

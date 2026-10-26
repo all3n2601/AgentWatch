@@ -1,5 +1,6 @@
 import json
 import sys
+from pathlib import Path
 
 import pytest
 from agentwatch_data.files import file_sha256
@@ -203,6 +204,36 @@ def test_an_evaluated_run_logs_none_of_the_exploratory_files(tmp_path):
     names = {item.path for item in mlflow.MlflowClient().list_artifacts(outcome.run_id)}
     assert "report.json" in names and "classifier.txt" in names
     assert not any(name.startswith("exploratory") for name in names)
+
+
+def test_only_the_attempts_named_files_are_logged(tmp_path):
+    output = tmp_path / "out"
+    output.mkdir()
+    (output / "notes.txt").write_text("not an artifact\n")
+    outcome = run(
+        tmp_path / "split.json", output, loader=loader_for([], SPLITS), **tracking(tmp_path)
+    )
+    logged_runs(tmp_path)  # points mlflow at this test's tracking database
+    names = {item.path for item in mlflow.MlflowClient().list_artifacts(outcome.run_id)}
+    assert "notes.txt" not in names and "tracking.json" not in names
+    assert {"report.json", "classifier.txt", "predictions.jsonl"} <= names
+
+
+def test_a_failed_model_save_leaves_no_staging_file(tmp_path, monkeypatch):
+    import lightgbm
+    from lightgbm.basic import LightGBMError
+
+    def failing_save(self, filename, **kwargs):
+        Path(filename).write_text("partial")
+        raise LightGBMError("could not write the model")
+
+    monkeypatch.setattr(lightgbm.Booster, "save_model", failing_save)
+    output = tmp_path / "out"
+    outcome = run(
+        tmp_path / "split.json", output, loader=loader_for([], SPLITS), **tracking(tmp_path)
+    )
+    assert outcome.status == "failed"
+    assert not [path.name for path in output.iterdir() if path.name.startswith(".")]
 
 
 def test_a_blocked_run_that_was_not_tracked_exits_three(tmp_path, monkeypatch):
