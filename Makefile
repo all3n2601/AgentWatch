@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver pipeline-setup pipeline-run pipeline-ui llm-up llm-down agent-tasks agent-run agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down agent-tasks agent-run agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -110,6 +110,12 @@ PIPELINE_RUN_DIRS ?=
 comma := ,
 space := $(subst ,, )
 PIPELINE_RUN_DIRS_JSON = [$(subst $(space),$(comma),$(foreach dir,$(PIPELINE_RUN_DIRS),"$(dir)"))]
+
+requirements: ## Export pinned requirements.txt files from the uv lockfiles, for pip users (CI checks they match)
+	uv export --frozen --package agentwatch-data --no-dev --no-hashes --quiet -o requirements.txt
+	cd pipelines/validation && uv export --frozen --no-dev --no-hashes --quiet -o requirements.txt
+	cd pipelines/versioning && uv export --frozen --no-dev --no-hashes --quiet -o requirements.txt
+	cd pipelines/orchestration && uv export --frozen --no-dev --no-hashes --quiet -o requirements.txt
 
 pipeline-setup: ## Prepare every stage environment once and warm TensorFlow, so the first DAG run does not pay for it
 	uv sync --frozen --all-packages --compile-bytecode

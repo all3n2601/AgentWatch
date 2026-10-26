@@ -87,7 +87,7 @@ one to the pipeline and plans what is missing; the roadmap steps above own the w
 | Alerts (email or Slack) for errors and anomalies | Slack incoming webhook: every task's final failure, and each successful run's summary with its drift, rejected-run share, leakage, and unpushed-version findings (`agentwatch_orchestration.alerts`) | Done (2026-10-25); delivered to a real channel 2026-10-26 |
 | Pipeline flow optimization with Airflow's Gantt chart | Gantt-chart timings before and after: prepared environments (`make pipeline-setup`) and the slice report beside versioning; measurements under "Pipeline flow optimization" | Done (2026-10-26) on the shared release; remeasure at step 10 volume |
 | Bias detection and mitigation through data slicing | `make slice-dataset`: data-level slices with declared thresholds, per-flag mitigations, and balancing weights; findings and mitigation in the data card's "Slices and bias" | Data level done (2026-10-26); model-level slicing waits on a model |
-| README: setup, run, structure, DVC | The README has an Airflow section (setup, `make pipeline-run`, configuration); the course-layout mapping and DVC pull steps are not written yet | Partial |
+| README: setup, run, structure, DVC | [`pipelines/README.md`](../pipelines/README.md): setup (uv or pip), getting the data, running it, the course-layout mapping, components, DVC and why there is no `dvc.yaml`, tests, troubleshooting; `requirements.txt` files exported from the lockfiles (`make requirements`, checked in CI) | Done (2026-10-26); DVC pull steps work once the remote is committed |
 
 ### Airflow DAG (step 11)
 
@@ -223,7 +223,7 @@ model could be skewed:
 
 ### README and submission details
 
-- **README:** a data pipeline section covering:
+- **README:** written 2026-10-26 as [`pipelines/README.md`](../pipelines/README.md), covering:
   - setup for the three environments;
   - running it through `make` and Airflow;
   - how the layout maps to the course's example structure: `dags/` is the Airflow DAG folder,
@@ -233,8 +233,9 @@ model could be skewed:
 - **Committed `.dvc` files:** these need the shared remote, F's bucket. If it is not ready
   before the deadline, the team chooses a fallback remote it controls (another GCS bucket, or
   DVC's Google Drive remote) so a grader's `dvc pull` works.
-- **`requirements.txt`:** the `uv.lock` files are the pinned record. If a `requirements.txt` is
-  required, export one with `uv export --frozen` and have CI check it stays in sync.
+- **`requirements.txt`:** the `uv.lock` files are the pinned record. `make requirements`
+  exports `requirements.txt` (shared workspace) and one per isolated environment, and CI fails
+  if they drift from the lockfiles (done 2026-10-26).
 - **`dvc.yaml`:** not used. Airflow orchestrates the stages and DVC versions their outputs.
   DVC pipeline stages remove their outputs before rerunning unless marked persistent, which
   conflicts with append-only, immutable releases, and they would duplicate Airflow.

@@ -55,6 +55,8 @@ jobs:
           enable-cache: true
       - run: uv sync --all-packages --frozen
       - run: uv run ruff check .
+      # The requirements.txt files are exported from the lockfiles for pip users; they must match.
+      - run: make requirements && git diff --exit-code -- requirements.txt pipelines/*/requirements.txt
       # The digest comes from the code, so CI cannot drift from the pinned image.
       - run: make sandbox-image
       - run: uv run pytest
