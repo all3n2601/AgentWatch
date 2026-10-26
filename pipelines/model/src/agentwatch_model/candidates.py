@@ -67,6 +67,17 @@ class Candidate:
     classes_absent_from_train: tuple[str, ...] = ()
 
 
+def check_lightgbm() -> None:
+    """Raise TrainingError when LightGBM cannot load, such as without its OpenMP runtime."""
+    try:
+        import lightgbm  # noqa: F401
+    except (ImportError, OSError) as error:
+        raise TrainingError(
+            f"LightGBM could not load ({type(error).__name__}: {error}); it needs OpenMP, "
+            "libgomp on Linux or libomp on macOS"
+        ) from error
+
+
 def positive_int(parsed: dict, key: str) -> int:
     value = parsed.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:

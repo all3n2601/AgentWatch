@@ -28,6 +28,7 @@ from agentwatch_model.candidates import (
     Prediction,
     TrainingConfig,
     TrainingError,
+    check_lightgbm,
     fit_candidate,
     load_training_config,
     predict,
@@ -89,25 +90,13 @@ class Outcome:
 def attempt_errors() -> tuple[type[BaseException], ...]:
     """Data and training failures that end an attempt as a recorded failed run.
 
-    Only this package's own data errors are listed, so any other ValueError is a programming
-    error and crashes instead of being recorded as a plausible-looking failed attempt. OSError
-    and ImportError cover a missing OpenMP runtime; LightGBMError is added when LightGBM itself
-    can load.
+    Only this package's own data errors and LightGBM's are listed, so any other ValueError, or
+    an I/O failure such as a full disk, crashes instead of being recorded as a plausible-looking
+    failed attempt. run() has already checked that LightGBM loads.
     """
-    errors: list[type[BaseException]] = [
-        RowError,
-        FeatureError,
-        CandidateError,
-        OSError,
-        ImportError,
-    ]
-    try:
-        from lightgbm.basic import LightGBMError
+    from lightgbm.basic import LightGBMError
 
-        errors.append(LightGBMError)
-    except (ImportError, OSError):
-        pass
-    return tuple(errors)
+    return (RowError, FeatureError, CandidateError, LightGBMError)
 
 
 def failed_report(contract: Contract, rules: Rules, model: dict, reason: str) -> dict:
@@ -310,6 +299,8 @@ def run(
     """Train, score and track one attempt."""
     contract, rules = load_contract(contract_path), load_rules(rules_path)
     config = load_training_config(training_path)
+    # An environment that cannot train is a setup error, not a failed attempt.
+    check_lightgbm()
     scored_split = "validation" if explore else "test"
     directory = output / EXPLORATORY_DIRECTORY if explore else output
     directory.mkdir(parents=True, exist_ok=True)

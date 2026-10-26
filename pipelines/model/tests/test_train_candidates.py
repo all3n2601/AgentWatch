@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 from agentwatch_data.files import file_sha256
@@ -223,6 +224,22 @@ def test_main_exits_one_for_blocked_and_failed_runs(tmp_path, monkeypatch):
         str(tmp_path / "artifacts"),
     ]
     assert main(args) == 1
+
+
+def test_main_exits_two_when_lightgbm_cannot_load(tmp_path, monkeypatch, capsys):
+    # A None entry makes `import lightgbm` raise ImportError, as a missing OpenMP runtime does.
+    monkeypatch.setitem(sys.modules, "lightgbm", None)
+    args = [
+        "--split",
+        str(tmp_path / "split.json"),
+        "--output",
+        str(tmp_path / "out"),
+        "--tracking-uri",
+        f"sqlite:///{tmp_path / 'mlflow.db'}",
+    ]
+    assert main(args) == 2
+    assert "LightGBM could not load" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists() and not (tmp_path / "mlflow.db").exists()
 
 
 def test_main_exits_two_on_a_configuration_error(tmp_path, capsys):
