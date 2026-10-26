@@ -51,8 +51,15 @@ def test_the_slice_report_runs_beside_versioning_and_feeds_only_the_alert(dag):
     assert dag.get_task("alert").trigger_rule == "all_done"
 
 
+def test_the_last_task_waits_on_every_branch_and_tolerates_only_skips(dag):
+    finish = dag.get_task("finish")
+    assert finish.upstream_task_ids == {"summarize", "slices", "alert"}
+    assert finish.trigger_rule == "none_failed"
+    assert dag.leaves == [finish]
+
+
 def test_findings_are_alerted_after_the_summary(dag):
-    assert dag.get_task("summarize").downstream_task_ids == {"alert"}
+    assert dag.get_task("summarize").downstream_task_ids == {"alert", "finish"}
 
 
 def test_one_run_at_a_time_and_triggered_by_hand(dag):
@@ -180,6 +187,43 @@ def test_a_failed_slice_report_still_posts_the_run_summary(
     assert "Bias slices: no report" in summary
 
 
+def test_a_failed_version_fails_the_run_after_the_slice_report_succeeded(
+    dag, metadata_database, stubbed_stages, slack, monkeypatch
+):
+    from agentwatch_orchestration import stages
+
+    def integrity_refused(_config):
+        raise stages.StageError("version failed with exit code 1:\nintegrity check refused")
+
+    monkeypatch.setattr(stages, "version", integrity_refused)
+    run = dag.test(run_conf={"run_dirs": []})
+    states = {ti.task_id: ti.state for ti in run.get_task_instances()}
+    assert states["slices"] == "success"
+    assert states["version"] == "failed"
+    assert states["summarize"] == "upstream_failed"
+    assert states["alert"] == "skipped"
+    assert states["finish"] == "upstream_failed"
+    assert run.state == "failed"
+
+
+def test_a_push_that_fails_for_good_fails_the_run(
+    dag, metadata_database, stubbed_stages, slack, monkeypatch
+):
+    from agentwatch_orchestration import stages
+
+    def push_fails(_config):
+        raise stages.StageError("push failed with exit code 1:\nremote unreachable")
+
+    monkeypatch.setattr(stages, "remote_configured", lambda _config: True)
+    monkeypatch.setattr(stages, "push", push_fails)
+    # Its final attempt; the retries in between would only repeat this failure after a delay.
+    monkeypatch.setattr(dag.get_task("push"), "retries", 0)
+    run = dag.test(run_conf={"run_dirs": []})
+    assert run.get_task_instance("push").state == "failed"
+    assert run.get_task_instance("finish").state == "upstream_failed"
+    assert run.state == "failed"
+
+
 def test_a_clean_run_posts_its_summary(dag, metadata_database, stubbed_stages, slack, monkeypatch):
     from agentwatch_orchestration import stages
 
@@ -206,6 +250,8 @@ def test_findings_are_skipped_not_sent_without_a_webhook(
     monkeypatch.delenv(alerts.SLACK_WEBHOOK_ENV, raising=False)
     run = dag.test(run_conf={"run_dirs": []})
     assert run.get_task_instance("alert").state == "skipped"
+    assert run.get_task_instance("finish").state == "success"
+    assert run.state == "success"  # an unsent alert is not a failed run
 
 
 def test_a_clean_run_is_skipped_not_succeeded_without_a_webhook(
