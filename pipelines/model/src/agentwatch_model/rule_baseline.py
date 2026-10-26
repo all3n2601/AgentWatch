@@ -130,9 +130,6 @@ def run(
     rules = load_rules(rules_path)
     scored_split = "validation" if explore else "test"
     directory = output_directory(output, explore)
-    # Cleared first, so no file from an earlier run can sit beside this run's outputs.
-    for name in (REPORT, PREDICTIONS):
-        (directory / name).unlink(missing_ok=True)
     # Resolved at call time, so tests can replace the module's load_split.
     load = loader or load_split
     try:
@@ -142,7 +139,7 @@ def run(
         )
     except SplitError as error:
         report = blocked_report(contract, rules, str(error)) | {"split": split_identity(split)}
-        write_atomic(directory / REPORT, json_text(report))
+        replace_outputs(directory, report)
         return report["status"]
     validate_rows(train, "train")
     validate_rows(scored, scored_split)
@@ -168,11 +165,24 @@ def run(
             "sha256": hashlib.sha256(records.encode()).hexdigest(),
         },
     }
-    # Predictions first: the report names their hash, so a crash between the two writes leaves
-    # a report that does not match, which the hash exposes.
-    write_atomic(directory / PREDICTIONS, records)
-    write_atomic(directory / REPORT, json_text(report))
+    replace_outputs(directory, report, records)
     return report["status"]
+
+
+def replace_outputs(directory: Path, report: dict, records: str | None = None) -> None:
+    """Replace the directory's earlier outputs with this run's, once there is a result to write.
+
+    A run that stops before this point (bad rows, a configuration error) leaves the earlier
+    result in place. Both earlier files are removed first, so files from different runs never
+    sit side by side; predictions are written before the report, which names their hash, so a
+    crash between the two leaves predictions without a report rather than a mismatched pair.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in (REPORT, PREDICTIONS):
+        (directory / name).unlink(missing_ok=True)
+    if records is not None:
+        write_atomic(directory / PREDICTIONS, records)
+    write_atomic(directory / REPORT, json_text(report))
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
