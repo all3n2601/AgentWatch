@@ -26,20 +26,33 @@ def percent(share: float) -> str:
 
 
 def spoken_list(values: list[int]) -> str:
+    if len(values) == 1:
+        return str(values[0])
     return ", ".join(str(value) for value in values[:-1]) + f" and {values[-1]}"
 
 
-def table_rows(text: str) -> dict[str, list[str]]:
-    """Cells of every Markdown table row, keyed by the row's first cell."""
-    rows = {}
-    for line in text.splitlines():
-        if line.startswith("|") and not line.startswith("|---"):
-            cells = [" ".join(cell.split()) for cell in line.strip().strip("|").split("|")]
-            rows[cells[0]] = cells
-    return rows
+def table_lines(text: str) -> list[list[str]]:
+    """Cells of every Markdown table row in the text, header rows included."""
+    return [
+        [" ".join(cell.split()) for cell in line.strip().strip("|").split("|")]
+        for line in text.splitlines()
+        if line.startswith("|") and not line.startswith("|---")
+    ]
 
 
-ROWS = table_rows(DOC)
+ROWS = {cells[0]: cells for cells in table_lines(DOC)}
+
+
+def test_table_rows_are_keyed_unambiguously():
+    # Rows are looked up by their first cell across every table on the page, so a repeated
+    # first cell would silently shadow the row a check means to read.
+    assert len(ROWS) == len(table_lines(DOC))
+
+
+def test_spoken_list_reads_like_the_contract_page():
+    assert spoken_list([1, 2, 4]) == "1, 2 and 4"
+    assert spoken_list([1, 2]) == "1 and 2"
+    assert spoken_list([3]) == "3"
 
 
 def test_version_and_status_are_declared():
