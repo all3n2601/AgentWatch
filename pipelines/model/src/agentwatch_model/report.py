@@ -55,9 +55,11 @@ def none_rate_gate(rate: dict, threshold: float, clean_steps: int, minimum: int)
         "clean_steps": clean_steps,
         "min_clean_steps": minimum,
     }
-    if clean_steps < minimum or rate["rate"] is None:
-        reason = f"{clean_steps} clean steps; the contract needs at least {max(minimum, 1)}"
+    if clean_steps < minimum:
+        reason = f"{clean_steps} clean steps; the contract needs at least {minimum}"
         return gate | {"outcome": "inconclusive", "reason": reason}
+    if rate["rate"] is None:
+        return gate | {"outcome": "inconclusive", "reason": "No steps to measure the rate on"}
     return gate | {"outcome": "pass" if rate["rate"] >= threshold else "fail"}
 
 

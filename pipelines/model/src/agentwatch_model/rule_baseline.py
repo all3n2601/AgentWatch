@@ -29,6 +29,7 @@ DEFAULT_SCHEMA = Path(__file__).resolve().parents[3] / "validation" / "schema" /
 DEFAULT_OUTPUT = Path(".data/rule-baseline")
 REPORT = "report.json"
 PREDICTIONS = "predictions.jsonl"
+EXPLORATORY_DIRECTORY = "exploratory"
 BOOTSTRAP_RESAMPLES = 2000
 BOOTSTRAP_SEED = 0  # recorded in the report so the interval can be reproduced
 REQUIRED_FIELDS = (
@@ -103,6 +104,11 @@ def prediction_records(
     return "".join(f"{line}\n" for line in lines)
 
 
+def output_directory(output: Path, explore: bool) -> Path:
+    """Exploratory runs write beneath the output, so they never replace an evaluated result."""
+    return output / EXPLORATORY_DIRECTORY if explore else output
+
+
 def split_identity(path: Path) -> dict:
     return {"file": path.name, "sha256": file_sha256(path) if path.is_file() else None}
 
@@ -123,6 +129,10 @@ def run(
     contract = load_contract(contract_path)
     rules = load_rules(rules_path)
     scored_split = "validation" if explore else "test"
+    directory = output_directory(output, explore)
+    # Cleared first, so no file from an earlier run can sit beside this run's outputs.
+    for name in (REPORT, PREDICTIONS):
+        (directory / name).unlink(missing_ok=True)
     # Resolved at call time, so tests can replace the module's load_split.
     load = loader or load_split
     try:
@@ -132,9 +142,7 @@ def run(
         )
     except SplitError as error:
         report = blocked_report(contract, rules, str(error)) | {"split": split_identity(split)}
-        # A stale predictions file from an earlier run must not sit beside a blocked report.
-        (output / PREDICTIONS).unlink(missing_ok=True)
-        write_atomic(output / REPORT, json_text(report))
+        write_atomic(directory / REPORT, json_text(report))
         return report["status"]
     validate_rows(train, "train")
     validate_rows(scored, scored_split)
@@ -162,8 +170,8 @@ def run(
     }
     # Predictions first: the report names their hash, so a crash between the two writes leaves
     # a report that does not match, which the hash exposes.
-    write_atomic(output / PREDICTIONS, records)
-    write_atomic(output / REPORT, json_text(report))
+    write_atomic(directory / PREDICTIONS, records)
+    write_atomic(directory / REPORT, json_text(report))
     return report["status"]
 
 
@@ -198,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ContractError, RulesError, RowError, tomllib.TOMLDecodeError, OSError) as error:
         print(f"Rule baseline error: {error}", file=sys.stderr)
         return EXIT_ERROR
-    print(f"Rule baseline {status}: {args.output / REPORT}")
+    print(f"Rule baseline {status}: {output_directory(args.output, args.explore) / REPORT}")
     return EXIT_BLOCKED if status == "blocked" else 0
 
 
