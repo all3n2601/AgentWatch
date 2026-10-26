@@ -139,20 +139,31 @@ def test_a_failed_command_raises_with_its_exit_code_and_stderr_tail(config, fake
     assert "line 9\n" not in message  # only the tail is kept
 
 
+def gate_result(config, drift: list[dict[str, str]]) -> str:
+    """Write a gate result with the given drift; returns the gate's printout naming it."""
+    path = config.root / "data/datasets/validations/r/attempt/result.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"status": "passed", "drift": drift}))
+    relative = path.relative_to(config.root)
+    return f"passed: r ({relative})\nresult: {relative}\n"
+
+
 def test_validate_checks_the_given_release_not_the_newest(config, fake_run):
+    fake_run.responses = [(0, gate_result(config, []), "")]
     stages.validate(config, "data/datasets/mine")
     (argv,) = fake_run.argvs()
     assert argv[argv.index("--release") + 1] == "data/datasets/mine"
     assert argv[argv.index("--project") + 1] == str(config.root / "pipelines/validation")
 
 
-def test_validate_returns_the_gates_drift_findings(config, fake_run):
-    printed = (
-        "passed: data/datasets/r (data/datasets/r/gate/result.json)\n"
-        "  drift condition: L-infinity distance 0.4 exceeds 0.25\n"
-        "  drift kind: L-infinity distance 0.3 exceeds 0.25\n"
-    )
-    fake_run.responses = [(0, printed, "")]
+def test_validate_returns_the_drift_recorded_in_the_gates_result(config, fake_run):
+    drift = [
+        {"feature": "condition", "description": "L-infinity distance 0.4 exceeds 0.25"},
+        {"feature": "kind", "description": "L-infinity distance 0.3 exceeds 0.25"},
+    ]
+    # The printout's own drift lines are ignored; only the durable result is read.
+    printout = gate_result(config, drift) + "  drift other: printed only\n"
+    fake_run.responses = [(0, printout, "")]
     assert stages.validate(config, "data/datasets/r") == [
         "condition: L-infinity distance 0.4 exceeds 0.25",
         "kind: L-infinity distance 0.3 exceeds 0.25",
@@ -160,22 +171,23 @@ def test_validate_returns_the_gates_drift_findings(config, fake_run):
 
 
 def test_validate_without_drift_returns_no_findings(config, fake_run):
-    fake_run.responses = [(0, "passed: data/datasets/r (result.json)\n", "")]
+    fake_run.responses = [(0, gate_result(config, []), "")]
     assert stages.validate(config, "data/datasets/r") == []
 
 
 def test_slices_reports_the_release_with_its_split_outside_the_stores(config, fake_run):
+    report = config.root / ".data/reports/steps-v1.2+abc/slices.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps({"flags": [{"kind": "absent_from_split"}, {"kind": "x"}]}))
     printed = (
-        f"slices: {config.root}/.data/reports/steps-v1.2+abc/slices.json\n"
+        f"slices: {report}\n"
         "summary: .data/reports/steps-v1.2+abc/slices.md\n"
         "  flag absent_from_split: kind=cpu: no rows in the test split\n"
-        "  flag single_class: cgroup_available=false: every row is labeled 'none'\n"
     )
     fake_run.responses = [(0, printed, "")]
     outcome = stages.slices(config, "data/datasets/steps-v1.2+abc", "s.json")
-    assert outcome == stages.SliceOutcome(
-        report=f"{config.root}/.data/reports/steps-v1.2+abc/slices.json", flags=2
-    )
+    # The count comes from the report itself, not from the flag lines printed.
+    assert outcome == stages.SliceOutcome(report=str(report), flags=2)
     (argv,) = fake_run.argvs()
     assert argv[argv.index("--release") + 1] == "data/datasets/steps-v1.2+abc"
     assert argv[argv.index("--split") + 1] == "s.json"
@@ -186,6 +198,29 @@ def test_slices_without_a_report_line_fails(config, fake_run):
     fake_run.responses = [(0, "summary: s.md\n", "")]
     with pytest.raises(stages.StageError, match="did not report a 'slices:' line"):
         stages.slices(config, "data/datasets/r", "s.json")
+
+
+@pytest.mark.parametrize("content", ["not json", "{}", '{"flags": 3}'])
+def test_slices_with_an_unreadable_report_fails(config, fake_run, content):
+    (config.root / "slices.json").write_text(content)
+    fake_run.responses = [(0, "slices: slices.json\n", "")]
+    with pytest.raises(stages.StageError, match="slice report .* (is unreadable|has invalid flags)"):
+        stages.slices(config, "data/datasets/r", "s.json")
+
+
+def test_validate_without_a_result_line_fails_rather_than_reporting_no_drift(config, fake_run):
+    fake_run.responses = [(0, "passed: r (result.json)\n", "")]
+    with pytest.raises(stages.StageError, match="did not report a 'result:' line"):
+        stages.validate(config, "data/datasets/r")
+
+
+@pytest.mark.parametrize("content", ["not json", "{}", '{"drift": [{"feature": "kind"}]}'])
+def test_validate_with_an_unreadable_result_fails(config, fake_run, content):
+    path = config.root / "result.json"
+    path.write_text(content)
+    fake_run.responses = [(0, "passed: r (result.json)\nresult: result.json\n", "")]
+    with pytest.raises(stages.StageError, match="gate result .* is unreadable"):
+        stages.validate(config, "data/datasets/r")
 
 
 def test_a_timed_out_command_raises(config, monkeypatch):
@@ -210,6 +245,7 @@ def test_commands_run_from_the_root_without_airflows_virtual_environment(
     config, fake_run, monkeypatch
 ):
     monkeypatch.setenv("VIRTUAL_ENV", "/airflow/.venv")
+    fake_run.responses = [(0, gate_result(config, []), "")]
     stages.validate(config, "r")
     (call,) = fake_run.calls
     assert call["cwd"] == config.root

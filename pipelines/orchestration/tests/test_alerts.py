@@ -32,14 +32,14 @@ def test_alerts_are_off_without_a_webhook():
 
 
 def test_a_webhook_that_is_not_https_is_refused_without_echoing_it():
-    with pytest.raises(alerts.AlertError) as raised:
+    with pytest.raises(alerts.AlertConfigError) as raised:
         alerts.AlertConfig.from_env({alerts.SLACK_WEBHOOK_ENV: "http://hooks.example/secret"})
     assert "secret" not in str(raised.value)
 
 
 @pytest.mark.parametrize("share", ["lots", "-0.1", "1.5", "nan"])
 def test_an_invalid_rejected_share_is_refused(share):
-    with pytest.raises(alerts.AlertError, match=alerts.MAX_REJECTED_SHARE_ENV):
+    with pytest.raises(alerts.AlertConfigError, match=alerts.MAX_REJECTED_SHARE_ENV):
         alerts.AlertConfig.from_env({alerts.MAX_REJECTED_SHARE_ENV: share})
 
 
@@ -113,6 +113,16 @@ def test_a_failure_message_keeps_only_the_errors_tail_and_links_the_log():
     assert message.endswith("Log: http://airflow/log")
 
 
+def test_slack_control_characters_are_escaped_in_both_messages():
+    error = RuntimeError('File "<module>", line 1 & more')
+    failure = alerts.failure_message("dag", "run-1", "validate", error, None)
+    assert "&lt;module&gt;" in failure and "&amp; more" in failure and "<module>" not in failure
+    found = ["Drift against the previous passing release: kind: <b> & c"]
+    message = alerts.run_message(summary(release="data/datasets/<r>"), found)
+    assert "Release: data/datasets/&lt;r&gt;" in message
+    assert "kind: &lt;b&gt; &amp; c" in message
+
+
 def test_a_failure_without_a_recorded_error_says_so():
     message = alerts.failure_message("dag", "run-1", "build", None, None)
     assert "no error was recorded" in message
@@ -181,13 +191,24 @@ def test_the_env_file_supplies_only_the_alert_keys(tmp_path):
     }
 
 
+def test_an_unquoted_values_trailing_comment_is_dropped(tmp_path):
+    (tmp_path / ".env").write_text(
+        f"{alerts.SLACK_WEBHOOK_ENV}=https://hooks.slack.invalid/x#frag # prod channel\n"
+        f"{alerts.MAX_REJECTED_SHARE_ENV}='0.2 # kept, inside quotes' # dropped\n"
+    )
+    assert alerts.read_env_file(tmp_path / ".env", alerts.ALERT_ENV_KEYS) == {
+        alerts.SLACK_WEBHOOK_ENV: "https://hooks.slack.invalid/x#frag",
+        alerts.MAX_REJECTED_SHARE_ENV: "0.2 # kept, inside quotes",
+    }
+
+
 def test_a_missing_env_file_has_no_settings(tmp_path):
     assert alerts.read_env_file(tmp_path / ".env", alerts.ALERT_ENV_KEYS) == {}
 
 
 def test_an_unreadable_env_file_is_an_error(tmp_path):
     (tmp_path / ".env").mkdir()  # a directory where the file should be
-    with pytest.raises(alerts.AlertError, match="could not be read"):
+    with pytest.raises(alerts.AlertConfigError, match="could not be read"):
         alerts.read_env_file(tmp_path / ".env", alerts.ALERT_ENV_KEYS)
 
 

@@ -18,7 +18,9 @@ retried away. One run at a time, because versioning snapshots the whole stores.
 
 Alerts go to Slack (agentwatch_orchestration.alerts): every task's final failure, and, after
 the summary, the run's summary with any findings of a run that otherwise succeeded (drift, too
-many rejected runs, a leakage check that did not pass, a version that was not pushed). Posting an alert is retried; Slack is a network service.
+many rejected runs, a leakage check that did not pass, a version that was not pushed). Posting an
+alert is retried, because Slack is a network service; invalid alert settings are not, because
+every attempt would fail the same way.
 """
 
 import logging
@@ -28,7 +30,7 @@ from datetime import UTC, datetime, timedelta
 
 from agentwatch_orchestration import alerts, stages
 from airflow.sdk import Param, dag, task
-from airflow.sdk.exceptions import AirflowSkipException
+from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
 
 logger = logging.getLogger(__name__)
 
@@ -182,19 +184,19 @@ def agentwatch_dataset():
 
     @task(retries=ALERT_RETRIES, retry_delay=ALERT_RETRY_DELAY)
     def alert(summary: dict[str, object]) -> list[str]:
-        settings = alert_config()
+        try:
+            settings = alert_config()
+        except alerts.AlertConfigError as error:
+            raise AirflowFailException(str(error)) from error
         drift = summary["drift"]
         if not isinstance(drift, list):
             raise alerts.AlertError(f"run summary drift must be a list, got {drift!r}")
         found = alerts.findings(summary, [str(line) for line in drift], settings.max_rejected_share)
         for line in found:
             logger.warning("Finding: %s", line)
+        # Skipped, not succeeded, whenever nothing was sent, findings or not: a green alert task
+        # must mean the summary reached Slack.
         if settings.webhook_url is None:
-            if not found:
-                logger.info(
-                    "No findings; summary not sent because %s is not set", alerts.SLACK_WEBHOOK_ENV
-                )
-                return found
             raise AirflowSkipException(
                 f"{len(found)} finding(s) not sent to Slack because {alerts.SLACK_WEBHOOK_ENV} "
                 "is not set; they are listed in this task's log"
