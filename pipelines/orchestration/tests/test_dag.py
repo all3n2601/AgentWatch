@@ -15,7 +15,17 @@ def dag():
 
 
 def test_tasks_run_in_pipeline_order(dag):
-    order = ["acquire", "build", "validate", "split", "version", "push", "summarize", "alert"]
+    order = [
+        "acquire",
+        "build",
+        "validate",
+        "split",
+        "version",
+        "push",
+        "summarize",
+        "alert",
+        "finish",
+    ]
     for upstream, downstream in pairwise(order):
         assert downstream in dag.get_task(upstream).downstream_task_ids
 
@@ -33,10 +43,12 @@ def test_every_task_alerts_slack_when_it_fails(dag):
         assert callbacks == ["alert_on_failure"], task.task_id
 
 
-def test_the_slice_report_runs_beside_versioning_and_feeds_the_summary(dag):
+def test_the_slice_report_runs_beside_versioning_and_feeds_only_the_alert(dag):
     assert {"slices", "version"} <= dag.get_task("split").downstream_task_ids
-    assert dag.get_task("slices").downstream_task_ids == {"summarize"}
+    assert dag.get_task("slices").downstream_task_ids == {"alert", "finish"}
     assert "slices" not in dag.get_task("version").get_flat_relative_ids(upstream=True)
+    assert "slices" not in dag.get_task("summarize").get_flat_relative_ids(upstream=True)
+    assert dag.get_task("alert").trigger_rule == "all_done"
 
 
 def test_findings_are_alerted_after_the_summary(dag):
@@ -119,6 +131,7 @@ def test_a_run_passes_the_built_release_and_summarizes_after_a_skipped_push(
         "push": "skipped",
         "summarize": "success",
         "alert": "success",
+        "finish": "success",
     }
     assert ("acquire", ([".data/coding-demo"],)) in stubbed_stages
     assert ("validate", ("data/datasets/steps-v1.2+abc",)) in stubbed_stages
@@ -136,8 +149,6 @@ def test_a_run_passes_the_built_release_and_summarizes_after_a_skipped_push(
         "split": "s.json",
         "leakage": "passed",
         "drift": ["kind: distance 0.3 exceeds 0.25"],
-        "slice_report": ".data/reports/steps-v1.2+abc/slices.json",
-        "slice_flags": 3,
         "versioned": True,
         "pushed": False,
     }
@@ -147,6 +158,26 @@ def test_a_run_passes_the_built_release_and_summarizes_after_a_skipped_push(
     assert "Drift against the previous passing release: kind: distance 0.3" in message
     assert "The version was not pushed" in message
     assert "Bias slices: 3 flag(s)" in message
+
+
+def test_a_failed_slice_report_still_posts_the_run_summary(
+    dag, metadata_database, stubbed_stages, slack, monkeypatch
+):
+    from agentwatch_orchestration import stages
+
+    def report_fails(_config, _release, _split):
+        raise stages.StageError("slices failed with exit code 1:\nSlicing failed: bad split")
+
+    monkeypatch.setattr(stages, "slices", report_fails)
+    run = dag.test(run_conf={"run_dirs": []})
+    assert run.state == "failed"  # the report's failure is not hidden
+    assert run.get_task_instance("slices").state == "failed"
+    assert run.get_task_instance("summarize").state == "success"
+    assert run.get_task_instance("alert").state == "success"
+    failure, summary = sorted(slack, key=lambda text: "task `slices` failed" not in text)
+    assert "task `slices` failed" in failure
+    assert "Release: data/datasets/steps-v1.2+abc" in summary
+    assert "Bias slices: no report" in summary
 
 
 def test_a_clean_run_posts_its_summary(dag, metadata_database, stubbed_stages, slack, monkeypatch):
@@ -219,6 +250,7 @@ def test_a_failed_task_alerts_slack_and_stops_the_run(
     assert run.state == "failed"
     assert run.get_task_instance("validate").state == "failed"
     assert run.get_task_instance("split").state == "upstream_failed"
+    assert run.get_task_instance("alert").state == "skipped"  # no summary, no second alert
     (message,) = slack
     assert "task `validate` failed" in message
     assert "anomaly rows: missing" in message

@@ -123,8 +123,6 @@ class RunSummary:
     split: str
     leakage: str
     drift: list[str]  # the gate's drift findings against the previous passing release
-    slice_report: str
-    slice_flags: int
     versioned: bool
     pushed: bool
 

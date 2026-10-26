@@ -1,11 +1,17 @@
 """The AgentWatch dataset pipeline as an Airflow DAG.
 
-    acquire -> build -> validate -> split -> version -> push -> summarize -> alert
-                                     split -> slices --------> summarize
+    acquire -> build -> validate -> split -> version -> push -> summarize -> alert -> finish
+                        validate, split -> slices -------------------------> alert
+                                           slices ------------------------------------> finish
 
 The bias slice report only reads the release and its split, so it runs beside versioning
 instead of after it, adding no time to the run's critical path (docs/data-pipeline-plan.md,
-pipeline flow optimization).
+pipeline flow optimization). DVC 3.67.1 with the default cache type (reflink, then copy) leaves
+the workspace files in place while it adds them, so the report can read them meanwhile; a
+hardlink or symlink cache type would relink them, and the report would have to finish first.
+The report is not part of the summary: a failed report is alerted as its own failure and does
+not cost the run its summary. finish does nothing; as the only last task, it makes the run fail
+whenever the report failed, which the alert (run however the report ended) would otherwise hide.
 
 Each task runs one existing dataset command in its own environment through
 agentwatch_orchestration.stages; the DAG owns ordering, retries, and task logs only. The DAG is
@@ -158,7 +164,6 @@ def agentwatch_dataset():
         built: dict[str, object],
         validated: dict[str, object],
         split_outcome: dict[str, object],
-        slice_outcome: dict[str, object],
         versioned: bool,
     ) -> dict[str, object]:
         from airflow.sdk import get_current_context
@@ -174,16 +179,27 @@ def agentwatch_dataset():
             split=str(split_outcome["path"]),
             leakage=str(split_outcome["leakage"]),
             drift=[str(line) for line in validated["drift"]],
-            slice_report=str(slice_outcome["report"]),
-            slice_flags=int(slice_outcome["flags"]),
             versioned=versioned,
             pushed=pushed,
         )
         logger.info("Run summary: %s", summary.as_dict())
         return summary.as_dict()
 
-    @task(retries=ALERT_RETRIES, retry_delay=ALERT_RETRY_DELAY)
-    def alert(summary: dict[str, object]) -> list[str]:
+    # all_done: the alert waits for the slice report however it ended. The summary is pulled,
+    # not passed, so a failed earlier stage skips the alert instead of failing it a second time.
+    @task(trigger_rule="all_done", retries=ALERT_RETRIES, retry_delay=ALERT_RETRY_DELAY)
+    def alert() -> list[str]:
+        from airflow.sdk import get_current_context
+
+        ti = get_current_context()["ti"]
+        summary = ti.xcom_pull(task_ids="summarize")
+        if not isinstance(summary, dict):
+            raise AirflowSkipException(
+                "No run summary: an earlier stage did not finish, and its failure was alerted"
+            )
+        slice_outcome = ti.xcom_pull(task_ids="slices")  # None when the report did not finish
+        if not (slice_outcome is None or isinstance(slice_outcome, dict)):
+            raise alerts.AlertError(f"slice outcome must be a mapping, got {slice_outcome!r}")
         try:
             settings = alert_config()
         except alerts.AlertConfigError as error:
@@ -201,8 +217,13 @@ def agentwatch_dataset():
                 f"{len(found)} finding(s) not sent to Slack because {alerts.SLACK_WEBHOOK_ENV} "
                 "is not set; they are listed in this task's log"
             )
-        alerts.send_slack(settings.webhook_url, alerts.run_message(summary, found))
+        message = alerts.run_message(summary, found, slice_outcome)
+        alerts.send_slack(settings.webhook_url, message)
         return found
+
+    @task
+    def finish() -> None:
+        """Nothing to do: reached only when the alert and the slice report did not fail."""
 
     added = acquire()
     built = build(added)
@@ -211,9 +232,11 @@ def agentwatch_dataset():
     slice_outcome = slices(validated, split_outcome)
     versioned = version(split_outcome)
     pushed = push(versioned)
-    summary = summarize(added, built, validated, split_outcome, slice_outcome, versioned)
+    summary = summarize(added, built, validated, split_outcome, versioned)
     pushed >> summary
-    alert(summary)
+    alerted = alert()
+    [summary, slice_outcome] >> alerted
+    [alerted, slice_outcome] >> finish()
 
 
 agentwatch_dataset()

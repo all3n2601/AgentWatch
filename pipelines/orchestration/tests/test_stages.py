@@ -204,7 +204,9 @@ def test_slices_without_a_report_line_fails(config, fake_run):
 def test_slices_with_an_unreadable_report_fails(config, fake_run, content):
     (config.root / "slices.json").write_text(content)
     fake_run.responses = [(0, "slices: slices.json\n", "")]
-    with pytest.raises(stages.StageError, match="slice report .* (is unreadable|has invalid flags)"):
+    with pytest.raises(
+        stages.StageError, match="slice report .* (is unreadable|has invalid flags)"
+    ):
         stages.slices(config, "data/datasets/r", "s.json")
 
 
