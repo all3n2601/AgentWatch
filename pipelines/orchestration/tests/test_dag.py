@@ -33,6 +33,12 @@ def test_every_task_alerts_slack_when_it_fails(dag):
         assert callbacks == ["alert_on_failure"], task.task_id
 
 
+def test_the_slice_report_runs_beside_versioning_and_feeds_the_summary(dag):
+    assert {"slices", "version"} <= dag.get_task("split").downstream_task_ids
+    assert dag.get_task("slices").downstream_task_ids == {"summarize"}
+    assert "slices" not in dag.get_task("version").get_flat_relative_ids(upstream=True)
+
+
 def test_findings_are_alerted_after_the_summary(dag):
     assert dag.get_task("summarize").downstream_task_ids == {"alert"}
 
@@ -71,6 +77,8 @@ def stubbed_stages(monkeypatch, tmp_path):
     monkeypatch.setattr(stages, "validate", record("validate", ["kind: distance 0.3 exceeds 0.25"]))
     split = stages.SplitOutcome(path="s.json", reused=False, leakage="passed")
     monkeypatch.setattr(stages, "split", record("split", split))
+    slices = stages.SliceOutcome(report=".data/reports/steps-v1.2+abc/slices.json", flags=3)
+    monkeypatch.setattr(stages, "slices", record("slices", slices))
     monkeypatch.setattr(stages, "version", record("version"))
     monkeypatch.setattr(stages, "remote_configured", record("remote_configured", False))
     monkeypatch.setattr(stages, "push", record("push"))
@@ -106,6 +114,7 @@ def test_a_run_passes_the_built_release_and_summarizes_after_a_skipped_push(
         "build": "success",
         "validate": "success",
         "split": "success",
+        "slices": "success",
         "version": "success",
         "push": "skipped",
         "summarize": "success",
@@ -114,6 +123,7 @@ def test_a_run_passes_the_built_release_and_summarizes_after_a_skipped_push(
     assert ("acquire", ([".data/coding-demo"],)) in stubbed_stages
     assert ("validate", ("data/datasets/steps-v1.2+abc",)) in stubbed_stages
     assert ("split", ("data/datasets/steps-v1.2+abc",)) in stubbed_stages
+    assert ("slices", ("data/datasets/steps-v1.2+abc", "s.json")) in stubbed_stages
     assert all(name != "push" for name, _ in stubbed_stages)
     summary = run.get_task_instance("summarize").xcom_pull(task_ids="summarize")
     assert summary == {
@@ -126,6 +136,8 @@ def test_a_run_passes_the_built_release_and_summarizes_after_a_skipped_push(
         "split": "s.json",
         "leakage": "passed",
         "drift": ["kind: distance 0.3 exceeds 0.25"],
+        "slice_report": ".data/reports/steps-v1.2+abc/slices.json",
+        "slice_flags": 3,
         "versioned": True,
         "pushed": False,
     }
@@ -134,6 +146,7 @@ def test_a_run_passes_the_built_release_and_summarizes_after_a_skipped_push(
     assert "rejected 1 of 3 runs" in message
     assert "Drift against the previous passing release: kind: distance 0.3" in message
     assert "The version was not pushed" in message
+    assert "Bias slices: 3 flag(s)" in message
 
 
 def test_a_clean_run_posts_its_summary(dag, metadata_database, stubbed_stages, slack, monkeypatch):

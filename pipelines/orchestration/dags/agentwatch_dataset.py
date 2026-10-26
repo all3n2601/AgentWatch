@@ -1,6 +1,11 @@
 """The AgentWatch dataset pipeline as an Airflow DAG.
 
     acquire -> build -> validate -> split -> version -> push -> summarize -> alert
+                                     split -> slices --------> summarize
+
+The bias slice report only reads the release and its split, so it runs beside versioning
+instead of after it, adding no time to the run's critical path (docs/data-pipeline-plan.md,
+pipeline flow optimization).
 
 Each task runs one existing dataset command in its own environment through
 agentwatch_orchestration.stages; the DAG owns ordering, retries, and task logs only. The DAG is
@@ -121,6 +126,13 @@ def agentwatch_dataset():
         return {"path": outcome.path, "reused": outcome.reused, "leakage": outcome.leakage}
 
     @task
+    def slices(validated: dict[str, object], split_outcome: dict[str, object]) -> dict[str, object]:
+        outcome = stages.slices(config(), str(validated["release"]), str(split_outcome["path"]))
+        if outcome.flags:
+            logger.warning("%d slice flag(s); details in %s", outcome.flags, outcome.report)
+        return asdict(outcome)
+
+    @task
     def version(_split: dict[str, object]) -> bool:
         stages.version(config())
         return True
@@ -144,6 +156,7 @@ def agentwatch_dataset():
         built: dict[str, object],
         validated: dict[str, object],
         split_outcome: dict[str, object],
+        slice_outcome: dict[str, object],
         versioned: bool,
     ) -> dict[str, object]:
         from airflow.sdk import get_current_context
@@ -159,6 +172,8 @@ def agentwatch_dataset():
             split=str(split_outcome["path"]),
             leakage=str(split_outcome["leakage"]),
             drift=[str(line) for line in validated["drift"]],
+            slice_report=str(slice_outcome["report"]),
+            slice_flags=int(slice_outcome["flags"]),
             versioned=versioned,
             pushed=pushed,
         )
@@ -191,9 +206,10 @@ def agentwatch_dataset():
     built = build(added)
     validated = validate(built)
     split_outcome = split(validated)
+    slice_outcome = slices(validated, split_outcome)
     versioned = version(split_outcome)
     pushed = push(versioned)
-    summary = summarize(added, built, validated, split_outcome, versioned)
+    summary = summarize(added, built, validated, split_outcome, slice_outcome, versioned)
     pushed >> summary
     alert(summary)
 

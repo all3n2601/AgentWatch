@@ -147,6 +147,7 @@ def run_message(summary: Mapping[str, object], found: Sequence[str]) -> str:
             f"rejected: {summary['runs_rejected']}, new evidence: {summary['evidence_added']}"
         ),
         f"Split: {summary['split']} (leakage check: {summary['leakage']})",
+        f"Bias slices: {summary['slice_flags']} flag(s), report {summary['slice_report']}",
         f"Versioned: {_yes_no(summary['versioned'])}, pushed: {_yes_no(summary['pushed'])}",
         *(f"• {line}" for line in found),
     ]

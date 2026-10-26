@@ -164,6 +164,30 @@ def test_validate_without_drift_returns_no_findings(config, fake_run):
     assert stages.validate(config, "data/datasets/r") == []
 
 
+def test_slices_reports_the_release_with_its_split_outside_the_stores(config, fake_run):
+    printed = (
+        f"slices: {config.root}/.data/reports/steps-v1.2+abc/slices.json\n"
+        "summary: .data/reports/steps-v1.2+abc/slices.md\n"
+        "  flag absent_from_split: kind=cpu: no rows in the test split\n"
+        "  flag single_class: cgroup_available=false: every row is labeled 'none'\n"
+    )
+    fake_run.responses = [(0, printed, "")]
+    outcome = stages.slices(config, "data/datasets/steps-v1.2+abc", "s.json")
+    assert outcome == stages.SliceOutcome(
+        report=f"{config.root}/.data/reports/steps-v1.2+abc/slices.json", flags=2
+    )
+    (argv,) = fake_run.argvs()
+    assert argv[argv.index("--release") + 1] == "data/datasets/steps-v1.2+abc"
+    assert argv[argv.index("--split") + 1] == "s.json"
+    assert argv[argv.index("--output") + 1] == str(config.root / ".data/reports/steps-v1.2+abc")
+
+
+def test_slices_without_a_report_line_fails(config, fake_run):
+    fake_run.responses = [(0, "summary: s.md\n", "")]
+    with pytest.raises(stages.StageError, match="did not report a 'slices:' line"):
+        stages.slices(config, "data/datasets/r", "s.json")
+
+
 def test_a_timed_out_command_raises(config, monkeypatch):
     def timeout(argv, **kwargs):
         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])

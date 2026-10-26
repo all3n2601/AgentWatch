@@ -19,6 +19,8 @@ def summary(**overrides: object) -> dict[str, object]:
         "leakage": "passed",
         "versioned": True,
         "pushed": True,
+        "slice_report": ".data/reports/r/slices.json",
+        "slice_flags": 4,
     }
     return base | overrides
 
@@ -92,6 +94,7 @@ def test_the_run_message_lists_the_summary_and_every_finding():
     assert "Rows: 63, runs: 9, rejected: 1, new evidence: 2" in message
     assert "Split: s.json (leakage check: passed)" in message
     assert "Versioned: yes, pushed: no" in message
+    assert "Bias slices: 4 flag(s), report .data/reports/r/slices.json" in message
     assert "• first" in message and "• second" in message
 
 

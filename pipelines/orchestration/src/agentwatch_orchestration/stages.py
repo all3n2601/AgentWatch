@@ -34,6 +34,8 @@ RELEASE_PREFIX = "release: "
 REPORT_PREFIX = "report: "
 SPLIT_PREFIX = "split: "
 LEAKAGE_PREFIX = "leakage: "
+SLICES_PREFIX = "slices: "
+FLAG_PREFIX = "  flag "  # the slice report prints each flag indented, as "  flag <kind>: ..."
 DRIFT_PREFIX = "drift "  # the gate prints each drift finding indented, as "  drift <feature>: ..."
 REUSED_SUFFIX = " (reused)"
 # dvc remote default exits 1 with this message when no default remote is set; any other failure
@@ -55,6 +57,7 @@ class PipelineConfig:
     datasets: Path = Path("data/datasets")
     schema: Path = Path("pipelines/validation/schema/steps.pbtxt")
     contract: Path = Path("pipelines/model/evaluation-contract.toml")
+    reports: Path = Path(".data/reports")  # derived reports, outside the versioned stores
     api_url: str | None = None  # also build from runs saved through the ingestion API
     timeout_seconds: int = DEFAULT_STAGE_TIMEOUT_SECONDS
 
@@ -103,6 +106,12 @@ class SplitOutcome:
 
 
 @dataclass(frozen=True)
+class SliceOutcome:
+    report: str
+    flags: int  # slices that crossed a declared threshold; details are in the report
+
+
+@dataclass(frozen=True)
 class RunSummary:
     """What one pipeline run produced, so a run is traceable without reading its logs."""
 
@@ -115,6 +124,8 @@ class RunSummary:
     split: str
     leakage: str
     drift: list[str]  # the gate's drift findings against the previous passing release
+    slice_report: str
+    slice_flags: int
     versioned: bool
     pushed: bool
 
@@ -265,6 +276,20 @@ def split(config: PipelineConfig, release: str) -> SplitOutcome:
         path=path.removesuffix(REUSED_SUFFIX),
         reused=path.endswith(REUSED_SUFFIX),
         leakage=value_after("split", output, LEAKAGE_PREFIX),
+    )
+
+
+def slices(config: PipelineConfig, release: str, split: str) -> SliceOutcome:
+    """Slice the release for bias with its split. Reads the release only, so it can run beside
+    versioning; its report is written outside the versioned stores."""
+    output = str(config.path(config.reports) / Path(release).name)
+    argv = data_command(
+        config, "slices", "--release", release, "--split", split, "--output", output
+    )
+    printed = run_command(config, "slices", argv).stdout
+    return SliceOutcome(
+        report=value_after("slices", printed, SLICES_PREFIX),
+        flags=sum(line.startswith(FLAG_PREFIX) for line in printed.splitlines()),
     )
 
 
