@@ -78,8 +78,10 @@ a separate requirement. Unknown or unsupported readings stay distinct from measu
 
 ## Acceptance and experiment gates
 
-O01 must accept and freeze a versioned contract before any optimization evaluation. The
-following numerical gates are proposals, not measured performance or accepted team policy:
+O01 must accept and freeze a versioned contract before any optimization evaluation. That
+contract is [the optimization contract](optimization-contract.md) (`opt-contract-v1`); it is
+authoritative once accepted. The following numerical gates are proposals, not measured
+performance or accepted team policy:
 
 - Use at least five paired repeated batches and at least 20 completed tasks per configuration
   for tail-latency reporting. Fix inputs, task/model versions, arrivals, test/retrieval state,

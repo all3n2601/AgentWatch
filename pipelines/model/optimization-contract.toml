@@ -1,0 +1,91 @@
+# Policy and evaluation contract for manual concurrency limits, declared before any
+# optimization evaluation. Meaning, rationale and the acceptance record are in
+# docs/optimization-contract.md. Never edit a threshold after seeing evaluation results;
+# change the version instead. Reports identify this file by SHA-256 of its parsed contents
+# as canonical JSON, the same method as eval-contract-v1.
+version = "opt-contract-v1"
+# "proposed" until every team has accepted it; values marked "proposed" have no supporting data.
+status = "proposed"
+
+[policy]
+# Two independent positive-integer limits on future admissions to the designated workload.
+controls = ["inference_requests", "test_jobs"]
+min_limit = 1
+# Enforcement is per runner process; no limit is claimed across runners.
+enforcement_scope = "runner_process"
+# Lowering a limit affects only future admissions; in-flight work is never cancelled.
+lowering_cancels_in_flight = false
+# Every admission queue declares a maximum length and maximum wait in its experiment manifest.
+require_declared_queue_bounds = true
+# The runner has no admission limit today; the manifest records the baseline limits used.
+baseline = "unlimited"
+
+[workload]
+# A batch is a set of tasks submitted together to one runner; batch completion time runs
+# from the first submission to the last terminal task.
+unit = "batch"
+# Development tasks choose settings; frozen evaluation tasks are disjoint and used once.
+require_disjoint_evaluation_tasks = true
+# Proposed.
+min_evaluation_tasks = 2
+conditions = ["clean", "contended"]
+# The contended condition's injector set and intensity, the arrival schedule, and the
+# test and retrieval state are preregistered in the manifest.
+require_preregistered_contention = true
+require_preregistered_arrivals = true
+# Candidate limits are preregistered; a candidate above measured capacity is not run.
+candidate_limits = [1, 2, 4]
+# Each candidate changes one control; factorial runs are reported but never gated in v1.
+change_one_control_at_a_time = true
+factorial_outcome = "not_evaluated"
+
+[repetitions]
+# A pair is one baseline batch and one candidate batch on the same tasks, inputs, hardware
+# and power state, run back to back in a randomized order.
+min_paired_batches = 5
+min_completed_tasks_per_configuration = 20
+order = "randomized_with_recorded_seed"
+require_declared_warmup = true
+# Cold requests are reported separately and excluded from warm comparisons.
+separate_cold_requests = true
+
+[gates]
+# Improvement is gated on the contended condition only.
+improvement_conditions = ["contended"]
+# Relative reduction of the candidate's median batch completion time against baseline.
+min_median_batch_time_reduction = 0.10
+# Proposed. Percentile paired bootstrap over pairs of the median relative reduction, with a
+# recorded seed. The interval must exclude zero; otherwise the improvement gate is inconclusive.
+improvement_interval_excludes_zero = true
+interval_method = "paired_bootstrap_percentile"
+interval_level = 0.95
+bootstrap_resamples = 10000
+# Guardrails, gated on every condition.
+guardrail_conditions = ["clean", "contended"]
+min_throughput_ratio = 0.95
+max_p95_task_latency_ratio = 1.05
+max_new_failures = 0
+max_new_timeouts = 0
+# Quality: no frozen task whose acceptance tests pass at baseline may fail with the candidate.
+max_tasks_newly_failing_acceptance = 0
+# Starvation: any admission wait above the declared maximum wait. Leak: any permit still
+# held after its batch ends.
+max_starved_admissions = 0
+max_leaked_permits = 0
+# Admission overhead with unchanged limits, measured separately from instrumentation overhead.
+max_median_admission_overhead = 0.05
+# Proposed, shared with eval-contract-v1.
+max_median_instrumentation_overhead = 0.05
+# The existing gate in services/agent experiment.py: coefficient of variation of the root
+# step's total duration across baseline batches, at most this value; otherwise every
+# comparison on that baseline is inconclusive.
+max_baseline_cpu_variability = 0.15
+
+[outcomes]
+values = ["pass", "fail", "inconclusive", "not_evaluated"]
+# Each candidate is gated independently; at most one is promoted: the passing candidate
+# with the lowest median batch time, and the smaller limit on a tie.
+max_promoted_candidates = 1
+# Anything other than pass on every gate keeps the baseline limits.
+promote_only_if_all_pass = true
+preserve_every_attempt = true
