@@ -625,6 +625,11 @@ frozen evaluation sets without tuning against them.
 - [ ] Train LightGBM resource classification and latency-fraction regression.
 - [ ] Track data versions, parameters, metrics, and artifacts in MLflow.
 - [ ] Compare models and rules on the same held-out tasks and contention cases.
+  2026-10-26 (M03): `make train-candidates` trains the classifier and regressor on the training
+  split (`training-v1`), compares them with `rules-v1` on identical rows against
+  `eval-contract-v1`, and logs every attempt, including blocked and failed ones, to MLflow
+  ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
+  evaluable release; open until one covering all four classes passes the leakage check.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
 - [ ] Load a versioned registered model in the correlation service.

@@ -110,3 +110,17 @@ def test_main_exits_two_on_a_configuration_error(tmp_path, capsys):
     assert main(args) == 2
     assert "Rule baseline error" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"label_excess_fraction": None}, "not a number from 0 to 1"),
+        ({"label_excess_fraction": 1.5}, "not a number from 0 to 1"),
+        ({"label_resource": "gpu"}, "unknown label"),
+    ],
+)
+def test_rows_with_unusable_labels_are_refused(tmp_path, change, message):
+    loader = fake_loader([], {"train": TRAIN, "test": [row() | change]})
+    with pytest.raises(RowError, match=message):
+        run(tmp_path / "split.json", tmp_path / "out", loader=loader)
