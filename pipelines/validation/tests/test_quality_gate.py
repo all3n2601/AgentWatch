@@ -584,6 +584,13 @@ def test_cli_reports_drift(datasets, release, schema, capsys):
     assert "drift label_resource" in capsys.readouterr().out
 
 
+def test_cli_names_the_durable_result_for_later_stages(release, schema, capsys):
+    assert main(["validate", "--release", str(release), "--schema", str(schema)]) == 0
+    (line,) = [line for line in capsys.readouterr().out.splitlines() if line.startswith("result: ")]
+    result = json.loads(Path(line.removeprefix("result: ")).read_text())
+    assert result["release"] == release.name and result["drift"] == []
+
+
 def test_cli_freezes_a_schema(release, tmp_path, capsys):
     path = tmp_path / "frozen.pbtxt"
     assert main(["freeze-schema", "--release", str(release), "--schema", str(path)]) == 0
