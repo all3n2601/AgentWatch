@@ -42,8 +42,11 @@ leakage check does not pass. The command writes to `.data/rule-baseline/`:
   records this file's SHA-256, and `(run_id, step_id)` must be unique.
 
 `--explore` writes the same two files to `.data/rule-baseline/exploratory/`, so it never
-replaces an evaluated result. Each run first removes its directory's earlier report and
-predictions, so files from different runs never sit side by side.
+replaces an evaluated result. A run that produces a report, blocked or not, first removes its
+directory's earlier report and predictions, so files from different runs never sit side by
+side. A run that stops with an error before that (exit 2) leaves the earlier result in place.
+A blocked `--explore` run also exits 1; its report is under `exploratory/` and says nothing about
+the evaluated split.
 
 | Status | Meaning |
 |---|---|

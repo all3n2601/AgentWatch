@@ -86,13 +86,21 @@ def test_an_exploratory_run_leaves_the_evaluated_result_in_place(tmp_path):
     assert read_report(output / "exploratory")["status"] == "exploratory"
 
 
-def test_a_run_that_stops_on_bad_rows_leaves_no_earlier_outputs(tmp_path):
+def test_a_run_that_stops_on_bad_rows_leaves_the_earlier_result_in_place(tmp_path):
     output = tmp_path / "out"
     run(tmp_path / "split.json", output, loader=fake_loader([]))
+    before = {name: (output / name).read_text() for name in ("report.json", "predictions.jsonl")}
     loader = fake_loader([], {"train": TRAIN, "test": [row(label="gpu")]})
     with pytest.raises(RowError):
         run(tmp_path / "split.json", output, loader=loader)
-    assert not (output / "report.json").exists()
+    assert {name: (output / name).read_text() for name in before} == before
+
+
+def test_a_blocked_run_replaces_an_earlier_evaluated_result(tmp_path):
+    output = tmp_path / "out"
+    run(tmp_path / "split.json", output, loader=fake_loader([]))
+    run(tmp_path / "split.json", output, loader=blocked_loader)
+    assert read_report(output)["status"] == "blocked"
     assert not (output / "predictions.jsonl").exists()
 
 
