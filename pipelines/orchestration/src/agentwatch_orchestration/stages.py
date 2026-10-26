@@ -34,7 +34,7 @@ RELEASE_PREFIX = "release: "
 REPORT_PREFIX = "report: "
 SPLIT_PREFIX = "split: "
 LEAKAGE_PREFIX = "leakage: "
-DRIFT_PREFIX = "drift "  # the gate prints each drift finding indented, as "  drift <feature>: ..."
+RESULT_PREFIX = "result: "
 REUSED_SUFFIX = " (reused)"
 # dvc remote default exits 1 with this message when no default remote is set; any other failure
 # is a broken configuration or environment, which must fail the push rather than skip it.
@@ -235,7 +235,8 @@ def validate(config: PipelineConfig, release: str) -> list[str]:
     """Run the TFDV quality gate; anomalies fail the stage and stop the run.
 
     Drift does not fail the gate. Its findings are returned, one per line, for the run summary
-    and alerts.
+    and alerts. They are read from the gate's durable result, not its printed lines, so a change
+    to the printout cannot silently drop them.
     """
     schema = str(config.path(config.schema))
     output = run_command(
@@ -243,12 +244,17 @@ def validate(config: PipelineConfig, release: str) -> list[str]:
         "validate",
         validation_command(config, "validate", "--release", release, "--schema", schema),
     ).stdout
-    drift = []
-    for line in output.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(DRIFT_PREFIX):
-            drift.append(stripped.removeprefix(DRIFT_PREFIX))
-    return drift
+    return read_gate_drift(config.path(Path(value_after("validate", output, RESULT_PREFIX))))
+
+
+def read_gate_drift(path: Path) -> list[str]:
+    """The drift findings of a gate result the gate just wrote, as "feature: description"."""
+    try:
+        drift = json.loads(path.read_text())["drift"]
+        lines = [f"{item['feature']}: {item['description']}" for item in drift]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise StageError(f"gate result {path} is unreadable: {error}") from error
+    return lines
 
 
 def split(config: PipelineConfig, release: str) -> SplitOutcome:

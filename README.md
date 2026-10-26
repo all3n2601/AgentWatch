@@ -169,8 +169,14 @@ versioned and pushed). The summary is marked ✅ when clean, or ⚠️ with its 
 against the previous passing release, more than `AGENTWATCH_ALERT_MAX_REJECTED_SHARE` of runs
 rejected by the build (default 0.10, declared before collection), a leakage check that did not
 pass, or a version not pushed because no DVC remote is configured. Without a webhook, a failure
-only logs a warning, and the `alert` task lists its findings in its log and is marked skipped,
-so nothing looks delivered when it was not.
+only logs a warning, and the `alert` task lists any findings in its log and is marked skipped,
+so nothing looks delivered when it was not. Invalid alert settings fail the `alert` task without
+retries. Drift is read from the gate's result file, not its printout.
+
+Failure messages include the failing command's stderr tail, so stages must not print secrets
+when they fail. A post is retried up to three times, so a timeout after Slack accepted it can
+show the same message twice. If Slack itself is unreachable, the only record is an error in the
+task log; there is no second channel.
 
 1. In Slack, create an app at <https://api.slack.com/apps> → **Incoming Webhooks** → turn on →
    **Add New Webhook to Workspace** → pick the alerts channel, and copy the URL.

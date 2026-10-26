@@ -164,6 +164,35 @@ def test_findings_are_skipped_not_sent_without_a_webhook(
     assert run.get_task_instance("alert").state == "skipped"
 
 
+def test_a_clean_run_is_skipped_not_succeeded_without_a_webhook(
+    dag, metadata_database, stubbed_stages, monkeypatch
+):
+    from agentwatch_orchestration import alerts, stages
+
+    monkeypatch.delenv(alerts.SLACK_WEBHOOK_ENV, raising=False)
+    built = stages.BuildOutcome(
+        release="data/datasets/steps-v1.2+abc", report="b.json", rows=7, runs=2, runs_rejected=0
+    )
+    monkeypatch.setattr(stages, "build", lambda _config: built)
+    monkeypatch.setattr(stages, "validate", lambda _config, _release: [])
+    monkeypatch.setattr(stages, "remote_configured", lambda _config: True)
+    monkeypatch.setattr(stages, "push", lambda _config: None)
+    run = dag.test(run_conf={"run_dirs": []})
+    assert run.get_task_instance("alert").state == "skipped"
+
+
+def test_invalid_alert_settings_fail_the_alert_without_retrying(
+    dag, metadata_database, stubbed_stages, monkeypatch
+):
+    from agentwatch_orchestration import alerts
+
+    monkeypatch.setenv(alerts.SLACK_WEBHOOK_ENV, "http://hooks.slack.invalid/x")
+    run = dag.test(run_conf={"run_dirs": []})
+    alert = run.get_task_instance("alert")
+    assert alert.state == "failed"
+    assert alert.try_number == 1
+
+
 def test_a_failed_task_alerts_slack_and_stops_the_run(
     dag, metadata_database, stubbed_stages, slack, monkeypatch
 ):
