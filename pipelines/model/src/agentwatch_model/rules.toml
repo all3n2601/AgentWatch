@@ -1,0 +1,17 @@
+# rules-v1: threshold rules naming the resource a step waited on, from steps-v1.2 features.
+# Thresholds are proposed, declared before any evaluation, and never tuned on the test split.
+# Any change to a value changes the rules version hash, so retuned rules are never silent.
+version = "rules-v1"
+
+# A step is attributed to cpu_sandbox when any measured CPU signal reaches its threshold.
+# Missing or unreadable readings never fire a rule.
+[cpu_sandbox]
+# Share of the step spent waiting for a worker before it started.
+min_queue_fraction = 0.5
+# Max host CPU PSI "some" avg10 (%) in the step window, when PSI was readable.
+min_cpu_pressure_avg10 = 20.0
+# cgroup v2 throttled time as a share of the step's duration, when it was measured.
+min_throttled_fraction = 0.1
+
+# steps-v1.2 has no feature that measures inference or retrieval waiting, so rules-v1 never
+# predicts those classes; evaluation reports them as uncovered rather than guessing.
