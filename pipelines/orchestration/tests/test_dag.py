@@ -133,6 +133,25 @@ def test_a_run_passes_the_built_release_and_summarizes_after_a_skipped_push(
     assert "Release: data/datasets/steps-v1.2+abc" in message
     assert "rejected 1 of 3 runs" in message
     assert "Drift against the previous passing release: kind: distance 0.3" in message
+    assert "The version was not pushed" in message
+
+
+def test_a_clean_run_posts_its_summary(dag, metadata_database, stubbed_stages, slack, monkeypatch):
+    from agentwatch_orchestration import stages
+
+    built = stages.BuildOutcome(
+        release="data/datasets/steps-v1.2+abc", report="b.json", rows=7, runs=2, runs_rejected=0
+    )
+    monkeypatch.setattr(stages, "build", lambda _config: built)
+    monkeypatch.setattr(stages, "validate", lambda _config, _release: [])
+    monkeypatch.setattr(stages, "remote_configured", lambda _config: True)
+    monkeypatch.setattr(stages, "push", lambda _config: None)
+    run = dag.test(run_conf={"run_dirs": []})
+    assert run.get_task_instance("push").state == "success"
+    assert run.get_task_instance("alert").state == "success"
+    (message,) = slack
+    assert "finished cleanly" in message
+    assert "pushed: yes" in message
 
 
 def test_findings_are_skipped_not_sent_without_a_webhook(

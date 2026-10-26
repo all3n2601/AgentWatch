@@ -13,8 +13,12 @@ def summary(**overrides: object) -> dict[str, object]:
         "build_report": "data/datasets/reports/b.json",
         "runs": 9,
         "runs_rejected": 1,
+        "rows": 63,
+        "evidence_added": 2,
         "split": "s.json",
         "leakage": "passed",
+        "versioned": True,
+        "pushed": True,
     }
     return base | overrides
 
@@ -75,11 +79,27 @@ def test_each_drift_line_is_a_finding():
     ]
 
 
-def test_the_findings_message_names_the_release_and_every_finding():
-    message = alerts.findings_message(summary(), ["first", "second"])
+def test_a_version_that_was_not_pushed_is_a_finding():
+    (finding,) = alerts.findings(summary(pushed=False), [], 0.10)
+    assert "not pushed" in finding
+
+
+def test_the_run_message_lists_the_summary_and_every_finding():
+    message = alerts.run_message(summary(pushed=False), ["first", "second"])
+    assert message.startswith(":warning:")
     assert "2 finding(s)" in message
     assert "Release: data/datasets/steps-v1.2+abc" in message
+    assert "Rows: 63, runs: 9, rejected: 1, new evidence: 2" in message
+    assert "Split: s.json (leakage check: passed)" in message
+    assert "Versioned: yes, pushed: no" in message
     assert "• first" in message and "• second" in message
+
+
+def test_a_clean_run_message_says_so_without_bullets():
+    message = alerts.run_message(summary(), [])
+    assert message.startswith(":white_check_mark:")
+    assert "finished cleanly" in message
+    assert "•" not in message
 
 
 def test_a_failure_message_keeps_only_the_errors_tail_and_links_the_log():

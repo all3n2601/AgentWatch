@@ -6,8 +6,9 @@ Without it, alerts are not sent and the pipeline logs that they were not, so a m
 configuration is visible rather than silently treated as "nothing to report".
 
 A run can succeed and still need a person's attention: drift against the previous passing
-release, too many runs rejected by the build, or a leakage check that did not pass. These are
-findings, reported after the run summary. Thresholds are declared here, before data is
+release, too many runs rejected by the build, a leakage check that did not pass, or a version
+that was not pushed to a DVC remote. These are findings, reported with the run summary; a run
+without findings still posts its summary, so a quiet channel never stands in for a clean run. Thresholds are declared here, before data is
 collected; they must not be tuned to silence an alert.
 
 This module does not import Airflow, so it is tested without it.
@@ -122,16 +123,38 @@ def findings(
             f"split {summary['split']}"
         )
     found.extend(f"Drift against the previous passing release: {line}" for line in drift)
+    # A failed push fails its task (and alerts as a failure), so here it was skipped: DVC has
+    # no default remote, and nobody else can pull this version.
+    if summary["pushed"] is not True:
+        found.append(
+            "The version was not pushed: no DVC remote is configured, so it exists only in "
+            "this checkout's DVC cache"
+        )
     return found
 
 
-def findings_message(summary: Mapping[str, object], found: Sequence[str]) -> str:
+def run_message(summary: Mapping[str, object], found: Sequence[str]) -> str:
+    """The run summary, headed by its outcome, with one bullet per finding."""
+    if found:
+        heading = f":warning: AgentWatch dataset run finished with {len(found)} finding(s)"
+    else:
+        heading = ":white_check_mark: AgentWatch dataset run finished cleanly"
     lines = [
-        f":warning: AgentWatch dataset run finished with {len(found)} finding(s)",
+        heading,
         f"Release: {summary['release']}",
+        (
+            f"Rows: {summary['rows']}, runs: {summary['runs']}, "
+            f"rejected: {summary['runs_rejected']}, new evidence: {summary['evidence_added']}"
+        ),
+        f"Split: {summary['split']} (leakage check: {summary['leakage']})",
+        f"Versioned: {_yes_no(summary['versioned'])}, pushed: {_yes_no(summary['pushed'])}",
         *(f"• {line}" for line in found),
     ]
     return "\n".join(lines)
+
+
+def _yes_no(value: object) -> str:
+    return "yes" if value is True else "no"
 
 
 def failure_message(

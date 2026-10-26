@@ -12,8 +12,8 @@ would repeat the same failure, and the gate's anomalies must stop the run rather
 retried away. One run at a time, because versioning snapshots the whole stores.
 
 Alerts go to Slack (agentwatch_orchestration.alerts): every task's final failure, and, after
-the summary, findings of a run that otherwise succeeded (drift, too many rejected runs, a
-leakage check that did not pass). Posting an alert is retried; Slack is a network service.
+the summary, the run's summary with any findings of a run that otherwise succeeded (drift, too
+many rejected runs, a leakage check that did not pass, a version that was not pushed). Posting an alert is retried; Slack is a network service.
 """
 
 import logging
@@ -172,17 +172,19 @@ def agentwatch_dataset():
         if not isinstance(drift, list):
             raise alerts.AlertError(f"run summary drift must be a list, got {drift!r}")
         found = alerts.findings(summary, [str(line) for line in drift], settings.max_rejected_share)
-        if not found:
-            logger.info("No findings to alert on")
-            return found
         for line in found:
             logger.warning("Finding: %s", line)
         if settings.webhook_url is None:
+            if not found:
+                logger.info(
+                    "No findings; summary not sent because %s is not set", alerts.SLACK_WEBHOOK_ENV
+                )
+                return found
             raise AirflowSkipException(
                 f"{len(found)} finding(s) not sent to Slack because {alerts.SLACK_WEBHOOK_ENV} "
                 "is not set; they are listed in this task's log"
             )
-        alerts.send_slack(settings.webhook_url, alerts.findings_message(summary, found))
+        alerts.send_slack(settings.webhook_url, alerts.run_message(summary, found))
         return found
 
     added = acquire()

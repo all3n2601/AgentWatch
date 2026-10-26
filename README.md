@@ -164,11 +164,13 @@ does not commit the updated `data/*.dvc` files; commit them yourself after a run
 ### Slack alerts
 
 The DAG posts to a Slack incoming webhook when any task fails for good (with its error tail and
-log link), and when a run that succeeded still has findings: drift against the previous passing
-release, more than `AGENTWATCH_ALERT_MAX_REJECTED_SHARE` of runs rejected by the build (default
-0.10, declared before collection), or a leakage check that did not pass. Without a webhook, a
-failure only logs a warning, and the `alert` task lists its findings in its log and is marked
-skipped, so nothing looks delivered when it was not.
+log link), and posts every successful run's summary (release, rows, runs, rejections, split,
+versioned and pushed). The summary is marked ✅ when clean, or ⚠️ with its findings: drift
+against the previous passing release, more than `AGENTWATCH_ALERT_MAX_REJECTED_SHARE` of runs
+rejected by the build (default 0.10, declared before collection), a leakage check that did not
+pass, or a version not pushed because no DVC remote is configured. Without a webhook, a failure
+only logs a warning, and the `alert` task lists its findings in its log and is marked skipped,
+so nothing looks delivered when it was not.
 
 1. In Slack, create an app at <https://api.slack.com/apps> → **Incoming Webhooks** → turn on →
    **Add New Webhook to Workspace** → pick the alerts channel, and copy the URL.

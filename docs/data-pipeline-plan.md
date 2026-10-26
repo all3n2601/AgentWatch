@@ -84,7 +84,7 @@ one to the pipeline and plans what is missing; the roadmap steps above own the w
 | Error handling and logging | Every stage rejects untrustworthy input with a reason; build reports and gate results are durable records; Python logging; each Airflow task logs its command's output and fails with the exit code and stderr tail | Done |
 | Code style (PEP 8) | Ruff on every PR | Done |
 | Airflow DAG for the whole workflow | `agentwatch_dataset`: acquire → build → validate → split → version → push → summarize, run end to end on the shared 50-run release and with new recorded runs | Done (2026-10-24) |
-| Alerts (email or Slack) for errors and anomalies | Slack incoming webhook: every task's final failure, and drift, rejected-run share, and leakage findings after the summary (`agentwatch_orchestration.alerts`) | Done (2026-10-25); delivery to the team workspace not yet shown |
+| Alerts (email or Slack) for errors and anomalies | Slack incoming webhook: every task's final failure, and each successful run's summary with its drift, rejected-run share, leakage, and unpushed-version findings (`agentwatch_orchestration.alerts`) | Done (2026-10-25); delivered to a real channel 2026-10-26 |
 | Pipeline flow optimization with Airflow's Gantt chart | Not built | Step 11, once the DAG runs |
 | Bias detection and mitigation through data slicing | Not built | Step 12 |
 | README: setup, run, structure, DVC | The README has an Airflow section (setup, `make pipeline-run`, configuration); the course-layout mapping and DVC pull steps are not written yet | Partial |
