@@ -1,12 +1,13 @@
 """Slice a dataset release to find where its data is skewed, and say how to mitigate it.
 
     python -m agentwatch_data.slices --release data/datasets/<version> [--split <split file>]
+    python -m agentwatch_data.slices --release data/datasets/<version> --newest-split
 
 The dataset has no demographic attributes. Its slices are the attributes along which the data,
 or a model trained on it, could be skewed: the task, the experiment kind, the label, the
 condition and injection method, the agent model, the source, the telemetry status, and the
-availability of PSI and cgroup readings (which also stands in for the host platform: macOS
-has neither).
+availability of PSI and cgroup readings. Availability is not the host platform: Linux hosts can
+lack cgroup readings too, so a slice without them is not a macOS slice.
 
 For each slice the report records its rows, runs, and share of the release; its label balance;
 how often each nullable reading is missing (missing stays distinct from a measured zero); its
@@ -35,7 +36,7 @@ import pyarrow.parquet as pq
 
 from agentwatch_data.build import DATASET_FILE
 from agentwatch_data.files import json_text, write_atomic
-from agentwatch_data.splits import SPLITS
+from agentwatch_data.splits import GROUP_KEYS, SPLITS, SPLITS_DIR
 
 SLICE_METHOD = "slices-v1"  # bump when attributes, metrics, or thresholds change
 ATTRIBUTES = (
@@ -55,16 +56,21 @@ NO_RESOURCE = "none"  # the label of a step no resource slowed
 RULE = "rule_prediction"
 # Nullable readings: null means the reading was missing or unsupported, never zero.
 READINGS = ("telemetry_coverage", "cpu_pressure_max_avg10", "cgroup_throttled_usec_delta")
-REQUIRED_COLUMNS = ("run_id", RULE, *ATTRIBUTES, *READINGS)
+REQUIRED_COLUMNS = tuple(dict.fromkeys(("run_id", RULE, *ATTRIBUTES, *READINGS, *GROUP_KEYS)))
 # condition and injection_method decide the label by design (contended runs are the positives),
 # so single-class slices and label-rate gaps across them are expected, not bias; the target
 # cannot be compared with itself.
 LABEL_GAP_EXEMPT = (TARGET, "condition", "injection_method")
+# They also split the rows exactly as the label does, so their missing-readings gaps repeat the
+# label's; the label alone reports them, so one finding is not counted three times.
+MISSING_GAP_EXEMPT = ("condition", "injection_method")
 # An availability flag defines whether its reading is missing, so that gap is a tautology.
 READING_AVAILABILITY = {
     "cpu_pressure_available": "cpu_pressure_max_avg10",
     "cgroup_available": "cgroup_throttled_usec_delta",
 }
+# Slice values share one namespace with these markers and with "true"/"false" for booleans;
+# an attribute whose real values could equal one of them would need distinct markers.
 UNRECORDED = "(unrecorded)"  # a null attribute, such as agent_model on non-agent runs
 UNASSIGNED = "unassigned"  # rows whose task the split file does not place
 EXCLUDED = "excluded"  # rows of runs the split excluded (a source not allowed in test)
@@ -110,15 +116,17 @@ class SliceError(RuntimeError):
 
 @dataclass(frozen=True)
 class Assignment:
-    """Where a split file put each row: by its task, unless its run was excluded."""
+    """Where a split file put each row: by its group (the split's group key), unless its run
+    was excluded."""
 
     groups: dict[str, str]
     excluded_runs: frozenset[str]
+    group_key: str = GROUP_KEYS[0]
 
     def split_of(self, row: dict[str, object]) -> str:
         if row["run_id"] in self.excluded_runs:
             return EXCLUDED
-        return self.groups.get(str(row["task_id"]), UNASSIGNED)
+        return self.groups.get(str(row[self.group_key]), UNASSIGNED)
 
 
 @dataclass(frozen=True)
@@ -148,16 +156,33 @@ def load_assignment(split: Path, release: Path) -> Assignment:
         document = json.loads(split.read_text())
         groups = document["groups"]
         split_release = document["release"]
+        group_key = document["contract"]["group_key"]
         excluded_runs = frozenset(str(run["run_id"]) for run in document["excluded_runs"])
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise SliceError(f"split file {split} is unreadable: {error}") from error
     if split_release != release.name:
         raise SliceError(f"split file {split} is for {split_release}, not {release.name}")
-    if not isinstance(groups, dict) or not all(
-        isinstance(task, str) and name in SPLITS for task, name in groups.items()
+    if group_key not in GROUP_KEYS:
+        raise SliceError(f"split file {split} groups by {group_key!r}, not one of {GROUP_KEYS}")
+    # An empty assignment would leave every row unassigned: a report that looks computed but
+    # places nothing.
+    if (
+        not isinstance(groups, dict)
+        or not groups
+        or not all(isinstance(task, str) and name in SPLITS for task, name in groups.items())
     ):
         raise SliceError(f"split file {split} has an invalid task assignment")
-    return Assignment(groups, excluded_runs)
+    return Assignment(groups, excluded_runs, group_key)
+
+
+def newest_split(release: Path) -> Path | None:
+    """The most recently written split file of a release in its datasets store, if any."""
+    directory = release.parent / SPLITS_DIR / release.name
+    try:
+        candidates = [(path.stat().st_mtime, path) for path in directory.glob("*.json")]
+    except OSError as error:
+        raise SliceError(f"split directory {directory} is unreadable: {error}") from error
+    return max(candidates)[1] if candidates else None
 
 
 def slice_value(value: object) -> str:
@@ -234,7 +259,7 @@ def flags_for(attribute: str, slices: dict[str, dict], split_rows: Counter | Non
                 f"(gap {gap:.1%}, declared maximum {MAX_POSITIVE_RATE_GAP:.0%})",
             )
     for reading in READINGS:
-        if READING_AVAILABILITY.get(attribute) == reading:
+        if attribute in MISSING_GAP_EXEMPT or READING_AVAILABILITY.get(attribute) == reading:
             continue
         rates = {value: described["missing_rate"][reading] for value, described in slices.items()}
         gap = max(rates.values()) - min(rates.values())
@@ -289,6 +314,18 @@ def analyze(rows: list[dict[str, object]], release: str, splits: Assignment | No
     }
 
 
+def flag_location(flag: dict, separator: str) -> str:
+    """Where a flag applies: one slice of an attribute, or the attribute as a whole."""
+    if flag["value"] is None:
+        return flag["attribute"]
+    return f"{flag['attribute']}{separator}{flag['value']}"
+
+
+def table_cell(text: str) -> str:
+    """Text that stays inside one Markdown table cell."""
+    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
 def markdown(report: dict) -> str:
     lines = [
         f"# Slices of {report['release']}",
@@ -302,7 +339,7 @@ def markdown(report: dict) -> str:
     if not report["flags"]:
         lines.append("No slice crossed a declared threshold.")
     for flag in report["flags"]:
-        where = f"{flag['attribute']} = {flag['value']}" if flag["value"] else flag["attribute"]
+        where = flag_location(flag, " = ")
         lines.append(f"- **{flag['kind']}** — {where}: {flag['detail']}. {flag['mitigation']}")
     for attribute, analysis in report["attributes"].items():
         has_splits = report["split_rows"] is not None
@@ -314,7 +351,7 @@ def markdown(report: dict) -> str:
                 f"{reading} {rate:.0%}" for reading, rate in described["missing_rate"].items()
             )
             cells = [
-                value,
+                table_cell(value),
                 str(described["rows"]),
                 f"{described['share']:.1%}",
                 f"{described['positive_rate']:.1%}",
@@ -339,30 +376,41 @@ def slice_release(release: Path, split: Path | None, output: Path) -> SliceRepor
     splits = load_assignment(split, release) if split is not None else None
     report = analyze(rows, release.name, splits)
     json_path, markdown_path = output / "slices.json", output / "slices.md"
-    write_atomic(json_path, json_text(report))
-    write_atomic(markdown_path, markdown(report))
+    try:
+        write_atomic(json_path, json_text(report))
+        write_atomic(markdown_path, markdown(report))
+    except OSError as error:
+        # Never leave this run's JSON beside an older run's Markdown.
+        json_path.unlink(missing_ok=True)
+        raise SliceError(f"the report could not be written to {output}: {error}") from error
     return SliceReport(report, json_path, markdown_path)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--release", type=Path, required=True)
-    parser.add_argument("--split", type=Path, help="a split file of this release")
+    choice = parser.add_mutually_exclusive_group()
+    choice.add_argument("--split", type=Path, help="a split file of this release")
+    choice.add_argument(
+        "--newest-split",
+        action="store_true",
+        help="use the release's most recently written split file, if it has one",
+    )
     parser.add_argument(
         "--output", type=Path, help="report directory (default: .data/reports/<release>)"
     )
     args = parser.parse_args(argv)
     output = args.output or Path(".data/reports") / args.release.name
     try:
-        result = slice_release(args.release, args.split, output)
+        split = newest_split(args.release) if args.newest_split else args.split
+        result = slice_release(args.release, split, output)
     except SliceError as error:
         print(f"Slicing failed: {error}", file=sys.stderr)
         return 1
     print(f"slices: {result.json_path}")
     print(f"summary: {result.markdown_path}")
     for flag in result.report["flags"]:
-        where = f"{flag['attribute']}={flag['value']}" if flag["value"] else flag["attribute"]
-        print(f"  flag {flag['kind']}: {where}: {flag['detail']}")
+        print(f"  flag {flag['kind']}: {flag_location(flag, '=')}: {flag['detail']}")
     return 0
 
 

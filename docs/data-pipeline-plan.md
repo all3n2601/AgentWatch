@@ -156,8 +156,8 @@ model could be skewed:
 - agent model;
 - source;
 - telemetry status;
-- availability of PSI and cgroup readings, which also stands in for the host platform: macOS
-  has neither.
+- availability of PSI and cgroup readings. This is not the host platform: Linux hosts can lack
+  cgroup readings too.
 
 - **Data level, from the first release:** for each slice, its share of rows, its label balance,
   its missing readings and telemetry coverage, and its counts in each split. Slices below
