@@ -1,0 +1,15 @@
+[project]
+name = "agentwatch-model"
+version = "0.1.0"
+description = "AgentWatch attribution models: rule baseline evaluation against the evaluation contract"
+requires-python = ">=3.13,<3.15"
+dependencies = [
+    "agentwatch-data",
+]
+
+[tool.uv.sources]
+agentwatch-data = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

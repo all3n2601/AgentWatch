@@ -617,6 +617,10 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
 - [ ] Evaluate the expanded rule baseline before training the learned model.
+  2026-10-26 (M02): `make rule-baseline` evaluates `rules-v1` against `eval-contract-v1`
+  ([rule baseline](rule-baseline.md), `pipelines/model/tests`). On the interim
+  `steps-v1.2+5954f97ef8b2` split it reports blocked by the leakage check, with no metrics.
+  Open until a release covering all four classes and mixed contention passes that check.
 
 **Exit test:** Rebuild labels and features from recorded evidence. Validate schema, missingness,
 class balance, baseline noise, split independence, and feature leakage. Report rule metrics on the

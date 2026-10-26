@@ -8,6 +8,7 @@ members = [
     "agentwatch-data",
     "agentwatch-features",
     "agentwatch-injectors",
+    "agentwatch-model",
     "agentwatch-python-workspace",
     "agentwatch-sandbox",
     "agentwatch-sdk",
@@ -69,6 +70,17 @@ requires-dist = [
 name = "agentwatch-injectors"
 version = "0.1.0"
 source = { editable = "services/injectors" }
+
+[[package]]
+name = "agentwatch-model"
+version = "0.1.0"
+source = { editable = "pipelines/model" }
+dependencies = [
+    { name = "agentwatch-data" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "agentwatch-data", editable = "pipelines/data" }]
 
 [[package]]
 name = "agentwatch-python-workspace"
