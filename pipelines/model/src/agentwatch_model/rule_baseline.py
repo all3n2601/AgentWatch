@@ -20,7 +20,7 @@ from agentwatch_data.splits import SplitError, load_split
 
 from agentwatch_model.contract import DEFAULT_CONTRACT, ContractError, load_contract
 from agentwatch_model.metrics import CLASSES, is_number
-from agentwatch_model.report import blocked_report, build_report
+from agentwatch_model.report import blocked_report, build_report, dataset_version
 from agentwatch_model.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 
 # pipelines/validation/schema/steps.pbtxt beside this package's source tree. This default holds
@@ -69,9 +69,12 @@ def validate_rows(rows: list[dict], split: str) -> None:
 
 
 def validate_dataset_version(rows: list[dict]) -> None:
-    versions = sorted({row["dataset_version"] for row in rows})
-    if len(versions) > 1:
-        raise RowError(f"Rows come from more than one dataset version: {versions}")
+    # report.dataset_version holds the one implementation of this check; here its failure
+    # becomes a row error, so every caller refuses mixed releases the same way.
+    try:
+        dataset_version(rows)
+    except ValueError as error:
+        raise RowError(str(error)) from error
 
 
 def prediction_records(

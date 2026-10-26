@@ -47,6 +47,9 @@ leakage check does not pass. The command writes to `.data/rule-baseline/`:
 | `blocked` | `load_split` refused the split; the reason is recorded, with no metrics or predictions; exit code 1 |
 | `exploratory` | Run with `--explore`, which skips only the leakage check and scores the validation split, so test results cannot steer later threshold changes; no gate is evaluated |
 
+Consumers should branch on `status`. `evaluation` is false and no gate passes in both blocked
+and exploratory reports, and an exploratory report has metrics while a blocked one does not.
+
 A malformed rules or contract file (including contract classes that differ from the dataset's),
 or a split row that is missing a required field, repeats a step, has an unknown label or an
 excess fraction outside 0 to 1, or comes from a different dataset version than the other rows,
