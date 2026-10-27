@@ -244,3 +244,22 @@ def test_overhead_failure_with_refused_records_exits_five(tmp_path, monkeypatch)
     server.ingest = refuse_one_step
     overhead = overhead_with(server, tmp_path, monkeypatch)
     assert overhead() == cli.EXIT_RECORDS_REFUSED
+
+
+def test_sampling_overhead_reads_one_dcgm_identity_for_every_request(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_measure(task, model, chat, output_dir, *, service_probes=None):
+        captured["probes"] = service_probes
+        return {"status": "failed", "error": "not measured in this test"}
+
+    monkeypatch.setattr(cli, "measure_sampling_overhead", fake_measure)
+    argv = ["sampling-overhead", "--model-backend", "vllm", "--output-dir", str(tmp_path)]
+    argv += ["--dcgm-url", "http://127.0.0.1:9400/metrics"]
+    assert cli.main(argv) == cli.EXIT_FAILED
+    server = cli.ResourceRegistration(
+        resource_id="model-server-1", service_id="vllm", resource_class="inference"
+    )
+    first, second = captured["probes"](server), captured["probes"](server)
+    assert [p.resource.service_id for p in first] == ["vllm", "nvidia-dcgm"]
+    assert first[1].resource.resource_id == second[1].resource.resource_id

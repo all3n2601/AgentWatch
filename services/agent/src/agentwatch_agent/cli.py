@@ -706,18 +706,19 @@ def sampling_overhead_command(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     output_dir = default_output_dir(args.output_dir, task)
     model = build_model(args)
+    # One identity for the whole measurement: every sampled request reads the same device.
+    dcgm_gpu = ResourceRegistration(
+        resource_id=f"gpu-dcgm-{uuid4().hex[:12]}",
+        service_id="nvidia-dcgm",
+        resource_class="inference",
+    )
 
     def service_probes(server: ResourceRegistration) -> list[Probe]:
         probes: list[Probe] = []
         if model.backend == "vllm":
             probes.append(vllm_probe(server, model.endpoint, model.name))
         if args.dcgm_url is not None:
-            gpu = ResourceRegistration(
-                resource_id=f"gpu-dcgm-{uuid4().hex[:12]}",
-                service_id="nvidia-dcgm",
-                resource_class="inference",
-            )
-            probes.append(dcgm_probe(gpu, args.dcgm_url))
+            probes.append(dcgm_probe(dcgm_gpu, args.dcgm_url))
         return probes
 
     with_services = model.backend == "vllm" or args.dcgm_url is not None
