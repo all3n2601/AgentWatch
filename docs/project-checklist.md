@@ -393,6 +393,17 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   2026-10-24 (A04): NVML GPU gauges and per-call Ollama request timing
   (`ollama-request-timing-v1`) on the laptop; the inference queue is recorded as unavailable
   because Ollama reports none. vLLM and DCGM are not installed there and remain open.
+  2026-10-27 (M2, [ADR 0007](adr/0007-vllm-request-traces-and-server-metrics.md),
+  [M2 record](gpu-measurement-access.md#m2-vllm-request-traces-server-metrics-and-dcgm-october-27-2026)):
+  optional Compose vLLM v0.32.0 (`Qwen3-1.7B` BF16) runs on the laptop's GPU. Each model call's
+  own queue, prefill and decode time is vLLM's request span, joined to the step by trace
+  context (`vllm-request-trace-v1`), and its `/metrics` are sampled as 16 server-wide
+  `inference.vllm.*` metrics; streamed calls record the runner's time to first output. Under
+  bounded inference contention (`competing-openai-chat-v1`) the runner's requests waited
+  842–1,096 ms in vLLM's queue against 0.02–0.08 ms clean, with prefill and decode unchanged.
+  DCGM 4.5.2 runs too: device fields are measured, while its profiling fields read N/A on this
+  GPU (NVML GPM status 19) and are recorded `unavailable`. Sampling overhead was +0.6% and
+  +1.7% in two attempts (no budget applied). Open until review and merge.
 - [ ] Add retrieval telemetry from Qdrant requests and queue/service latency where observable.
   No retrieval metric is registered; retrieval is in-process BM25. 2026-10-24 (A04): each
   search records `retrieval-timing-v1` (service time apart from dispatch, index queue
@@ -411,6 +422,8 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   and cleaned up on request ([A05 record](gpu-measurement-access.md#a05-bounded-injectors-and-replay-experiment-october-25-2026)).
   The retrieval flood also slows the runner's other threads, including its sampler (0.30–0.39 s
   median instead of 0.25 s), so it is not retrieval-exclusive. Open until review and merge.
+  2026-10-27 (M2): the inference injector also loads a loopback vLLM server
+  (`competing-openai-chat-v1`, same bounds); one real contended replay confirmed its cleanup.
 
 **Exit test:** Known isolated workloads exercise each resource and a clean control. Measurements
 and attribution identify the affected class. Real GPU validation uses real inference hardware;

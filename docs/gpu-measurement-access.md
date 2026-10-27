@@ -18,7 +18,9 @@ A04 sampler that does is [described below](#a04-gpu-and-inference-telemetry-reco
 
 Docker GPU passthrough works (`docker run --gpus all … nvidia-smi`). vLLM was not installed or
 tested; its support for this GPU remains unverified. The plan's 7B FP16 model would not fit in
-8 GiB; a quantized or smaller model is required on this machine.
+8 GiB; a quantized or smaller model is required on this machine. Since October 27, vLLM v0.32.0
+serves `Qwen3-1.7B` BF16 on this GPU under WSL2, and DCGM's device fields work
+([the M2 record](#m2-vllm-request-traces-server-metrics-and-dcgm-october-27-2026)).
 
 ## Reproducible setup
 
@@ -67,7 +69,9 @@ Without `AGENTWATCH_LLM_GPU=1`, `make llm-up` starts the unchanged CPU-only serv
 ## Unavailable signals and measurement boundaries
 
 - DCGM (`dcgmi`, `nv-hostengine`) is not installed; DCGM support on WSL2 is unconfirmed.
-- vLLM queue and request metrics are unavailable because vLLM is not installed.
+  (Since October 27 it runs in Docker; its profiling fields read N/A on this device.)
+- vLLM queue and request metrics are unavailable because vLLM is not installed. (Since
+  October 27, the optional vLLM service measures both; see the M2 record.)
 - Per-process GPU accounting is unavailable. In WSL, `--query-compute-apps` lists a PID with
   process name `[Not Found]` and memory `[N/A]`; Windows `nvidia-smi` names host processes but
   also reports their GPU memory as `[N/A]`.
@@ -230,6 +234,7 @@ inference timing; that is not evidence of zero overhead, and live delivery is ex
 
 Not established: DCGM, vLLM queue metrics, per-process GPU use, retrieval latency beyond
 in-process BM25, L4/GCP hardware, behavior under GPU contention, and a non-WSL Linux host.
+(DCGM device fields and vLLM queue metrics were measured later; see the M2 record.)
 Hosts without NVML are covered by unit tests only (`unsupported`, never zero). The
 evidence is in `.data/a04-20261024/` on the GPU laptop and in
 `C:\Users\benoy\AgentWatch-evidence\a04-2026-10-24\`, with the protocol, host conditions,
@@ -397,6 +402,110 @@ themselves, contention labels (D02), and retrieval contention that does not also
 runner process. Evidence is in `.data/agent-experiments/` on the GPU laptop and in
 `C:\Users\benoy\AgentWatch-evidence\a05-2026-10-25\` (`attempt1-api-without-cpu-counters/`,
 `attempt2/`, `attempt3-first-review-fixes/`, `attempt4-final-code/`), with `SHA256SUMS`.
+
+## M2: vLLM request traces, server metrics and DCGM (October 27, 2026)
+
+[ADR 0007](adr/0007-vllm-request-traces-and-server-metrics.md) adds vLLM as an optional model
+server whose per-request queue wait is measured, its `/metrics` as model-server samples,
+streamed model calls timed on the runner's clock, and optional DCGM device fields. Protocol
+`m2-vllm-inference-evidence-v1` was declared in writing before measuring (parts A–D and
+plumbing-only checks below). Every attempt is kept.
+
+Conditions: branch `feature/vllm-inference-queue-telemetry` at `7a0e8ed` (parts A, B, C
+attempt 1) and `f5e89ed` (C attempt 2, D). Services from `deploy/compose/compose.yaml`:
+vLLM v0.32.0 (`vllm/vllm-openai@sha256:6ee13335…`) serving `Qwen/Qwen3-1.7B` BF16 at revision
+`70d244cc`, `--max-model-len 4096`, `--gpu-memory-utilization 0.6`, `--max-num-seqs 2`, prefix
+caching on (default); OpenTelemetry Collector 0.162.0; dcgm-exporter 4.5.2-4.8.1 at 250 ms.
+Live API from the branch on `:8091` against the dev database (no migrations on the branch).
+Windows: Balanced power scheme, AC power, CPU load 12–42% before the parts; WSL load average
+0.6–1.0, CPU PSI `some avg10` 0.00.
+
+**Serving on the laptop.** vLLM's first start took about 4.5 minutes (61 s loading 3.78 GiB of
+downloaded weights, 29 s `torch.compile`, about 2 minutes capturing CUDA graphs). The restart
+before the protocol, with weights cached, took about 4.6 minutes (24 s loading, 206 s engine
+initialization): its new compile-cache volume was still empty, so the cache's effect on later
+restarts is not measured. Model loading took 3.22 GiB; the KV cache got
+0.79 GiB, 7,376 tokens (1.80 concurrent 4,096-token requests). Device memory used was
+5,206 MiB of 8,151 with vLLM loaded, so Ollama (about 2.2 GiB) cannot run beside it.
+
+**DCGM.** Measured before the protocol on October 27 (kept as `pre-protocol-dcgm-probe/`):
+dcgm-exporter initializes DCGM on this GPU under WSL2 and exports device fields (SM and memory
+clocks, power, a cumulative energy counter, temperature, utilization, memory-copy utilization,
+framebuffer). The profiling (DCP) fields are listed by `dcgmi profile -l` but read N/A in
+`dcgmi dmon`, and the host engine logs `Got nvml st 19 from NvmlGpmSampleGet()` for each; the
+exporter omits them, also with `SYS_ADMIN`. The runner records them `unavailable`. In every
+protocol run, the four DCGM device metrics were `measured` and the four profiling metrics
+`unavailable` in every round.
+
+**A. Agent runs** (`fix-mean-empty`, vLLM, DCGM on; one warm-up excluded; all checks passed):
+
+| Run | Records delivered (refused) | Rounds per thread, interval median / max |
+| --- | --- | --- |
+| `bd679197-ad5c-4aa2-8ca2-827e405233fa` | 373 (0) | 10; 0.250 / 0.250 s |
+| `c466d848-c18b-4598-a392-e194cf0070a9` | 339 (0) | 9; 0.250 / 0.250 s |
+| `102686ba-41da-4504-9a01-faefb8e70e61` | 339 (0) | 9; 0.250 / 0.250 s |
+
+- All 15 model calls had exactly one joined vLLM span. vLLM measured a queue wait of
+  28–49 µs, prefill 17–144 ms, decode 0.16–0.56 s and end to end 0.19–0.59 s. The runner saw
+  its first output after 31–246 ms and spent 4.3–7.5 ms outside vLLM's end-to-end time (a
+  cross-clock estimate). Placement confirmed `max_model_len` 4,096 equal to `num_ctx`.
+- Model calls now join their own telemetry: 14 of 15 were `present` on the `vllm` service, one
+  `no_overlap`. Before this change every model call's own status was `empty`. The
+  finished-request counter is not a per-step wait: of the 15 windows, 11 held fewer than two
+  readings (no increase), three increased by 0 and one by 1. vLLM counts a request when it ends,
+  milliseconds before the runner finishes the step, so whether a call's own request falls in its
+  window is chance. Per-step waiting comes from the span.
+- No round was late or missed on either thread. The host thread used 2.8–3.3 ms of CPU per
+  round (median), the HTTP thread 9.2–9.6 ms, mostly parsing vLLM's 64 KB exposition, with a
+  round wall time of 39–46 ms. vLLM's `/metrics` took 10.0–11.8 ms (median; max 20 ms) and
+  dcgm-exporter's 2.5–3.1 ms. The change log was about 290 KB per run.
+
+**B. Inference contention** (`agent-replay-experiment-v1`, `--conditions inference`, 1
+warm-up, 3 baselines, `competing-openai-chat-v1` at 2 concurrent requests of 128 tokens, then a
+clean control). The experiment passed all eight of its declared checks (baseline root CV
+4.0%). All 35 model calls of the source run and six replays had a joined span.
+
+| Replays | vLLM queue wait | Prefill | Decode | Runner first output |
+| --- | --- | --- | --- | --- |
+| 3 baselines, 15 calls | 0.02–0.08 ms | 16–44 ms | 0.16–0.53 s | 30–149 ms |
+| Inference contention, 5 calls | 842–1,096 ms | 23–47 ms | 0.17–0.54 s | 966–1,234 ms |
+| Clean control, 5 calls | 0.04–0.05 ms | 21–42 ms | 0.17–0.53 s | 52–144 ms |
+
+- With two request slots taken by competing requests, the runner's requests waited in vLLM's
+  queue while their own prefill and decode stayed within the baseline range. Inside every
+  contended model call's window vLLM's gauges read 1 waiting and 2 running requests, against 0
+  waiting in the baselines. Model calls took 2.7–5.0× their baseline mean and the run 3.37×;
+  the clean control ran 0.94–1.05× (run 1.04×). These are observations on one host, not labels.
+- The injector sent 17 requests, completed 15 (1,560 tokens), failed none, had 2 in flight at
+  the stop request, and its cleanup was confirmed without terminate or kill.
+
+**C. Sampling overhead** (`resource-sampling-overhead-v2`; CPU and NVML probes plus the vLLM
+and DCGM probes on their own thread):
+
+| Attempt (UTC) | Unsampled median / p90 | Sampled median / p90 | Difference | Sampler CPU per round |
+| --- | --- | --- | --- | --- |
+| 1 (23:51) | 0.2695 / 0.2814 s | 0.2740 / 0.2871 s | +4.5 ms (+1.7%) | 7.1 ms |
+| 2 (23:53) | 0.2708 / 0.2861 s | 0.2723 / 0.2867 s | +1.5 ms (+0.6%) | 7.2 ms |
+
+Every request generated 22 tokens with one reply digest. Attempt 1's report listed a new DCGM
+resource ID per sampled request; that defect was fixed with a regression test before attempt 2,
+and attempt 1 is kept. Both differences are positive, but the unsampled median itself moved
+1.3 ms between attempts: this resolves a small effect at most, not an overhead budget (O01).
+
+**D. Streamed Ollama** (GPU Ollama 0.35.1 on 11435, `qwen3:1.7b`; one warm-up excluded): both
+runs (`6c0009c3-6174-4cdf-9fea-0ce5ce2edc1b`, `9d213534-3a39-4a19-a8e8-2bf6132cde24`) completed
+with every check passing; every model call had a stream timing and a `reported` Ollama timing.
+With tools in the request, Ollama sent each reply in 2–3 chunks: the first output arrived after
+most of the request (for example 0.49 s of a 0.71 s call), so for Ollama time to first output is
+not a time to first token. Model calls still join `empty` own telemetry: Ollama has no metrics.
+
+Not established: vLLM on any other host, DCGM profiling fields on any device, per-process GPU
+use, the collector's own effect on vLLM timing beyond part C, contention through vLLM's batch
+rather than its slot limit (a larger `--max-num-seqs`), and features or labels from these
+signals (B02, D02). Evidence is in `.data/m2-vllm-20261027/` on the GPU laptop and in
+`C:\Users\benoy\AgentWatch-evidence\m2-vllm-2026-10-27\`, with the protocol and its deviation,
+host conditions, driver and summary scripts, run directories, coverage reports, the trace file,
+server logs, image digests and `SHA256SUMS`.
 
 ## Evidence locations
 

@@ -144,7 +144,9 @@ nonnegative microsecond counter. Counter resets are unavailable deltas, never ne
 Inference/GPU and retrieval entries require their owners' measured definitions under A04;
 they are not assumed available because an enum exists. A04 registered five whole-device NVML
 GPU gauges for `inference` resources and three cumulative CPU stall and usage counters for
-`cpu_sandbox` resources ([the registry](live-ingestion.md)). No retrieval metric is
+`cpu_sandbox` resources ([the registry](live-ingestion.md)). M2 registered sixteen
+server-wide vLLM metrics and eight whole-device DCGM metrics for `inference` resources
+([ADR 0007](adr/0007-vllm-request-traces-and-server-metrics.md)). No retrieval metric is
 registered: the in-process index has nothing to sample, and its per-request service time is
 local evidence (`retrieval-timing-v1`). Cumulative counters and host-wide
 PSI must not be presented as step-exclusive duration. Sampling configuration records both
