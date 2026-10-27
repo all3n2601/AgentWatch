@@ -156,8 +156,11 @@ def agentwatch_dataset():
     )
     def push(_versioned: bool) -> bool:
         pipeline = config()
-        if not stages.remote_configured(pipeline):
-            raise AirflowSkipException("No DVC remote is configured; the version stays local")
+        if pipeline.push_remote is None:
+            raise AirflowSkipException(
+                f"Pushing is off, so the version stays local; set {stages.PUSH_REMOTE_ENV} to a "
+                "DVC remote you can write to (gcs for the team bucket)"
+            )
         stages.push(pipeline)
         return True
 

@@ -584,11 +584,14 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   `mixed` replays, plus an `experiment.json` manifest and `injections/` logs that keep the
   conditions out of replay evidence. Four real runs of the protocol on one task are recorded; the second task,
   repeats and labels for these replays (D02) are open.
-- [ ] Store versioned Parquet datasets with GCS/DVC or an explicitly chosen equivalent.
+- [x] Store versioned Parquet datasets with GCS/DVC or an explicitly chosen equivalent.
   DVC versioning is in place (2026-10-18): `make add-evidence` curates runs into an immutable
   evidence store, `make version-dataset` verifies and snapshots the evidence and dataset stores,
   and `pipelines/versioning/tests` shows a fresh clone rebuilding a versioned release byte for
-  byte through a local remote. Open until the GCS remote exists (needs F's bucket).
+  byte through a local remote. The GCS remote `gs://agentwatch-dvc/agentwatch/dvc` holds the
+  shared release `steps-v1.2+5954f97ef8b2` (2026-10-27), with `data/*.dvc` committed; a fresh
+  clone with no Google login pulled it (`make pull-dataset`, public HTTPS remote) and ran
+  `make pipeline-run` successfully. The DAG pushes only when `AGENTWATCH_DVC_PUSH_REMOTE` is set.
 - [x] Validate data with TFDV or an explicitly chosen equivalent (2026-10-12): `make
   validate-dataset` checks a release with TFDV 1.21 against the frozen schema in
   `pipelines/validation/schema/steps.pbtxt`; Parquet types that differ from the release's contract

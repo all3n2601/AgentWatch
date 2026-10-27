@@ -99,7 +99,7 @@ def stubbed_stages(monkeypatch, tmp_path):
     slices = stages.SliceOutcome(report=".data/reports/steps-v1.2+abc/slices.json", flags=3)
     monkeypatch.setattr(stages, "slices", record("slices", slices))
     monkeypatch.setattr(stages, "version", record("version"))
-    monkeypatch.setattr(stages, "remote_configured", record("remote_configured", False))
+    monkeypatch.delenv(stages.PUSH_REMOTE_ENV, raising=False)  # pushing is off by default
     monkeypatch.setattr(stages, "push", record("push"))
     return calls
 
@@ -214,7 +214,7 @@ def test_a_push_that_fails_for_good_fails_the_run(
     def push_fails(_config):
         raise stages.StageError("push failed with exit code 1:\nremote unreachable")
 
-    monkeypatch.setattr(stages, "remote_configured", lambda _config: True)
+    monkeypatch.setenv(stages.PUSH_REMOTE_ENV, "gcs")
     monkeypatch.setattr(stages, "push", push_fails)
     # Its final attempt; the retries in between would only repeat this failure after a delay.
     monkeypatch.setattr(dag.get_task("push"), "retries", 0)
@@ -232,7 +232,7 @@ def test_a_clean_run_posts_its_summary(dag, metadata_database, stubbed_stages, s
     )
     monkeypatch.setattr(stages, "build", lambda _config: built)
     monkeypatch.setattr(stages, "validate", lambda _config, _release: [])
-    monkeypatch.setattr(stages, "remote_configured", lambda _config: True)
+    monkeypatch.setenv(stages.PUSH_REMOTE_ENV, "gcs")
     monkeypatch.setattr(stages, "push", lambda _config: None)
     run = dag.test(run_conf={"run_dirs": []})
     assert run.get_task_instance("push").state == "success"
@@ -265,7 +265,7 @@ def test_a_clean_run_is_skipped_not_succeeded_without_a_webhook(
     )
     monkeypatch.setattr(stages, "build", lambda _config: built)
     monkeypatch.setattr(stages, "validate", lambda _config, _release: [])
-    monkeypatch.setattr(stages, "remote_configured", lambda _config: True)
+    monkeypatch.setenv(stages.PUSH_REMOTE_ENV, "gcs")
     monkeypatch.setattr(stages, "push", lambda _config: None)
     run = dag.test(run_conf={"run_dirs": []})
     assert run.get_task_instance("alert").state == "skipped"

@@ -13,7 +13,7 @@ recorded runs (results.json + samples.jsonl)
   split     70/15/15 grouped by task, leakage check                      data/datasets/splits/
   slices    bias report per slice (runs beside version)                  .data/reports/<release>/
   version   integrity check, then a DVC snapshot of both stores          data/evidence.dvc, data/datasets.dvc
-  push      upload to the DVC remote (skipped when none is configured)
+  push      upload to the team bucket (only when AGENTWATCH_DVC_PUSH_REMOTE is set)
   summarize run summary
   alert     run summary and findings to Slack, with the slice report's flag count
   finish    fails the run if the slice report failed
@@ -127,19 +127,21 @@ webhook is described in the [root README](../README.md#slack-alerts).
 
 The pipeline's inputs are recorded experiment runs. There are three ways to get them.
 
-**1. From the DVC remote.** Once the team's Google Cloud Storage remote is configured, this
-command downloads exactly the evidence and dataset versions recorded in the commit you have
-checked out:
+**1. From the DVC remote (recommended).** This downloads exactly the evidence and dataset
+versions recorded in the commit you have checked out, from the team's Google Cloud Storage
+bucket `agentwatch-dvc`. It needs no Google account or login:
 
 ```bash
-make pull-dataset
+make pull-dataset          # about 5 s: 50 runs in data/evidence/, release steps-v1.2+5954f97ef8b2 in data/datasets/
 ```
 
-The remote is not committed yet: until it is, `make pull-dataset` reports that no remote is
-configured. Use option 2 meanwhile.
+Pulls go through the bucket's public HTTPS address (the `public` remote in `.dvc/config`).
+Plain `dvc pull` uses the default `gs://` remote instead, which works without a login but
+spends a long time probing for Google credentials first; use `make pull-dataset` or
+`dvc pull -r public`.
 
-**2. From the shared archive (works today).** A gated release of 50 real runs (25 CPU and 25
-coding runs, recorded 2026-10-21) is committed as a zip archive:
+**2. From the shared archive.** The same gated release (50 real runs: 25 CPU and 25 coding,
+recorded 2026-10-21) is also committed as a zip archive:
 
 ```bash
 unzip -q data/shared/agentwatch-dataset-steps-v1.2-5954f97ef8b2.zip
@@ -149,7 +151,8 @@ rm -r agentwatch-dataset-2026-10-20
 
 This fills `data/evidence/` (the raw runs) and `data/datasets/` (release
 `steps-v1.2+5954f97ef8b2` with its gate result and split). The archive's own `README.md` and
-`SHA256SUMS` describe and verify it.
+`SHA256SUMS` describe and verify it. `SHA256SUMS` has Windows line endings, so check it with
+`tr -d '\r' < SHA256SUMS | shasum -a 256 -c -` from inside the unzipped folder.
 
 **3. Record new runs.** `make demo-cpu` and `make demo-coding` run the CPU and coding
 experiments locally and write runs under `.data/`. Add them to the pipeline with
@@ -191,8 +194,8 @@ Each stage also has its own `make` target, which runs the newest release:
 **Expected result on the shared archive.** The run succeeds in about 6 s once warm (10 s on the
 first run after `make pipeline-setup`). It reuses release `steps-v1.2+5954f97ef8b2`, the gate
 passes, the leakage check is `blocked` (expected for this data; see the data card), the slice
-report raises 17 flags, `push` is skipped because no DVC remote is configured, and the summary
-lists both findings. With a webhook set, the same summary arrives in Slack.
+report raises 17 flags, `push` is skipped because pushing is off (see
+[Data versioning with DVC](#data-versioning-with-dvc)), and the summary lists both findings. With a webhook set, the same summary arrives in Slack.
 
 ## Pipeline components
 
@@ -219,8 +222,28 @@ which files make up each version.
 
 ```bash
 make version-dataset       # verify both stores, then snapshot them; commit the updated data/*.dvc
-make push-dataset          # upload the snapshot to the remote
+make push-dataset          # upload the snapshot to the team bucket (needs write access)
 git add data/evidence.dvc data/datasets.dvc && git commit -m "chore: version dataset <release>"
+```
+
+**Remotes** (`.dvc/config`, no credentials committed):
+
+| Remote | Address | Used for |
+|---|---|---|
+| `gcs` (default) | `gs://agentwatch-dvc/agentwatch/dvc` | Pushing; needs a teammate's write access and `gcloud auth application-default login` |
+| `public` | `https://storage.googleapis.com/agentwatch-dvc/agentwatch/dvc` | Pulling (`make pull-dataset`, `make dataset-status`); no login |
+
+The bucket is publicly readable because it holds only data that is already public in this
+repository. Writing is limited to the team.
+
+**Pushing from the DAG is opt-in.** Every run appends a quality-gate attempt to the datasets
+store, so every run has something new to upload, and a clone without write access would fail
+there. The DAG's `push` task therefore uploads only when `AGENTWATCH_DVC_PUSH_REMOTE` names a
+remote you can write to; otherwise it is skipped and the run summary reports the version as
+not pushed:
+
+```bash
+AGENTWATCH_DVC_PUSH_REMOTE=gcs make pipeline-run      # team members with write access
 ```
 
 Before snapshotting, the integrity check refuses to version a store that was edited, is
@@ -230,9 +253,9 @@ versioning tests check this. Once per clone, `make dataset-merge-driver` lets gi
 files that two people updated at the same time. The full versioning rules are in the data
 card's [Versioning](../docs/data-card.md#versioning) section.
 
-**Status.** The DVC mechanism and its tests are in place. The shared Google Cloud Storage
-remote and the first committed pointer files are pending; until then versions stay in each
-person's DVC cache and the shared archive stands in.
+**Status (2026-10-27).** The shared release is versioned and pushed to the bucket, and its
+pointer files are committed. A fresh clone with no Google login ran `make pull-dataset` (109
+files in 4 s) and then `make pipeline-run`, which succeeded with `push` skipped.
 
 ### Why there is no `dvc.yaml`
 

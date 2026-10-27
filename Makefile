@@ -95,11 +95,15 @@ retire-release: ## Remove a release that was never versioned, with its reports, 
 	mkdir -p .dvc/tmp && $(DVC) data status --granular --unchanged --json > $(DVC_STATUS)
 	$(DATA).retire --datasets $(DATASET_OUTPUT) --dvc-status $(DVC_STATUS) $(RELEASE)
 
-push-dataset: ## Upload versioned evidence and datasets to the DVC remote (configure one first; see docs/data-card.md)
+# Pulls use the bucket's public HTTPS address, so they need no Google login; pushes go to the
+# default gs:// remote and need write access (gcloud auth application-default login).
+DVC_PULL_REMOTE ?= public
+
+push-dataset: ## Upload versioned evidence and datasets to the team bucket (needs write access; see docs/data-card.md)
 	$(DVC) push
 
-pull-dataset: ## Download the evidence and datasets versioned at this commit (TARGET="<paths>" for part of it; see docs/data-card.md)
-	$(DVC) pull $(TARGET)
+pull-dataset: ## Download the evidence and datasets versioned at this commit, no login needed (TARGET="<paths>" for part of it)
+	$(DVC) pull --remote $(DVC_PULL_REMOTE) $(TARGET)
 
 fetch-dataset: ## Fetch every committed version's data into the DVC cache (before merging branches that both versioned data)
 	$(DVC) fetch --all-commits
@@ -110,7 +114,7 @@ dataset-merge-driver: ## Once per clone: let git merge concurrent data/*.dvc ver
 
 dataset-status: ## Show changes not yet versioned, and (with a remote configured) versioned data not yet uploaded
 	$(DVC) status
-	@if $(DVC) remote default >/dev/null 2>&1; then $(DVC) status --cloud; else echo "No DVC remote configured, so uploads are not checked; see docs/data-card.md"; fi
+	$(DVC) status --cloud --remote $(DVC_PULL_REMOTE)
 
 # The Airflow DAG runs the dataset targets above in order. Airflow has its own environment, and
 # its home (metadata database, task logs) is local scratch output under .data/. Run from the
