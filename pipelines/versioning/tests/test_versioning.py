@@ -143,10 +143,15 @@ def build(repo: Path, output: str) -> Path:
     return repo / out.split("release: ", 1)[1].splitlines()[0].strip()
 
 
-def test_committed_config_keeps_analytics_off_and_holds_no_remote():
+def test_committed_config_keeps_analytics_off_and_holds_only_the_team_remotes():
     config = (ROOT / ".dvc/config").read_text()
     assert "analytics = false" in config and "check_update = false" in config
-    assert "remote" not in config  # remotes and credentials are configured locally
+    # Pushes go to the bucket (default); pulls use its public HTTPS address and need no login.
+    assert "remote = gcs" in config
+    assert "url = gs://agentwatch-dvc/agentwatch/dvc" in config
+    assert "url = https://storage.googleapis.com/agentwatch-dvc/agentwatch/dvc" in config
+    for secret in ("credentialpath", "password", "key", "token"):
+        assert secret not in config  # credentials stay in each person's gcloud login
     assert (ROOT / "data/.gitignore").read_text().split() == ["/evidence", "/datasets"]
 
 

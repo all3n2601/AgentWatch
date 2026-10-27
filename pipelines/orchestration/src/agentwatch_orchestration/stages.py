@@ -15,6 +15,7 @@ This module does not import Airflow, so it is tested without it.
 import json
 import logging
 import os
+import re
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -37,10 +38,10 @@ LEAKAGE_PREFIX = "leakage: "
 SLICES_PREFIX = "slices: "
 RESULT_PREFIX = "result: "
 REUSED_SUFFIX = " (reused)"
-# dvc remote default exits 1 with this message when no default remote is set; any other failure
-# is a broken configuration or environment, which must fail the push rather than skip it.
-NO_REMOTE_EXIT_CODE = 1
-NO_REMOTE_MESSAGE = "No default remote set"
+# Pushing needs write access to a remote, which a clone (or a grader) pulling the public data
+# does not have, so the DAG pushes only to a remote named here and skips the push otherwise.
+PUSH_REMOTE_ENV = "AGENTWATCH_DVC_PUSH_REMOTE"
+REMOTE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")  # never an option such as --all
 
 
 class StageError(RuntimeError):
@@ -59,10 +60,12 @@ class PipelineConfig:
     reports: Path = Path(".data/reports")  # derived reports, outside the versioned stores
     api_url: str | None = None  # also build from runs saved through the ingestion API
     timeout_seconds: int = DEFAULT_STAGE_TIMEOUT_SECONDS
+    push_remote: str | None = None  # the DVC remote to push versions to; None skips pushing
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "PipelineConfig":
-        """Read AGENTWATCH_ROOT, AGENTWATCH_DATASET_API_URL, and AGENTWATCH_STAGE_TIMEOUT_SECONDS."""
+        """Read AGENTWATCH_ROOT, AGENTWATCH_DATASET_API_URL, AGENTWATCH_STAGE_TIMEOUT_SECONDS, and
+        AGENTWATCH_DVC_PUSH_REMOTE."""
         root = Path(env["AGENTWATCH_ROOT"]) if env.get("AGENTWATCH_ROOT") else DEFAULT_ROOT
         timeout_text = env.get("AGENTWATCH_STAGE_TIMEOUT_SECONDS")
         timeout_seconds = DEFAULT_STAGE_TIMEOUT_SECONDS
@@ -76,12 +79,16 @@ class PipelineConfig:
                 ) from error
             if timeout_seconds <= 0:
                 raise StageError("AGENTWATCH_STAGE_TIMEOUT_SECONDS must be positive")
+        push_remote = env.get(PUSH_REMOTE_ENV) or None
+        if push_remote is not None and not REMOTE_NAME.fullmatch(push_remote):
+            raise StageError(f"{PUSH_REMOTE_ENV} must be a DVC remote name, got {push_remote!r}")
         if not (root / "Makefile").is_file():
             raise StageError(f"{root} is not an AgentWatch checkout; set AGENTWATCH_ROOT")
         return cls(
             root=root,
             api_url=env.get("AGENTWATCH_DATASET_API_URL") or None,
             timeout_seconds=timeout_seconds,
+            push_remote=push_remote,
         )
 
     def path(self, relative: Path) -> Path:
@@ -335,22 +342,8 @@ def version(config: PipelineConfig) -> None:
     run_command(config, "version", dvc_command(config, "add", evidence, datasets))
 
 
-def remote_configured(config: PipelineConfig) -> bool:
-    """Whether DVC has a default remote; without one there is nowhere to push.
-
-    Only DVC's own "no default remote" answer means unconfigured. Any other failure raises, so
-    the push task fails (and retries) instead of being skipped like a local-only setup.
-    """
-    argv = dvc_command(config, "remote", "default")
-    result = run_command(config, "push", argv, check=False)
-    if result.returncode == 0:
-        return True
-    output = result.stdout + result.stderr
-    if result.returncode == NO_REMOTE_EXIT_CODE and NO_REMOTE_MESSAGE in output:
-        return False
-    tail = "\n".join(output.splitlines()[-STDERR_TAIL_LINES:])
-    raise StageError(f"push could not read the DVC remote (exit code {result.returncode}):\n{tail}")
-
-
 def push(config: PipelineConfig) -> None:
-    run_command(config, "push", dvc_command(config, "push"))
+    """Upload this checkout's versions to the configured push remote."""
+    if config.push_remote is None:
+        raise StageError(f"no push remote: set {PUSH_REMOTE_ENV}")
+    run_command(config, "push", dvc_command(config, "push", "--remote", config.push_remote))

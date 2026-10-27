@@ -141,12 +141,12 @@ def findings(
             f"split {summary['split']}"
         )
     found.extend(f"Drift against the previous passing release: {line}" for line in drift)
-    # A failed push fails its task (and alerts as a failure), so here it was skipped: DVC has
-    # no default remote, and nobody else can pull this version.
+    # A failed push fails its task (and alerts as a failure), so here it was skipped: no push
+    # remote is set, and nobody else can pull this version.
     if summary["pushed"] is not True:
         found.append(
-            "The version was not pushed: no DVC remote is configured, so it exists only in "
-            "this checkout's DVC cache"
+            "The version was not pushed (AGENTWATCH_DVC_PUSH_REMOTE is not set), so it exists "
+            "only in this checkout's DVC cache"
         )
     return found
 

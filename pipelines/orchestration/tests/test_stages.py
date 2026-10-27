@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -294,28 +295,29 @@ def test_version_snapshots_nothing_when_integrity_fails(config, fake_run):
     assert len(fake_run.calls) == 2
 
 
-def test_a_default_remote_is_configured(config, fake_run):
-    fake_run.responses = [(0, "storage\n", "")]
-    assert stages.remote_configured(config) is True
+def test_push_uploads_to_the_configured_remote_only(config, fake_run):
+    stages.push(dataclasses.replace(config, push_remote="gcs"))
+    (argv,) = fake_run.argvs()
+    assert argv[-3:] == ["push", "--remote", "gcs"]
 
 
-def test_no_default_remote_is_unconfigured(config, fake_run):
-    fake_run.responses = [(1, "", "No default remote set\n")]
-    assert stages.remote_configured(config) is False
+def test_push_without_a_remote_runs_nothing(config, fake_run):
+    with pytest.raises(stages.StageError, match="set AGENTWATCH_DVC_PUSH_REMOTE"):
+        stages.push(config)
+    assert fake_run.calls == []
 
 
-@pytest.mark.parametrize(
-    ("code", "stderr"),
-    [
-        (1, "ERROR: configuration error - config file error"),
-        (251, "ERROR: you are not inside of a DVC repository"),
-        (2, "error: Failed to spawn: `dvc`"),
-    ],
-)
-def test_other_remote_failures_fail_the_push(config, fake_run, code, stderr):
-    fake_run.responses = [(code, "", stderr)]
-    with pytest.raises(stages.StageError, match=f"exit code {code}"):
-        stages.remote_configured(config)
+def test_config_from_env_reads_the_push_remote(config):
+    env = {"AGENTWATCH_ROOT": str(config.root), stages.PUSH_REMOTE_ENV: "gcs"}
+    assert stages.PipelineConfig.from_env(env).push_remote == "gcs"
+    assert stages.PipelineConfig.from_env({"AGENTWATCH_ROOT": str(config.root)}).push_remote is None
+
+
+@pytest.mark.parametrize("name", ["--all", "-r", "gcs remote", "gcs;rm"])
+def test_a_push_remote_that_is_not_a_remote_name_is_refused(config, name):
+    env = {"AGENTWATCH_ROOT": str(config.root), stages.PUSH_REMOTE_ENV: name}
+    with pytest.raises(stages.StageError, match="must be a DVC remote name"):
+        stages.PipelineConfig.from_env(env)
 
 
 def test_config_from_env_reads_root_api_and_timeout(config):

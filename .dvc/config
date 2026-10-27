@@ -1,3 +1,8 @@
 [core]
     analytics = false
     check_update = false
+    remote = gcs
+['remote "gcs"']
+    url = gs://agentwatch-dvc/agentwatch/dvc
+['remote "public"']
+    url = https://storage.googleapis.com/agentwatch-dvc/agentwatch/dvc

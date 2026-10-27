@@ -377,12 +377,16 @@ conflict with `main` is merged locally this way and pushed. `make pull-dataset` 
 overwrite evidence or releases you added but have not versioned: version (or move) them first,
 and never answer with DVC's suggested `--force`, which deletes them.
 
-**Remotes.** No remote is committed until a shared one exists. For local work, add one that
-stays out of git: `uv run --project pipelines/versioning dvc remote add --local -d storage
-<directory>`. When workstream F provides the bucket, the GCS remote is committed as the default
-(`dvc remote add -d gcs gs://<bucket>/agentwatch/dvc`), and the pointer files are committed
-with each version. People authenticate with `gcloud auth application-default login`; CI and
-Airflow use a service account, never a key in the repository. The bucket uses DVC's
+**Remotes.** Two remotes are committed (2026-10-27), both pointing at the bucket
+`agentwatch-dvc`: `gcs` (`gs://agentwatch-dvc/agentwatch/dvc`, the default, used for pushing)
+and `public` (`https://storage.googleapis.com/agentwatch-dvc/agentwatch/dvc`, used by
+`make pull-dataset` and `make dataset-status`). The bucket is publicly readable because it holds
+only data that is already public in this repository; writing is limited to the team. Pushing
+needs `gcloud auth application-default login` with write access; pulling needs no login. The
+Airflow DAG pushes only to the remote named by `AGENTWATCH_DVC_PUSH_REMOTE`, so a clone without
+write access still completes a run. A local remote for experiments stays out of git:
+`uv run --project pipelines/versioning dvc remote add --local -d storage <directory>`. CI and a
+scheduled Airflow use a service account, never a key in the repository. The bucket uses DVC's
 content-addressed layout, so files are found through the pointers rather than by release name.
 
 ## Column roles
