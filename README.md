@@ -139,6 +139,9 @@ Each language uses its native toolchain. The root `Makefile` only coordinates co
 
 ## Data pipeline in Airflow
 
+The course submission guide for the data pipeline (setup, running it, folder structure, DVC,
+tests, and how each requirement is met) is [`pipelines/README.md`](pipelines/README.md).
+
 The Airflow DAG `agentwatch_dataset` in `pipelines/orchestration/dags/` runs the dataset commands
 in order: acquire (add recorded runs to the evidence store) → build → validate (TFDV gate) →
 split → version (integrity check, then DVC) → push → summarize → alert → finish, with the bias
