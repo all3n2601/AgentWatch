@@ -156,8 +156,18 @@ def slack_text(value: object) -> str:
     return str(value).translate(SLACK_ESCAPES)
 
 
-def run_message(summary: Mapping[str, object], found: Sequence[str]) -> str:
-    """The run summary, headed by its outcome, with one bullet per finding."""
+def run_message(
+    summary: Mapping[str, object],
+    found: Sequence[str],
+    slices: Mapping[str, object] | None = None,
+) -> str:
+    """The run summary, headed by its outcome, with one bullet per finding.
+
+    The bias slice report is listed but its flags are not findings: they describe the release's
+    composition, which a run does not change, so they would head every run on today's data
+    with the same warning. slices is None when the report task did not finish; its failure is
+    alerted on its own.
+    """
     if found:
         heading = f":warning: AgentWatch dataset run finished with {len(found)} finding(s)"
     else:
@@ -171,10 +181,19 @@ def run_message(summary: Mapping[str, object], found: Sequence[str]) -> str:
             f"rejected: {text['runs_rejected']}, new evidence: {text['evidence_added']}"
         ),
         f"Split: {text['split']} (leakage check: {text['leakage']})",
+        slice_line(slices),
         f"Versioned: {_yes_no(summary['versioned'])}, pushed: {_yes_no(summary['pushed'])}",
         *(f"• {slack_text(line)}" for line in found),
     ]
     return "\n".join(lines)
+
+
+def slice_line(slices: Mapping[str, object] | None) -> str:
+    if slices is None:
+        return "Bias slices: no report; the slices task did not finish (see its failure alert)"
+    return (
+        f"Bias slices: {slack_text(slices['flags'])} flag(s), report {slack_text(slices['report'])}"
+    )
 
 
 def _yes_no(value: object) -> str:

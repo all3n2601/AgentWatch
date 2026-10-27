@@ -175,6 +175,41 @@ def test_validate_without_drift_returns_no_findings(config, fake_run):
     assert stages.validate(config, "data/datasets/r") == []
 
 
+def test_slices_reports_the_release_with_its_split_outside_the_stores(config, fake_run):
+    report = config.root / ".data/reports/steps-v1.2+abc/slices.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps({"flags": [{"kind": "absent_from_split"}, {"kind": "x"}]}))
+    printed = (
+        f"slices: {report}\n"
+        "summary: .data/reports/steps-v1.2+abc/slices.md\n"
+        "  flag absent_from_split: kind=cpu: no rows in the test split\n"
+    )
+    fake_run.responses = [(0, printed, "")]
+    outcome = stages.slices(config, "data/datasets/steps-v1.2+abc", "s.json")
+    # The count comes from the report itself, not from the flag lines printed.
+    assert outcome == stages.SliceOutcome(report=str(report), flags=2)
+    (argv,) = fake_run.argvs()
+    assert argv[argv.index("--release") + 1] == "data/datasets/steps-v1.2+abc"
+    assert argv[argv.index("--split") + 1] == "s.json"
+    assert argv[argv.index("--output") + 1] == str(config.root / ".data/reports/steps-v1.2+abc")
+
+
+def test_slices_without_a_report_line_fails(config, fake_run):
+    fake_run.responses = [(0, "summary: s.md\n", "")]
+    with pytest.raises(stages.StageError, match="did not report a 'slices:' line"):
+        stages.slices(config, "data/datasets/r", "s.json")
+
+
+@pytest.mark.parametrize("content", ["not json", "{}", '{"flags": 3}'])
+def test_slices_with_an_unreadable_report_fails(config, fake_run, content):
+    (config.root / "slices.json").write_text(content)
+    fake_run.responses = [(0, "slices: slices.json\n", "")]
+    with pytest.raises(
+        stages.StageError, match="slice report .* (is unreadable|has invalid flags)"
+    ):
+        stages.slices(config, "data/datasets/r", "s.json")
+
+
 def test_validate_without_a_result_line_fails_rather_than_reporting_no_drift(config, fake_run):
     fake_run.responses = [(0, "passed: r (result.json)\n", "")]
     with pytest.raises(stages.StageError, match="did not report a 'result:' line"):

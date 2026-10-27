@@ -85,7 +85,7 @@ one to the pipeline and plans what is missing; the roadmap steps above own the w
 | Code style (PEP 8) | Ruff on every PR | Done |
 | Airflow DAG for the whole workflow | `agentwatch_dataset`: acquire → build → validate → split → version → push → summarize, run end to end on the shared 50-run release and with new recorded runs | Done (2026-10-24) |
 | Alerts (email or Slack) for errors and anomalies | Slack incoming webhook: every task's final failure, and each successful run's summary with its drift, rejected-run share, leakage, and unpushed-version findings (`agentwatch_orchestration.alerts`) | Done (2026-10-25); delivered to a real channel 2026-10-26 |
-| Pipeline flow optimization with Airflow's Gantt chart | Not built | Step 11, once the DAG runs |
+| Pipeline flow optimization with Airflow's Gantt chart | Gantt-chart timings before and after: prepared environments (`make pipeline-setup`) and the slice report beside versioning; measurements under "Pipeline flow optimization" | Done (2026-10-26) on the shared release; remeasure at step 10 volume |
 | Bias detection and mitigation through data slicing | `make slice-dataset`: data-level slices with declared thresholds, per-flag mitigations, and balancing weights; findings and mitigation in the data card's "Slices and bias" | Data level done (2026-10-26); model-level slicing waits on a model |
 | README: setup, run, structure, DVC | The README has an Airflow section (setup, `make pipeline-run`, configuration); the course-layout mapping and DVC pull steps are not written yet | Partial |
 
@@ -146,6 +146,58 @@ reading of evidence are the likely candidates. Then:
 - avoid reading the same Parquet file twice.
 
 Record the durations before and after each change in this plan, as evidence of the optimization.
+
+#### Measured 2026-10-26
+
+Workload: the shared release `steps-v1.2+5954f97ef8b2` (50 runs, 350 rows), no new evidence,
+on a MacBook (Apple silicon, macOS), each from a fresh checkout. Durations are task start to
+end in Airflow's metadata database, which is what the Gantt chart draws. "Cold" is the first
+run in a new checkout; "warm" is the mean of the next two.
+
+| Task | Before, cold | Before, warm | After, cold (setup first) | After, warm |
+|---|---|---|---|---|
+| acquire | 0.99 s | 1.00 s | 0.97 s | 0.97 s |
+| build | 2.31 s | 0.25 s | 1.89 s | 0.25 s |
+| validate (TFDV gate) | **26.68 s** | 3.09 s | 4.18 s | 2.54 s |
+| split | 1.25 s | 0.22 s | 0.71 s | 0.22 s |
+| version | 2.99 s | 0.94 s | 1.74 s | 0.90 s |
+| slices (new) | n/a | n/a | 0.21 s | 0.21 s |
+| **Whole run** | **35.1 s** | 6.3 s | **10.5 s** | 5.9 s |
+
+What the Gantt chart showed: one serial chain, with the gate taking 76% of a cold run and about
+half of a warm one. Its time is TensorFlow's import, not statistics: importing TFDV alone takes
+2.3 s warm and 18–25 s the first time in a new environment, while the statistics over 350 rows
+take well under a second. Skipping uv's lock check per stage (`--frozen`) saved 4 ms per command,
+so it was not changed.
+
+Changes:
+
+1. **Prepared environments** (`make pipeline-setup`): syncs the four environments with
+   precompiled bytecode and imports TFDV once, before the first run. The first run drops from
+   35.1 s to 10.5 s; the setup itself takes about 26 s, so a single cold run costs about the
+   same in total (about 36 s either way). The saving holds only when the environment is reused
+   across runs, once per checkout or worker image.
+   Precompiling alone brought the first import from 24.5 s to 18.0 s; the warm import does the
+   rest.
+2. **The bias slice report runs beside versioning.** It reads only the release and its split,
+   so it depends on `split` and feeds `alert`, not `version` or `summarize`: a failed report
+   fails the run and is alerted, but the run summary is still posted. In one scheduler run
+   (`airflow standalone`, LocalExecutor) it ran from 44.85 s to 45.74 s while `version` ran from
+   44.83 s to 46.71 s, so the report added no time to the critical path. That is one observed
+   overlap; the DAG allows it but does not guarantee it. `make pipeline-run` (`airflow dags
+   test`) runs tasks one at a time and does not show this overlap. Reading the release while
+   `version` runs `dvc add` is safe with DVC 3.67.1's default cache type: on this APFS disk,
+   adding a tracked store with new and changed files left every workspace file's inode in place
+   (checked 2026-10-26). A hardlink or symlink cache type would relink the files, and the report
+   would then have to finish before `version`.
+
+Limits: each configuration was measured cold once, and warm as the mean of two runs, on one
+MacBook, so no spread is reported. The 18–25 s first TFDV import may come from macOS's
+first-load checks of native libraries or from a cold page cache, so it may be smaller on the
+Linux target or return after a reboot. 350 rows is small, so stage work is a minor share;
+scheduler runs add about 0.6 s of process start per task (16.2 s for the same run under `airflow
+standalone`). Remeasure at step 10 volume, on Linux, where reading evidence and computing
+statistics will matter.
 
 ### Bias detection and mitigation (step 12)
 

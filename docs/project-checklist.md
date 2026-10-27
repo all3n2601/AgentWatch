@@ -606,7 +606,11 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   summarize, each in its stage's own environment, with only the DVC push retried
   (`pipelines/orchestration/tests`). Run end to end with `make pipeline-run` on the shared
   `steps-v1.2+5954f97ef8b2` evidence and with a new recorded run added. Committing
-  `data/*.dvc` from the DAG and the Gantt-chart optimization are open.
+  `data/*.dvc` from the DAG is open.
+- [x] Optimize the dataset DAG from its Gantt-chart timings (2026-10-26): `make pipeline-setup`
+  prepares the stage environments and warms TensorFlow (first run 35.1 s → 10.5 s on the shared
+  release), and the slice report runs beside versioning, confirmed overlapping under the
+  scheduler. Timings in the data pipeline plan, "Pipeline flow optimization".
 - [x] Alert Slack from the dataset DAG (2026-10-25): every task's final failure, and findings of
   a successful run (drift, rejected-run share over a declared 10%, leakage check not passed,
   version not pushed), posted with every successful run's summary, through an incoming webhook

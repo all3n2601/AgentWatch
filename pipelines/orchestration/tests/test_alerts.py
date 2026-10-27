@@ -85,14 +85,27 @@ def test_a_version_that_was_not_pushed_is_a_finding():
 
 
 def test_the_run_message_lists_the_summary_and_every_finding():
-    message = alerts.run_message(summary(pushed=False), ["first", "second"])
+    slices = {"report": ".data/reports/r/slices.json", "flags": 4}
+    message = alerts.run_message(summary(pushed=False), ["first", "second"], slices)
     assert message.startswith(":warning:")
     assert "2 finding(s)" in message
     assert "Release: data/datasets/steps-v1.2+abc" in message
     assert "Rows: 63, runs: 9, rejected: 1, new evidence: 2" in message
     assert "Split: s.json (leakage check: passed)" in message
     assert "Versioned: yes, pushed: no" in message
+    assert "Bias slices: 4 flag(s), report .data/reports/r/slices.json" in message
     assert "• first" in message and "• second" in message
+
+
+def test_slice_flags_are_listed_but_do_not_make_a_run_a_finding():
+    message = alerts.run_message(summary(), [], {"report": "slices.json", "flags": 17})
+    assert message.startswith(":white_check_mark:")
+    assert "Bias slices: 17 flag(s), report slices.json" in message
+
+
+def test_a_run_message_without_a_slice_report_says_so():
+    message = alerts.run_message(summary(), [], None)
+    assert "Bias slices: no report; the slices task did not finish" in message
 
 
 def test_a_clean_run_message_says_so_without_bullets():

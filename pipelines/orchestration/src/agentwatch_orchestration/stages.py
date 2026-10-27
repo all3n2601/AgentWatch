@@ -34,6 +34,7 @@ RELEASE_PREFIX = "release: "
 REPORT_PREFIX = "report: "
 SPLIT_PREFIX = "split: "
 LEAKAGE_PREFIX = "leakage: "
+SLICES_PREFIX = "slices: "
 RESULT_PREFIX = "result: "
 REUSED_SUFFIX = " (reused)"
 # dvc remote default exits 1 with this message when no default remote is set; any other failure
@@ -55,6 +56,7 @@ class PipelineConfig:
     datasets: Path = Path("data/datasets")
     schema: Path = Path("pipelines/validation/schema/steps.pbtxt")
     contract: Path = Path("pipelines/model/evaluation-contract.toml")
+    reports: Path = Path(".data/reports")  # derived reports, outside the versioned stores
     api_url: str | None = None  # also build from runs saved through the ingestion API
     timeout_seconds: int = DEFAULT_STAGE_TIMEOUT_SECONDS
 
@@ -100,6 +102,12 @@ class SplitOutcome:
     path: str
     reused: bool
     leakage: str  # passed, or a blocked/inconclusive status with its reason
+
+
+@dataclass(frozen=True)
+class SliceOutcome:
+    report: str
+    flags: int  # slices that crossed a declared threshold; details are in the report
 
 
 @dataclass(frozen=True)
@@ -272,6 +280,29 @@ def split(config: PipelineConfig, release: str) -> SplitOutcome:
         reused=path.endswith(REUSED_SUFFIX),
         leakage=value_after("split", output, LEAKAGE_PREFIX),
     )
+
+
+def slices(config: PipelineConfig, release: str, split: str) -> SliceOutcome:
+    """Slice the release for bias with its split. Reads the release only, so it can run beside
+    versioning; its report is written outside the versioned stores."""
+    output = str(config.path(config.reports) / Path(release).name)
+    argv = data_command(
+        config, "slices", "--release", release, "--split", split, "--output", output
+    )
+    printed = run_command(config, "slices", argv).stdout
+    report = value_after("slices", printed, SLICES_PREFIX)
+    return SliceOutcome(report=report, flags=read_slice_flags(config.path(Path(report))))
+
+
+def read_slice_flags(path: Path) -> int:
+    """How many flags a slice report the slicer just wrote raised."""
+    try:
+        flags = json.loads(path.read_text())["flags"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise StageError(f"slice report {path} is unreadable: {error}") from error
+    if not isinstance(flags, list):
+        raise StageError(f"slice report {path} has invalid flags: {flags!r}")
+    return len(flags)
 
 
 def version(config: PipelineConfig) -> None:

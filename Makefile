@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset rule-baseline train-candidates freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver pipeline-run pipeline-ui llm-up llm-down agent-tasks agent-run agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset rule-baseline train-candidates freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver pipeline-setup pipeline-run pipeline-ui llm-up llm-down agent-tasks agent-run agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -122,6 +122,13 @@ PIPELINE_RUN_DIRS ?=
 comma := ,
 space := $(subst ,, )
 PIPELINE_RUN_DIRS_JSON = [$(subst $(space),$(comma),$(foreach dir,$(PIPELINE_RUN_DIRS),"$(dir)"))]
+
+pipeline-setup: ## Prepare every stage environment once and warm TensorFlow, so the first DAG run does not pay for it
+	uv sync --frozen --all-packages --compile-bytecode
+	uv sync --project pipelines/validation --frozen --compile-bytecode
+	uv sync --project pipelines/versioning --frozen --compile-bytecode
+	uv sync --project pipelines/orchestration --frozen --compile-bytecode
+	uv run --project pipelines/validation --frozen python -c "import tensorflow_data_validation"
 
 pipeline-run: ## Run the whole Airflow dataset DAG once, without a scheduler (PIPELINE_RUN_DIRS=".data/coding-demo ..." to add runs first)
 	$(if $(findstring ",$(PIPELINE_RUN_DIRS))$(findstring ',$(PIPELINE_RUN_DIRS)),$(error PIPELINE_RUN_DIRS paths cannot contain quotes; trigger the DAG with its run_dirs parameter instead))
