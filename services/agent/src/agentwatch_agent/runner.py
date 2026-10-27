@@ -19,7 +19,6 @@ from uuid import UUID, uuid4
 
 from agentwatch_sdk.live import ResourceRegistration, RunCreate
 from agentwatch_worker.nvml import NvmlDevice
-from agentwatch_worker.ollama import request_timing
 
 from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.config import (
@@ -47,7 +46,9 @@ from agentwatch_agent.model import (
     ModelReply,
     ModelResponseError,
     RequestedCall,
+    StreamTimer,
     chat_payload,
+    joined_vllm_timing,
     parse_reply,
     wait_interruptibly,
 )
@@ -62,6 +63,13 @@ from agentwatch_agent.resources import (
     ResourceSampler,
 )
 from agentwatch_agent.retrieval import RETRIEVAL_METHOD, DocumentIndex
+from agentwatch_agent.service_probes import (
+    DCGM_METRICS,
+    VLLM_METRICS,
+    ExpositionChangeLog,
+    dcgm_probe,
+    vllm_probe,
+)
 from agentwatch_agent.session import (
     TERMINAL_RUN_STATES,
     CancellationState,
@@ -71,17 +79,31 @@ from agentwatch_agent.session import (
 from agentwatch_agent.steps import Step, StepRecorder, new_trace_id
 from agentwatch_agent.tasks import Task
 from agentwatch_agent.tools import ToolDispatcher, ToolFailed, ToolRejected, tool_message
+from agentwatch_agent.vllm import traceparent
+from agentwatch_agent.vllm_traces import collect_request_timings
 from agentwatch_agent.workspace import Workspace
 
 EVIDENCE_FILE = "agent-evidence.json"
 JOURNAL_FILE = "live-journal.jsonl"
+# Every vLLM series each round saw, as changes; local evidence for later analysis only.
+VLLM_CHANGE_LOG_FILE = "vllm-metrics-changes.jsonl"
+# Bounded wait after the run for vLLM's request spans (exported within about 1 s).
+DEFAULT_TRACE_WAIT_SECONDS = 10.0
 MAX_EVIDENCE_TEXT = 2000
-LIMITATIONS = (
-    (
+MODEL_QUEUE_LIMITATIONS = {
+    "ollama": (
         "Model-call queue delay is runner-side dispatch only; waiting inside the model server "
         "is part of execution wall time, not a measured inference queue. Ollama reports no "
         "queue wait, so each call's timing breakdown records the observed queue as unavailable"
     ),
+    "vllm": (
+        "Model-call queue delay is runner-side dispatch only; vLLM's own queue wait for each "
+        "request is its measured span attribute (vllm-request-trace-v1), joined after the run "
+        "and unavailable when no span arrived. vLLM's /metrics counters are server-wide, "
+        "covering every request finished in a window, not one step's request"
+    ),
+}
+LIMITATIONS = (
     "Model-call CPU time is not measured: inference runs in the model server's process",
     (
         "CPU PSI is host-wide and the cgroup counter covers the runner's cgroup; neither is "
@@ -101,6 +123,10 @@ LIMITATIONS = (
         "only select reviewed patches, so no model-written code is executed"
     ),
     "Temperature 0 does not guarantee repeatable model output or timing",
+    (
+        "Time to first output is observed by the runner on its own clock; it includes the "
+        "server's queue, prefill and the local network, and is not a server-measured phase"
+    ),
 )
 VERIFICATION_FAILED = "Agent finished, but the runner's verification tests did not pass"
 # Raised by urllib/json/Ollama helpers for a failed or unusable model request.
@@ -176,9 +202,15 @@ class AgentRunner:
         proc: Path = Path("/proc"),
         cgroup_root: Path = Path("/sys/fs/cgroup"),
         open_gpu: Callable[[], NvmlDevice] | None = None,
+        dcgm_metrics_url: str | None = None,
+        vllm_traces_file: Path | None = None,
+        trace_wait_seconds: float = DEFAULT_TRACE_WAIT_SECONDS,
     ):
-        # Without open_gpu no GPU resource is registered or sampled.
+        # Without open_gpu no GPU resource is registered or sampled; without a DCGM exporter
+        # URL, no DCGM resource. A vLLM model server is always sampled through its /metrics.
         self.open_gpu = open_gpu
+        self.dcgm_metrics_url = dcgm_metrics_url
+        self.model = model
         # Validated before anything is created, so invalid settings leave nothing behind.
         validate_sample_budget(
             (limits or RunLimits()).run_timeout_seconds,
@@ -186,7 +218,8 @@ class AgentRunner:
             len(self._sampled_metrics()),
         )
         self.task = task
-        self.model = model
+        self.vllm_traces_file = vllm_traces_file
+        self.trace_wait_seconds = trace_wait_seconds
         self.transport = transport
         self.output_dir = output_dir
         self.limits = limits or RunLimits()
@@ -236,9 +269,10 @@ class AgentRunner:
             },
             "model_endpoint": self.model.endpoint,
             "clock_id": self.clock.clock_id,
+            "model_backend": self.model.backend,
             "model_calls": [],
             "tool_calls": [],
-            "limitations": list(LIMITATIONS),
+            "limitations": [MODEL_QUEUE_LIMITATIONS[self.model.backend], *LIMITATIONS],
         }
         with closing(journal):
             workspace: Workspace | None = None
@@ -315,6 +349,7 @@ class AgentRunner:
         errors: list[BaseException] = []
         self._background = ()
         sampler: ResourceSampler | None = None
+        service_sampler: ResourceSampler | None = None
         watcher: CancellationWatcher | None = None
         background = ExitStack()
         try:
@@ -334,7 +369,26 @@ class AgentRunner:
             watcher = background.enter_context(
                 CancellationWatcher(session, self.cancellation, self.cancel_poll_seconds)
             )
-            self._background = (flusher, sampler, watcher)
+            service_probes = self._service_probes(resources)
+            service_sampler = (
+                background.enter_context(
+                    ResourceSampler(
+                        delivery.emit,
+                        run_id=session.run_id,
+                        task_id=self.task.task_id,
+                        clock=self.clock,
+                        probes=service_probes,
+                        interval_seconds=self.sampling_interval_seconds,
+                    )
+                )
+                if service_probes
+                else None
+            )
+            self._background = tuple(
+                component
+                for component in (flusher, sampler, service_sampler, watcher)
+                if component is not None
+            )
             deadline = time.monotonic() + self.limits.run_timeout_seconds
             try:
                 started_state = session.change_state("running", None)
@@ -377,8 +431,14 @@ class AgentRunner:
             self._attempt(errors, background.close)
             state, reason = self._absorb_background_errors(errors, state, reason)
             final_state, reason = self._finish(session, delivery, workspace, state, reason, errors)
+            # After the run closed, so waiting for spans never lengthens the run itself.
+            self._attempt(errors, lambda: self._join_server_traces(trace_id))
             self._record_outcome(
                 final_state, reason, task_passed, delivery, sampler, steps, watcher
+            )
+            # None when the run has no service probes or failed before sampling started.
+            self.evidence["service_sampling"] = (
+                service_sampler.summary() if service_sampler is not None else None
             )
             write_json_atomic(evidence_path, self.evidence)
         if errors:
@@ -434,6 +494,8 @@ class AgentRunner:
             system_prompt=SYSTEM_PROMPT,
             tools=self._tools,
             sampled_metrics=self._sampled_metrics(),
+            model_backend=self.model.backend,
+            model_transport="stream",
             chat_options=self.chat_options,
             limits=self.limits,
             sampling_interval_seconds=self.sampling_interval_seconds,
@@ -532,44 +594,96 @@ class AgentRunner:
     def _resources(self) -> dict[str, ResourceRegistration]:
         # Opaque per-runner-lifetime IDs: a new runner process is a new measured resource.
         suffix = uuid4().hex[:12]
-        return {
-            "tool_host": ResourceRegistration(
-                resource_id=f"tool-host-{suffix}",
-                service_id="agentwatch-agent-runner",
-                resource_class="cpu_sandbox",
-            ),
-            "inference": ResourceRegistration(
-                resource_id=f"model-server-{suffix}",
-                service_id="ollama",
-                resource_class="inference",
-            ),
-            "docs_index": ResourceRegistration(
-                resource_id=f"docs-index-{suffix}",
-                service_id="agentwatch-agent-docs-index",
-                resource_class="retrieval",
-            ),
-        } | (
+        return (
             {
-                # The GPU device itself, sampled whole; model placement links it to the server.
-                "gpu": ResourceRegistration(
-                    resource_id=f"gpu-{suffix}",
-                    service_id="nvidia-nvml",
+                "tool_host": ResourceRegistration(
+                    resource_id=f"tool-host-{suffix}",
+                    service_id="agentwatch-agent-runner",
+                    resource_class="cpu_sandbox",
+                ),
+                "inference": ResourceRegistration(
+                    resource_id=f"model-server-{suffix}",
+                    service_id=self.model.service_id,
                     resource_class="inference",
-                )
+                ),
+                "docs_index": ResourceRegistration(
+                    resource_id=f"docs-index-{suffix}",
+                    service_id="agentwatch-agent-docs-index",
+                    resource_class="retrieval",
+                ),
             }
-            if self.open_gpu is not None
-            else {}
+            | (
+                {
+                    # The GPU device itself, sampled whole; model placement links it to the server.
+                    "gpu": ResourceRegistration(
+                        resource_id=f"gpu-{suffix}",
+                        service_id="nvidia-nvml",
+                        resource_class="inference",
+                    )
+                }
+                if self.open_gpu is not None
+                else {}
+            )
+            | (
+                {
+                    # The same device read through DCGM: its own resource, so the two services'
+                    # readings are never merged into one series.
+                    "gpu_dcgm": ResourceRegistration(
+                        resource_id=f"gpu-dcgm-{suffix}",
+                        service_id="nvidia-dcgm",
+                        resource_class="inference",
+                    )
+                }
+                if self.dcgm_metrics_url is not None
+                else {}
+            )
         )
 
     def _sampled_metrics(self) -> tuple[str, ...]:
         metrics = CPU_METRICS + (GPU_METRICS if self.open_gpu is not None else ())
-        return tuple(metric for metric, _unit in metrics)
+        service = (VLLM_METRICS if self.model.backend == "vllm" else ()) + (
+            DCGM_METRICS if self.dcgm_metrics_url is not None else ()
+        )
+        return tuple(metric for metric, _unit in metrics) + tuple(e.metric for e in service)
 
     def _probes(self, resources: dict[str, ResourceRegistration]) -> list[Probe]:
         probes: list[Probe] = [CpuProbe(resources["tool_host"], self.proc, self.cgroup_root)]
         if self.open_gpu is not None:
             probes.append(GpuProbe(resources["gpu"], self.open_gpu))
         return probes
+
+    def _service_probes(self, resources: dict[str, ResourceRegistration]) -> list[Probe]:
+        """HTTP metrics sources, on their own thread so a slow fetch cannot delay CPU/GPU."""
+        probes: list[Probe] = []
+        if self.model.backend == "vllm":
+            log = ExpositionChangeLog(self.output_dir / VLLM_CHANGE_LOG_FILE, self.clock)
+            probes.append(
+                vllm_probe(resources["inference"], self.model.endpoint, self.model.name, log)
+            )
+        if self.dcgm_metrics_url is not None:
+            probes.append(dcgm_probe(resources["gpu_dcgm"], self.dcgm_metrics_url))
+        return probes
+
+    def _join_server_traces(self, trace_id: str) -> None:
+        """Attach vLLM's measured per-request timing to each model call that was sent."""
+        if self.model.backend != "vllm":
+            return
+        calls = [c for c in self.evidence["model_calls"] if isinstance(c.get("timing"), dict)]
+        if self.vllm_traces_file is None:
+            self.evidence["server_traces"] = {"status": "not_configured"}
+            unavailable = {"status": "unavailable", "problems": ["no vLLM traces file given"]}
+            for call in calls:
+                call["timing"] = joined_vllm_timing(call["timing"], unavailable)
+            return
+        collected = collect_request_timings(
+            self.vllm_traces_file,
+            trace_id,
+            {call["span_id"]: call["timing"].get("completion_id") for call in calls},
+            wait_seconds=self.trace_wait_seconds,
+        )
+        for call in calls:
+            call["timing"] = joined_vllm_timing(call["timing"], collected["calls"][call["span_id"]])
+        self.evidence["server_traces"] = {k: v for k, v in collected.items() if k != "calls"}
 
     def _close_run(
         self, session: RunSession, state: str, reason: str | None, delivered: bool
@@ -696,12 +810,19 @@ class AgentRunner:
         record = {"step_id": step.step_id, "span_id": step.span_id, "request_index": index}
         self.evidence["model_calls"].append(record)
         payload = chat_payload(self.model.name, messages, list(self._tools), self.chat_options)
+        timer = StreamTimer(self.clock)
+        trace_context = traceparent(steps.trace_id, step.span_id)
+
+        def request() -> dict:
+            timer("request")
+            return self.model.chat(payload, trace_context=trace_context, on_event=timer)
+
         steps.start(step)
         started = time.monotonic()
         failure: RunFailure | None = None
         try:
             response = wait_interruptibly(
-                lambda: self.model.chat(payload),
+                request,
                 cancel=self.cancellation.event,
                 deadline_monotonic=context.deadline_monotonic,
             )
@@ -721,6 +842,7 @@ class AgentRunner:
         finally:
             # Measured before any placement read, so it covers only the model request.
             record["request_wall_seconds"] = time.monotonic() - started
+            record["stream_timing"] = timer.summary()
         if failure is not None:
             steps.fail(step, failure.reason)
             if failure.reason != self._run_limit_reason():
@@ -729,7 +851,7 @@ class AgentRunner:
             raise failure
         steps.complete(step)
         record["metrics"] = reply.metrics
-        record["timing"] = request_timing(reply.metrics, record["request_wall_seconds"])
+        record["timing"] = self.model.request_timing(reply.metrics, record["request_wall_seconds"])
         record["requested_tool_calls"] = len(reply.calls)
         # Read after the step closed so the extra request is not timed as inference.
         record["model_placement"] = self._observe_placement(context.deadline_monotonic)

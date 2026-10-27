@@ -1,8 +1,9 @@
 """Inference contention: competing generation requests to the run's own model server.
 
-A child process keeps `concurrency` non-streaming `/api/generate` requests in flight against
-the same Ollama endpoint and model the run uses, so they compete for the server's request slots
-and its device. Only loopback endpoints are accepted: the injector loads designated local
+A child process keeps `concurrency` non-streaming requests in flight against the same model
+server and model the run uses, so they compete for the server's request slots and its device:
+Ollama's `/api/generate` (`competing-ollama-generate-v1`) or vLLM's OpenAI-compatible
+`/v1/chat/completions` (`competing-openai-chat-v1`). Only loopback endpoints are accepted: the injector loads designated local
 capacity, never a shared or remote server. Each request is bounded by `num_predict` and a socket
 timeout no longer than the time left. The child is ready once every worker has sent its first
 request, so an unreachable server fails the start. Stopping ends the child, which closes its
@@ -11,7 +12,8 @@ requests still in flight are counted as abandoned, and Ollama stops generating f
 connection.
 
 The competing requests use the run's `num_ctx` (or, like the run, none): a different context size
-makes Ollama reload the model, which would measure model loading instead of contention.
+makes Ollama reload the model, which would measure model loading instead of contention. vLLM
+fixes its context when it starts, so a vLLM injector takes no `num_ctx`.
 """
 
 import http.client
@@ -41,6 +43,12 @@ from agentwatch_injectors.processes import (
 )
 
 INFERENCE_METHOD = "competing-ollama-generate-v1"
+VLLM_INFERENCE_METHOD = "competing-openai-chat-v1"
+# server -> (request path, method name)
+SERVERS = {
+    "ollama": ("/api/generate", INFERENCE_METHOD),
+    "vllm": ("/v1/chat/completions", VLLM_INFERENCE_METHOD),
+}
 MAX_CONCURRENCY = 4
 MAX_NUM_PREDICT = 256
 MAX_REQUEST_TIMEOUT_SECONDS = 120.0
@@ -78,7 +86,28 @@ class GenerateRejected(ValueError):
     """The model server answered, but not with a completed generation."""
 
 
-def _generate(url: str, payload: dict, timeout_seconds: float, on_sent: Callable[[], None]) -> dict:
+def generated_tokens(server: str, result: object) -> int | None:
+    """Tokens one completed request generated, or raise if it did not complete."""
+    if not isinstance(result, dict) or result.get("error"):
+        raise GenerateRejected("model server returned an unusable generate response")
+    if server == "ollama":
+        if result.get("done") is not True:
+            raise GenerateRejected("model server returned an unusable generate response")
+        count = result.get("eval_count")
+    else:
+        choices = result.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise GenerateRejected("model server returned a completion without choices")
+        if choices[0].get("finish_reason") is None:
+            raise GenerateRejected("model server returned an unfinished completion")
+        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        count = usage.get("completion_tokens")
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
+def _generate(
+    url: str, path: str, payload: dict, timeout_seconds: float, on_sent: Callable[[], None]
+) -> dict:
     """Send one generate request, call `on_sent` once it is on the wire, and await the reply."""
     parsed = urllib.parse.urlsplit(url)
     connection_type = (
@@ -88,7 +117,7 @@ def _generate(url: str, payload: dict, timeout_seconds: float, on_sent: Callable
     try:
         connection.request(
             "POST",
-            parsed.path.rstrip("/") + "/api/generate",
+            parsed.path.rstrip("/") + path,
             body=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
         )
@@ -99,10 +128,7 @@ def _generate(url: str, payload: dict, timeout_seconds: float, on_sent: Callable
         connection.close()
     if response.status != 200:
         raise GenerateRejected(f"model server answered HTTP {response.status}")
-    result = json.loads(body)
-    if not isinstance(result, dict) or result.get("error") or result.get("done") is not True:
-        raise GenerateRejected("model server returned an unusable generate response")
-    return result
+    return json.loads(body)
 
 
 def _compete(
@@ -111,6 +137,7 @@ def _compete(
     reports: Connection,
     backstop_seconds: float,
     url: str,
+    server: str,
     payload: dict,
     concurrency: int,
     request_timeout_seconds: float,
@@ -140,7 +167,8 @@ def _compete(
                 counts["started"] += 1
                 counts["in_flight"] += 1
             try:
-                result = _generate(url, payload, timeout, lambda: sent(index))
+                result = _generate(url, SERVERS[server][0], payload, timeout, lambda: sent(index))
+                tokens = generated_tokens(server, result)
             except (OSError, http.client.HTTPException, ValueError) as error:
                 with lock:
                     counts["failed"] += 1
@@ -151,8 +179,8 @@ def _compete(
             with lock:
                 counts["completed"] += 1
                 counts["in_flight"] -= 1
-                if isinstance(result.get("eval_count"), int):
-                    eval_counts.append(result["eval_count"])
+                if tokens is not None:
+                    eval_counts.append(tokens)
 
     for index in range(concurrency):
         # Daemon threads: a request blocked on its socket must not keep the child alive.
@@ -194,8 +222,15 @@ class CompetingInferenceInjector(BoundedInjector):
         concurrency: int = 2,
         num_predict: int = 128,
         request_timeout_seconds: float = 60.0,
+        server: str = "ollama",
     ):
         super().__init__(clock, max_duration_seconds)
+        if server not in SERVERS:
+            raise ValueError(f"server must be one of {', '.join(SERVERS)}")
+        if server == "vllm" and num_ctx is not None:
+            raise ValueError("num_ctx does not apply to vLLM, whose context is fixed at startup")
+        self.server = server
+        self.method = SERVERS[server][1]
         self.url = loopback_url(url)
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a nonblank model name")
@@ -221,7 +256,7 @@ class CompetingInferenceInjector(BoundedInjector):
         # Only the host and port are recorded, never credentials or paths from the URL.
         return {
             "scope": "loopback model server",
-            "server": "ollama",
+            "server": self.server,
             "model": self.model,
             "endpoint_host": urllib.parse.urlsplit(self.url).hostname,
             "endpoint_port": urllib.parse.urlsplit(self.url).port,
@@ -231,6 +266,15 @@ class CompetingInferenceInjector(BoundedInjector):
         return self.max_duration_seconds + BACKSTOP_GRACE_SECONDS
 
     def payload(self) -> dict:
+        if self.server == "vllm":
+            return {
+                "model": self.model,
+                "messages": [{"role": "user", "content": COMPETING_PROMPT}],
+                "max_tokens": self.num_predict,
+                "temperature": 0,
+                "stream": False,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
         options = {"temperature": 0, "num_predict": self.num_predict}
         if self.num_ctx is not None:
             options["num_ctx"] = self.num_ctx
@@ -248,7 +292,15 @@ class CompetingInferenceInjector(BoundedInjector):
         start_children(
             self._group,
             _compete,
-            [(self.url, self.payload(), self.concurrency, self.request_timeout_seconds)],
+            [
+                (
+                    self.url,
+                    self.server,
+                    self.payload(),
+                    self.concurrency,
+                    self.request_timeout_seconds,
+                )
+            ],
             self._backstop_seconds(),
             "agentwatch-inference-injector",
         )

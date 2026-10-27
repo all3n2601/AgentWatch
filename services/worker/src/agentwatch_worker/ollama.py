@@ -67,6 +67,50 @@ def ollama_chat(url: str, payload: dict) -> dict:
     return result
 
 
+def ollama_chat_stream(url: str, payload: dict, on_event: Callable[[str], None]) -> dict:
+    """Stream one chat request and return it in the non-streamed response shape.
+
+    `on_event` receives "response" when the reply's headers arrive, "chunk" for each NDJSON
+    chunk and "output" when a chunk carries text or tool calls, so the caller can time the
+    first output on its own clock. The final chunk carries Ollama's durations.
+    """
+    request = urllib.request.Request(
+        url.rstrip("/") + "/api/chat",
+        data=json.dumps(payload | {"stream": True}, allow_nan=False).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    content: list[str] = []
+    calls: list = []
+    final: dict | None = None
+    with urllib.request.urlopen(request, timeout=CHAT_TIMEOUT_SECONDS) as response:
+        on_event("response")
+        for raw in response:
+            if not raw.strip():
+                continue
+            chunk = json.loads(raw)
+            if not isinstance(chunk, dict) or chunk.get("error"):
+                raise RuntimeError(f"Invalid Ollama stream chunk: {chunk}")
+            message = chunk.get("message") if isinstance(chunk.get("message"), dict) else {}
+            text, chunk_calls = message.get("content"), message.get("tool_calls")
+            if isinstance(text, str) and text:
+                content.append(text)
+            if isinstance(chunk_calls, list):
+                calls.extend(chunk_calls)
+            on_event("chunk")
+            if (isinstance(text, str) and text) or chunk_calls:
+                on_event("output")
+            if chunk.get("done") is True:
+                final = chunk
+                break
+    if final is None:
+        raise RuntimeError("Ollama stream ended without a final chunk")
+    message = {"role": "assistant", "content": "".join(content)}
+    if calls:
+        message["tool_calls"] = calls
+    return {key: value for key, value in final.items() if key != "message"} | {"message": message}
+
+
 def _nonnegative_or_none(value: float) -> float | None:
     return value if value >= -TIMING_TOLERANCE_SECONDS else None
 

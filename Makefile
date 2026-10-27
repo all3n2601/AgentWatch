@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset rule-baseline train-candidates freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down agent-tasks agent-run agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset rule-baseline train-candidates freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down agent-tasks agent-run agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -162,6 +162,18 @@ llm-up: ## Start Docker Ollama (AGENTWATCH_LLM_GPU=1 for NVIDIA, OLLAMA_HOST_POR
 
 llm-down: ## Stop the local LLM while retaining downloaded models
 	docker compose -f deploy/compose/compose.yaml stop ollama
+
+vllm-up: ## Start GPU vLLM and its trace collector (stop Ollama first: 8 GB fits one); the first start downloads ~4 GB
+	docker compose -f deploy/compose/compose.yaml --profile vllm up -d --wait otel-collector vllm
+
+vllm-down: ## Stop vLLM and its trace collector, keeping downloaded weights and compile caches
+	docker compose -f deploy/compose/compose.yaml stop vllm otel-collector
+
+dcgm-up: ## Start dcgm-exporter on 127.0.0.1:9400 (NVIDIA GPU); runs sample it with --dcgm-url
+	docker compose -f deploy/compose/compose.yaml --profile dcgm up -d dcgm-exporter
+
+dcgm-down: ## Stop dcgm-exporter
+	docker compose -f deploy/compose/compose.yaml stop dcgm-exporter
 
 AGENT_TASK ?= fix-mean-empty
 

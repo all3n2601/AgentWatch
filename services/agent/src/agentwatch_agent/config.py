@@ -8,7 +8,12 @@ from dataclasses import asdict, dataclass, field
 from agentwatch_worker.ollama import CHAT_TIMEOUT_SECONDS
 
 # v2 (A04): GPU sampling, per-round sampler cost and the inference request-timing breakdown.
-RUNNER_VERSION = "agent-runner-v2"
+# v3 (M2, ADR 0007): streamed model calls timed on the runner's clock, a vLLM backend with its
+# server metrics and per-request trace spans, and optional DCGM device fields.
+RUNNER_VERSION = "agent-runner-v3"
+MODEL_BACKENDS = ("ollama", "vllm")
+# Model calls stream so the runner observes the first output; "single" is one JSON reply.
+MODEL_TRANSPORTS = ("stream", "single")
 CONTRACT_VERSION = "live-contracts-v1"
 DEFAULT_MODEL = "qwen3:1.7b"
 # Greedy decoding with bounded output. Temperature 0 does not by itself make runs repeatable.
@@ -90,6 +95,10 @@ class RunConfiguration:
     # Every metric sampled each round, in order. Which of them a host can actually measure
     # is evidence, not configuration.
     sampled_metrics: tuple[str, ...]
+    # The serving software is part of the workload: a different server, weights format or
+    # transport is a different configuration, never a repetition of the same one.
+    model_backend: str = "ollama"
+    model_transport: str = "stream"
     chat_options: dict = field(default_factory=lambda: dict(DEFAULT_CHAT_OPTIONS))
     limits: RunLimits = field(default_factory=RunLimits)
     sampling_interval_seconds: float = DEFAULT_SAMPLING_INTERVAL_SECONDS
@@ -101,6 +110,10 @@ class RunConfiguration:
     def __post_init__(self):
         if not self.model.strip():
             raise ValueError("model must be nonblank")
+        if self.model_backend not in MODEL_BACKENDS:
+            raise ValueError(f"model_backend must be one of {', '.join(MODEL_BACKENDS)}")
+        if self.model_transport not in MODEL_TRANSPORTS:
+            raise ValueError(f"model_transport must be one of {', '.join(MODEL_TRANSPORTS)}")
         _positive_seconds("sampling_interval_seconds", self.sampling_interval_seconds)
         _positive_seconds("cancel_poll_seconds", self.cancel_poll_seconds)
         validate_sample_budget(

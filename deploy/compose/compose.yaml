@@ -18,6 +18,81 @@ services:
       timeout: 5s
       retries: 20
 
+  # Optional GPU model server with measured queue and per-request timing (ADR 0007). It needs an
+  # NVIDIA GPU and does not share 8 GB with the Ollama service: run one profile at a time.
+  vllm:
+    image: vllm/vllm-openai@sha256:6ee133356d49ed24cee03dd0cda3d3980279a11c107ce3e752c89e76540f41c9
+    profiles: [vllm]
+    ports:
+      - "127.0.0.1:${VLLM_HOST_PORT:-8000}:8000"
+    volumes:
+      - vllm-hf-cache:/root/.cache/huggingface
+      # torch.compile and CUDA graph caches, so a restart skips about 3 minutes of compiling.
+      - vllm-compile-cache:/root/.cache/vllm
+    environment:
+      OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: http/protobuf
+      # Export finished request spans within 0.5 s instead of the SDK's 5 s default.
+      OTEL_BSP_SCHEDULE_DELAY: "500"
+      OTEL_SERVICE_NAME: vllm
+    command:
+      - --model=Qwen/Qwen3-1.7B
+      # The weights' exact revision is part of the served name, so it enters run configuration.
+      - --revision=70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
+      - --served-model-name=${VLLM_MODEL:-Qwen/Qwen3-1.7B@70d244cc86cc}
+      - --max-model-len=4096
+      - --gpu-memory-utilization=${VLLM_GPU_MEMORY_UTILIZATION:-0.6}
+      # Two request slots: contention beyond them waits in vLLM's queue, where it is measured.
+      - --max-num-seqs=${VLLM_MAX_NUM_SEQS:-2}
+      - --enable-auto-tool-choice
+      - --tool-call-parser=hermes
+      - --otlp-traces-endpoint=http://otel-collector:4318/v1/traces
+    shm_size: 2g
+    mem_limit: 10g
+    depends_on:
+      - otel-collector
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    profiles: [vllm]
+    # The file exporter runs as the image's non-root user; it must write the bind-mounted folder.
+    user: "0:0"
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ${AGENTWATCH_OTEL_TRACES_DIR:-../../.data/otel}:/traces
+    mem_limit: 512m
+
+  # Optional DCGM device fields beside NVML. On the WSL2 laptop, profiling fields read N/A.
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter@sha256:17e9d49093f2d86d90260eec3c07b18b3f78fc5eadef3c8ab26a24fa5a9c1b2c
+    profiles: [dcgm]
+    command:
+      ["--collect-interval", "250", "--collectors", "/etc/dcgm-exporter/agentwatch-counters.csv"]
+    volumes:
+      - ./dcgm-counters.csv:/etc/dcgm-exporter/agentwatch-counters.csv:ro
+    ports:
+      - "127.0.0.1:${DCGM_EXPORTER_HOST_PORT:-9400}:9400"
+    mem_limit: 512m
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   postgres:
     image: postgres:17-alpine
     environment:
@@ -37,3 +112,5 @@ services:
 volumes:
   ollama-data:
   postgres-data:
+  vllm-hf-cache:
+  vllm-compile-cache:

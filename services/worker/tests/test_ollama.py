@@ -1,8 +1,11 @@
 import argparse
 import http.client
 import io
+import json
+import threading
 import urllib.error
 from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from agentwatch_worker import ollama
@@ -215,3 +218,87 @@ def test_differences_within_the_timing_tolerance_are_kept():
     timing = ollama.request_timing(REPORTED, client_wall_seconds=0.54 - 5e-7)
     assert timing["status"] == "reported"
     assert timing["client_outside_server_seconds"] == pytest.approx(-5e-7)
+
+
+class StreamingOllama:
+    """Loopback /api/chat test double that streams NDJSON chunks; synthetic, never evidence."""
+
+    def __init__(self, chunks: list[dict]):
+        owner = self
+        self.payloads: list[dict] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                owner.payloads.append(
+                    json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson")
+                self.end_headers()
+                for chunk in chunks:
+                    self.wfile.write((json.dumps(chunk) + "\n").encode())
+
+            def log_message(self, *_):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+FINAL_CHUNK = {
+    "message": {"role": "assistant", "content": ""},
+    "done": True,
+    "done_reason": "stop",
+    "total_duration": 3_000_000,
+    "load_duration": 1_000,
+    "prompt_eval_duration": 1_000_000,
+    "eval_duration": 1_500_000,
+    "eval_count": 3,
+}
+
+
+def test_a_streamed_chat_is_returned_in_the_single_reply_shape():
+    call = {"function": {"name": "read_file", "arguments": {"path": "stats.py"}}}
+    chunks = [
+        {"message": {"role": "assistant", "content": "Read"}, "done": False},
+        {"message": {"role": "assistant", "content": " it"}, "done": False},
+        {"message": {"role": "assistant", "content": "", "tool_calls": [call]}, "done": False},
+        FINAL_CHUNK,
+    ]
+    events = []
+    with StreamingOllama(chunks) as server:
+        response = ollama.ollama_chat_stream(
+            server.url, {"model": "m", "stream": False}, events.append
+        )
+    assert server.payloads[0]["stream"] is True
+    assert response["message"] == {"role": "assistant", "content": "Read it", "tool_calls": [call]}
+    assert response["total_duration"] == 3_000_000 and response["eval_count"] == 3
+    assert events == ["response", "chunk", "output", "chunk", "output", "chunk", "output", "chunk"]
+    timing = ollama.request_timing(response, 0.004)
+    assert timing["status"] == "reported" and timing["server_total_seconds"] == 0.003
+
+
+def test_a_stream_that_ends_without_its_final_chunk_is_refused():
+    chunks = [{"message": {"role": "assistant", "content": "partial"}, "done": False}]
+    with (
+        StreamingOllama(chunks) as server,
+        pytest.raises(RuntimeError, match="without a final chunk"),
+    ):
+        ollama.ollama_chat_stream(server.url, {"model": "m"}, lambda _event: None)
+
+
+def test_a_stream_error_chunk_is_refused():
+    with (
+        StreamingOllama([{"error": "model not found"}]) as server,
+        pytest.raises(RuntimeError, match="Invalid Ollama stream chunk"),
+    ):
+        ollama.ollama_chat_stream(server.url, {"model": "m"}, lambda _event: None)

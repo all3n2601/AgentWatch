@@ -189,6 +189,58 @@ def test_invalid_samples(client, live, mutation):
     assert post(client, live, sample(live, **mutation)).status_code == 422
 
 
+def test_vllm_and_dcgm_readings_are_stored_with_their_availability(client, registration):
+    registration["resources"] += [
+        {"resource_id": "model-server", "service_id": "vllm", "resource_class": "inference"},
+        {"resource_id": "gpu-dcgm", "service_id": "nvidia-dcgm", "resource_class": "inference"},
+    ]
+    run_id = client.post("/v1/live/runs", json=registration).json()["run_id"]
+
+    def inference(metric, unit, value, resource_id="model-server", service_id="vllm", **more):
+        return sample(
+            run_id,
+            resource_id=resource_id,
+            service_id=service_id,
+            resource_class="inference",
+            metric=metric,
+            unit=unit,
+            value=value,
+            **more,
+        )
+
+    records = [
+        inference("inference.vllm.requests_waiting.v1", "requests", 2),
+        inference("inference.vllm.kv_cache_usage.v1", "fraction", 0.25, tick_ns=11),
+        inference("inference.vllm.request_queue.seconds_total.v1", "seconds", 0.0, tick_ns=12),
+        inference(
+            "gpu.dcgm.prof.sm_active.v1",
+            "fraction",
+            None,
+            resource_id="gpu-dcgm",
+            service_id="nvidia-dcgm",
+            availability="unavailable",
+            reason="dcgm-exporter did not export DCGM_FI_PROF_SM_ACTIVE",
+        ),
+        inference(
+            "gpu.dcgm.energy.total_mj.v1",
+            "millijoules",
+            164718335,
+            resource_id="gpu-dcgm",
+            service_id="nvidia-dcgm",
+            tick_ns=13,
+        ),
+    ]
+    assert post(client, run_id, *records).status_code == 200
+    stored = {r["payload"]["metric"]: r["payload"] for r in snapshot(client, run_id)["records"]}
+    assert stored["inference.vllm.requests_waiting.v1"]["value"] == 2
+    # A measured zero is kept as zero, and an absent reading as unavailable without a value.
+    assert stored["inference.vllm.request_queue.seconds_total.v1"]["value"] == 0.0
+    assert stored["gpu.dcgm.prof.sm_active.v1"]["availability"] == "unavailable"
+    assert stored["gpu.dcgm.prof.sm_active.v1"]["value"] is None
+    over = inference("inference.vllm.kv_cache_usage.v1", "fraction", 1.5, tick_ns=20)
+    assert post(client, run_id, over).status_code == 422
+
+
 def test_parent_order_cycles_and_missing_parent(client, live):
     assert post(client, live, event(live, parent_step_id="missing")).status_code == 422
     assert (

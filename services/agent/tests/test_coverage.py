@@ -15,6 +15,7 @@ CLOCK = "fixture-clock"
 MS = 1_000_000
 GPU_UTIL = "gpu.nvml.utilization.gpu.v1"
 THROTTLED = "cpu.cgroup.throttled_usec.v1"
+QUEUE_TOTAL = "inference.vllm.request_queue.seconds_total.v1"
 SAMPLED = {"gpu-1": "fixture device", "host-1": "fixture host"}
 
 
@@ -78,6 +79,7 @@ def sample(
     unit, resource_class = {
         GPU_UTIL: ("percent", "inference"),
         THROTTLED: ("microseconds", "cpu_sandbox"),
+        QUEUE_TOTAL: ("seconds", "inference"),
     }[metric]
     return ResourceSample(
         contract_version="live-contracts-v1",
@@ -441,3 +443,33 @@ def test_report_covers_a_test_double_runner_run(mean_task, server, tmp_path):
     assert search["timing"]["service_method"] == "retrieval-timing-v1"
     assert search["timing"]["service_queue_availability"] == "unsupported"
     assert search["timing"]["service_seconds"] > 0
+
+
+def test_vllm_counters_report_increases_and_its_span_supplies_the_queue(tmp_path):
+    records = [
+        *executed("model-call-1", 0, 0, 500 * MS, resource_id="model-server-1"),
+        sample(0, QUEUE_TOTAL, 1.0, resource="model-server-1"),
+        sample(400 * MS, QUEUE_TOTAL, 1.25, resource="model-server-1"),
+    ]
+    extra = {
+        "service_sampling": {"resources": [{"resource_id": "model-server-1", "scope": "vLLM"}]},
+        "model_calls": [
+            {
+                "step_id": "model-call-1",
+                "timing": {
+                    "method": "vllm-request-trace-v1",
+                    "server_total_seconds": 0.45,
+                    "observed_queue_seconds": 0.02,
+                    "observed_queue_availability": "measured",
+                    "observed_queue_reason": None,
+                },
+            }
+        ],
+    }
+    report = coverage_report(write_run(tmp_path, records, evidence_extra=extra))
+    entry = steps_by_id(report)["model-call-1"]
+    # Server-wide: the increase covers every request finished in the window.
+    assert entry["own"]["measured"][QUEUE_TOTAL]["increase"] == pytest.approx(0.25)
+    assert entry["timing"]["service_queue_seconds"] == 0.02
+    assert entry["timing"]["service_queue_availability"] == "measured"
+    assert entry["timing"]["outside_service_seconds"] == pytest.approx(0.05)

@@ -21,6 +21,7 @@ import json
 import platform
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -34,7 +35,7 @@ from agentwatch_agent.delivery import Journal
 from agentwatch_agent.model import chat_payload
 from agentwatch_agent.overhead import merged_availability
 from agentwatch_agent.prompts import SYSTEM_PROMPT, task_message
-from agentwatch_agent.resources import CpuProbe, GpuProbe, ResourceSampler
+from agentwatch_agent.resources import CpuProbe, GpuProbe, Probe, ResourceSampler
 from agentwatch_agent.stats import summarize
 from agentwatch_agent.tasks import Task
 from agentwatch_agent.tools import tool_definitions
@@ -48,6 +49,16 @@ PROTOCOL = {
     "sampled": "CPU and GPU probes at the run interval, journaled records, no live delivery",
     "statistics": "median and p90 of runner wall and Ollama durations; sampler round cost",
     "threshold": None,
+}
+# v2 adds the run's HTTP service probes (vLLM /metrics, DCGM) on their own sampling thread, as a
+# vLLM run samples them: a scrape also costs the model server's API process CPU.
+PROTOCOL_WITH_SERVICES = PROTOCOL | {
+    "version": "resource-sampling-overhead-v2",
+    "sampled": (
+        "CPU and GPU probes, plus HTTP service probes on a second thread, at the run interval; "
+        "journaled records, no live delivery"
+    ),
+    "statistics": "median and p90 of runner wall and server durations; sampler round cost",
 }
 CONDITIONS = ("unsampled", "sampled")
 # Ollama's reported durations compared between conditions, in nanoseconds.
@@ -83,6 +94,14 @@ def reply_digest(response: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
+def generated_tokens(response: dict) -> object:
+    """Ollama's eval_count, or the completion tokens vLLM reports in its usage."""
+    if "eval_count" in response:
+        return response.get("eval_count")
+    usage = (response.get("vllm") or {}).get("usage") or {}
+    return usage.get("completion_tokens")
+
+
 def measure_sampling_overhead(
     task: Task,
     model: str,
@@ -95,7 +114,9 @@ def measure_sampling_overhead(
     sampling_interval_seconds: float = DEFAULT_SAMPLING_INTERVAL_SECONDS,
     proc: Path = Path("/proc"),
     cgroup_root: Path = Path("/sys/fs/cgroup"),
+    service_probes: Callable[[ResourceRegistration], list[Probe]] | None = None,
 ) -> dict:
+    """Run the protocol; `service_probes` builds a run's HTTP probes for its model server."""
     if repetitions < 1 or warmup < 0:
         raise ValueError("repetitions must be positive and warmup nonnegative")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +131,12 @@ def measure_sampling_overhead(
     gpu = ResourceRegistration(
         resource_id=f"gpu-{suffix}", service_id="nvidia-nvml", resource_class="inference"
     )
+    server = ResourceRegistration(
+        resource_id=f"model-server-{suffix}",
+        service_id="agentwatch-sampling-overhead",
+        resource_class="inference",
+    )
+    protocol = PROTOCOL if service_probes is None else PROTOCOL_WITH_SERVICES
     measurements: list[dict] = []
     sampling: list[dict] = []
     journal = Journal(output_dir / "sampling-journal.jsonl")
@@ -125,15 +152,12 @@ def measure_sampling_overhead(
             "wall_seconds": wall,
             **{key: response.get(key) for key in SERVER_DURATIONS},
             "prompt_eval_count": response.get("prompt_eval_count"),
-            "eval_count": response.get("eval_count"),
+            "eval_count": generated_tokens(response),
             "reply_digest": reply_digest(response),
         }
 
-    def sampled(index: int) -> dict:
-        probes = [CpuProbe(host, proc, cgroup_root)]
-        if open_gpu is not None:
-            probes.append(GpuProbe(gpu, open_gpu))
-        sampler = ResourceSampler(
+    def sampler_for(probes: list[Probe]) -> ResourceSampler:
+        return ResourceSampler(
             lambda record: journal.write("record", record),
             run_id=run_id,
             task_id=task.task_id,
@@ -141,12 +165,23 @@ def measure_sampling_overhead(
             probes=probes,
             interval_seconds=sampling_interval_seconds,
         )
-        with sampler:
+
+    def sampled(index: int) -> dict:
+        probes: list[Probe] = [CpuProbe(host, proc, cgroup_root)]
+        if open_gpu is not None:
+            probes.append(GpuProbe(gpu, open_gpu))
+        samplers = [sampler_for(probes)]
+        if service_probes is not None:
+            samplers.append(sampler_for(service_probes(server)))
+        with ExitStack() as running:
+            for sampler in samplers:
+                running.enter_context(sampler)
             measurement = timed("sampled", index)
-        # A dead sampler would silently remove the work being measured.
-        if sampler.error is not None:
-            raise sampler.error
-        sampling.append(sampler.summary())
+        for sampler in samplers:
+            # A dead sampler would silently remove the work being measured.
+            if sampler.error is not None:
+                raise sampler.error
+            sampling.append(sampler.summary())
         return measurement
 
     warmups: list[dict] = []
@@ -168,7 +203,7 @@ def measure_sampling_overhead(
         journal.close()
     return _report(
         task, model, payload, warmups, measurements, sampling, sampling_interval_seconds
-    ) | {"status": status, "error": error}
+    ) | {"protocol": protocol, "status": status, "error": error}
 
 
 def _seconds(measurements: list[dict], key: str) -> dict | None:
@@ -219,7 +254,14 @@ def _report(
         "sampling": {
             "rounds": rounds,
             "availability_counts": merged_availability(sampling),
-            "resources": sampling[0]["resources"] if sampling else [],
+            # Every distinct sampled resource: host and service samplers both report theirs.
+            "resources": list(
+                {
+                    entry["resource_id"]: entry
+                    for summary in sampling
+                    for entry in summary["resources"]
+                }.values()
+            ),
             "thread_cpu_total_seconds": sum(c["thread_cpu_total_seconds"] for c in costs),
             "thread_cpu_per_round_seconds": (
                 sum(c["thread_cpu_total_seconds"] for c in costs) / rounds if rounds else None
