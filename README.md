@@ -6,6 +6,44 @@ sandboxes, or retrieval, and displays confidence and model-quality measurements.
 
 An eight-week DADS 7305 MLOps final project.
 
+## At a glance
+
+When an AI agent step is slow, AgentWatch tells you whether it was doing real work or
+waiting, and which resource it waited on: the GPU, a CPU sandbox, or retrieval.
+
+```mermaid
+mindmap
+  root((AgentWatch))
+    The problem
+      A slow agent step: real work or waiting?
+      A wrong guess means the wrong fix
+        Buying GPUs when the CPU is the bottleneck
+    Answers for every step
+      How much of the time was waiting?
+      Which resource: GPU, CPU sandbox or retrieval?
+      How sure is the answer?
+    Who it helps
+      Platform engineers
+      AI engineers
+      Head of platform, who pays
+    Built today
+      Measure
+        OpenTelemetry spans per step
+        CPU samples every 250 ms
+        Qwen3 tool-calling agent
+      Store and show
+        FastAPI + PostgreSQL run history
+        Next.js dashboard with 7 pages
+      Learn
+        Rule baseline
+        Airflow + DVC dataset pipeline
+        LightGBM + MLflow candidates
+    Planned
+      GPU and retrieval telemetry
+      Live scoring within about 15 s
+      Drift checks and retraining
+```
+
 ## Contributing
 
 See [the contributor guide](CONTRIBUTING.md) for setup, branch naming, verification,
