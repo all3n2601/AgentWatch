@@ -3,6 +3,7 @@
     acquire -> build -> validate -> split -> version -> push -> summarize -> alert -> finish
                         validate, split -> slices -------------------------> alert
                                            slices ------------------------------------> finish
+                                                                 summarize ------------> finish
 
 The bias slice report only reads the release and its split, so it runs beside versioning
 instead of after it, adding no time to the run's critical path (docs/data-pipeline-plan.md,
@@ -10,8 +11,10 @@ pipeline flow optimization). DVC 3.67.1 with the default cache type (reflink, th
 the workspace files in place while it adds them, so the report can read them meanwhile; a
 hardlink or symlink cache type would relink them, and the report would have to finish first.
 The report is not part of the summary: a failed report is alerted as its own failure and does
-not cost the run its summary. finish does nothing; as the only last task, it makes the run fail
-whenever the report failed, which the alert (run however the report ended) would otherwise hide.
+not cost the run its summary. finish does nothing; as the only last task, it decides the run's
+state. It waits on summarize, slices, and alert, and runs unless one of them failed or could not
+run because an earlier stage failed, so any failed stage fails the run, which the alert (run
+however its upstreams ended) would otherwise hide. A skipped alert (no webhook) does not.
 
 Each task runs one existing dataset command in its own environment through
 agentwatch_orchestration.stages; the DAG owns ordering, retries, and task logs only. The DAG is
@@ -221,9 +224,9 @@ def agentwatch_dataset():
         alerts.send_slack(settings.webhook_url, message)
         return found
 
-    @task
+    @task(trigger_rule="none_failed")
     def finish() -> None:
-        """Nothing to do: reached only when the alert and the slice report did not fail."""
+        """Nothing to do: reached only when no stage, the slice report, or the alert failed."""
 
     added = acquire()
     built = build(added)
@@ -236,7 +239,7 @@ def agentwatch_dataset():
     pushed >> summary
     alerted = alert()
     [summary, slice_outcome] >> alerted
-    [alerted, slice_outcome] >> finish()
+    [summary, slice_outcome, alerted] >> finish()
 
 
 agentwatch_dataset()
