@@ -251,6 +251,7 @@ def test_sampling_overhead_reads_one_dcgm_identity_for_every_request(tmp_path, m
 
     def fake_measure(task, model, chat, output_dir, *, service_probes=None):
         captured["probes"] = service_probes
+        output_dir.mkdir(parents=True)  # as the real measurement does
         return {"status": "failed", "error": "not measured in this test"}
 
     monkeypatch.setattr(cli, "measure_sampling_overhead", fake_measure)
