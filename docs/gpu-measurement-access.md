@@ -433,7 +433,13 @@ dcgm-exporter initializes DCGM on this GPU under WSL2 and exports device fields 
 clocks, power, a cumulative energy counter, temperature, utilization, memory-copy utilization,
 framebuffer). The profiling (DCP) fields are listed by `dcgmi profile -l` but read N/A in
 `dcgmi dmon`, and the host engine logs `Got nvml st 19 from NvmlGpmSampleGet()` for each; the
-exporter omits them, also with `SYS_ADMIN`. The runner records them `unavailable`. In every
+exporter omits them, also with `SYS_ADMIN`. NVML names status 19 "In use by another client", not
+"Not Supported". That first `dmon` test ran while the exporter probe was still running, a second
+DCGM client, so it was retested on October 28 with a single client and no other GPU container:
+still N/A, with GPM failures of status 17 ("Operating System") and 19. The only NVIDIA processes
+on Windows were the driver's display service, so the block appears to lie in the Windows driver or
+WSL2 GPU layer; its cause is not established (`dcgm-single-client-retest/`). The runner records
+the fields `unavailable`. In every
 protocol run, the four DCGM device metrics were `measured` and the four profiling metrics
 `unavailable` in every round.
 

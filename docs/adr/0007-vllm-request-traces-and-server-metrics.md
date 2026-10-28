@@ -43,7 +43,8 @@ queue, prefill and the local network; it is an observation, not a server phase.
 separate resource (service `nvidia-dcgm`), so its readings never merge with NVML's. On the
 laptop the device fields work (utilization, memory-copy utilization, an energy counter,
 temperature), while the profiling fields (SM active and occupancy, tensor and DRAM activity)
-read N/A: DCGM lists them, but `NvmlGpmSampleGet` fails (NVML status 19). They are registered
+read N/A: DCGM lists them, but `NvmlGpmSampleGet` fails (NVML status 19, "in use by another
+client", and 17, "operating system", with DCGM as the only client). They are registered
 so a supporting host (an L4) measures them, and are `unavailable` here, never zero.
 
 **Isolation of the measurement.** HTTP sources are read on a second sampling thread with a
