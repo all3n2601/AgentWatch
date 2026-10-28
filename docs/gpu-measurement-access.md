@@ -482,7 +482,7 @@ clean control). The experiment passed all eight of its declared checks (baseline
 **C. Sampling overhead** (`resource-sampling-overhead-v2`; CPU and NVML probes plus the vLLM
 and DCGM probes on their own thread):
 
-| Attempt (UTC) | Unsampled median / p90 | Sampled median / p90 | Difference | Sampler CPU per round |
+| Attempt (UTC) | Unsampled median / p90 | Sampled median / p90 | Difference | CPU per round, both threads |
 | --- | --- | --- | --- | --- |
 | 1 (23:51) | 0.2695 / 0.2814 s | 0.2740 / 0.2871 s | +4.5 ms (+1.7%) | 7.1 ms |
 | 2 (23:53) | 0.2708 / 0.2861 s | 0.2723 / 0.2867 s | +1.5 ms (+0.6%) | 7.2 ms |
@@ -491,6 +491,8 @@ Every request generated 22 tokens with one reply digest. Attempt 1's report list
 resource ID per sampled request; that defect was fixed with a regression test before attempt 2,
 and attempt 1 is kept. Both differences are positive, but the unsampled median itself moved
 1.3 ms between attempts: this resolves a small effect at most, not an overhead budget (O01).
+The per-round CPU averages the host and HTTP sampler threads' rounds together, so it is not
+comparable with the v1 figures above.
 
 **D. Streamed Ollama** (GPU Ollama 0.35.1 on 11435, `qwen3:1.7b`; one warm-up excluded): both
 runs (`6c0009c3-6174-4cdf-9fea-0ce5ce2edc1b`, `9d213534-3a39-4a19-a8e8-2bf6132cde24`) completed

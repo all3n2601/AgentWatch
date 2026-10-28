@@ -813,9 +813,19 @@ class AgentRunner:
         timer = StreamTimer(self.clock)
         trace_context = traceparent(steps.trace_id, step.span_id)
 
+        def observe(event: str) -> None:
+            timer(event)
+            # Stop reading a stream the run no longer waits for: leaving the request closes
+            # the connection, so the server stops generating and frees its request slot
+            # instead of holding it for the next call. Same reasons as wait_interruptibly.
+            if self.cancellation.event.is_set():
+                raise RunCancelled("Cancelled while waiting for a model response")
+            if time.monotonic() >= context.deadline_monotonic:
+                raise RunFailure("Run time limit reached while waiting for a model response")
+
         def request() -> dict:
             timer("request")
-            return self.model.chat(payload, trace_context=trace_context, on_event=timer)
+            return self.model.chat(payload, trace_context=trace_context, on_event=observe)
 
         steps.start(step)
         started = time.monotonic()

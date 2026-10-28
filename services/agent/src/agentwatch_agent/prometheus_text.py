@@ -36,6 +36,9 @@ class Series:
 class Exposition:
     series: tuple[Series, ...]
     unparsed_lines: int
+    # Metric names whose line was readable up to the name but not beyond: such a series is
+    # malformed, which differs from a series the service never exported.
+    unparsed_names: frozenset[str] = frozenset()
 
     def named(self, name: str) -> list[Series]:
         return [entry for entry in self.series if entry.name == name]
@@ -101,6 +104,7 @@ def parse_exposition(text: str) -> Exposition:
         raise ExpositionError(f"exposition has more than {MAX_EXPOSITION_LINES} lines")
     series: list[Series] = []
     unparsed = 0
+    names: set[str] = set()
     for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -109,7 +113,10 @@ def parse_exposition(text: str) -> Exposition:
             series.append(_sample(line))
         except ValueError:
             unparsed += 1
-    return Exposition(tuple(series), unparsed)
+            name = _NAME.match(line)
+            if name is not None:
+                names.add(name.group())
+    return Exposition(tuple(series), unparsed, frozenset(names))
 
 
 def fetch_exposition(url: str, timeout_seconds: float) -> Exposition:

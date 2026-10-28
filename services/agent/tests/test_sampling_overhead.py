@@ -10,6 +10,7 @@ from agentwatch_agent.sampling_overhead import (
     measure_sampling_overhead,
     reply_digest,
 )
+from agentwatch_agent.service_probes import vllm_probe
 from agentwatch_agent.tools import tool_definitions
 
 # Illustrative Ollama durations in nanoseconds.
@@ -114,3 +115,32 @@ def test_reply_digest_ignores_ollamas_random_tool_call_ids():
     )
     assert reply_digest(tool_reply(["call_a"])) != reply_digest(tool_reply(["call_a"], "median"))
     assert reply_digest({"message": {"content": "done"}}) != reply_digest(tool_reply(["call_a"]))
+
+
+def test_service_probes_run_as_protocol_v2_on_their_own_sampler(mean_task, tmp_path):
+    # vLLM's usage reports the generated tokens; its /metrics is unreachable here.
+    reply = {
+        "message": {"role": "assistant", "content": "x"},
+        "vllm": {"usage": {"completion_tokens": 9}},
+    }
+    report = measure(
+        mean_task,
+        tmp_path,
+        lambda _payload: reply,
+        service_probes=lambda server: [vllm_probe(server, "http://127.0.0.1:1", "m@1")],
+    )
+    assert report["status"] == "completed"
+    assert report["protocol"]["version"] == "resource-sampling-overhead-v2"
+    assert report["conditions"]["sampled"]["eval_counts"] == [9]
+    sources = {entry.get("source") for entry in report["sampling"]["resources"]}
+    assert "vLLM" in sources and len(report["sampling"]["resources"]) == 3
+    # A refused scrape is recorded as unavailable, never as a reading.
+    counts = report["sampling"]["availability_counts"]["inference.vllm.requests_waiting.v1"]
+    assert set(counts) == {"unavailable"}
+    assert any("combine the host and service" in text for text in report["limitations"])
+
+
+def test_without_service_probes_the_v1_protocol_is_unchanged(mean_task, tmp_path):
+    report = measure(mean_task, tmp_path, lambda _payload: RESPONSE)
+    assert report["protocol"] == PROTOCOL
+    assert not any("combine the host and service" in text for text in report["limitations"])

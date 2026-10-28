@@ -12,8 +12,9 @@ from agentwatch_worker.ollama import CHAT_TIMEOUT_SECONDS
 # server metrics and per-request trace spans, and optional DCGM device fields.
 RUNNER_VERSION = "agent-runner-v3"
 MODEL_BACKENDS = ("ollama", "vllm")
-# Model calls stream so the runner observes the first output; "single" is one JSON reply.
-MODEL_TRANSPORTS = ("stream", "single")
+# Model calls stream so the runner observes the first output. Recorded so that a different
+# transport, if one is added, never shares a digest with streamed runs.
+MODEL_TRANSPORTS = ("stream",)
 CONTRACT_VERSION = "live-contracts-v1"
 DEFAULT_MODEL = "qwen3:1.7b"
 # Greedy decoding with bounded output. Temperature 0 does not by itself make runs repeatable.

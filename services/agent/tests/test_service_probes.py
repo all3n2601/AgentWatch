@@ -158,3 +158,18 @@ def test_the_change_log_stops_at_its_size_bound(tmp_path, monkeypatch):
     assert log.truncated is True
     assert (tmp_path / "changes.jsonl").stat().st_size <= 150
     assert log.describe()["rounds"] < 10
+
+
+def test_an_unparsable_line_of_a_registered_series_is_malformed_not_absent():
+    # One engine's line is broken: summing the other would undercount the waiting requests.
+    text = (
+        'vllm:num_requests_waiting{engine="0",model_name="m@1"} 2.0\n'
+        'vllm:num_requests_waiting{engine="1",model_name="m@1" 1.0\n'
+    )
+    exposition = parse_exposition(text)
+    value, availability, reason = series_reading(exposition, WAITING, {"model_name": "m@1"}, "v")
+    assert (value, availability) == (None, "malformed")
+    assert reason == "v sent an unparsable vllm:num_requests_waiting line"
+    # Other series in the same exposition are unaffected.
+    kv = parse_exposition(text + 'vllm:kv_cache_usage_perc{model_name="m@1"} 0.5\n')
+    assert series_reading(kv, KV, {"model_name": "m@1"}, "v")[1] == "measured"

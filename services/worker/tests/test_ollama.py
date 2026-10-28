@@ -302,3 +302,10 @@ def test_a_stream_error_chunk_is_refused():
         pytest.raises(RuntimeError, match="Invalid Ollama stream chunk"),
     ):
         ollama.ollama_chat_stream(server.url, {"model": "m"}, lambda _event: None)
+
+
+def test_an_oversized_stream_line_is_refused(monkeypatch):
+    monkeypatch.setattr(ollama, "MAX_STREAM_BYTES", 100)
+    chunks = [{"message": {"role": "assistant", "content": "x" * 1000}, "done": False}]
+    with StreamingOllama(chunks) as server, pytest.raises(RuntimeError, match="exceeded 100"):
+        ollama.ollama_chat_stream(server.url, {"model": "m"}, lambda _event: None)

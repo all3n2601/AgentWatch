@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 
 # Bounds each chat request's socket waits; generation is further bounded by num_predict.
 CHAT_TIMEOUT_SECONDS = 300
+# A streamed reply is assembled in memory; num_predict bounds generation far below this.
+MAX_STREAM_BYTES = 16 * 1024 * 1024
 # Server-reported chat response fields kept as evidence.
 OLLAMA_METRIC_KEYS = (
     "total_duration",
@@ -83,9 +85,14 @@ def ollama_chat_stream(url: str, payload: dict, on_event: Callable[[str], None])
     content: list[str] = []
     calls: list = []
     final: dict | None = None
+    received = 0
     with urllib.request.urlopen(request, timeout=CHAT_TIMEOUT_SECONDS) as response:
         on_event("response")
-        for raw in response:
+        # Each read is bounded, so one endless line cannot exhaust memory.
+        while raw := response.readline(MAX_STREAM_BYTES - received + 1):
+            received += len(raw)
+            if received > MAX_STREAM_BYTES:
+                raise RuntimeError(f"Ollama stream exceeded {MAX_STREAM_BYTES} bytes")
             if not raw.strip():
                 continue
             chunk = json.loads(raw)

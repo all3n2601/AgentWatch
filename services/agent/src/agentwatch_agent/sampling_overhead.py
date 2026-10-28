@@ -201,9 +201,15 @@ def measure_sampling_overhead(
         status, error = "failed", f"{type(failure).__name__}: {failure}"[:500]
     finally:
         journal.close()
-    return _report(
+    report = _report(
         task, model, payload, warmups, measurements, sampling, sampling_interval_seconds
     ) | {"protocol": protocol, "status": status, "error": error}
+    if service_probes is not None:
+        report["limitations"].append(
+            "Sampling rounds and per-round thread CPU combine the host and service samplers' "
+            "rounds, so they are not comparable with resource-sampling-overhead-v1"
+        )
+    return report
 
 
 def _seconds(measurements: list[dict], key: str) -> dict | None:

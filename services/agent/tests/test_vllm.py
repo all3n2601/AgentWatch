@@ -273,3 +273,36 @@ def test_recorded_output_ticks_are_bounded(monkeypatch):
     summary = timer.summary()
     assert summary["output_chunks"] == 5 and len(summary["output_offsets_seconds"]) == 2
     assert summary["output_offsets_truncated"] is True
+
+
+def test_an_error_sent_mid_stream_fails_the_call_instead_of_truncating_it():
+    with FakeVllm([text_reply("partial answer")]) as server:
+        server.error_mid_stream = True
+        with pytest.raises(VllmResponseError, match="error mid-stream.*engine died"):
+            vllm_chat(server.url, payload(), timeout_seconds=5, on_event=lambda _event: None)
+
+
+def test_a_stream_without_a_finish_reason_is_refused():
+    with FakeVllm([text_reply("unfinished")]) as server:
+        server.omit_finish = True
+        with pytest.raises(VllmResponseError, match="without a finish reason"):
+            vllm_chat(server.url, payload(), timeout_seconds=5, on_event=lambda _event: None)
+
+
+def test_one_oversized_line_is_refused_without_reading_all_of_it(monkeypatch):
+    monkeypatch.setattr(vllm_module, "MAX_STREAM_BYTES", 200)
+    with (
+        FakeVllm([text_reply("x" * 5000)]) as server,
+        pytest.raises(VllmResponseError, match="exceeded 200 bytes"),
+    ):
+        vllm_chat(server.url, payload(), timeout_seconds=5, on_event=lambda _event: None)
+
+
+def test_an_unreported_context_length_is_unknown_not_a_mismatch():
+    with FakeVllm([]) as server:
+        server.server.RequestHandlerClass.do_GET = lambda handler: handler._send(
+            200, json.dumps({"data": [{"id": MODEL, "root": "test/model"}]}).encode()
+        )
+        placement = VllmChatModel(server.url, MODEL, num_ctx=4096).observe_placement()
+    assert placement["status"] == "measured"
+    assert placement["context_matches_num_ctx"] is None

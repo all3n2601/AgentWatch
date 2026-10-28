@@ -10,7 +10,6 @@ Each request can carry the step's W3C trace context. vLLM then records its own m
 prefill and decode time for that request in a span whose parent is the step (`vllm_traces`).
 """
 
-import http.client
 import json
 import urllib.parse
 import urllib.request
@@ -25,6 +24,8 @@ MAX_STREAM_BYTES = 16 * 1024 * 1024
 # Canonical options with an OpenAI equivalent. num_ctx has none: the context is fixed by the
 # server's --max-model-len, which the placement reading records and the runner checks.
 OPTION_NAMES = {"temperature": "temperature", "num_predict": "max_tokens"}
+# Server error text kept in a failure reason; the reply itself is untrusted.
+MAX_ERROR_TEXT = 500
 STREAM_EVENTS = ("response", "chunk", "output")
 
 
@@ -107,7 +108,10 @@ def chat_request(payload: dict, *, stream: bool) -> dict:
 
 
 def _arguments(raw: object) -> object:
-    """Parse JSON-string arguments into an object; leave anything else for the dispatcher."""
+    """Parse JSON-string arguments; text that is not JSON is passed through unparsed.
+
+    Either way the dispatcher decides: anything but a JSON object is rejected there.
+    """
     if not isinstance(raw, str):
         return raw
     try:
@@ -176,6 +180,11 @@ class StreamAssembler:
         """Apply one chunk; return whether it carried model output (text or a tool call)."""
         if not isinstance(chunk, dict):
             raise VllmResponseError("stream chunk is not a JSON object")
+        # vLLM reports a failure after the 200 headers as an error chunk, then still sends
+        # [DONE]: the reply so far is not the model's answer.
+        if "error" in chunk or chunk.get("object") == "error":
+            detail = chunk.get("error") if "error" in chunk else chunk.get("message")
+            raise VllmResponseError(f"vLLM reported an error mid-stream: {detail}"[:MAX_ERROR_TEXT])
         if not self.document:
             self.document = chunk
         if isinstance(chunk.get("usage"), dict):
@@ -209,6 +218,9 @@ class StreamAssembler:
     def response(self) -> dict:
         if not self.document:
             raise VllmResponseError("stream ended without any chunk")
+        # vLLM sets finish_reason on the last choice chunk of every completed reply.
+        if self.finish_reason is None:
+            raise VllmResponseError("stream ended without a finish reason")
         calls = [self.calls[index] for index in sorted(self.calls)]
         details = _details(self.document) | {"usage": self.usage}
         return canonical_response("".join(self.content), calls, self.finish_reason, details)
@@ -245,7 +257,8 @@ def vllm_chat(
             return parse_completion(json.load(response))
         on_event("response")
         assembler, received, done = StreamAssembler(), 0, False
-        for raw in response:
+        while raw := response.readline(MAX_STREAM_BYTES - received + 1):
+            # The read itself is bounded, so one endless line cannot exhaust memory.
             received += len(raw)
             if received > MAX_STREAM_BYTES:
                 raise VllmResponseError(f"streamed reply exceeded {MAX_STREAM_BYTES} bytes")
@@ -294,7 +307,3 @@ def vllm_base_url(value: str) -> str:
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ValueError(f"expected an http(s) URL such as http://127.0.0.1:8000, got {value!r}")
     return value.rstrip("/")
-
-
-# Raised for a failed or unusable vLLM request; the runner records them as request failures.
-VLLM_REQUEST_ERRORS = (OSError, http.client.HTTPException, ValueError)

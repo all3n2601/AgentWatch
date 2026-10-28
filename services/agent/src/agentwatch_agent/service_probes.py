@@ -151,7 +151,13 @@ SERVICE_COUNTER_METRICS = frozenset(
 def series_reading(
     exposition: Exposition, entry: SeriesMetric, labels: dict[str, str], source: str
 ) -> Reading:
-    """Sum the series named by `entry` whose labels include `labels`; never invent a value."""
+    """Sum the series named by `entry` whose labels include `labels`; never invent a value.
+
+    If any line of that name failed to parse, the reading is malformed: its labels are
+    unknown, so a sum of the remaining series could silently undercount.
+    """
+    if entry.series in exposition.unparsed_names:
+        return None, "malformed", f"{source} sent an unparsable {entry.series} line"[:512]
     matching = [
         series
         for series in exposition.named(entry.series)

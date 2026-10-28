@@ -63,6 +63,8 @@ class FakeVllm:
         self.traceparents: list[str | None] = []
         self.metrics_text = METRICS_TEXT
         self.omit_done = False  # end streams without their [DONE] marker
+        self.error_mid_stream = False  # an error chunk replaces the finish chunk; [DONE] follows
+        self.omit_finish = False  # never send a finish reason
         self._lock = threading.Lock()
         owner = self
 
@@ -101,6 +103,11 @@ class FakeVllm:
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
                 for chunk in owner.chunks(reply, request_id):
+                    finishing = any(c.get("finish_reason") for c in chunk.get("choices", []))
+                    if finishing and owner.error_mid_stream:
+                        chunk = {"error": {"message": "engine died", "code": 500}}
+                    elif finishing and owner.omit_finish:
+                        continue
                     self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
                 if not owner.omit_done:
                     self.wfile.write(b"data: [DONE]\n\n")

@@ -135,8 +135,12 @@ class VllmChatModel:
                 "reason": f"models response is not valid UTF-8 JSON: {error}",
             }
         if placement.get("status") == "measured" and self.num_ctx is not None:
-            # The run declares num_ctx, but vLLM fixes the context at startup.
-            placement["context_matches_num_ctx"] = placement.get("max_model_len") == self.num_ctx
+            # The run declares num_ctx, but vLLM fixes the context at startup. An unreported
+            # length is unknown, not a mismatch.
+            served = placement.get("max_model_len")
+            placement["context_matches_num_ctx"] = (
+                None if served is None else served == self.num_ctx
+            )
         return placement | {"read_seconds": (time.monotonic_ns() - observed_at) / 1e9}
 
     def request_timing(self, metrics: dict, client_wall_seconds: float) -> dict:
@@ -245,7 +249,11 @@ class StreamTimer:
 
 
 def chat_payload(model: str, messages: list[dict], tools: list[dict], options: dict) -> dict:
-    """The runner's non-streaming chat request; thinking is off so replies stay bounded."""
+    """The runner's canonical chat request; thinking is off so replies stay bounded.
+
+    `stream` stays False here: whether a call streams is the adapter's transport choice
+    (`model_transport`), so recorded payloads and replays do not depend on it.
+    """
     return {
         "model": model,
         "messages": messages,

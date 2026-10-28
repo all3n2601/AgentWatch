@@ -67,26 +67,39 @@ def request_spans(paths: Iterable[Path], trace_id: str) -> list[dict]:
     for path in paths:
         try:
             size = path.stat().st_size
+            budget -= size
+            if budget < 0:
+                raise ValueError(f"trace files exceed {MAX_TRACE_BYTES} bytes")
+            with path.open(encoding="utf-8", errors="replace") as stream:
+                lines = [line for line in stream if trace_id in line]  # most are other runs'
         except FileNotFoundError:
             continue  # rotated away between listing and reading
-        budget -= size
-        if budget < 0:
-            raise ValueError(f"trace files exceed {MAX_TRACE_BYTES} bytes")
-        with path.open(encoding="utf-8", errors="replace") as stream:
-            for line in stream:
-                # Cheap filter first: most lines belong to other runs.
-                if trace_id not in line:
-                    continue
-                try:
-                    document = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # a line still being written
-                for resource in document.get("resourceSpans") or []:
-                    for scope in resource.get("scopeSpans") or []:
-                        for span in scope.get("spans") or []:
-                            if span.get("traceId") == trace_id and span.get("name") == SPAN_NAME:
-                                spans.append(span)
+        for line in lines:
+            try:
+                document = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # a line still being written
+            spans.extend(
+                span
+                for span in _spans(document)
+                if span.get("traceId") == trace_id and span.get("name") == SPAN_NAME
+            )
     return spans
+
+
+def _objects(value: object, key: str) -> list[dict]:
+    """The JSON objects in `value[key]`; anything else in an untrusted line is skipped."""
+    items = value.get(key) if isinstance(value, dict) else None
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _spans(document: object) -> list[dict]:
+    return [
+        span
+        for resource in _objects(document, "resourceSpans")
+        for scope in _objects(resource, "scopeSpans")
+        for span in _objects(scope, "spans")
+    ]
 
 
 def span_timing(span: dict, response_id: object) -> dict:

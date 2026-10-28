@@ -1,6 +1,7 @@
 """The runner with a vLLM backend, against loopback and in-memory test doubles only."""
 
 import json
+import threading
 from pathlib import Path
 
 from agent_test_doubles import SOLVE_MEAN, ScriptedModel
@@ -107,3 +108,41 @@ def test_backend_and_transport_change_the_configuration_digest(mean_task, server
     assert vllm.model_backend == "vllm" and ollama.model_backend == "ollama"
     assert vllm.digest() != ollama.digest()
     assert json.dumps(vllm.as_dict())  # serializable evidence
+
+
+class TrickleModel(ScriptedModel):
+    """Streams output chunks until the runner stops reading; synthetic test double."""
+
+    def __init__(self, on_chunk):
+        super().__init__([])
+        self.on_chunk = on_chunk
+        self.chunks_sent = 0
+        self.stopped_by: BaseException | None = None
+
+    def chat(self, payload, *, trace_context=None, on_event=None):
+        try:
+            on_event("response")
+            for _ in range(500):
+                self.chunks_sent += 1
+                self.on_chunk(self.chunks_sent)
+                on_event("chunk")
+                on_event("output")
+                threading.Event().wait(0.01)
+        except BaseException as error:  # recorded, then re-raised as the runner expects
+            self.stopped_by = error
+            raise
+        raise AssertionError("the runner never stopped reading the stream")
+
+
+def test_cancelling_a_streamed_call_stops_reading_it(mean_task, server, tmp_path):
+    holder = {}
+    model = TrickleModel(
+        lambda sent: sent == 3 and holder["runner"].request_cancel("test", "Stop the run")
+    )
+    holder["runner"] = make_runner(mean_task, server, model, tmp_path)
+    outcome = holder["runner"].run()
+    assert outcome.state == "cancelled"
+    # The model stopped streaming at the next chunk, so the server would free the slot.
+    assert type(model.stopped_by).__name__ == "RunCancelled"
+    assert model.chunks_sent < 10
+    assert evidence(outcome)["model_calls"][0]["abandoned_request"] is True

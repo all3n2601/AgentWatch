@@ -132,3 +132,20 @@ def test_collection_gives_up_at_its_bound_and_reports_what_is_missing(tmp_path):
     assert collected["complete"] is False
     assert collected["calls"][STEP_A]["status"] == "unavailable"
     assert clock["now"] >= 1
+
+
+def test_lines_that_are_not_otlp_objects_are_skipped(tmp_path):
+    path = tmp_path / "vllm-traces.jsonl"
+    path.write_text(
+        f'["{TRACE}"]\n'
+        f'{{"resourceSpans": ["{TRACE}", {{"scopeSpans": "x"}}]}}\n'
+        + span_line(TRACE, STEP_A, "c-1")
+    )
+    assert [s["parentSpanId"] for s in request_spans([path], TRACE)] == [STEP_A]
+
+
+def test_a_file_rotated_away_mid_read_is_skipped(tmp_path):
+    missing = tmp_path / "vllm-traces-2026-10-27T23-00-00.000.jsonl"
+    current = tmp_path / "vllm-traces.jsonl"
+    current.write_text(span_line(TRACE, STEP_A, "c-1"))
+    assert len(request_spans([missing, current], TRACE)) == 1
