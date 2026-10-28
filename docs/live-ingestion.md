@@ -138,6 +138,8 @@ The metric registry (`METRICS` in `agentwatch_sdk.live`) accepts:
 | `gpu.dcgm.energy.total_mj.v1` | `inference` | millijoules ≥ 0 | Cumulative device energy since boot |
 | `gpu.dcgm.temperature.gpu_c.v1` | `inference` | celsius ≥ 0 | GPU temperature |
 | `gpu.dcgm.prof.{sm_active,sm_occupancy,tensor_active,dram_active}.v1` | `inference` | fraction 0–1 | DCGM profiling ratios, where the device supports them |
+| `gpu.gpm.{graphics_active,sm_util,sm_occupancy,tensor_active,dram_bw_util,fp32_util,fp16_util}.v1` | `inference` | percent 0–100 | NVML GPM activity over the Windows-side exporter's latest window |
+| `gpu.gpm.pcie_tx.v1`, `gpu.gpm.pcie_rx.v1` | `inference` | mebibytes_per_second ≥ 0 | PCIe throughput over that window |
 
 The three cumulative CPU counters (A04, [ADR 0005](adr/0005-cpu-counters-retrieval-timing-and-step-correlation.md))
 measure a window by their increase across it; any decrease is a reset with no delta. Host PSI
@@ -150,7 +152,10 @@ own period or establish saturation. vLLM entries (M2,
 the run's served model: the cumulative ones sum every finished request, so a window's increase
 covers all requests completed in it, not one step's own wait, which comes from vLLM's request
 span in local evidence. DCGM entries are whole-device and sit on their own `nvidia-dcgm`
-resource; on the GPU laptop the profiling ratios are always `unavailable`. New signals (for
+resource; on the GPU laptop the profiling ratios are always `unavailable`. GPM entries (M2,
+[ADR 0008](adr/0008-windows-gpm-exporter-for-wsl2.md)) are the same kind of activity read on the
+Windows host for WSL2 runs, on their own `nvidia-nvml-gpm` resource; each describes the
+exporter's latest window, ending before the sample's tick, and a window is never sent twice. New signals (for
 example retrieval) need new versioned names; a definition never changes meaning in place. The change is additive, but an older
 service refuses metrics it does not define, and **every** agent `run` sends all of them: it
 always registers the GPU and reports it as `unsupported` where NVML is missing (macOS,

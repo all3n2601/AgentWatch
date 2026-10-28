@@ -443,8 +443,9 @@ DCGM, located the block (`dcgm-after-counter-setting-reboot/`): both Windows and
 device as GPM-supported, but two `nvmlGpmSampleGet` calls succeed through the Windows driver and
 fail inside WSL2 ("GPU access blocked by the operating system", then "In use by another
 client"). WSL2's GPU virtualization refuses GPM sampling. Whether Windows needs the counter
-setting is not established: it was tested only with the setting on. The runner records the fields
-`unavailable`. In every
+setting is not established: it was tested only with the setting on. The runner records the DCGM
+fields `unavailable`; the same activity is now read through a Windows-side exporter
+([below](#m2-gpm-profiling-through-a-windows-side-exporter-october-28-2026)). In every
 protocol run, the four DCGM device metrics were `measured` and the four profiling metrics
 `unavailable` in every round.
 
@@ -528,6 +529,82 @@ signals (B02, D02). Evidence is in `.data/m2-vllm-20261027/` on the GPU laptop a
 `C:\Users\benoy\AgentWatch-evidence\m2-vllm-2026-10-27\`, with the protocol and its deviation,
 host conditions, driver and summary scripts, run directories, coverage reports, the trace file,
 server logs, image digests and `SHA256SUMS`.
+
+## M2: GPM profiling through a Windows-side exporter (October 28, 2026)
+
+[ADR 0008](adr/0008-windows-gpm-exporter-for-wsl2.md) samples NVML GPM, the source of DCGM's
+profiling fields, in a Windows process (`make gpm-exporter`) and lets the WSL2 runner read its
+windows from a file (`--gpm-file`), because WSL2 refuses GPM samples (the DCGM paragraph above).
+Protocol `m2-gpm-evidence-v1` was declared in writing before measuring. Every attempt is kept.
+
+Conditions: branch `feature/windows-gpm-profiling` at `e511870`, stacked on the M2 vLLM branch.
+The laptop was rebooted on October 28 at 00:42 UTC with GPU performance counters open to all
+users (`RmProfilingAdminOnly=0`). The exporter ran at 250 ms for the whole session; vLLM, the
+collector and the branch API (`:8091`, dev database) as in the M2 record above; no Ollama or
+dcgm-exporter. Windows: Balanced power scheme, AC power, CPU load 20–68% before the parts.
+
+**Feasibility (exploratory, before the protocol).** The driver named the nine metric IDs as
+expected (`gract`, `smutil`, `smocc`, `mmaact`, `dram`, `fp32`, `fp16`, `pcitx`, `pcirx`), and
+one computation took 0.3 ms. While Docker GPU Ollama generated 400 tokens, SM utilization read
+65–90%, SM occupancy 34–46%, DRAM bandwidth 16–20% and graphics engine active 73–88%, against 0
+at idle; `nvidia-smi` utilization read 66–78% over the same seconds. A first attempt used the
+Windows Ollama app, which generated at CPU speed (about 6 tokens/s) and left the GPU idle: not a
+valid load, kept as such. WSL read the exporter's file in 29–57 ms (shell, including process
+start), seeing each new window.
+
+**Attempt 1 of part A** (01:02 UTC) is kept as failed: PostgreSQL had not restarted after the
+reboot, so the live API exited at startup and all four runs exited 4 with nothing measured.
+
+**A. Agent runs** (vLLM, `--gpm-file`; one warm-up excluded; all checks passed):
+
+| Run | Records delivered (refused) | GPM windows used / repeated rounds | File read median / max |
+| --- | --- | --- | --- |
+| `28a729c2-9661-4b63-a3e1-509ed2cbace6` | 453 (0) | 12 / 0 | 29.3 / 50.9 ms |
+| `c8bdb684-1587-4769-a5cf-6e06e5bf26a5` | 453 (0) | 12 / 0 | 24.6 / 31.8 ms |
+| `eac4b341-b41d-4d66-8f5f-dd945c471ed1` | 418 (0) | 9 / 2 | 26.8 / 36.6 ms |
+
+- All nine GPM metrics were `measured` in every run. The two rounds without a new window were
+  `unavailable`, as designed. Windows were 0.250 s (max 0.252 s). The HTTP-probe thread used
+  16.4–17.1 ms of CPU per round with the vLLM and GPM probes, against 9.2–9.6 ms with vLLM and
+  DCGM in the M2 runs above.
+- Per-call means inside model-call windows: DRAM bandwidth 0–66% (median 27–61%), tensor-core
+  activity at most 2.2%, SM utilization 0–88%. Tool steps in run 2 read 86% SM utilization:
+  a window ends before the step's tick, so a short step often holds the previous call's
+  activity. At 250 ms GPM describes the run and longer calls, not individual short steps.
+
+**B. Inference contention** (`--conditions inference`, 1 warm-up, 3 baselines, a clean control;
+all eight experiment checks passed, baseline root CV 1.4%; all 7 runs passed the GPM checks):
+
+| Replay | SM util, run mean | SM occupancy | DRAM bandwidth | Tensor active | vLLM queue wait |
+| --- | --- | --- | --- | --- | --- |
+| 3 baselines | 65.5–77.3% | 11.3–13.2% | 42.1–46.0% | 0.46–0.61% | 0.04 ms |
+| Inference contention | 88.2% | 7.8% | 64.4% | 4.21% | 425–1,390 ms |
+| Clean control | 65.1% | 10.9% | 40.9% | 0.64% | 0.04 ms |
+
+The device was busier under contention, as vLLM's measured queue showed: higher SM utilization
+and DRAM bandwidth, and tensor activity 6.9–9.2 times the baselines. That vLLM batching the
+competing requests explains the tensor rise is a hypothesis, not tested. Observations, not labels.
+
+**C. Sampling overhead** (`resource-sampling-overhead-v2` with the vLLM and GPM probes): median
+0.3360 s unsampled and 0.3444 s sampled (+8.4 ms, +2.5%), p90 0.618 and 0.374 s (the unsampled
+p90 holds an outlier); 22 tokens and one reply digest in every request; 11.8 ms of CPU per round
+across both sampler threads. The unsampled median was 65 ms slower than in the M2 vLLM attempts,
+so the host differed; this resolves no overhead budget.
+
+**Exporter.** Over the session (1,809 windows, about 452 s) the exporter used 2.61 s of CPU,
+including start-up: about 0.6% of one core. The declared check "no write failures" **failed**:
+one window could not be written because a reader held the file through all three attempts. That
+window was dropped and counted, so readers saw no new window rather than wrong data. The two
+`python.exe` processes were the virtual environment's launcher and its interpreter, one exporter.
+Windows process CPU time advances in 15.6 ms steps, so the per-run `exporter_cpu_seconds` of 0.0
+in part A is below its resolution, not a measured zero.
+
+Not established: GPM on another device or driver; whether Windows needs the counter setting;
+a clock mapping aligning windows with steps; reader-writer contention at other intervals.
+Evidence is in `.data/m2-gpm-20261028/` on the GPU laptop and in
+`C:\Users\benoy\AgentWatch-evidence\m2-gpm-2026-10-28\`, with the protocol and deviation,
+host conditions, scripts, run directories, coverage reports, the exporter's final file and
+`SHA256SUMS`.
 
 ## Evidence locations
 

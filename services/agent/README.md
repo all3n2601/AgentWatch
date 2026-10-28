@@ -59,6 +59,20 @@ collector) after the run closes, and the call's `timing` becomes `vllm-request-t
 is sampled through `/metrics` on a second thread. A vLLM run and an Ollama run never share a
 configuration digest: `model_backend` and `model_transport` are part of it.
 
+### GPU profiling activity on WSL2
+
+WSL2 refuses NVML GPM samples, the source of DCGM's profiling fields, so on the GPU laptop a
+Windows process samples them ([ADR 0008](../../docs/adr/0008-windows-gpm-exporter-for-wsl2.md)):
+
+```powershell
+make gpm-exporter   # on Windows: writes .data/gpm/gpm.prom every 250 ms; Ctrl-C stops
+```
+
+Then pass `--gpm-file .data/gpm/gpm.prom` (or `AGENTWATCH_GPM_FILE`) to `run`, `experiment` or
+`sampling-overhead` in WSL. Nine `gpu.gpm.*` metrics (SM utilization and occupancy, tensor-core
+and DRAM activity, FP32/FP16 pipes, PCIe) are sampled on a `gpu-gpm-*` resource. A round with no
+new exporter window records them `unavailable`, never the previous window again.
+
 The same exit codes apply to `run`, `overhead` and `resend`:
 
 | Exit code | Meaning |
