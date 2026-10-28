@@ -67,7 +67,7 @@ from agentwatch_agent.runner import (
     write_json_atomic,
 )
 from agentwatch_agent.sampling_overhead import measure_sampling_overhead
-from agentwatch_agent.service_probes import dcgm_probe, vllm_probe
+from agentwatch_agent.service_probes import GpmFileProbe, dcgm_probe, vllm_probe
 from agentwatch_agent.session import CancellationState
 from agentwatch_agent.tasks import Task, TaskDefinitionError, load_task, task_names
 
@@ -173,6 +173,13 @@ def add_dcgm_argument(command: argparse.ArgumentParser) -> None:
         default=os.environ.get("AGENTWATCH_DCGM_URL") or None,
         help="dcgm-exporter /metrics URL; DCGM is not sampled without it",
     )
+    gpm = os.environ.get("AGENTWATCH_GPM_FILE")
+    command.add_argument(
+        "--gpm-file",
+        type=Path,
+        default=Path(gpm) if gpm else None,
+        help="GPM exporter text file written on Windows (ADR 0008); GPM is not sampled without it",
+    )
 
 
 def add_server_evidence_arguments(command: argparse.ArgumentParser) -> None:
@@ -196,7 +203,11 @@ def build_model(args: argparse.Namespace) -> ChatModel:
 
 
 def server_evidence(args: argparse.Namespace) -> dict:
-    return {"dcgm_metrics_url": args.dcgm_url, "vllm_traces_file": args.vllm_traces_file}
+    return {
+        "dcgm_metrics_url": args.dcgm_url,
+        "gpm_file": args.gpm_file,
+        "vllm_traces_file": args.vllm_traces_file,
+    }
 
 
 def parser() -> argparse.ArgumentParser:
@@ -713,15 +724,25 @@ def sampling_overhead_command(args: argparse.Namespace) -> int:
         resource_class="inference",
     )
 
+    gpm_gpu = ResourceRegistration(
+        resource_id=f"gpu-gpm-{uuid4().hex[:12]}",
+        service_id="nvidia-nvml-gpm",
+        resource_class="inference",
+    )
+
     def service_probes(server: ResourceRegistration) -> list[Probe]:
         probes: list[Probe] = []
         if model.backend == "vllm":
             probes.append(vllm_probe(server, model.endpoint, model.name))
         if args.dcgm_url is not None:
             probes.append(dcgm_probe(dcgm_gpu, args.dcgm_url))
+        if args.gpm_file is not None:
+            probes.append(GpmFileProbe(gpm_gpu, args.gpm_file))
         return probes
 
-    with_services = model.backend == "vllm" or args.dcgm_url is not None
+    with_services = (
+        model.backend == "vllm" or args.dcgm_url is not None or args.gpm_file is not None
+    )
     report = measure_sampling_overhead(
         task,
         model.name,

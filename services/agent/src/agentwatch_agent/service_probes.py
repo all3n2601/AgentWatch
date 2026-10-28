@@ -16,6 +16,7 @@ import json
 import math
 import statistics
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
@@ -23,7 +24,12 @@ from typing import IO
 from agentwatch_sdk.live import METRICS, ResourceRegistration
 
 from agentwatch_agent.clock import MonotonicClock
-from agentwatch_agent.prometheus_text import Exposition, ExpositionError, fetch_exposition
+from agentwatch_agent.prometheus_text import (
+    Exposition,
+    ExpositionError,
+    fetch_exposition,
+    read_exposition_file,
+)
 from agentwatch_agent.resources import MetricReading, Reading
 
 # Below the 250 ms default interval, so one slow fetch delays at most the round it is in.
@@ -236,37 +242,53 @@ class ExpositionChangeLog:
 
 
 class ExpositionProbe:
-    """One registered resource read from one service's /metrics endpoint each round."""
+    """One registered resource read from one exposition (an endpoint or a file) each round."""
 
     def __init__(
         self,
         resource: ResourceRegistration,
         *,
-        url: str,
+        fetch: Callable[[], Exposition],
         source: str,
         entries: tuple[SeriesMetric, ...],
         labels: dict[str, str],
         scope: str,
-        fetch_timeout_seconds: float = DEFAULT_FETCH_TIMEOUT_SECONDS,
+        fetch_details: dict | None = None,
         change_log: ExpositionChangeLog | None = None,
     ):
         self.resource = resource
-        self.url = url
+        self.fetch = fetch
+        self.fetch_details = fetch_details or {}
         self.source = source
         self.entries = entries
         self.labels = labels
         self.scope = scope
         self.metrics = tuple((entry.metric, entry.unit) for entry in entries)
-        self.fetch_timeout_seconds = fetch_timeout_seconds
         self.change_log = change_log
         self._fetch_seconds: list[float] = []
         self._failures: dict[str, int] = {}
 
     def read(self) -> list[MetricReading]:
+        exposition, error = self._fetch_logged()
+        if exposition is None:
+            reason = f"{self.source} metrics request failed ({error})"
+            return self._all(None, "unavailable", reason)
+        return self._readings(exposition)
+
+    def _all(self, value: float | None, availability: str, reason: str | None):
+        return [((e.metric, e.unit), (value, availability, reason)) for e in self.entries]
+
+    def _readings(self, exposition: Exposition) -> list[MetricReading]:
+        return [
+            ((e.metric, e.unit), series_reading(exposition, e, self.labels, self.source))
+            for e in self.entries
+        ]
+
+    def _fetch_logged(self) -> tuple[Exposition | None, str | None]:
         started = time.monotonic()
         exposition, error = None, None
         try:
-            exposition = fetch_exposition(self.url, self.fetch_timeout_seconds)
+            exposition = self.fetch()
         except FETCH_ERRORS as failure:
             error = f"{type(failure).__name__}"
             self._failures[error] = self._failures.get(error, 0) + 1
@@ -274,20 +296,14 @@ class ExpositionProbe:
         self._fetch_seconds.append(fetch_seconds)
         if self.change_log is not None:
             self.change_log.record(exposition, fetch_seconds, error)
-        if exposition is None:
-            reason = f"{self.source} metrics request failed ({error})"
-            return [((e.metric, e.unit), (None, "unavailable", reason)) for e in self.entries]
-        return [
-            ((e.metric, e.unit), series_reading(exposition, e, self.labels, self.source))
-            for e in self.entries
-        ]
+        return exposition, error
 
     def describe(self) -> dict:
         fetches = self._fetch_seconds
         return {
             "source": self.source,
             "series_labels": dict(self.labels),
-            "fetch_timeout_seconds": self.fetch_timeout_seconds,
+            **self.fetch_details,
             "fetches": len(fetches),
             "fetch_failures": dict(self._failures),
             "fetch_median_seconds": statistics.median(fetches) if fetches else None,
@@ -306,9 +322,11 @@ def vllm_probe(
     served_model: str,
     change_log: ExpositionChangeLog | None = None,
 ) -> ExpositionProbe:
+    url = base_url.rstrip("/") + "/metrics"
     return ExpositionProbe(
         resource,
-        url=base_url.rstrip("/") + "/metrics",
+        fetch=lambda: fetch_exposition(url, DEFAULT_FETCH_TIMEOUT_SECONDS),
+        fetch_details={"fetch_timeout_seconds": DEFAULT_FETCH_TIMEOUT_SECONDS},
         source="vLLM",
         entries=VLLM_METRICS,
         labels={"model_name": served_model},
@@ -325,9 +343,106 @@ def dcgm_probe(
 ) -> ExpositionProbe:
     return ExpositionProbe(
         resource,
-        url=metrics_url,
+        fetch=lambda: fetch_exposition(metrics_url, DEFAULT_FETCH_TIMEOUT_SECONDS),
+        fetch_details={"fetch_timeout_seconds": DEFAULT_FETCH_TIMEOUT_SECONDS},
         source="dcgm-exporter",
         entries=DCGM_METRICS,
         labels={"gpu": str(gpu_index)},
         scope="one whole NVIDIA device through DCGM, every process on it; not per process",
     )
+
+
+GPM_PREFIX = "agentwatch_gpm"
+# (registered metric, unit, the exporter's metric name; agentwatch_worker.gpm.METRICS)
+_GPM = (
+    ("gpu.gpm.graphics_active.v1", "percent", "graphics_active"),
+    ("gpu.gpm.sm_util.v1", "percent", "sm_util"),
+    ("gpu.gpm.sm_occupancy.v1", "percent", "sm_occupancy"),
+    ("gpu.gpm.tensor_active.v1", "percent", "tensor_active"),
+    ("gpu.gpm.dram_bw_util.v1", "percent", "dram_bw_util"),
+    ("gpu.gpm.fp32_util.v1", "percent", "fp32_util"),
+    ("gpu.gpm.fp16_util.v1", "percent", "fp16_util"),
+    ("gpu.gpm.pcie_tx.v1", "mebibytes_per_second", "pcie_tx"),
+    ("gpu.gpm.pcie_rx.v1", "mebibytes_per_second", "pcie_rx"),
+)
+GPM_METRICS = tuple(
+    SeriesMetric(metric, unit, f"{GPM_PREFIX}_{name}_{unit}") for metric, unit, name in _GPM
+)
+_GPM_NAMES = {metric: name for metric, _unit, name in _GPM}
+
+
+class GpmFileProbe(ExpositionProbe):
+    """GPM windows from the exporter's text file (`agentwatch_worker.gpm_exporter`, ADR 0008).
+
+    A round uses a window only once: when the exporter has written no new window since the
+    previous round (same `sequence`), every reading is `unavailable`, never the old window at a
+    new tick. A window covers the exporter's last interval on its own clock, ending before the
+    runner's tick by up to that interval plus the file's latency; no clock mapping is applied.
+    """
+
+    def __init__(self, resource: ResourceRegistration, path: Path, gpu_index: int = 0):
+        super().__init__(
+            resource,
+            fetch=lambda: read_exposition_file(path),
+            fetch_details={"file": path.name},
+            source="GPM exporter",
+            entries=GPM_METRICS,
+            labels={"gpu": str(gpu_index)},
+            scope=(
+                "one whole NVIDIA device through NVML GPM on the Windows host, every process on "
+                "it, over the exporter's latest window; not per process"
+            ),
+        )
+        self._label = {"gpu": str(gpu_index)}
+        self._last_sequence: float | None = None
+        self.repeated_windows = 0
+        self._windows: list[float] = []
+        self._exporter_cpu: list[float] = []
+
+    def _one(self, exposition: Exposition, name: str, labels: dict[str, str]) -> float | None:
+        values = [
+            s.value
+            for s in exposition.named(f"{GPM_PREFIX}_{name}")
+            if all(s.label(k) == v for k, v in labels.items())
+        ]
+        return values[0] if len(values) == 1 and math.isfinite(values[0]) else None
+
+    def read(self) -> list[MetricReading]:
+        exposition, error = self._fetch_logged()
+        if exposition is None:
+            return self._all(None, "unavailable", f"GPM exporter file unreadable ({error})")
+        sequence = self._one(exposition, "sequence", self._label)
+        if sequence is None:
+            return self._all(None, "unavailable", "GPM exporter file has no window sequence")
+        if sequence == self._last_sequence:
+            self.repeated_windows += 1
+            return self._all(None, "unavailable", "No new GPM window since the previous round")
+        self._last_sequence = sequence
+        for name, kept in (
+            ("window_seconds", self._windows),
+            ("exporter_cpu_seconds_total", self._exporter_cpu),
+        ):
+            value = self._one(exposition, name, self._label)
+            if value is not None:
+                kept.append(value)
+        readings = self._readings(exposition)
+        for index, ((metric, unit), (value, availability, reason)) in enumerate(readings):
+            if availability == "unavailable":
+                code = self._one(
+                    exposition, "metric_status", self._label | {"metric": _GPM_NAMES[metric]}
+                )
+                if code is not None and code != 0:
+                    reason = f"NVML refused GPM metric {_GPM_NAMES[metric]} (code {code:g})"
+                    readings[index] = ((metric, unit), (None, "unavailable", reason))
+        return readings
+
+    def describe(self) -> dict:
+        cpu = self._exporter_cpu
+        return super().describe() | {
+            "windows_used": len(self._windows),
+            "repeated_windows": self.repeated_windows,
+            "window_median_seconds": statistics.median(self._windows) if self._windows else None,
+            "window_max_seconds": max(self._windows) if self._windows else None,
+            # The exporter's own process CPU between the first and last window this run used.
+            "exporter_cpu_seconds": cpu[-1] - cpu[0] if len(cpu) > 1 else None,
+        }

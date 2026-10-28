@@ -146,3 +146,29 @@ def test_cancelling_a_streamed_call_stops_reading_it(mean_task, server, tmp_path
     assert type(model.stopped_by).__name__ == "RunCancelled"
     assert model.chunks_sent < 10
     assert evidence(outcome)["model_calls"][0]["abandoned_request"] is True
+
+
+def test_a_gpm_file_is_its_own_sampled_resource(mean_task, server, tmp_path):
+    from agentwatch_worker.gpm import METRICS as EXPORTED
+    from agentwatch_worker.gpm import MetricResult
+    from agentwatch_worker.gpm_exporter import render
+
+    path = tmp_path / "gpm.prom"
+    results = {m.name: MetricResult(30.0, 0) for m in EXPORTED}
+    path.write_text(render(0, 1, 0.25, results, {m.name: m.unit for m in EXPORTED}, 1.0, 0))
+    outcome = make_runner(
+        mean_task,
+        server,
+        ScriptedModel(SOLVE_MEAN),
+        tmp_path,
+        gpm_file=path,
+        limits=RunLimits(run_timeout_seconds=120),
+    ).run()
+    assert outcome.state == "completed"
+    run = server.only_run()
+    services = {r.resource_id: r.service_id for r in run.registration.resources}
+    gpm = [rid for rid, service in services.items() if service == "nvidia-nvml-gpm"]
+    assert len(gpm) == 1 and gpm[0].startswith("gpu-gpm-")
+    counts = evidence(outcome)["service_sampling"]["availability_counts"]["gpu.gpm.sm_util.v1"]
+    # One window was written, so only the first round used it; later rounds had no new one.
+    assert counts["measured"] == 1 and counts.get("unavailable", 0) >= 1

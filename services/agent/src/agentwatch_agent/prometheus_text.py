@@ -8,6 +8,7 @@ non-finite values are kept so callers can report them as malformed instead of as
 import re
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 # vLLM's exposition was about 64 KB on the laptop (October 27, 2026); this leaves headroom
 # without letting a misbehaving endpoint fill the runner's memory every round.
@@ -126,6 +127,17 @@ def fetch_exposition(url: str, timeout_seconds: float) -> Exposition:
         if response.status != 200:
             raise ExpositionError(f"metrics endpoint answered HTTP {response.status}")
         body = response.read(MAX_EXPOSITION_BYTES + 1)
+    return _decoded(body)
+
+
+def read_exposition_file(path: Path) -> Exposition:
+    """Read a text-file exposition (as a node-exporter textfile). OS errors propagate."""
+    with path.open("rb") as stream:
+        body = stream.read(MAX_EXPOSITION_BYTES + 1)
+    return _decoded(body)
+
+
+def _decoded(body: bytes) -> Exposition:
     if len(body) > MAX_EXPOSITION_BYTES:
         raise ExpositionError(f"exposition is larger than {MAX_EXPOSITION_BYTES} bytes")
     try:
