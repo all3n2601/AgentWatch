@@ -402,7 +402,8 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   bounded inference contention (`competing-openai-chat-v1`) the runner's requests waited
   842–1,096 ms in vLLM's queue against 0.02–0.08 ms clean, with prefill and decode unchanged.
   DCGM 4.5.2 runs too: device fields are measured, while its profiling fields read N/A on this
-  GPU (NVML GPM sampling fails under WSL2, cause not established) and are recorded `unavailable`. Sampling overhead was +0.6% and
+  GPU because WSL2 blocks GPM sampling, which works through the Windows driver, and are recorded
+  `unavailable`. Sampling overhead was +0.6% and
   +1.7% in two attempts (no budget applied). Open until review and merge.
 - [ ] Add retrieval telemetry from Qdrant requests and queue/service latency where observable.
   No retrieval metric is registered; retrieval is in-process BM25. 2026-10-24 (A04): each

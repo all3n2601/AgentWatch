@@ -436,10 +436,15 @@ framebuffer). The profiling (DCP) fields are listed by `dcgmi profile -l` but re
 exporter omits them, also with `SYS_ADMIN`. NVML names status 19 "In use by another client", not
 "Not Supported". That first `dmon` test ran while the exporter probe was still running, a second
 DCGM client, so it was retested on October 28 with a single client and no other GPU container:
-still N/A, with GPM failures of status 17 ("Operating System") and 19. The only NVIDIA processes
-on Windows were the driver's display service, so the block appears to lie in the Windows driver or
-WSL2 GPU layer; its cause is not established (`dcgm-single-client-retest/`). The runner records
-the fields `unavailable`. In every
+still N/A, with GPM failures of status 17 ("Operating System") and 19
+(`dcgm-single-client-retest/`). Enabling GPU performance counters for all users
+(`RmProfilingAdminOnly=0`) and rebooting changed nothing. Calling NVML's GPM API directly, without
+DCGM, located the block (`dcgm-after-counter-setting-reboot/`): both Windows and WSL2 report the
+device as GPM-supported, but two `nvmlGpmSampleGet` calls succeed through the Windows driver and
+fail inside WSL2 ("GPU access blocked by the operating system", then "In use by another
+client"). WSL2's GPU virtualization refuses GPM sampling. Whether Windows needs the counter
+setting is not established: it was tested only with the setting on. The runner records the fields
+`unavailable`. In every
 protocol run, the four DCGM device metrics were `measured` and the four profiling metrics
 `unavailable` in every round.
 
