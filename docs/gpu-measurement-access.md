@@ -423,8 +423,8 @@ Windows: Balanced power scheme, AC power, CPU load 12–42% before the parts; WS
 **Serving on the laptop.** vLLM's first start took about 4.5 minutes (61 s loading 3.78 GiB of
 downloaded weights, 29 s `torch.compile`, about 2 minutes capturing CUDA graphs). The restart
 before the protocol, with weights cached, took about 4.6 minutes (24 s loading, 206 s engine
-initialization): its new compile-cache volume was still empty, so the cache's effect on later
-restarts is not measured. Model loading took 3.22 GiB; the KV cache got
+initialization): its new compile-cache volume was still empty. With both caches populated, a
+restart on October 28 reached healthy in 91 s (0.23 s compiling, 26 s engine initialization). Model loading took 3.22 GiB; the KV cache got
 0.79 GiB, 7,376 tokens (1.80 concurrent 4,096-token requests). Device memory used was
 5,206 MiB of 8,151 with vLLM loaded, so Ollama (about 2.2 GiB) cannot run beside it.
 
@@ -500,6 +500,15 @@ with every check passing; every model call had a stream timing and a `reported` 
 With tools in the request, Ollama sent each reply in 2–3 chunks: the first output arrived after
 most of the request (for example 0.49 s of a 0.71 s call), so for Ollama time to first output is
 not a time to first token. Model calls still join `empty` own telemetry: Ollama has no metrics.
+
+**After review** (`066a941`, outside the protocol): the review fixes change only failure paths
+that the runs above never took (a mid-stream server error, an oversized line, an unparsable
+series, a cancelled stream, a backend mismatch). At that commit a warm-up and one vLLM run
+(`26610d6d-1197-4c35-b206-2e64bf2e7fec`) completed, and a run interrupted with SIGINT during
+its third model call was cancelled with that call marked abandoned. One second later vLLM ran no
+request and had not finished that call (its `stop` count was unchanged, and v0.32's `abort`
+count did not record it either): the closed stream ended the request. The runner process also
+exited there, so this does not isolate the in-process close; that is covered by a unit test.
 
 Not established: vLLM on any other host, DCGM profiling fields on any device, per-process GPU
 use, the collector's own effect on vLLM timing beyond part C, contention through vLLM's batch
