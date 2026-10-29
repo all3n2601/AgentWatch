@@ -375,9 +375,12 @@ class GpmFileProbe(ExpositionProbe):
     """GPM windows from the exporter's text file (`agentwatch_worker.gpm_exporter`, ADR 0008).
 
     A round uses a window only once: when the exporter has written no new window since the
-    previous round (same `sequence`), every reading is `unavailable`, never the old window at a
-    new tick. A window covers the exporter's last interval on its own clock, ending before the
-    runner's tick by up to that interval plus the file's latency; no clock mapping is applied.
+    previous round (same `instance` and `sequence`), every reading is `unavailable`, never the
+    old window at a new tick. The first window a run reads is only a baseline: a file left by a
+    stopped exporter looks the same as a live one, so a window counts once the run has seen the
+    file change, which needs no clock shared with Windows. A window covers the exporter's last
+    interval on its own clock, ending before the runner's tick by up to that interval plus the
+    file's latency; no clock mapping is applied.
     """
 
     def __init__(self, resource: ResourceRegistration, path: Path, gpu_index: int = 0):
@@ -394,10 +397,11 @@ class GpmFileProbe(ExpositionProbe):
             ),
         )
         self._label = {"gpu": str(gpu_index)}
-        self._last_sequence: float | None = None
+        self._last_window: tuple[str, float] | None = None
         self.repeated_windows = 0
         self._windows: list[float] = []
-        self._exporter_cpu: list[float] = []
+        # Each exporter instance's own CPU readings, so a restart never yields a negative cost.
+        self._exporter_cpu: dict[str, list[float]] = {}
 
     def _one(self, exposition: Exposition, name: str, labels: dict[str, str]) -> float | None:
         values = [
@@ -407,24 +411,42 @@ class GpmFileProbe(ExpositionProbe):
         ]
         return values[0] if len(values) == 1 and math.isfinite(values[0]) else None
 
+    def _instance(self, exposition: Exposition) -> str | None:
+        instances = [
+            s.label("instance")
+            for s in exposition.named(f"{GPM_PREFIX}_exporter_info")
+            if s.label("gpu") == self._label["gpu"]
+        ]
+        return instances[0] if len(instances) == 1 and instances[0] else None
+
     def read(self) -> list[MetricReading]:
         exposition, error = self._fetch_logged()
         if exposition is None:
             return self._all(None, "unavailable", f"GPM exporter file unreadable ({error})")
+        instance = self._instance(exposition)
         sequence = self._one(exposition, "sequence", self._label)
-        if sequence is None:
-            return self._all(None, "unavailable", "GPM exporter file has no window sequence")
-        if sequence == self._last_sequence:
+        if instance is None or sequence is None:
+            return self._all(
+                None, "unavailable", "GPM exporter file has no exporter instance or window sequence"
+            )
+        window, previous = (instance, sequence), self._last_window
+        self._last_window = window
+        if previous is None:
+            return self._all(
+                None,
+                "unavailable",
+                "First GPM window of this run, kept as a baseline: the file may be left by a "
+                "stopped exporter",
+            )
+        if window == previous:
             self.repeated_windows += 1
             return self._all(None, "unavailable", "No new GPM window since the previous round")
-        self._last_sequence = sequence
-        for name, kept in (
-            ("window_seconds", self._windows),
-            ("exporter_cpu_seconds_total", self._exporter_cpu),
-        ):
-            value = self._one(exposition, name, self._label)
-            if value is not None:
-                kept.append(value)
+        window_seconds = self._one(exposition, "window_seconds", self._label)
+        if window_seconds is not None:
+            self._windows.append(window_seconds)
+        cpu = self._one(exposition, "exporter_cpu_seconds_total", self._label)
+        if cpu is not None:
+            self._exporter_cpu.setdefault(instance, []).append(cpu)
         readings = self._readings(exposition)
         for index, ((metric, unit), (value, availability, reason)) in enumerate(readings):
             if availability == "unavailable":
@@ -437,12 +459,14 @@ class GpmFileProbe(ExpositionProbe):
         return readings
 
     def describe(self) -> dict:
-        cpu = self._exporter_cpu
+        spans = [cpu[-1] - cpu[0] for cpu in self._exporter_cpu.values() if len(cpu) > 1]
         return super().describe() | {
             "windows_used": len(self._windows),
             "repeated_windows": self.repeated_windows,
+            "exporter_instances": len(self._exporter_cpu),
             "window_median_seconds": statistics.median(self._windows) if self._windows else None,
             "window_max_seconds": max(self._windows) if self._windows else None,
-            # The exporter's own process CPU between the first and last window this run used.
-            "exporter_cpu_seconds": cpu[-1] - cpu[0] if len(cpu) > 1 else None,
+            # The exporter's own process CPU between the first and last window this run used,
+            # summed over exporter instances.
+            "exporter_cpu_seconds": sum(spans) if spans else None,
         }

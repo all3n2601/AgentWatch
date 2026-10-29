@@ -5,15 +5,17 @@ Run on Windows when the runner is in WSL2, which refuses GPM samples:
     uv run --package agentwatch-worker python -m agentwatch_worker.gpm_exporter \\
         --output .data/gpm/gpm.prom
 
-Each window replaces the file atomically. It carries a `sequence` that increases with every
-window, so a reader can tell a new window from one it has already read, the window's length on
-this process's monotonic clock, each metric's NVML status, and this process's own CPU time. A
-metric NVML refused is omitted, never written as zero. The file names no host paths.
+Each window replaces the file atomically. It carries a random `instance` for this process and a
+`sequence` that increases with every window, so a reader can tell a new window from one it has
+already read even across exporter restarts, the window's length on this process's monotonic
+clock, each metric's NVML status, and this process's own CPU time. A metric NVML refused is
+omitted, never written as zero. The file names no host paths.
 """
 
 import argparse
 import math
 import os
+import secrets
 import sys
 import time
 from collections.abc import Callable
@@ -32,6 +34,7 @@ REPLACE_RETRY_SECONDS = 0.01
 
 def render(
     gpu_index: int,
+    instance: str,
     sequence: int,
     window_seconds: float,
     results: dict[str, MetricResult],
@@ -41,6 +44,7 @@ def render(
 ) -> str:
     label = f'{{gpu="{gpu_index}"}}'
     lines = [
+        f'{PREFIX}_exporter_info{{gpu="{gpu_index}",instance="{instance}"}} 1',
         f"# TYPE {PREFIX}_sequence counter",
         f"{PREFIX}_sequence{label} {sequence}",
         f"{PREFIX}_window_seconds{label} {window_seconds:.6f}",
@@ -78,9 +82,11 @@ def export(
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     cpu_seconds: Callable[[], float] = time.process_time,
+    instance: str | None = None,
 ) -> dict:
     """Write windows until the duration ends (or forever); return counts for the operator."""
     units = {metric.name: metric.unit for metric in sampler.metrics}
+    instance = instance or secrets.token_hex(8)
     started = monotonic()
     next_due = started
     previous_at: float | None = None
@@ -90,8 +96,10 @@ def export(
         results = sampler.window()
         if results is not None and previous_at is not None:
             sequence += 1
+            # A failed write cannot publish itself: readers see it in the next window written.
             text = render(
                 gpu_index,
+                instance,
                 sequence,
                 sampled_at - previous_at,
                 results,
@@ -102,10 +110,19 @@ def export(
             if not replace_atomically(output, text, sleep):
                 write_failures += 1
         previous_at = sampled_at
-        # A fixed cadence, so slow windows do not accumulate drift.
+        # A fixed cadence, so slow windows do not accumulate drift. An overrun skips the slots it
+        # missed instead of sampling back to back to catch up.
         next_due += interval_seconds
-        sleep(max(next_due - monotonic(), 0))
-    return {"windows": sequence, "write_failures": write_failures}
+        now = monotonic()
+        if next_due < now:
+            next_due += math.ceil((now - next_due) / interval_seconds) * interval_seconds
+        sleep(next_due - now)
+    # `windows` counts every window computed, including the ones whose write failed.
+    return {
+        "windows": sequence,
+        "windows_written": sequence - write_failures,
+        "write_failures": write_failures,
+    }
 
 
 def positive_seconds(value: str) -> float:

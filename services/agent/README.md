@@ -71,7 +71,8 @@ make gpm-exporter   # on Windows: writes .data/gpm/gpm.prom every 250 ms; Ctrl-C
 Then pass `--gpm-file .data/gpm/gpm.prom` (or `AGENTWATCH_GPM_FILE`) to `run`, `experiment` or
 `sampling-overhead` in WSL. Nine `gpu.gpm.*` metrics (SM utilization and occupancy, tensor-core
 and DRAM activity, FP32/FP16 pipes, PCIe) are sampled on a `gpu-gpm-*` resource. A round with no
-new exporter window records them `unavailable`, never the previous window again.
+new exporter window records them `unavailable`, never the previous window again, and so does a
+run's first round, whose window is only a baseline (the file may be left by a stopped exporter).
 
 The same exit codes apply to `run`, `overhead` and `resend`:
 

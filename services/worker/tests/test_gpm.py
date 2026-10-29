@@ -110,6 +110,7 @@ def window_of(values):
 def test_render_omits_refused_metrics_and_keeps_their_status():
     text = render(
         0,
+        "a1",
         7,
         0.25,
         window_of({"sm_util": (42.5, 0), "tensor_active": (None, 3)}),
@@ -117,6 +118,7 @@ def test_render_omits_refused_metrics_and_keeps_their_status():
         1.5,
         0,
     )
+    assert 'agentwatch_gpm_exporter_info{gpu="0",instance="a1"} 1' in text
     assert 'agentwatch_gpm_sequence{gpu="0"} 7' in text
     assert 'agentwatch_gpm_sm_util_percent{gpu="0"} 42.500000' in text
     assert "agentwatch_gpm_tensor_active_percent" not in text
@@ -159,8 +161,9 @@ def test_export_writes_one_numbered_window_per_interval(tmp_path):
         monotonic=clock.monotonic,
         sleep=clock.sleep,
         cpu_seconds=lambda: 0.5,
+        instance="a1",
     )
-    assert counts == {"windows": 3, "write_failures": 0}
+    assert counts == {"windows": 3, "windows_written": 3, "write_failures": 0}
     text = output.read_text()
     assert 'agentwatch_gpm_sequence{gpu="0"} 3' in text
     assert 'agentwatch_gpm_window_seconds{gpu="0"} 0.250000' in text
@@ -184,7 +187,59 @@ def test_a_file_held_by_a_reader_is_counted_not_fatal(tmp_path, monkeypatch):
         cpu_seconds=lambda: 0.0,
     )
     assert counts["write_failures"] == counts["windows"] >= 1
+    assert counts["windows_written"] == 0
     assert not list(tmp_path.iterdir())
+
+
+class SlowSampler(ScriptedSampler):
+    """The second window takes 0.6 s, overrunning a 0.25 s interval."""
+
+    def __init__(self, clock):
+        super().__init__()
+        self.clock = clock
+        self.sampled_at = []
+
+    def window(self):
+        self.sampled_at.append(self.clock.now)
+        if len(self.sampled_at) == 2:
+            self.clock.now += 0.6
+        return super().window()
+
+
+def test_an_overrun_skips_missed_slots_instead_of_sampling_back_to_back(tmp_path):
+    clock = FakeTime()
+    sampler = SlowSampler(clock)
+    export(
+        sampler,
+        tmp_path / "gpm.prom",
+        gpu_index=0,
+        interval_seconds=0.25,
+        duration_seconds=1.6,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+        cpu_seconds=lambda: 0.0,
+    )
+    # Slots at 0.5 and 0.75 were missed; sampling resumes on the grid at 1.0.
+    assert sampler.sampled_at[:4] == pytest.approx([0.0, 0.25, 1.0, 1.25])
+
+
+def test_each_exporter_process_names_a_new_instance(tmp_path):
+    instances = set()
+    for _ in range(2):
+        clock = FakeTime()
+        output = tmp_path / "gpm.prom"
+        export(
+            ScriptedSampler(),
+            output,
+            gpu_index=0,
+            interval_seconds=0.25,
+            duration_seconds=0.6,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+            cpu_seconds=lambda: 0.0,
+        )
+        instances.add(output.read_text().split('instance="')[1].split('"')[0])
+    assert len(instances) == 2
 
 
 @pytest.mark.parametrize("interval", ["0.05", "nan", "inf"])

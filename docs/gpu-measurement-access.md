@@ -599,6 +599,18 @@ window was dropped and counted, so readers saw no new window rather than wrong d
 Windows process CPU time advances in 15.6 ms steps, so the per-run `exporter_cpu_seconds` of 0.0
 in part A is below its resolution, not a measured zero.
 
+**Post-review changes (October 29).** After the automated review, the exporter names a random
+instance per process and skips missed slots after an overrun instead of sampling back to back.
+The probe keys windows by instance and sequence, and the first window a run reads is only a
+baseline (`unavailable`), so a file left by a stopped exporter is never measured. The runs above
+predate this: under it each would have used one window fewer. A smoke check on the laptop, not a
+protocol run: a reader at about 0.28 s per round across two consecutive 5 s exporter processes on
+an idle GPU used 29 windows from 2 instances; the 3 rounds while the second exporter started and
+every round after both stopped were `unavailable`. In an earlier try, whose reader ended before
+the second exporter started, a fresh reader of the file left behind measured nothing. The first exporter again dropped one window (1 of 19) to a reader holding the
+file. The exporter CPU over the windows used was 0.42 s across both processes, higher per second
+than the session figure above; not investigated.
+
 Not established: GPM on another device or driver; whether Windows needs the counter setting;
 a clock mapping aligning windows with steps; reader-writer contention at other intervals.
 Evidence is in `.data/m2-gpm-20261028/` on the GPU laptop and in

@@ -166,7 +166,8 @@ def add_model_arguments(command: argparse.ArgumentParser) -> None:
     )
 
 
-def add_dcgm_argument(command: argparse.ArgumentParser) -> None:
+def add_gpu_device_arguments(command: argparse.ArgumentParser) -> None:
+    """Optional whole-device GPU evidence: DCGM fields and the Windows GPM exporter's windows."""
     command.add_argument(
         "--dcgm-url",
         type=http_url,
@@ -183,14 +184,14 @@ def add_dcgm_argument(command: argparse.ArgumentParser) -> None:
 
 
 def add_server_evidence_arguments(command: argparse.ArgumentParser) -> None:
-    """Optional evidence beside the run's own samples: vLLM request spans and DCGM fields."""
+    """Optional evidence beside the run's own samples: vLLM request spans and GPU device fields."""
     command.add_argument(
         "--vllm-traces-file",
         type=Path,
         default=Path(os.environ.get("AGENTWATCH_VLLM_TRACES_FILE", DEFAULT_VLLM_TRACES_FILE)),
         help="OTLP JSON lines the Compose collector writes (vLLM backend only)",
     )
-    add_dcgm_argument(command)
+    add_gpu_device_arguments(command)
 
 
 def build_model(args: argparse.Namespace) -> ChatModel:
@@ -311,7 +312,7 @@ def parser() -> argparse.ArgumentParser:
     )
     sampling.add_argument("--task", default="fix-mean-empty")
     add_model_arguments(sampling)
-    add_dcgm_argument(sampling)
+    add_gpu_device_arguments(sampling)
     sampling.add_argument("--output-dir", type=Path, default=Path(".data/sampling-overhead"))
 
     coverage = commands.add_parser(

@@ -21,16 +21,19 @@ name that differs from the expected one is reported as refused, never under our 
 **A file, not a socket, crosses the boundary.** WSL2 cannot reach a plain Windows `localhost`
 port on this host, and opening one to the WSL network would need a firewall rule. The exporter
 instead replaces `.data/gpm/gpm.prom` atomically with a Prometheus text exposition, and the
-runner reads it through `/mnt/c`. The file carries a `sequence`, the window's length, each
-metric's NVML status and the exporter's own CPU time. A metric NVML refused is omitted, never
+runner reads it through `/mnt/c`. The file carries a random `instance` per exporter process, a
+`sequence`, the window's length, each metric's NVML status and the exporter's own CPU time. A metric NVML refused is omitted, never
 written as zero.
 
 **Each window is used once.** The runner's `GpmFileProbe` reads the file on the HTTP-probe thread
 (ADR 0007) as nine `gpu.gpm.*.v1` metrics on their own resource (service `nvidia-nvml-gpm`).
-When the sequence has not advanced since the previous round, every reading is `unavailable` ("no
-new GPM window"), so no window is re-reported at a new tick. A missing or unreadable file, a file
-without a sequence, and a refused metric are `unavailable` with their reason; an out-of-range value
-is `malformed`.
+When the instance and sequence have not changed since the previous round, every reading is
+`unavailable` ("no new GPM window"), so no window is re-reported at a new tick; a restarted
+exporter, which counts from 1 again, is told apart by its instance. The first window a run reads
+is only a baseline, also `unavailable`: a file left by a stopped exporter looks the same as a live
+one, and seeing the file change needs no clock shared with Windows. A missing or unreadable file,
+a file without an instance or sequence, and a refused metric are `unavailable` with their reason;
+an out-of-range value is `malformed`.
 
 **Windows and runner clocks are not mapped.** A reading describes the exporter's latest window on
 its own monotonic clock, ending before the runner's tick by up to one interval plus file latency.

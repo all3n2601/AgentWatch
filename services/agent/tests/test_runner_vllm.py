@@ -155,7 +155,8 @@ def test_a_gpm_file_is_its_own_sampled_resource(mean_task, server, tmp_path):
 
     path = tmp_path / "gpm.prom"
     results = {m.name: MetricResult(30.0, 0) for m in EXPORTED}
-    path.write_text(render(0, 1, 0.25, results, {m.name: m.unit for m in EXPORTED}, 1.0, 0))
+    units = {m.name: m.unit for m in EXPORTED}
+    path.write_text(render(0, "a1", 1, 0.25, results, units, 1.0, 0))
     outcome = make_runner(
         mean_task,
         server,
@@ -170,5 +171,5 @@ def test_a_gpm_file_is_its_own_sampled_resource(mean_task, server, tmp_path):
     gpm = [rid for rid, service in services.items() if service == "nvidia-nvml-gpm"]
     assert len(gpm) == 1 and gpm[0].startswith("gpu-gpm-")
     counts = evidence(outcome)["service_sampling"]["availability_counts"]["gpu.gpm.sm_util.v1"]
-    # One window was written, so only the first round used it; later rounds had no new one.
-    assert counts["measured"] == 1 and counts.get("unavailable", 0) >= 1
+    # The file never changed during the run, so its one window was only ever a baseline.
+    assert "measured" not in counts and counts["unavailable"] >= 2
