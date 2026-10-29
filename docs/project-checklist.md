@@ -613,7 +613,9 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
 - [x] Optimize the dataset DAG from its Gantt-chart timings (2026-10-26): `make pipeline-setup`
   prepares the stage environments and warms TensorFlow (first run 35.1 s → 10.5 s on the shared
   release), and the slice report runs beside versioning, confirmed overlapping under the
-  scheduler. Timings in the data pipeline plan, "Pipeline flow optimization".
+  scheduler. Timings in the data pipeline plan, "Pipeline flow optimization". Documentation audit
+  2026-10-27: the linked 2026-10-24 Gantt capture predates these measurements; matching
+  before/after screenshots remain open.
 - [x] Alert Slack from the dataset DAG (2026-10-25): every task's final failure, and findings of
   a successful run (drift, rejected-run share over a declared 10%, leakage check not passed,
   version not pushed), posted with every successful run's summary, through an incoming webhook
