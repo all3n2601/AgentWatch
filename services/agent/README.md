@@ -56,7 +56,8 @@ per-request span (measured queue, prefill, decode, first token, end to end) is r
 `--vllm-traces-file` (default `.data/otel/vllm-traces.jsonl`, written by the Compose
 collector) after the run closes, and the call's `timing` becomes `vllm-request-trace-v1`
 ([ADR 0007](../../docs/adr/0007-vllm-request-traces-and-server-metrics.md)). The model server
-is sampled through `/metrics` on a second thread. A vLLM run and an Ollama run never share a
+is sampled through `/metrics` on a second thread. The collector runs as a non-root user; on a
+Linux host, set `AGENTWATCH_OTEL_USER` to the traces folder owner's `$(id -u):$(id -g)`. A vLLM run and an Ollama run never share a
 configuration digest: `model_backend` and `model_transport` are part of it.
 
 ### GPU profiling activity on WSL2
