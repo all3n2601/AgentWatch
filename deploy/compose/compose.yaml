@@ -67,8 +67,9 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
     profiles: [vllm]
-    # The file exporter runs as the image's non-root user; it must write the bind-mounted folder.
-    user: "0:0"
+    # Never root. The image's own user writes the bind-mounted folder under Docker Desktop; on a
+    # Linux host, set AGENTWATCH_OTEL_USER to the folder owner's "$(id -u):$(id -g)".
+    user: "${AGENTWATCH_OTEL_USER:-10001:10001}"
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
       - ${AGENTWATCH_OTEL_TRACES_DIR:-../../.data/otel}:/traces
