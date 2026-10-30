@@ -403,7 +403,11 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   842–1,096 ms in vLLM's queue against 0.02–0.08 ms clean, with prefill and decode unchanged.
   DCGM 4.5.2 runs too: device fields are measured, while its profiling fields read N/A on this
   GPU because WSL2 blocks GPM sampling, which works through the Windows driver, and are recorded
-  `unavailable`. Sampling overhead was +0.6% and
+  `unavailable`. 2026-10-28 ([ADR 0008](adr/0008-windows-gpm-exporter-for-wsl2.md),
+  [GPM record](gpu-measurement-access.md#m2-gpm-profiling-through-a-windows-side-exporter-october-28-2026)):
+  a Windows-side NVML GPM exporter supplies that activity to WSL2 runs (`gpu.gpm.*.v1`); under
+  inference contention SM utilization rose from 65–77% to 88% and DRAM bandwidth from 42–46% to
+  64%. One of 1,809 exporter windows was dropped (a declared check failed). Sampling overhead was +0.6% and
   +1.7% in two attempts (no budget applied). Open until review and merge.
 - [ ] Add retrieval telemetry from Qdrant requests and queue/service latency where observable.
   No retrieval metric is registered; retrieval is in-process BM25. 2026-10-24 (A04): each

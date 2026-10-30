@@ -65,8 +65,10 @@ from agentwatch_agent.resources import (
 from agentwatch_agent.retrieval import RETRIEVAL_METHOD, DocumentIndex
 from agentwatch_agent.service_probes import (
     DCGM_METRICS,
+    GPM_METRICS,
     VLLM_METRICS,
     ExpositionChangeLog,
+    GpmFileProbe,
     dcgm_probe,
     vllm_probe,
 )
@@ -203,6 +205,7 @@ class AgentRunner:
         cgroup_root: Path = Path("/sys/fs/cgroup"),
         open_gpu: Callable[[], NvmlDevice] | None = None,
         dcgm_metrics_url: str | None = None,
+        gpm_file: Path | None = None,
         vllm_traces_file: Path | None = None,
         trace_wait_seconds: float = DEFAULT_TRACE_WAIT_SECONDS,
     ):
@@ -210,6 +213,8 @@ class AgentRunner:
         # URL, no DCGM resource. A vLLM model server is always sampled through its /metrics.
         self.open_gpu = open_gpu
         self.dcgm_metrics_url = dcgm_metrics_url
+        # The Windows-side GPM exporter's file (ADR 0008); no GPM resource without it.
+        self.gpm_file = gpm_file
         self.model = model
         # Validated before anything is created, so invalid settings leave nothing behind.
         validate_sample_budget(
@@ -637,12 +642,25 @@ class AgentRunner:
                 if self.dcgm_metrics_url is not None
                 else {}
             )
+            | (
+                {
+                    "gpu_gpm": ResourceRegistration(
+                        resource_id=f"gpu-gpm-{suffix}",
+                        service_id="nvidia-nvml-gpm",
+                        resource_class="inference",
+                    )
+                }
+                if self.gpm_file is not None
+                else {}
+            )
         )
 
     def _sampled_metrics(self) -> tuple[str, ...]:
         metrics = CPU_METRICS + (GPU_METRICS if self.open_gpu is not None else ())
-        service = (VLLM_METRICS if self.model.backend == "vllm" else ()) + (
-            DCGM_METRICS if self.dcgm_metrics_url is not None else ()
+        service = (
+            (VLLM_METRICS if self.model.backend == "vllm" else ())
+            + (DCGM_METRICS if self.dcgm_metrics_url is not None else ())
+            + (GPM_METRICS if self.gpm_file is not None else ())
         )
         return tuple(metric for metric, _unit in metrics) + tuple(e.metric for e in service)
 
@@ -662,6 +680,8 @@ class AgentRunner:
             )
         if self.dcgm_metrics_url is not None:
             probes.append(dcgm_probe(resources["gpu_dcgm"], self.dcgm_metrics_url))
+        if self.gpm_file is not None:
+            probes.append(GpmFileProbe(resources["gpu_gpm"], self.gpm_file))
         return probes
 
     def _join_server_traces(self, trace_id: str) -> None:
