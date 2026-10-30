@@ -30,6 +30,13 @@ MIN_INTERVAL_SECONDS = 0.1
 # A reader on Windows can hold the file open briefly; replacing it then fails.
 REPLACE_ATTEMPTS = 3
 REPLACE_RETRY_SECONDS = 0.01
+# A reader holds the file for milliseconds; this many failed windows in a row (10 s at the
+# default interval) means the output cannot be written, so the exporter stops with an error.
+MAX_CONSECUTIVE_WRITE_FAILURES = 40
+
+
+class ExportFailed(Exception):
+    """The exporter cannot write its output and stops; readers then see no new window."""
 
 
 def render(
@@ -58,18 +65,30 @@ def render(
     return "\n".join(lines) + "\n"
 
 
-def replace_atomically(path: Path, text: str, sleep: Callable[[float], None]) -> bool:
+def replace_atomically(path: Path, text: str, sleep: Callable[[float], None]) -> OSError | None:
+    """Replace `path` with `text`; return None once written, else the error that dropped it.
+
+    A held file (PermissionError) is retried; any other file error, such as a full disk, drops
+    the window at once. The temporary file never outlives a failed attempt.
+    """
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(text, encoding="utf-8")
-    for attempt in range(REPLACE_ATTEMPTS):
-        try:
-            os.replace(temporary, path)
-            return True
-        except PermissionError:
-            if attempt + 1 < REPLACE_ATTEMPTS:
-                sleep(REPLACE_RETRY_SECONDS)
-    temporary.unlink(missing_ok=True)
-    return False
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        for attempt in range(REPLACE_ATTEMPTS):
+            try:
+                os.replace(temporary, path)
+                return None
+            except PermissionError as error:
+                failure: OSError = error
+                if attempt + 1 < REPLACE_ATTEMPTS:
+                    sleep(REPLACE_RETRY_SECONDS)
+    except OSError as error:
+        failure = error
+    try:
+        temporary.unlink(missing_ok=True)
+    except OSError:
+        pass  # The next window's write replaces it; the original failure is what is reported.
+    return failure
 
 
 def export(
@@ -90,7 +109,7 @@ def export(
     started = monotonic()
     next_due = started
     previous_at: float | None = None
-    sequence = write_failures = 0
+    sequence = write_failures = consecutive_failures = 0
     while duration_seconds is None or monotonic() - started < duration_seconds:
         sampled_at = monotonic()
         results = sampler.window()
@@ -107,8 +126,17 @@ def export(
                 cpu_seconds(),
                 write_failures,
             )
-            if not replace_atomically(output, text, sleep):
+            error = replace_atomically(output, text, sleep)
+            if error is None:
+                consecutive_failures = 0
+            else:
                 write_failures += 1
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_WRITE_FAILURES:
+                    raise ExportFailed(
+                        f"{consecutive_failures} windows in a row could not be written to "
+                        f"{output.name} ({type(error).__name__}: {error})"
+                    )
         previous_at = sampled_at
         # A fixed cadence, so slow windows do not accumulate drift. An overrun skips the slots it
         # missed instead of sampling back to back to catch up.
@@ -164,8 +192,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     except KeyboardInterrupt:
         counts = None
-    except NvmlError as error:
-        # A sample that cannot be taken ends the exporter; readers then see no new window.
+    except (NvmlError, ExportFailed) as error:
+        # A sample that cannot be taken, or an output that cannot be written, ends the exporter;
+        # readers then see no new window.
         print(f"error: {error}", file=sys.stderr)
         return 1
     finally:

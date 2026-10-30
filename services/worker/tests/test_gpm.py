@@ -1,12 +1,14 @@
 """NVML GPM binding and the GPM exporter, against a fake library (synthetic, never evidence)."""
 
 import ctypes
+import errno
 import os
+from pathlib import Path
 
 import pytest
 from agentwatch_worker import gpm_exporter
 from agentwatch_worker.gpm import METRICS, GpmSampler, _MetricsGet, _Support
-from agentwatch_worker.gpm_exporter import export, render
+from agentwatch_worker.gpm_exporter import ExportFailed, export, render, replace_atomically
 from agentwatch_worker.nvml import NvmlError, NvmlUnavailable
 
 
@@ -246,3 +248,83 @@ def test_each_exporter_process_names_a_new_instance(tmp_path):
 def test_intervals_below_the_minimum_are_refused(interval):
     with pytest.raises(SystemExit):
         gpm_exporter.main(["--output", "x.prom", "--interval", interval])
+
+
+WINDOW_TEXT = "agentwatch_gpm_sequence 1\n"
+
+
+def full_disk(*_args, **_kwargs):
+    raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def no_wait(_seconds):
+    pass
+
+
+def test_a_full_disk_drops_the_window_and_leaves_no_temporary_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "replace", full_disk)
+    error = replace_atomically(tmp_path / "gpm.prom", WINDOW_TEXT, no_wait)
+    assert isinstance(error, OSError) and error.errno == errno.ENOSPC
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_temporary_file_that_cannot_be_written_is_reported_not_raised(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "write_text", full_disk)
+    error = replace_atomically(tmp_path / "gpm.prom", WINDOW_TEXT, no_wait)
+    assert isinstance(error, OSError) and error.errno == errno.ENOSPC
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_writable_output_is_replaced_and_reports_no_error(tmp_path):
+    assert replace_atomically(tmp_path / "gpm.prom", WINDOW_TEXT, no_wait) is None
+    assert (tmp_path / "gpm.prom").read_text() == WINDOW_TEXT
+
+
+def test_an_output_that_stays_unwritable_stops_the_exporter(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "replace", full_disk)
+    clock = FakeTime()
+    with pytest.raises(ExportFailed, match="40 windows in a row could not be written to gpm.prom"):
+        export(
+            ScriptedSampler(),
+            tmp_path / "gpm.prom",
+            gpu_index=0,
+            interval_seconds=0.25,
+            duration_seconds=None,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+            cpu_seconds=lambda: 0.0,
+        )
+    assert not list(tmp_path.iterdir())
+
+
+def test_the_exporter_exits_nonzero_with_the_reason_when_its_output_fails(
+    tmp_path, monkeypatch, capsys
+):
+    closed = []
+
+    class Device:
+        identity = type("Identity", (), {"name": "fake GPU"})()
+
+        @classmethod
+        def open(cls, _index):
+            return cls()
+
+        def close(self):
+            closed.append("device")
+
+    class Sampler:
+        def __init__(self, _device):
+            pass
+
+        def close(self):
+            closed.append("sampler")
+
+    def unwritable(*_args, **_kwargs):
+        raise ExportFailed("40 windows in a row could not be written to gpm.prom (OSError: full)")
+
+    monkeypatch.setattr(gpm_exporter, "NvmlDevice", Device)
+    monkeypatch.setattr(gpm_exporter, "GpmSampler", Sampler)
+    monkeypatch.setattr(gpm_exporter, "export", unwritable)
+    assert gpm_exporter.main(["--output", str(tmp_path / "gpm.prom")]) == 1
+    assert "could not be written to gpm.prom" in capsys.readouterr().err
+    assert sorted(closed) == ["device", "sampler"]

@@ -45,6 +45,8 @@ are whole-device, every process on it, and not per process. The exporter needs G
 counters open to the user running it (`RmProfilingAdminOnly=0` was set when this was measured;
 whether Windows requires it was not tested). A reader can hold the file while the exporter
 replaces it; after three attempts that window is dropped and counted (`write_failures_total`).
+Any other file error, such as a full disk, drops the window at once; after 40 failed windows in a
+row (10 s at 250 ms) the exporter exits with an error, and readers see no new window.
 On a native Linux host DCGM's own profiling fields apply instead, and this exporter is not needed.
 Not established: GPM on any other device or driver, the exporter's effect on vLLM timing beyond the
 measured sampling overhead, and a clock mapping that would align windows with steps.
