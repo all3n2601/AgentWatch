@@ -72,6 +72,7 @@ services:
     user: "${AGENTWATCH_OTEL_USER:-10001:10001}"
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      # Relative to this file; it must match the runner's AGENTWATCH_VLLM_TRACES_FILE folder.
       - ${AGENTWATCH_OTEL_TRACES_DIR:-../../.data/otel}:/traces
     mem_limit: 512m
 

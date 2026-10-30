@@ -16,8 +16,8 @@ A04 sampler that does is [described below](#a04-gpu-and-inference-telemetry-reco
 | Inference server | Repository-pinned `ollama/ollama@sha256:292ee794…` (0.35.1), CUDA library `cuda_v13` |
 | Model | `qwen3:1.7b`, digest `8f68893c685c…`, `Q4_K_M`, context 4,096; 29/29 layers on GPU |
 
-Docker GPU passthrough works (`docker run --gpus all … nvidia-smi`). vLLM was not installed or
-tested; its support for this GPU remains unverified. The plan's 7B FP16 model would not fit in
+Docker GPU passthrough works (`docker run --gpus all … nvidia-smi`). At this inventory vLLM was
+not installed or tested, so its support for this GPU was unverified. The plan's 7B FP16 model would not fit in
 8 GiB; a quantized or smaller model is required on this machine. Since October 27, vLLM v0.32.0
 serves `Qwen3-1.7B` BF16 on this GPU under WSL2, and DCGM's device fields work
 ([the M2 record](#m2-vllm-request-traces-server-metrics-and-dcgm-october-27-2026)).
@@ -68,10 +68,11 @@ Without `AGENTWATCH_LLM_GPU=1`, `make llm-up` starts the unchanged CPU-only serv
 
 ## Unavailable signals and measurement boundaries
 
-- DCGM (`dcgmi`, `nv-hostengine`) is not installed; DCGM support on WSL2 is unconfirmed.
-  (Since October 27 it runs in Docker; its profiling fields read N/A on this device.)
-- vLLM queue and request metrics are unavailable because vLLM is not installed. (Since
-  October 27, the optional vLLM service measures both; see the M2 record.)
+- DCGM: at the October 13 inventory, `dcgmi` and `nv-hostengine` were not installed and DCGM
+  support on WSL2 was unconfirmed. Since October 27 it runs in Docker; its device fields work
+  and its profiling fields read N/A on this device (see the M2 record).
+- vLLM queue and request metrics: unavailable at the October 13 inventory because vLLM was not
+  installed. Since October 27 the optional vLLM service measures both (see the M2 record).
 - Per-process GPU accounting is unavailable. In WSL, `--query-compute-apps` lists a PID with
   process name `[Not Found]` and memory `[N/A]`; Windows `nvidia-smi` names host processes but
   also reports their GPU memory as `[N/A]`.
