@@ -28,6 +28,37 @@ and export `OLLAMA_URL=http://127.0.0.1:11435`. Each run writes
   (including rejected ones), runner verification, resource sampling (achieved intervals,
   missed rounds, sampler cost, GPU identity), delivery statistics, cancellation and cleanup.
 - `live-journal.jsonl`: every registration, record and state change sent, in order.
+- `vllm-metrics-changes.jsonl` (vLLM backend only): every series of vLLM's `/metrics` that
+  changed in each sampling round, the first round in full, bounded at 64 MB. Local evidence for
+  analysis beyond the registered metrics; never ingested.
+
+Every model call streams (`model_transport: stream`), and its `stream_timing`
+(`model-stream-timing-v1`) records, in the run's clock domain, when the request was sent and
+when the reply's headers, chunks and first and last output arrived. Time to first output
+includes the server's queue, prefill and the network; it is the runner's observation. With
+tools in the request, Ollama 0.35.1 sends a tool-call reply in two or three chunks, so its first
+output there is close to the whole request, not a first token.
+
+### vLLM backend
+
+```sh
+make llm-down && make vllm-up   # vLLM v0.32.0 + trace collector; they do not share 8 GB
+make dcgm-up                    # optional: DCGM device fields on 127.0.0.1:9400
+uv run --package agentwatch-agent python -m agentwatch_agent run --task fix-mean-empty   --model-backend vllm --dcgm-url http://127.0.0.1:9400/metrics
+```
+
+`--model-backend vllm` (or `AGENTWATCH_MODEL_BACKEND=vllm`) serves `VLLM_MODEL`
+(`Qwen/Qwen3-1.7B@70d244cc86cc`, BF16 at a pinned revision) from `VLLM_URL`
+(`http://127.0.0.1:8000`). `run`, `experiment` and `sampling-overhead` accept it; the
+inference injector then sends competing OpenAI-compatible chat requests
+(`competing-openai-chat-v1`). Each model call carries its step's trace context, vLLM's
+per-request span (measured queue, prefill, decode, first token, end to end) is read from
+`--vllm-traces-file` (default `.data/otel/vllm-traces.jsonl`, written by the Compose
+collector) after the run closes, and the call's `timing` becomes `vllm-request-trace-v1`
+([ADR 0007](../../docs/adr/0007-vllm-request-traces-and-server-metrics.md)). The model server
+is sampled through `/metrics` on a second thread. The collector runs as a non-root user; on a
+Linux host, set `AGENTWATCH_OTEL_USER` to the traces folder owner's `$(id -u):$(id -g)`. A vLLM run and an Ollama run never share a
+configuration digest: `model_backend` and `model_transport` are part of it.
 
 The same exit codes apply to `run`, `overhead` and `resend`:
 
@@ -73,8 +104,10 @@ URLs are excluded: the same configuration can run on different hosts.
 - **Correlation:** all steps share one `trace_id`, are parented to `agent-run`, and use one
   monotonic clock domain (`agent-runner-<uuid>`) for the runner process lifetime.
   `observed_at` is UTC wall time and is never subtracted from ticks.
-- **Queue delay** of a model call is runner-side dispatch only. Time spent waiting inside
-  Ollama is part of execution wall time, not a measured inference queue. Each call's
+- **Queue delay** of a model call is runner-side dispatch only. With vLLM, the request's own
+  wait in the server's queue is vLLM's measured span attribute, joined after the run and
+  `unavailable` when no span arrived. With Ollama, time spent waiting inside the server is
+  part of execution wall time, not a measured inference queue. Each Ollama call's
   `timing` (method `ollama-request-timing-v1`) keeps the runner's wall time and Ollama's
   total, load, prompt-evaluation and generation durations, and records the observed queue
   as `unavailable`: Ollama reports none. Its two differences (server time outside load,
@@ -100,9 +133,13 @@ URLs are excluded: the same configuration can run on different hosts.
   CPU metrics are `unsupported` and so are GPU metrics without NVML; a kernel without PSI or
   a cgroup without `cpu.pressure` is `unsupported`, a cpu.stat without a counter is
   `unavailable`, and a negative or unparsable value is `malformed`; a library that fails to initialize,
-  lacks an entry point the binding needs, or a missing device is `unavailable`. Because
-  `run` always samples all 10 metrics, it needs a live API that registers them, and the
-  longest `--run-timeout` the sample budget allows at 250 ms is 2,000 s. None is ever zero. `run` samples GPU index 0 and records
+  lacks an entry point the binding needs, or a missing device is `unavailable`. An Ollama
+  `run` always samples these 10 metrics, so it needs a live API that registers them, and the
+  longest `--run-timeout` the sample budget allows at 250 ms is 2,000 s. A vLLM run adds the
+  model server's 16 `inference.vllm.*` metrics (769 s), and `--dcgm-url` adds 8 `gpu.dcgm.*`
+  metrics on a `gpu-dcgm-*` resource (service `nvidia-dcgm`; 588 s with both). HTTP sources
+  are read on their own thread with a 200 ms timeout, so a slow scrape never delays the CPU
+  and NVML readings; a failed scrape makes that round `unavailable`. None is ever zero. `run` samples GPU index 0 and records
   the device count, name, driver and memory size under `resource_sampling.resources`.
   No retrieval metric exists: retrieval is in-process BM25. Each `search_docs` call instead
   records `retrieval-timing-v1` in its evidence: the search's own monotonic wall and thread

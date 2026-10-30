@@ -56,12 +56,17 @@ def wait_until(predicate, timeout_seconds: float = 15.0) -> bool:
 
 
 class FakeOllama:
-    """Test double for Ollama's /api/generate on loopback. Synthetic, never evidence."""
+    """Test double for a loopback model server (Ollama's /api/generate by default, or any
+    reply given). Synthetic, never evidence."""
 
-    def __init__(self, status: int = 200, hold: threading.Event | None = None):
+    def __init__(
+        self, status: int = 200, hold: threading.Event | None = None, reply: dict | None = None
+    ):
         self.status = status
         self.hold = hold  # when set, requests block until it is released
+        self.reply = reply if reply is not None else {"done": True, "eval_count": 5}
         self.payloads: list[dict] = []
+        self.paths: list[str] = []
         self.held = threading.Semaphore(0)
         owner = self
 
@@ -69,10 +74,11 @@ class FakeOllama:
             def do_POST(self):
                 body = self.rfile.read(int(self.headers["Content-Length"]))
                 owner.payloads.append(json.loads(body))
+                owner.paths.append(self.path)
                 if owner.hold is not None:
                     owner.held.release()
                     owner.hold.wait(30)
-                reply = {"done": True, "eval_count": 5} if owner.status == 200 else {"error": "x"}
+                reply = owner.reply if owner.status == 200 else {"error": "x"}
                 data = json.dumps(reply).encode()
                 try:
                     self.send_response(owner.status)

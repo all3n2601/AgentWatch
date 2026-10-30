@@ -68,6 +68,44 @@ def test_sampling_budget_must_fit_the_live_record_limit():
     configuration(run_timeout_seconds=900)
 
 
+@pytest.mark.parametrize(("field", "value"), [("model_backend", "tgi"), ("model_transport", "x")])
+def test_unknown_backends_and_transports_are_rejected(field, value):
+    settings = {
+        "task_id": "t-r1",
+        "task_content_sha256": "0" * 64,
+        "model": "m",
+        "system_prompt": "p",
+        "tools": (),
+        "sampled_metrics": ("cpu.psi.some.avg10.v1",),
+    }
+    with pytest.raises(ValueError, match=field):
+        RunConfiguration(**settings, **{field: value})
+
+
+def test_the_backend_selects_its_adapter_and_default_model(monkeypatch):
+    monkeypatch.delenv("VLLM_MODEL", raising=False)
+    monkeypatch.delenv("AGENTWATCH_LLM_MODEL", raising=False)
+    vllm = cli.build_model(
+        cli.parser().parse_args(["run", "--task", "x", "--model-backend", "vllm"])
+    )
+    assert (vllm.backend, vllm.name, vllm.endpoint) == (
+        "vllm",
+        cli.DEFAULT_VLLM_MODEL,
+        cli.DEFAULT_VLLM_URL,
+    )
+    assert vllm.num_ctx == 4096
+    ollama = cli.build_model(cli.parser().parse_args(["run", "--task", "x", "--model", "q"]))
+    assert (ollama.backend, ollama.name) == ("ollama", "q")
+
+
+def test_vllm_contention_only_targets_a_loopback_server(tmp_path, capsys):
+    argv = ["experiment", "--task", "fix-mean-empty", "--output-dir", str(tmp_path)]
+    argv += ["--model-backend", "vllm", "--vllm-url", "http://10.0.0.5:8000"]
+    assert cli.main(argv) == cli.EXIT_USAGE
+    assert "loopback" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     "limits",
     [{"max_model_calls": 0}, {"max_tool_calls": True}, {"run_timeout_seconds": float("nan")}],
@@ -206,3 +244,23 @@ def test_overhead_failure_with_refused_records_exits_five(tmp_path, monkeypatch)
     server.ingest = refuse_one_step
     overhead = overhead_with(server, tmp_path, monkeypatch)
     assert overhead() == cli.EXIT_RECORDS_REFUSED
+
+
+def test_sampling_overhead_reads_one_dcgm_identity_for_every_request(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_measure(task, model, chat, output_dir, *, service_probes=None):
+        captured["probes"] = service_probes
+        output_dir.mkdir(parents=True)  # as the real measurement does
+        return {"status": "failed", "error": "not measured in this test"}
+
+    monkeypatch.setattr(cli, "measure_sampling_overhead", fake_measure)
+    argv = ["sampling-overhead", "--model-backend", "vllm", "--output-dir", str(tmp_path)]
+    argv += ["--dcgm-url", "http://127.0.0.1:9400/metrics"]
+    assert cli.main(argv) == cli.EXIT_FAILED
+    server = cli.ResourceRegistration(
+        resource_id="model-server-1", service_id="vllm", resource_class="inference"
+    )
+    first, second = captured["probes"](server), captured["probes"](server)
+    assert [p.resource.service_id for p in first] == ["vllm", "nvidia-dcgm"]
+    assert first[1].resource.resource_id == second[1].resource.resource_id

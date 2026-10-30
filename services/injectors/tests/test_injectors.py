@@ -326,6 +326,79 @@ def test_stopping_abandons_in_flight_requests_and_ends_the_child(clock):
     assert log["cleanup"]["children"] == [{"stopped_by": "exited", "exitcode": 0}]
 
 
+VLLM_COMPLETION = {
+    "choices": [{"index": 0, "message": {"content": "one"}, "finish_reason": "length"}],
+    "usage": {"completion_tokens": 7},
+}
+
+
+def test_competing_vllm_requests_use_the_chat_api_and_count_tokens(clock):
+    with FakeOllama(reply=VLLM_COMPLETION) as server:
+        injector = CompetingInferenceInjector(
+            clock, 0.6, url=server.url, model="m@1", num_ctx=None, concurrency=2, server="vllm"
+        )
+        injector.start()
+        try:
+            assert wait_until(lambda: stopped(injector))
+        finally:
+            log = injector.stop()
+    activity = log["activity"]
+    assert log["method"] == "competing-openai-chat-v1"
+    assert log["target"]["server"] == "vllm"
+    assert activity["requests_completed"] > 0 and activity["requests_failed"] == 0
+    assert activity["generated_tokens"] == 7 * activity["requests_completed"]
+    assert set(server.paths) == {"/v1/chat/completions"}
+    payload = server.payloads[0]
+    assert payload["max_tokens"] == 128 and payload["stream"] is False
+    assert payload["messages"][0]["role"] == "user"
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert log["cleanup"]["confirmed"] is True
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"choices": []},
+        {"choices": [{"message": {}, "finish_reason": None}]},
+        {"error": "overloaded"},
+    ],
+)
+def test_unfinished_vllm_completions_count_as_failures(clock, reply):
+    with FakeOllama(reply=reply) as server:
+        injector = CompetingInferenceInjector(
+            clock, 0.6, url=server.url, model="m", num_ctx=None, concurrency=1, server="vllm"
+        )
+        injector.start()
+        try:
+            assert wait_until(lambda: stopped(injector))
+        finally:
+            log = injector.stop()
+    activity = log["activity"]
+    assert activity["requests_completed"] == 0 and activity["requests_failed"] >= 1
+    assert activity["failures_by_type"] == {"GenerateRejected": activity["requests_failed"]}
+
+
+def test_a_vllm_injector_refuses_a_context_size(clock):
+    with pytest.raises(ValueError, match="num_ctx does not apply"):
+        CompetingInferenceInjector(
+            clock, 5, url="http://127.0.0.1:1", model="m", num_ctx=4096, server="vllm"
+        )
+
+
+def test_an_unknown_model_server_is_refused(clock):
+    with pytest.raises(ValueError, match="server must be one of"):
+        CompetingInferenceInjector(
+            clock, 5, url="http://127.0.0.1:1", model="m", num_ctx=None, server="tgi"
+        )
+
+
+def test_a_vllm_injector_only_loads_loopback_servers(clock):
+    with pytest.raises(ValueError, match="loopback"):
+        CompetingInferenceInjector(
+            clock, 5, url="http://10.0.0.5:8000", model="m", num_ctx=None, server="vllm"
+        )
+
+
 def test_retrieval_flood_searches_until_its_bound(clock):
     searched = []
     injector = IndexQueryFloodInjector(

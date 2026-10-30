@@ -138,6 +138,39 @@ def test_gpu_metrics_are_registered_for_inference_resources(metric):
         ResourceSample.model_validate(gpu_sample(metric, value=-1))
 
 
+SERVER_METRICS = {
+    "inference.vllm.requests_waiting.v1": ("requests", None),
+    "inference.vllm.kv_cache_usage.v1": ("fraction", 1),
+    "inference.vllm.request_queue.seconds_total.v1": ("seconds", None),
+    "inference.vllm.prompt_tokens_total.v1": ("tokens", None),
+    "inference.vllm.preemptions_total.v1": ("preemptions", None),
+    "gpu.dcgm.energy.total_mj.v1": ("millijoules", None),
+    "gpu.dcgm.temperature.gpu_c.v1": ("celsius", None),
+    "gpu.dcgm.prof.sm_active.v1": ("fraction", 1),
+    "gpu.dcgm.utilization.gpu.v1": ("percent", 100),
+}
+
+
+@pytest.mark.parametrize(("metric", "definition"), SERVER_METRICS.items())
+def test_vllm_and_dcgm_metrics_are_bounded_inference_readings(metric, definition):
+    unit, maximum = definition
+
+    def reading(**changes):
+        values = {"resource_class": "inference", "metric": metric, "unit": unit, "value": 0}
+        return sample(str(uuid4()), **values | changes)
+
+    assert ResourceSample.model_validate(reading()).value == 0
+    unavailable = reading(value=None, availability="unavailable", reason="not exported")
+    assert ResourceSample.model_validate(unavailable).availability == "unavailable"
+    with pytest.raises(ValidationError, match="outside registered bounds"):
+        ResourceSample.model_validate(reading(value=-1))
+    with pytest.raises(ValidationError, match="class/unit mismatch"):
+        ResourceSample.model_validate(reading(resource_class="cpu_sandbox"))
+    if maximum is not None:
+        with pytest.raises(ValidationError, match="outside registered bounds"):
+            ResourceSample.model_validate(reading(value=maximum + 0.5))
+
+
 @pytest.mark.parametrize(
     "metric", [m for m, (_, maximum) in GPU_METRICS.items() if maximum is not None]
 )

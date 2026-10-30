@@ -29,15 +29,22 @@ import sys
 import urllib.parse
 from pathlib import Path
 from types import FrameType
+from uuid import uuid4
 
 from agentwatch_injectors.base import InjectorCleanupError
 from agentwatch_injectors.inference import loopback_url
 from agentwatch_sdk import LiveClient
+from agentwatch_sdk.live import ResourceRegistration
 from agentwatch_worker.nvml import NvmlDevice
 from agentwatch_worker.ollama import ollama_base_url
 
 from agentwatch_agent.clock import MonotonicClock
-from agentwatch_agent.config import DEFAULT_MODEL, RunLimits
+from agentwatch_agent.config import (
+    DEFAULT_CHAT_OPTIONS,
+    DEFAULT_MODEL,
+    MODEL_BACKENDS,
+    RunLimits,
+)
 from agentwatch_agent.coverage import CoverageError, coverage_report
 from agentwatch_agent.delivery import LiveRejectedError, is_retryable, replay_journal
 from agentwatch_agent.errors import RunNotStarted
@@ -49,9 +56,10 @@ from agentwatch_agent.experiment import (
     ReplayExperiment,
     build_injectors,
 )
-from agentwatch_agent.model import ChatModel, OllamaChatModel
+from agentwatch_agent.model import ChatModel, OllamaChatModel, VllmChatModel
 from agentwatch_agent.overhead import OverheadFailed, measure_overhead
 from agentwatch_agent.replay import ReplayPlanError, ReplayRunner, load_replay_plan
+from agentwatch_agent.resources import Probe
 from agentwatch_agent.runner import (
     JOURNAL_FILE,
     AgentRunner,
@@ -59,6 +67,7 @@ from agentwatch_agent.runner import (
     write_json_atomic,
 )
 from agentwatch_agent.sampling_overhead import measure_sampling_overhead
+from agentwatch_agent.service_probes import dcgm_probe, vllm_probe
 from agentwatch_agent.session import CancellationState
 from agentwatch_agent.tasks import Task, TaskDefinitionError, load_task, task_names
 
@@ -68,6 +77,10 @@ EXIT_RUN_UNCLOSED = 6
 EXIT_USAGE = 2
 DEFAULT_API_URL = "http://127.0.0.1:8090"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+DEFAULT_VLLM_URL = "http://127.0.0.1:8000"
+# The Compose service's served name, which carries the weights' revision (compose.yaml).
+DEFAULT_VLLM_MODEL = "Qwen/Qwen3-1.7B@70d244cc86cc"
+DEFAULT_VLLM_TRACES_FILE = ".data/otel/vllm-traces.jsonl"
 LIVE_TIMEOUT_SECONDS = 10
 
 
@@ -132,18 +145,68 @@ def choice_list(choices: tuple[str, ...]):
     return parse
 
 
+def add_model_arguments(command: argparse.ArgumentParser) -> None:
+    """The model server a command talks to; --model defaults per backend."""
+    command.add_argument(
+        "--model-backend",
+        choices=MODEL_BACKENDS,
+        default=os.environ.get("AGENTWATCH_MODEL_BACKEND", "ollama"),
+    )
+    command.add_argument(
+        "--model",
+        help="Model name (default: AGENTWATCH_LLM_MODEL for Ollama, VLLM_MODEL for vLLM)",
+    )
+    command.add_argument(
+        "--ollama-url",
+        type=ollama_base_url,
+        default=os.environ.get("OLLAMA_URL", DEFAULT_OLLAMA_URL),
+    )
+    command.add_argument(
+        "--vllm-url", type=http_url, default=os.environ.get("VLLM_URL", DEFAULT_VLLM_URL)
+    )
+
+
+def add_dcgm_argument(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--dcgm-url",
+        type=http_url,
+        default=os.environ.get("AGENTWATCH_DCGM_URL") or None,
+        help="dcgm-exporter /metrics URL; DCGM is not sampled without it",
+    )
+
+
+def add_server_evidence_arguments(command: argparse.ArgumentParser) -> None:
+    """Optional evidence beside the run's own samples: vLLM request spans and DCGM fields."""
+    command.add_argument(
+        "--vllm-traces-file",
+        type=Path,
+        default=Path(os.environ.get("AGENTWATCH_VLLM_TRACES_FILE", DEFAULT_VLLM_TRACES_FILE)),
+        help="OTLP JSON lines the Compose collector writes (vLLM backend only)",
+    )
+    add_dcgm_argument(command)
+
+
+def build_model(args: argparse.Namespace) -> ChatModel:
+    if args.model_backend == "vllm":
+        name = args.model or os.environ.get("VLLM_MODEL", DEFAULT_VLLM_MODEL)
+        # vLLM fixes the context at startup; placement readings check it matches num_ctx.
+        return VllmChatModel(args.vllm_url, name, num_ctx=DEFAULT_CHAT_OPTIONS.get("num_ctx"))
+    name = args.model or os.environ.get("AGENTWATCH_LLM_MODEL", DEFAULT_MODEL)
+    return OllamaChatModel(args.ollama_url, name)
+
+
+def server_evidence(args: argparse.Namespace) -> dict:
+    return {"dcgm_metrics_url": args.dcgm_url, "vllm_traces_file": args.vllm_traces_file}
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="agentwatch-agent", description=__doc__.split("\n")[0])
     commands = root.add_subparsers(dest="command", required=True)
 
     run = commands.add_parser("run", help="Run one fixed task with a real model")
     run.add_argument("--task", required=True, help="Task name; see the `tasks` command")
-    run.add_argument("--model", default=os.environ.get("AGENTWATCH_LLM_MODEL", DEFAULT_MODEL))
-    run.add_argument(
-        "--ollama-url",
-        type=ollama_base_url,
-        default=os.environ.get("OLLAMA_URL", DEFAULT_OLLAMA_URL),
-    )
+    add_model_arguments(run)
+    add_server_evidence_arguments(run)
     run.add_argument(
         "--api-url", type=http_url, default=os.environ.get("AGENTWATCH_API_URL", DEFAULT_API_URL)
     )
@@ -168,14 +231,8 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         help="Recorded run directory to replay; by default a new run is recorded first",
     )
-    experiment.add_argument(
-        "--model", default=os.environ.get("AGENTWATCH_LLM_MODEL", DEFAULT_MODEL)
-    )
-    experiment.add_argument(
-        "--ollama-url",
-        type=ollama_base_url,
-        default=os.environ.get("OLLAMA_URL", DEFAULT_OLLAMA_URL),
-    )
+    add_model_arguments(experiment)
+    add_server_evidence_arguments(experiment)
     experiment.add_argument(
         "--api-url", type=http_url, default=os.environ.get("AGENTWATCH_API_URL", DEFAULT_API_URL)
     )
@@ -242,12 +299,8 @@ def parser() -> argparse.ArgumentParser:
         help="Measure resource sampling's effect on a real model request (no live API needed)",
     )
     sampling.add_argument("--task", default="fix-mean-empty")
-    sampling.add_argument("--model", default=os.environ.get("AGENTWATCH_LLM_MODEL", DEFAULT_MODEL))
-    sampling.add_argument(
-        "--ollama-url",
-        type=ollama_base_url,
-        default=os.environ.get("OLLAMA_URL", DEFAULT_OLLAMA_URL),
-    )
+    add_model_arguments(sampling)
+    add_dcgm_argument(sampling)
     sampling.add_argument("--output-dir", type=Path, default=Path(".data/sampling-overhead"))
 
     coverage = commands.add_parser(
@@ -277,12 +330,13 @@ def run_command(args: argparse.Namespace) -> int:
     try:
         runner = AgentRunner(
             task=task,
-            model=OllamaChatModel(args.ollama_url, args.model),
+            model=build_model(args),
             transport=LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS),
             output_dir=default_output_dir(args.output_dir, task),
             limits=RunLimits(run_timeout_seconds=args.run_timeout),
             # A host without NVML records every GPU metric as unsupported, never as zero.
             open_gpu=NvmlDevice.open,
+            **server_evidence(args),
         )
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
@@ -372,13 +426,13 @@ def experiment_command(args: argparse.Namespace) -> int:
         )
         limits = RunLimits(run_timeout_seconds=args.run_timeout)
         settings.injection_bound_seconds(limits.run_timeout_seconds)
+        model = build_model(args)
         if any("inference" in settings.kinds(c) for c in settings.conditions):
-            loopback_url(args.ollama_url)  # contention only ever targets local capacity
+            loopback_url(model.endpoint)  # contention only ever targets local capacity
     except (TaskDefinitionError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_USAGE
     output_dir = default_output_dir(args.output_dir, task)
-    model = OllamaChatModel(args.ollama_url, args.model)
     transport = LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS)
     # What a signal cancels: the source run while it records, then the experiment.
     cancellable: list = []
@@ -413,6 +467,7 @@ def experiment_command(args: argparse.Namespace) -> int:
                 limits=limits,
                 clock=clock,
                 open_gpu=NvmlDevice.open,
+                **server_evidence(args),
             )
 
         try:
@@ -427,7 +482,12 @@ def experiment_command(args: argparse.Namespace) -> int:
             run_timeout_seconds=limits.run_timeout_seconds,
             make_runner=make_runner,
             make_injectors=functools.partial(
-                build_injectors, settings=settings, plan=plan, task=task, ollama_url=args.ollama_url
+                build_injectors,
+                settings=settings,
+                plan=plan,
+                task=task,
+                model_url=model.endpoint,
+                model_backend=model.backend,
             ),
             source={
                 "run_dir": str(source_dir),
@@ -469,6 +529,7 @@ def record_source(
         output_dir=source_dir,
         limits=limits,
         open_gpu=NvmlDevice.open,
+        **server_evidence(args),
     )
     cancellable.append(runner)
     try:
@@ -644,8 +705,30 @@ def sampling_overhead_command(args: argparse.Namespace) -> int:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_USAGE
     output_dir = default_output_dir(args.output_dir, task)
-    model = OllamaChatModel(args.ollama_url, args.model)
-    report = measure_sampling_overhead(task, args.model, model.chat, output_dir)
+    model = build_model(args)
+    # One identity for the whole measurement: every sampled request reads the same device.
+    dcgm_gpu = ResourceRegistration(
+        resource_id=f"gpu-dcgm-{uuid4().hex[:12]}",
+        service_id="nvidia-dcgm",
+        resource_class="inference",
+    )
+
+    def service_probes(server: ResourceRegistration) -> list[Probe]:
+        probes: list[Probe] = []
+        if model.backend == "vllm":
+            probes.append(vllm_probe(server, model.endpoint, model.name))
+        if args.dcgm_url is not None:
+            probes.append(dcgm_probe(dcgm_gpu, args.dcgm_url))
+        return probes
+
+    with_services = model.backend == "vllm" or args.dcgm_url is not None
+    report = measure_sampling_overhead(
+        task,
+        model.name,
+        model.chat,
+        output_dir,
+        service_probes=service_probes if with_services else None,
+    )
     path = output_dir / "sampling-overhead.json"
     write_json_atomic(path, report)
     if report["status"] != "completed":
