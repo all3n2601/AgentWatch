@@ -1,0 +1,18 @@
+# Replay-experiment label rules, frozen before any evaluation.
+# label_version fingerprints these values and the labeling code, so retuned labels are
+# never silent. Comments and formatting do not change it.
+# Condition names below come from experiment design and are used for labeling only;
+# condition data is never a model feature.
+version = "labels-v2"
+
+[noise]
+# A step is labeled with its resource only when its slowdown against the baseline mean
+# exceeds max(min_seconds, stdev_multiplier * baseline stdev). Same values as labels-v1.1.
+stdev_multiplier = 3.0
+min_seconds = 0.01
+
+# The resource each injected condition contends.
+[condition_resources]
+cpu = "cpu_sandbox"
+inference = "inference"
+retrieval = "retrieval"
