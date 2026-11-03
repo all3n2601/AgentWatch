@@ -65,6 +65,7 @@ class FakeVllm:
         self.omit_done = False  # end streams without their [DONE] marker
         self.error_mid_stream = False  # an error chunk replaces the finish chunk; [DONE] follows
         self.omit_finish = False  # never send a finish reason
+        self.broken_chunk = False  # open the stream with a chunk that is not JSON
         self._lock = threading.Lock()
         owner = self
 
@@ -102,6 +103,8 @@ class FakeVllm:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
+                if owner.broken_chunk:
+                    self.wfile.write(b'data: {"choices": [\n\n')
                 for chunk in owner.chunks(reply, request_id):
                     finishing = any(c.get("finish_reason") for c in chunk.get("choices", []))
                     if finishing and owner.error_mid_stream:

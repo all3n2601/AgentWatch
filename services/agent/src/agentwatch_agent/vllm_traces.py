@@ -55,6 +55,10 @@ def _value(attribute: dict) -> object:
     return None
 
 
+class TraceFilesUnreadable(ValueError):
+    """The trace files cannot be read within their bound."""
+
+
 def trace_files(directory: Path, name: str) -> list[Path]:
     """The current trace file and its rotated backups (`<stem>-<timestamp><suffix>`)."""
     stem, suffix = Path(name).stem, Path(name).suffix
@@ -69,7 +73,7 @@ def request_spans(paths: Iterable[Path], trace_id: str) -> list[dict]:
             size = path.stat().st_size
             budget -= size
             if budget < 0:
-                raise ValueError(f"trace files exceed {MAX_TRACE_BYTES} bytes")
+                raise TraceFilesUnreadable(f"trace files exceed {MAX_TRACE_BYTES} bytes")
             with path.open(encoding="utf-8", errors="replace") as stream:
                 lines = [line for line in stream if trace_id in line]  # most are other runs'
         except FileNotFoundError:
@@ -172,7 +176,11 @@ def collect_request_timings(
     """
     deadline = monotonic() + wait_seconds
     while True:
-        spans = request_spans(trace_files(traces_file.parent, traces_file.name), trace_id)
+        try:
+            spans = request_spans(trace_files(traces_file.parent, traces_file.name), trace_id)
+        except (TraceFilesUnreadable, OSError) as error:
+            # The run's own work stands; only its server timing is missing.
+            return _unreadable(traces_file, calls, f"vLLM traces unreadable ({error})")
         joined = join_spans(spans, calls)
         complete = all(entry["status"] != "unavailable" for entry in joined.values())
         if complete or monotonic() >= deadline:
@@ -184,3 +192,21 @@ def collect_request_timings(
                 "calls": joined,
             }
         sleep(POLL_SECONDS)
+
+
+def _unreadable(traces_file: Path, calls: dict[str, object], problem: str) -> dict:
+    return {
+        "method": REQUEST_TIMING_METHOD,
+        "traces_file": traces_file.name,
+        "spans_found": None,
+        "complete": False,
+        "problem": problem,
+        "calls": {
+            span_id: {
+                "method": REQUEST_TIMING_METHOD,
+                "status": "unavailable",
+                "problems": [problem],
+            }
+            for span_id in calls
+        },
+    }

@@ -75,6 +75,8 @@ def openai_messages(messages: list[dict]) -> list[dict]:
                     )
             translated.append(entry)
         elif role == "tool":
+            # Canonical (Ollama-shaped) tool results carry no call ID, so they answer the
+            # calls in the order requested; the runner appends them in that order.
             if not pending:
                 raise ValueError("a tool result does not answer any requested call")
             translated.append(
@@ -105,6 +107,14 @@ def chat_request(payload: dict, *, stream: bool) -> dict:
     if stream:
         body["stream_options"] = {"include_usage": True}
     return body
+
+
+def _json(document: str | bytes) -> object:
+    """Parse a reply body or stream chunk; unparsable text is a bad reply like any other."""
+    try:
+        return json.loads(document)
+    except ValueError as error:  # JSONDecodeError, or bytes that are not UTF-8
+        raise VllmResponseError("reply is not valid JSON") from error
 
 
 def _arguments(raw: object) -> object:
@@ -254,7 +264,7 @@ def vllm_chat(
     stream = on_event is not None
     with _post(url, chat_request(payload, stream=stream), headers, timeout_seconds) as response:
         if not stream:
-            return parse_completion(json.load(response))
+            return parse_completion(_json(response.read()))
         on_event("response")
         assembler, received, done = StreamAssembler(), 0, False
         while raw := response.readline(MAX_STREAM_BYTES - received + 1):
@@ -262,14 +272,17 @@ def vllm_chat(
             received += len(raw)
             if received > MAX_STREAM_BYTES:
                 raise VllmResponseError(f"streamed reply exceeded {MAX_STREAM_BYTES} bytes")
-            line = raw.decode("utf-8").strip()
+            try:
+                line = raw.decode("utf-8").strip()
+            except UnicodeDecodeError as error:
+                raise VllmResponseError("stream line is not UTF-8") from error
             if not line.startswith("data:"):
                 continue
             data = line.removeprefix("data:").strip()
             if data == "[DONE]":
                 done = True
                 break
-            output = assembler.add(json.loads(data))
+            output = assembler.add(_json(data))
             on_event("chunk")
             if output:
                 on_event("output")
