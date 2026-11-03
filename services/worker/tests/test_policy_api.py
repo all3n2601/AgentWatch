@@ -119,3 +119,24 @@ def test_run_policy_endpoint(client):
     assert response.status_code == 200
     assert response.json()["applicable"] is True
     assert client.get(f"/v1/live/runs/{uuid4()}/policy").status_code == 404
+
+
+def test_limits_never_serialize_null(client):
+    run_id = register_run(client, RUNNER_SERVICE_ID)
+    baseline = client.get(BASE).json()
+    assert baseline["limits"] == {}
+    created = client.post(f"{BASE}/versions", json=body(0, limits={"test_jobs": 2}))
+    assert created.status_code == 201
+    assert created.json()["policy"]["limits"] == {"test_jobs": 2}
+    responses = [
+        client.get(BASE).json(),
+        *client.get(f"{BASE}/versions").json()["versions"],
+        *client.get(f"/v1/live/runs/{run_id}/policy").json()["versions"],
+    ]
+    assert [version["limits"] for version in responses] == [
+        {"test_jobs": 2},
+        {"test_jobs": 2},
+        {},
+        {},
+        {"test_jobs": 2},
+    ]

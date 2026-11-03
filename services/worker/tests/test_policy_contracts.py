@@ -48,6 +48,15 @@ def test_limits_accept_positive_integers_and_absence():
     assert PolicyLimits.model_validate({}).model_dump(exclude_none=True) == {}
 
 
+def test_limits_omit_absent_controls_when_serialized():
+    # "No limit" is an absent key on the wire; null is rejected on input and never emitted.
+    limits = PolicyLimits(test_jobs=2)
+    assert limits.model_dump() == {"test_jobs": 2}
+    assert json.loads(limits.model_dump_json()) == {"test_jobs": 2}
+    assert PolicyLimits().model_dump() == {}
+    assert PolicyLimits().model_dump_json() == "{}"
+
+
 @pytest.mark.parametrize(
     "limits",
     [

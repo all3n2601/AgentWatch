@@ -83,26 +83,21 @@ test("parses baseline and versioned policies", async () => {
   assert.equal(requested.at(-1)!.searchParams.get("before"), "3");
 });
 
-test("a null limit from the service reads as no limit, not as a zero limit", async () => {
-  const { fetchImpl } = fakeFetch(() =>
-    json({ ...version2, limits: { inference_requests: null, test_jobs: 2 } }),
-  );
-  const active = await createPolicyApi(URLS, { fetchImpl }).active();
-  assert.ok(active.ok);
-  assert.deepEqual(active.data.limits, { test_jobs: 2 });
-  assert.equal(
-    limitsText(active.data.limits),
-    "Inference: no limit · Tests: 2",
-  );
-});
-
-test("a limit outside the contract is an invalid response", async () => {
-  const { fetchImpl } = fakeFetch(() =>
-    json({ ...version2, limits: { test_jobs: 0 } }),
-  );
-  const active = await createPolicyApi(URLS, { fetchImpl }).active();
-  assert.ok(!active.ok);
-  assert.equal(active.kind, "invalid_response");
+test("limits outside the contract are an invalid response", async () => {
+  // "No limit" is an absent key: null, zero, fractions and unknown controls are rejected.
+  for (const limits of [
+    { inference_requests: null, test_jobs: 2 },
+    { test_jobs: 0 },
+    { test_jobs: 1.5 },
+    { test_jobs: 1025 },
+    { test_jobs: 2, gpu_jobs: 1 },
+  ]) {
+    const { fetchImpl } = fakeFetch(() => json({ ...version2, limits }));
+    const active = await createPolicyApi(URLS, { fetchImpl }).active();
+    assert.ok(!active.ok, JSON.stringify(limits));
+    assert.equal(active.kind, "invalid_response");
+    assert.equal(policyStatusText(active), "Policy response is invalid");
+  }
 });
 
 test("maps 409 to conflict and 422 to invalid_request", async () => {

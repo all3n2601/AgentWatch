@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from agentwatch_sdk.live import Identifier, LiveModel, Reason, ResourceClass
 
@@ -38,6 +38,12 @@ class PolicyLimits(LiveModel):
         if isinstance(data, dict) and any(value is None for value in data.values()):
             raise ValueError("Omit a limit for no limit; null is not accepted")
         return data
+
+    @model_serializer(mode="wrap")
+    def omit_absent_limits(self, handler: SerializerFunctionWrapHandler):
+        # The wire contract mirrors input: "no limit" is an absent key, never null. The return
+        # type is left unannotated so the published schema keeps the declared properties.
+        return {key: value for key, value in handler(self).items() if value is not None}
 
 
 class PolicyChange(LiveModel):

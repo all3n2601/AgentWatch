@@ -22,21 +22,12 @@ const timestamp = z.iso.datetime({ offset: true });
 const text = (max: number) =>
   z.string().min(1).max(max).regex(/\S/, "Must not be blank");
 
-/**
- * An absent control means "no limit". The worker currently serializes absent controls as
- * `null`; both are read as no limit and normalized to an absent key, so a missing limit can
- * never be mistaken for a measured or configured zero.
- */
-export const policyLimitsSchema = z
-  .looseObject({
-    inference_requests: limit.nullish(),
-    test_jobs: limit.nullish(),
-  })
-  .transform(({ inference_requests, test_jobs, ...rest }) => ({
-    ...rest,
-    ...(inference_requests == null ? {} : { inference_requests }),
-    ...(test_jobs == null ? {} : { test_jobs }),
-  }));
+/** The only controls; an absent key means "no limit", and null is never a limit. */
+const limitsShape = {
+  inference_requests: limit.optional(),
+  test_jobs: limit.optional(),
+};
+export const policyLimitsSchema = z.strictObject(limitsShape);
 
 export const policyVersionSchema = z.looseObject({
   target: z.string(),
@@ -89,12 +80,7 @@ export const policyChangeSchema = z.strictObject({
   request_id: z.uuid(),
   expected_version: version,
   action: z.enum(["set", "disable", "restore"]),
-  limits: z
-    .strictObject({
-      inference_requests: limit.optional(),
-      test_jobs: limit.optional(),
-    })
-    .optional(),
+  limits: policyLimitsSchema.optional(),
   restored_from: version.optional(),
   operator: text(MAX_OPERATOR_LENGTH),
   reason: text(MAX_REASON_LENGTH),
