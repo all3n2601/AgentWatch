@@ -88,7 +88,7 @@ def read_experiment(directory: Path) -> Experiment:
     if len(set(indexes)) != len(indexes):
         raise ReplayEvidenceError(f"Replay indexes must be unique, got {indexes}")
     return Experiment(
-        name=directory.name,
+        name=root.name,
         status=_text(manifest, "status"),
         checks=dict(checks),
         task_id=_text(plan, "task_id"),

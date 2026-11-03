@@ -21,7 +21,7 @@ from agentwatch_data.splits import SPLITS, assign
 
 ASSIGNMENT_KEYS = {"version", "held_out_injection_methods", "test_task_groups"}
 # This module implements split-v2; a later assignment needs its own code and test split.
-VERSION_PREFIX = "split-v2"
+VERSION = "split-v2"
 MIXED = "mixed"
 INDEPENDENCE_KEYS = ("task_group", "run_id", "plan_sha256")
 
@@ -67,8 +67,8 @@ def load_assignment(path: Path | None = None) -> Assignment:
             f"Split assignment keys must be {sorted(ASSIGNMENT_KEYS)}, got {sorted(parsed)}"
         )
     version = parsed["version"]
-    if not isinstance(version, str) or not version.startswith(VERSION_PREFIX):
-        raise AssignmentError(f"version must start with {VERSION_PREFIX!r}, got {version!r}")
+    if not isinstance(version, str) or version != VERSION:
+        raise AssignmentError(f"version must be {VERSION!r}, got {version!r}")
     return Assignment(
         version=version,
         held_out_injection_methods=names(parsed, "held_out_injection_methods", {NO_INJECTION}),
@@ -101,7 +101,12 @@ def assign_groups(
 
 
 def independence(members: dict[str, list[dict]]) -> dict:
-    """Fail when a task group, run, or plan appears in more than one split."""
+    """Fail when a task group, run, or plan appears in more than one split.
+
+    Inside partition_v2 the task_group check cannot fail: assign_groups maps each group to one
+    split. It protects only when D03 recomputes this check from a stored split. Sharing of
+    run_id and plan_sha256 are the live checks there.
+    """
     shared: dict[str, list[str]] = {}
     for key in INDEPENDENCE_KEYS:
         seen: dict[str, set[str]] = {}
@@ -142,7 +147,13 @@ def held_out_status(members: dict[str, list[dict]], assignment: Assignment) -> d
                 if row_methods(row) - held_out
             }
             missing = sorted(classes - trained)
-            if missing:
+            if not classes:
+                # Nothing to contrast with training, so the hold-out is untested, not met.
+                reason = (
+                    f"held-out rows for {method} in test carry no contended label "
+                    "to contrast with training"
+                )
+            elif missing:
                 reason = f"training has no other method for {method}'s classes {missing}"
         if reason:
             break
@@ -163,7 +174,9 @@ def partition_v2(
 ) -> tuple[dict[str, str], dict[str, list[dict]], dict]:
     """Assign rows to splits; returns (groups, split -> rows, checks).
 
-    Raises AssignmentError when a group, run, or plan is shared between splits.
+    Raises AssignmentError when a group, run, or plan is shared between splits. For a group
+    that can never happen here (each group maps to one split); run_id and plan_sha256 sharing
+    are the checks that can fire.
     """
     groups = assign_groups(rows, assignment, fractions)
     members: dict[str, list[dict]] = {name: [] for name in SPLITS}

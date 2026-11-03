@@ -65,6 +65,7 @@ def test_packaged_assignment_loads():
         'version = "split-v2"\nheld_out_injection_methods = ["none"]\ntest_task_groups = []\n',
         'version = "split-v2"\nheld_out_injection_methods = ["a", "a"]\ntest_task_groups = []\n',
         'version = "split-v2"\nheld_out_injection_methods = []\ntest_task_groups = ["g", "g"]\n',
+        'version = "split-v20"\nheld_out_injection_methods = []\ntest_task_groups = []\n',
         'version = "split-v1"\nheld_out_injection_methods = []\ntest_task_groups = []\n',
         'version = "split-v2"\nheld_out_injection_methods = []\n',
         "not toml [",
@@ -175,6 +176,28 @@ def test_held_out_method_in_training_is_not_met():
     members = held_members(True)
     members["train"].append(row("g1", "r9", method=HELD_OUT, resource="cpu_sandbox"))
     assert held_out_status(members, assignment())["status"] == "not_met"
+
+
+def test_held_out_without_training_rows_is_not_met():
+    members = {
+        "train": [],
+        "validation": [],
+        "test": [row("g2", "r3", method=HELD_OUT, resource="none")],
+    }
+    result = held_out_status(members, assignment())
+    assert result["status"] == "not_met"
+    assert "no contended label" in result["reason"]
+
+
+def test_held_out_rows_without_contended_label_are_not_met():
+    members = held_members(True)
+    members["test"] = [
+        row("g2", "r3", method=HELD_OUT, resource="none"),
+        row("g2", "r4", method=HELD_OUT, resource="mixed", condition="mixed"),
+    ]
+    result = held_out_status(members, assignment())
+    assert result["status"] == "not_met"
+    assert "no contended label" in result["reason"]
 
 
 def test_mixed_in_test_reported():

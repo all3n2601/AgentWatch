@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from agentwatch_data import replay_evidence
@@ -35,6 +36,13 @@ def test_reads_synthetic_experiment(tmp_path):
     assert mixed.steps["agent-run"].is_leaf is False
     assert mixed.steps["model-call-1"].is_leaf is True
     assert mixed.steps["model-call-1"].total_seconds == 1.0
+
+
+def test_relative_dot_path_keeps_the_directory_name(tmp_path, monkeypatch):
+    directory = synthetic(tmp_path)
+    monkeypatch.chdir(directory)
+
+    assert read_experiment(Path(".")).name == directory.name
 
 
 def test_matches_source_comes_from_agent_evidence(tmp_path):
