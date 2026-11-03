@@ -206,7 +206,8 @@ split:
   frozen ones. A declared group cannot move within `split-v2`; changing the file requires
   `split-v3` and a new test split.
 
-Checks, recorded in the split and recomputed by `load_split`:
+Checks (D02 delivers them as functions over labeled rows; D03 records them in the split file
+and has `make_split`/`load_split` recompute them, once releases carry `task_group`):
 
 - **Independence (fails the split):** no `task_group`, `run_id` or `plan_sha256` appears in
   more than one split.
