@@ -60,9 +60,15 @@ class ReplayLabelConfig:
         return f"{self.version}+{self.fingerprint[:8]}"
 
 
-def logic_source() -> str:
-    """This module's source with normalized line endings, so checkouts agree."""
-    return Path(__file__).read_text(encoding="utf-8").replace("\r\n", "\n")
+def logic_source() -> dict[str, str]:
+    """Fingerprint label rules, evidence selection and excess fraction together."""
+    return {
+        name: files("agentwatch_data")
+        .joinpath(name)
+        .read_text(encoding="utf-8")
+        .replace("\r\n", "\n")
+        for name in ("replay_labels.py", "replay_evidence.py", "labels.py", "extract.py")
+    }
 
 
 def fingerprint(rules: dict) -> str:
@@ -283,6 +289,8 @@ def mixed_outcome(
 ) -> Outcome:
     members = tuple(sorted(injector.resource_class for injector in replay.injectors))
     method = "+".join(sorted(injector.method for injector in replay.injectors))
+    if not exceeded:
+        return Outcome((), "mixed_below_threshold", method)
     confirmed = []
     for member in members:
         solos = context.solo_by_class.get(member, [])
@@ -299,8 +307,6 @@ def mixed_outcome(
             )
         if reference.exceeded(solo_step):
             confirmed.append(member)
-    if not exceeded:
-        return Outcome((), "mixed_below_threshold", method)
     if len(confirmed) == len(members):
         return Outcome(members, "mixed_confirmed", method)
     if confirmed:

@@ -62,7 +62,7 @@ def test_packaged_replay_rules_load(config):
 # bump `version` in labels-v2.toml, which also needs an evaluation-contract change.
 # Otherwise (a comment or refactor) keep the version, and say why in the PR. Either way,
 # update the pin in the same PR.
-PINNED_REPLAY_LABEL_VERSION = "labels-v2+528cb806"
+PINNED_REPLAY_LABEL_VERSION = "labels-v2+8c1a0a1c"
 
 
 def test_replay_label_version_is_pinned(config):
@@ -249,11 +249,10 @@ def test_mixed_below_threshold(tmp_path, config):
 def test_mixed_missing_solo_member(tmp_path, config):
     directory = experiment(tmp_path, {"cpu": steps(1.5), "mixed": steps(1.9)})
     rows, rejections = label(directory, config)
-    assert [r for r in rows if r["condition"] == "mixed"] == []
+    assert row_for(rows, "mixed", "tool-call-1")["label_basis"] == "mixed_below_threshold"
     assert set(codes(rejections)) == {"mixed_solo_evidence_missing"}
     assert {r.origin for r in rejections} == {
         "experiment synthetic-exp replay 06 step model-call-1",
-        "experiment synthetic-exp replay 06 step tool-call-1",
     }
     assert row_for(rows, "cpu")["label_resource"] == "cpu_sandbox"
 
@@ -264,7 +263,7 @@ def test_mixed_with_rejected_solo_member_is_rejected(tmp_path, config):
     rows, rejections = label(directory, config)
     assert "replay_not_succeeded" in codes(rejections)
     assert "mixed_solo_evidence_missing" in codes(rejections)
-    assert [r for r in rows if r["condition"] == "mixed"] == []
+    assert row_for(rows, "mixed", "tool-call-1")["label_basis"] == "mixed_below_threshold"
 
 
 def test_mixed_with_single_injector_is_rejected(tmp_path, config):
@@ -460,12 +459,13 @@ def test_replay_without_run_id_is_rejected(tmp_path, config):
     assert all(r["run_id"] is not None for r in rows)
 
 
-def test_below_threshold_mixed_step_without_solo_member_is_rejected(tmp_path, config):
+def test_below_threshold_mixed_steps_do_not_require_solo_evidence(tmp_path, config):
     directory = experiment(tmp_path, {"cpu": steps(1.5), "mixed": steps(1.01)})
     rows, rejections = label(directory, config)
-    assert [r for r in rows if r["condition"] == "mixed"] == []
-    assert "experiment synthetic-exp replay 06 step model-call-1" in {r.origin for r in rejections}
-    assert set(codes(rejections)) == {"mixed_solo_evidence_missing"}
+    mixed_rows = [r for r in rows if r["condition"] == "mixed"]
+    assert len(mixed_rows) == 2
+    assert {r["label_basis"] for r in mixed_rows} == {"mixed_below_threshold"}
+    assert rejections == []
 
 
 def test_unusable_solo_copy_rejects_mixed_step(tmp_path, config):

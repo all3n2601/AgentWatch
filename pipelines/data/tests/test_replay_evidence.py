@@ -179,3 +179,52 @@ def test_duplicate_or_negative_replay_index_is_rejected(tmp_path, change):
     edit_manifest(directory, change)
     with pytest.raises(ReplayEvidenceError, match="Replay index"):
         read_experiment(directory)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["experiment.json", "replays/01/agent-evidence.json", "replays/01/live-journal.jsonl"],
+)
+def test_rejects_symlinked_files(tmp_path, filename):
+    directory = synthetic(tmp_path)
+    path = directory / filename
+    external = tmp_path / "external"
+    path.rename(external)
+    path.symlink_to(external)
+    with pytest.raises(ReplayEvidenceError, match="regular file without symlinks"):
+        read_experiment(directory)
+
+
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        ("evidence_dir", "directories must be unique"),
+        ("run_id", "run IDs must be unique"),
+    ],
+)
+def test_rejects_shared_replay_identity(tmp_path, key, message):
+    directory = synthetic(tmp_path)
+
+    def duplicate(manifest):
+        manifest["replays"][2][key] = manifest["replays"][1][key]
+
+    edit_manifest(directory, duplicate)
+    with pytest.raises(ReplayEvidenceError, match=message):
+        read_experiment(directory)
+
+
+@pytest.mark.parametrize("field", ["run_id", "plan_sha256", "step_id"])
+def test_rejects_conflicting_replay_evidence(tmp_path, field):
+    directory = synthetic(tmp_path)
+    path = directory / "replays/01/agent-evidence.json"
+    evidence = json.loads(path.read_text())
+    replay = evidence["replay"]
+    if field == "step_id":
+        replay["tool_results"].append(replay["model_outputs"][0])
+    elif field == "run_id":
+        evidence[field] = "different-run"
+    else:
+        replay[field] = "different-plan"
+    path.write_text(json.dumps(evidence))
+    with pytest.raises(ReplayEvidenceError, match=field):
+        read_experiment(directory)

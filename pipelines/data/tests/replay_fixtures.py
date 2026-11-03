@@ -68,8 +68,11 @@ def write_experiment(
         replay_dir = directory / "replays" / number
         replay_dir.mkdir(parents=True)
         step_ids = list(seconds)
+        run_id = f"00000000-0000-4000-8000-{index:012d}"
         evidence = {
+            "run_id": run_id,
             "replay": {
+                "plan_sha256": "0" * 64,
                 "model_outputs": [
                     {"step_id": step_id, "matches_source": (index, step_id) not in mismatches}
                     for step_id in step_ids
@@ -121,7 +124,7 @@ def write_experiment(
                 "injection_log": f"injections/{number}.json" if kinds else None,
                 "state": "completed",
                 "task_passed": True,
-                "run_id": f"00000000-0000-4000-8000-{index:012d}",
+                "run_id": run_id,
                 "injection_active": True if kinds else None,
                 "steps": {
                     step_id: {

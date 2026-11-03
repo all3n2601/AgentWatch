@@ -81,7 +81,22 @@ def read_experiment(directory: Path) -> Experiment:
     entries = manifest.get("replays")
     if not isinstance(entries, list):
         raise ReplayEvidenceError("replays must be a list")
-    replays = tuple(_read_replay(root, _object(entry, "replay")) for entry in entries)
+    plan_sha256 = _text(plan, "plan_sha256")
+    evidence_dirs: set[Path] = set()
+    run_ids: set[str] = set()
+    replays = []
+    for raw in entries:
+        entry = _object(raw, "replay")
+        evidence_dir = _confined(root, _text(entry, "evidence_dir"))
+        if evidence_dir in evidence_dirs:
+            raise ReplayEvidenceError("Replay evidence directories must be unique")
+        evidence_dirs.add(evidence_dir)
+        run_id = _optional_text(entry, "run_id")
+        if run_id is not None:
+            if run_id in run_ids:
+                raise ReplayEvidenceError("Replay run IDs must be unique")
+            run_ids.add(run_id)
+        replays.append(_read_replay(entry, root, evidence_dir, run_id, plan_sha256))
     # Labels look replays up by index (a clean control follows its contended replay), so a
     # repeated index would silently hide one replay's evidence.
     indexes = [replay.index for replay in replays]
@@ -92,13 +107,15 @@ def read_experiment(directory: Path) -> Experiment:
         status=_text(manifest, "status"),
         checks=dict(checks),
         task_id=_text(plan, "task_id"),
-        plan_sha256=_text(plan, "plan_sha256"),
+        plan_sha256=plan_sha256,
         model=_text(plan, "model"),
-        replays=replays,
+        replays=tuple(replays),
     )
 
 
-def _read_replay(root: Path, entry: dict) -> Replay:
+def _read_replay(
+    entry: dict, root: Path, evidence_dir: Path, run_id: str | None, plan_sha256: str
+) -> Replay:
     role, condition = _text(entry, "role"), _text(entry, "condition")
     if role not in ROLES:
         raise ReplayEvidenceError(f"Unknown replay role {role!r}")
@@ -109,24 +126,31 @@ def _read_replay(root: Path, entry: dict) -> Replay:
         raise ReplayEvidenceError(f"Replay index must be a nonnegative integer, got {index!r}")
     raw_steps = entry.get("steps")
     steps: dict[str, StepTiming] = {}
-    if raw_steps is not None:
-        steps = _read_steps(root, _text(entry, "evidence_dir"), _object(raw_steps, "steps"))
+    if raw_steps is not None and run_id is not None:
+        steps = _read_steps(evidence_dir, _object(raw_steps, "steps"), run_id, plan_sha256)
     return Replay(
         index=index,
         role=role,
         condition=condition,
         state=_text(entry, "state"),
         task_passed=_optional_bool(entry, "task_passed"),
-        run_id=_optional_text(entry, "run_id"),
+        run_id=run_id,
         injection_active=_optional_bool(entry, "injection_active"),
         injectors=_read_injectors(root, _optional_text(entry, "injection_log")),
         steps=steps,
     )
 
 
-def _read_steps(root: Path, evidence_dir: str, raw_steps: dict) -> dict[str, StepTiming]:
-    replay_dir = _confined(root, evidence_dir)
-    matches = _matches_source(_object(_read_json(replay_dir / EVIDENCE_FILE), EVIDENCE_FILE))
+def _read_steps(
+    replay_dir: Path, raw_steps: dict, run_id: str, plan_sha256: str
+) -> dict[str, StepTiming]:
+    evidence = _object(_read_json(replay_dir / EVIDENCE_FILE), EVIDENCE_FILE)
+    if _text(evidence, "run_id") != run_id:
+        raise ReplayEvidenceError(f"{EVIDENCE_FILE}: run_id differs from the manifest")
+    replay = _object(evidence.get("replay"), "replay")
+    if _text(replay, "plan_sha256") != plan_sha256:
+        raise ReplayEvidenceError(f"{EVIDENCE_FILE}: plan_sha256 differs from the manifest")
+    matches = _matches_source(replay)
     parents = _parent_step_ids(replay_dir / JOURNAL_FILE)
     steps = {}
     for step_id, raw in raw_steps.items():
@@ -144,8 +168,7 @@ def _read_steps(root: Path, evidence_dir: str, raw_steps: dict) -> dict[str, Ste
     return steps
 
 
-def _matches_source(evidence: dict) -> dict[str, bool]:
-    replay = _object(evidence.get("replay"), "replay")
+def _matches_source(replay: dict) -> dict[str, bool]:
     matches: dict[str, bool] = {}
     for key in ("model_outputs", "tool_results"):
         items = replay.get(key)
@@ -156,7 +179,10 @@ def _matches_source(evidence: dict) -> dict[str, bool]:
             matched = item.get("matches_source")
             if not isinstance(matched, bool):
                 raise ReplayEvidenceError(f"{EVIDENCE_FILE}: matches_source must be true or false")
-            matches[_text(item, "step_id")] = matched
+            step_id = _text(item, "step_id")
+            if step_id in matches:
+                raise ReplayEvidenceError(f"{EVIDENCE_FILE}: duplicate step_id {step_id!r}")
+            matches[step_id] = matched
     return matches
 
 
@@ -197,13 +223,18 @@ def _confined(root: Path, relative: str) -> Path:
     """Resolve a manifest path inside the experiment; reject absolute and escaping paths."""
     if PurePath(relative).is_absolute():
         raise ReplayEvidenceError(f"Path {relative!r} is outside the experiment directory")
-    resolved = (root / relative).resolve()
+    path = root / relative
+    if any(part.is_symlink() for part in (path, *path.parents) if part.is_relative_to(root)):
+        raise ReplayEvidenceError(f"Path {relative!r} contains a symlink")
+    resolved = path.resolve()
     if not resolved.is_relative_to(root):
         raise ReplayEvidenceError(f"Path {relative!r} is outside the experiment directory")
     return resolved
 
 
 def _read_text(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ReplayEvidenceError(f"{path.name} must be a regular file without symlinks")
     try:
         # Read one byte past the limit so an oversize file is detected without loading it all.
         with path.open("rb") as handle:

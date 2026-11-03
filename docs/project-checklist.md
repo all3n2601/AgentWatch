@@ -583,7 +583,10 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   frozen `split-v2` (held-out method `worker_queue_blocker`, test task `fix-window-count`,
   independence checks) are implemented as library code with synthetic-fixture tests in
   `pipelines/data/tests/test_replay_evidence.py`, `test_replay_labels.py` and
-  `test_split_assignment.py`. Releases still use `labels-v1.1` and `split-v1`. Open: labeling
+  `test_split_assignment.py`. Review fixes on 2026-11-03 reject symlinked files and conflicting
+  replay identities, fingerprint the evidence reader and labeling dependencies, and label
+  within-noise mixed steps without solo confirmation. All 700 data pipeline tests passed.
+  Releases still use `labels-v1.1` and `split-v1`. Open: labeling
   a real recorded replay experiment (none is in the evidence store), Rohit's acceptance of
   [`eval-contract-v2`](evaluation-contract-v2-proposal.md), D03 wiring into releases, and
   split-v2 reproduction (build twice, identical split id and `rows_sha256`), possible only after

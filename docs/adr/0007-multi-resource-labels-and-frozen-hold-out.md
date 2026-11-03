@@ -16,8 +16,9 @@ step, so splitting it between resources would fabricate attribution; no resource
 there are no ties. Each resource in a mixed label needs its own evidence: the same step,
 replayed under that resource's contention alone, must also have exceeded noise (the same
 `max(0.01 s, 3.0 × stdev)` threshold as `labels-v1.1`, strictly exceeded). The labeler
-requires exactly one labelable solo replay per mixed member class. Steps that slowed only when
-both contentions ran are labeled with both members under the distinct basis `mixed_joint_only`
+requires exactly one labelable solo replay per mixed member class when the mixed step exceeds
+noise. Steps that slowed only when both contentions ran are labeled with both members under
+the distinct basis `mixed_joint_only`
 so evaluation can report them separately; the alternative was rejecting them, which would drop
 data because the rule's answer was inconvenient. Steps are rejected only for missing or
 invalid evidence, each with its own recorded reason. The target `label_excess_fraction` is the

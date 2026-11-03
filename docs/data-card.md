@@ -279,7 +279,7 @@ wires them in, after Rohit accepts `eval-contract-v2` (see
 `pipelines/data/src/agentwatch_data/labels-v2.toml`; the label version is `labels-v2` plus an
 8-hex fingerprint of the rule values and the labeling code, pinned in
 `pipelines/data/tests/test_replay_labels.py` (`PINNED_REPLAY_LABEL_VERSION`, currently
-`labels-v2+528cb806`). `labels.toml` and `labels-v1.1` are untouched.
+`labels-v2+8c1a0a1c`). `labels.toml` and `labels-v1.1` are untouched.
 
 Usage: `python -m agentwatch_data.replay_labels <experiment directory>`. It labels one
 `agent-replay-experiment-v1` directory (`experiment.json`, `injections/`, per-replay
@@ -349,7 +349,7 @@ must also have exceeded noise.
 - No resource is ranked above another, so there are no ties to break. `mixed_joint_only` steps
   slowed only when both contentions ran, so each was necessary; the distinct basis lets
   evaluation report them separately.
-- A mixed step needs exactly one labelable solo replay per mixed member class. Zero or more
+- A mixed step that exceeds the noise threshold needs exactly one labelable solo replay per mixed member class. Zero or more
   than one, or a solo copy of the step that is not a usable leaf, rejects the step with
   `mixed_solo_evidence_missing`.
 - `control_exceeded_noise` records whether the clean control after a contended replay exceeded
