@@ -52,8 +52,8 @@ Rohit to accept the labels and split; thresholds are unchanged.
 
 Consequences: no replay experiment is in the evidence store, so `labels-v2` is verified on
 synthetic test fixtures only and real-replay acceptance is open. With two tasks the
-validation split is empty and the test split is one task, so held-out results will have wide
-uncertainty. Replay timings under contention remain features, so D03 must check they do not
+validation split is empty and, for a replay-only release, the test split is one task, so held-out
+results will have wide uncertainty. `worker_queue_blocker` is the `injection_method` of every current `labels-v1.1` CPU and coding row. Once a release carries both row kinds (D03), `split-v2` sends every CPU and coding task group to test, and training contains only the non-held-out replay task rows (today `fix-mean-empty`). This changes the rows #45 and #46 train on today, so `split-v1` stays in force until Rohit accepts `eval-contract-v2`. Replay timings under contention remain features, so D03 must check they do not
 encode the condition. D03 must also allow the empty `label_resources` string in the release
 value checks. Labels are operational proxies and still need validation against natural
 overload.

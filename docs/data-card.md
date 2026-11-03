@@ -290,9 +290,9 @@ deterministic: the same evidence gives the same rows and `label_version`.
 
 - Experiment: `status` must be `completed` and the checks `baseline_replays_complete`,
   `stable_baseline`, `same_steps_every_replay` and `injectors_cleaned_up` must all be `true`.
-  A missing blocking check counts as failed. Failing any rejects every row with
-  `protocol_checks_failed`; these are protocol-validity checks, not rule outcomes. Other failed
-  checks are listed in `failed_checks` and do not block labels.
+  A missing blocking check counts as failed. Failing any gives one experiment-level rejection
+  (`protocol_checks_failed`) and no rows; these are protocol-validity checks, not rule
+  outcomes. Other failed checks are listed in `failed_checks` and do not block labels.
 - Replay: warm-ups are never labeled. A replay needs `state == "completed"`,
   `task_passed is True` and a recorded `run_id`, and a contended replay needs
   `injection_active`. Replays with a duplicate or negative index are rejected, and so is a
@@ -301,6 +301,16 @@ deterministic: the same evidence gives the same rows and `label_version`.
   children's time. A step must be `completed` with a finite positive `total_seconds`. A step
   whose `matches_source` is false did different work and is rejected
   (`output_differs_from_source`); a differing baseline step is left out of the reference.
+
+Two kinds of problem differ:
+
+- **Unreadable experiment.** `ReplayEvidenceError` means the experiment cannot be read, so
+  nothing is labeled and the CLI exits 1: duplicate or negative replay indexes, bad or
+  out-of-experiment paths, oversize files, invalid JSON, non-finite or negative durations, a
+  missing replay record, or an invalid journal line in any replay. A read defect in one replay
+  currently aborts the whole experiment (fail closed, intended for D02); per-replay tolerance is
+  a D03 follow-up.
+- **Rejections.** The codes below are rule-level outcomes recorded beside the labeled rows.
 
 Rejections use one of `experiment_not_completed`, `protocol_checks_failed`,
 `replay_not_succeeded`, `injection_inactive`, `resource_class_mismatch`, `step_not_completed`,
@@ -365,6 +375,8 @@ recorded under contention (`duration_seconds`, `queue_seconds`, `execution_secon
 features, so D03 must check they do not encode the condition another way.
 
 ## Frozen split assignment (`split-v2`)
+
+**Effect on existing CPU and coding runs.** `worker_queue_blocker` is the `injection_method` of every current `labels-v1.1` CPU and coding row. Once a release carries both row kinds (D03), `split-v2` sends every CPU and coding task group to test, and training contains only the non-held-out replay task rows (today `fix-mean-empty`). This changes the rows #45 and #46 train on today, so `split-v1` stays in force until Rohit accepts `eval-contract-v2`.
 
 `split-v2` is meant to be used only when the evaluation contract selects it; `eval-contract-v1`
 does not, and `splits.py` does not implement `split-v2` yet, so `split-v1` runs exactly as
@@ -747,8 +759,15 @@ The main ones:
   retrieval flood slows every runner thread, so a step of another type can carry the label.
   `step_type` stays on each row so evaluation can report each class by step type.
 - **Only two agent tasks exist** (`fix-mean-empty-r1`, `fix-window-count-r1`), so a `split-v2`
-  validation split is empty and the test split is one task.
+  validation split is empty. "The test split is one task" holds only for a replay-only
+  release; once CPU and coding rows are in the release, `split-v2` sends all of them to test
+  (see [Frozen split assignment](#frozen-split-assignment-split-v2)).
 - **No recorded replay experiment is in the evidence store.** `labels-v2` and `split-v2` are
   verified on synthetic fixtures in tests only; acceptance on real replays is open.
+- **Synthetic fixture step names differ from the producer's.** The test fixture uses step IDs
+  and types such as `tool-call-1` and `model_call`/`tool_call`, while the producer writes
+  `tool-{n}-{name}` and `other`. Labels are unaffected, but D03 should remember that real tool
+  names may contain words like `retrieval`, and that `step_id` stays a non-feature
+  (`LEAKY_COLUMNS`).
 - **Replay timings under contention are features.** D03 must check that they do not encode the
   injected condition another way.

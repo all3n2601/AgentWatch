@@ -23,7 +23,11 @@ keeps building `labels-v1.1` releases with `split-v1`, and every threshold is un
    `group_key = "task_group"` and
    `assignment = "pipelines/data/src/agentwatch_data/split-assignment.toml"`. The file
    holds out injection method `worker_queue_blocker` and task group `fix-window-count`; changing
-   it requires `split-v3`.
+   it requires `split-v3`. `worker_queue_blocker` is the `injection_method` of every current `labels-v1.1` CPU and
+   coding row, so once a release carries both row kinds (D03), `split-v2` sends every CPU and coding
+   task group to test, and training contains only the non-held-out replay task rows (today
+   `fix-mean-empty`). This changes the rows #45 and #46 train on today, which is why `split-v1`
+   stays in force until Rohit accepts this contract.
 4. **Leave every threshold unchanged.**
 
 ## Dependencies and open items
