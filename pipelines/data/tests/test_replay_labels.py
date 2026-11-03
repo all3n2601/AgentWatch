@@ -12,8 +12,10 @@ from agentwatch_data.replay_labels import (
 )
 from agentwatch_data.schema import (
     COLUMNS,
+    COLUMNS_BY_NAME,
     REPLAY_CONDITIONS,
     REPLAY_LABEL_COLUMNS,
+    RESOURCE_CLASSES,
     SCHEMA_VERSION,
     Role,
     check_value,
@@ -479,7 +481,8 @@ def test_unusable_solo_copy_rejects_mixed_step(tmp_path, config):
 
 
 def labeled_rows(tmp_path, config):
-    rows, _ = label(experiment(tmp_path, controls={"cpu": steps(1.5)}), config)
+    contended = {"cpu": steps(1.5), "inference": steps(1.4), "mixed": steps(1.9)}
+    rows, _ = label(experiment(tmp_path, contended, controls={"cpu": steps(1.5)}), config)
     assert rows
     return rows
 
@@ -487,16 +490,24 @@ def labeled_rows(tmp_path, config):
 def test_replay_columns_describe_every_row_key(tmp_path, config):
     assert tuple(column.name for column in REPLAY_LABEL_COLUMNS) == ROW_KEYS
     by_name = {column.name: column for column in REPLAY_LABEL_COLUMNS}
-    for row in labeled_rows(tmp_path, config):
+    rows = labeled_rows(tmp_path, config)
+    for row in rows:
         for key, value in row.items():
-            # An unlabeled step has no confirmed resources: "" is the documented empty list,
-            # which the nonempty-string rule of check_value would otherwise reject.
-            if key == "label_resources" and value == "":
-                continue
-            assert check_value(by_name[key], value) is None, (key, value)
+            if key == "label_resources":
+                # "" means no resource, which check_value's nonempty-string rule would reject.
+                parts = value.split(",") if value else []
+                assert value == ",".join(sorted(parts)), value
+                assert set(parts) <= set(RESOURCE_CLASSES) - {"none"}, value
+            else:
+                assert check_value(by_name[key], value) is None, (key, value)
+    assert any(len(row["label_resources"].split(",")) == 2 for row in rows)
 
 
 def test_replay_label_metadata_is_never_a_feature():
+    by_name = {column.name: column for column in REPLAY_LABEL_COLUMNS}
+    timings = {"queue_seconds", "execution_seconds", "duration_seconds"}
+    assert {name for name, c in by_name.items() if c.role == Role.FEATURE} == timings
+    assert all(by_name[name] is COLUMNS_BY_NAME[name] for name in timings)
     metadata = {
         "task_group",
         "experiment",
@@ -510,21 +521,59 @@ def test_replay_label_metadata_is_never_a_feature():
         "control_exceeded_noise",
         "injection_method",
     }
+    assert all(by_name[name].role != Role.FEATURE for name in metadata)
     assert metadata.isdisjoint(feature_columns())
-    assert all(column.role != Role.FEATURE for column in REPLAY_LABEL_COLUMNS)
 
 
-# The release columns as of steps-v1.2; replay label columns must not change them.
-RELEASE_COLUMN_COUNT = 40
-RELEASE_FIRST_AND_LAST = ("run_id", "source_sha256")
+# The release columns as of steps-v1.2 (identical on origin/main); replay label columns
+# are not part of them until D03 adds them with steps-v1.3.
+RELEASE_COLUMN_NAMES = (
+    "run_id",
+    "step_id",
+    "task_id",
+    "kind",
+    "source",
+    "recorded_at",
+    "queue_seconds",
+    "execution_seconds",
+    "duration_seconds",
+    "cpu_seconds",
+    "queue_fraction",
+    "workload_iterations",
+    "tests_per_step",
+    "worker_capacity",
+    "cpu_pressure_max_avg10",
+    "cpu_pressure_available",
+    "cgroup_throttled_usec_delta",
+    "cgroup_available",
+    "telemetry_sample_count",
+    "telemetry_coverage",
+    "label_resource",
+    "label_excess_fraction",
+    "rule_prediction",
+    "rule_version",
+    "condition",
+    "workload",
+    "injection_method",
+    "agent_model",
+    "run_passed",
+    "failed_checks",
+    "telemetry_status",
+    "sampling_interval_seconds",
+    "measured_sampling_interval_seconds",
+    "baseline_mean_seconds",
+    "noise_threshold_seconds",
+    "label_basis",
+    "label_version",
+    "schema_version",
+    "dataset_version",
+    "source_sha256",
+)
 
 
 def test_release_schema_is_unchanged():
-    names = tuple(column.name for column in COLUMNS)
     assert SCHEMA_VERSION == "steps-v1.2"
-    assert len(names) == RELEASE_COLUMN_COUNT
-    assert (names[0], names[-1]) == RELEASE_FIRST_AND_LAST
-    assert not {"replay_index", "task_group", "label_resources"} & set(names)
+    assert tuple(column.name for column in COLUMNS) == RELEASE_COLUMN_NAMES
 
 
 def test_replay_step_ids_carry_no_condition(tmp_path, config):

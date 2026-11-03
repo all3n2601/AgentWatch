@@ -12,7 +12,7 @@ these columns with steps-v1.3.
 """
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
@@ -225,8 +225,8 @@ COLUMNS_BY_NAME = {column.name: column for column in COLUMNS}
 # Replay label rows (replay_labels.ROW_KEYS, in that order). A name shared with COLUMNS reuses
 # its definition unless the replay row's values differ; the replay variants below widen
 # label_resource to include `mixed` and extend condition and label_basis. Every column here
-# is an ID, LABEL or LINEAGE: replay rows carry the experiment design and are never features,
-# so the shared timing columns are kept as LINEAGE here instead of their release FEATURE role.
+# is an ID, LABEL or LINEAGE except the three shared timings, which keep their release FEATURE
+# role; the experiment design (condition, role, injection, label metadata) is never a feature.
 REPLAY_LABEL_COLUMNS = (
     Column("experiment", "string", Role.ID, "Experiment name; replays are grouped by it"),
     COLUMNS_BY_NAME["task_id"],
@@ -251,9 +251,9 @@ REPLAY_LABEL_COLUMNS = (
     ),
     COLUMNS_BY_NAME["step_id"],
     Column("step_type", "string", Role.ID, "Kind of step recorded by the agent run"),
-    replace(COLUMNS_BY_NAME["duration_seconds"], role=Role.LINEAGE),
-    replace(COLUMNS_BY_NAME["queue_seconds"], role=Role.LINEAGE),
-    replace(COLUMNS_BY_NAME["execution_seconds"], role=Role.LINEAGE),
+    COLUMNS_BY_NAME["duration_seconds"],
+    COLUMNS_BY_NAME["queue_seconds"],
+    COLUMNS_BY_NAME["execution_seconds"],
     Column(
         "label_resource",
         "string",
@@ -265,7 +265,9 @@ REPLAY_LABEL_COLUMNS = (
         "label_resources",
         "string",
         Role.LABEL,
-        "Comma-separated confirmed contended resources; empty when none",
+        "Sorted comma-separated confirmed contended resources; the empty string means none. "
+        "D03 must allow the empty string when merging this into steps-v1.3: the release "
+        "value check rejects empty strings",
     ),
     COLUMNS_BY_NAME["label_excess_fraction"],
     Column(
