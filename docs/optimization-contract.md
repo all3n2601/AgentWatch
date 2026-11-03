@@ -1,8 +1,9 @@
 # AgentWatch optimization contract
 
 Status: proposed `opt-contract-v1`, pending acceptance by all three teams. Thresholds live in
-`pipelines/model/optimization-contract.toml`. No concurrency control exists and no optimization
-has been evaluated; O02 and O03 implement the controls, and O06 runs the evaluation.
+`pipelines/model/optimization-contract.toml`. O02 stores and serves versioned manual policy
+([concurrency policy](concurrency-policy.md)); nothing enforces it until O03, and no optimization
+has been evaluated; O06 runs the evaluation.
 
 This contract fixes the policy semantics, preregistration and numerical gates for manual
 concurrency limits before any evaluation, so no gate is tuned to results. It turns the
