@@ -1,11 +1,13 @@
 """Export the live router OpenAPI and matching TypeScript data contracts."""
 
 import json
+import re
 from pathlib import Path
 
 from fastapi.openapi.utils import get_openapi
 
 from agentwatch_worker.live_api import router
+from agentwatch_worker.policy_api import router as policy_router
 
 
 def openapi_document() -> dict:
@@ -15,6 +17,15 @@ def openapi_document() -> dict:
         routes=router.routes,
         description="Bounded incremental ingestion and UUID-specific polling. "
         "See docs/live-ingestion.md for lifecycle, retry, gap and cleanup semantics.",
+    )
+
+
+def policy_openapi_document() -> dict:
+    return get_openapi(
+        title="AgentWatch concurrency policy API",
+        version="live-contracts-v1",
+        routes=policy_router.routes,
+        description="Versioned manual concurrency policy with append-only audit history.",
     )
 
 
@@ -64,11 +75,27 @@ def typescript_document(document: dict) -> str:
     return "\n".join(lines)
 
 
+def policy_typescript_document(policy_document: dict, live_document: dict) -> str:
+    """Declare only schemas absent from live.ts; `export type *` re-exports would collide."""
+    shared = set(live_document["components"]["schemas"])
+    schemas = policy_document["components"]["schemas"]
+    own = {name: schema for name, schema in schemas.items() if name not in shared}
+    referenced = set(re.findall(r"#/components/schemas/(\w+)", json.dumps(own)))
+    lines = typescript_document({"components": {"schemas": own}}).split("\n", 3)
+    imports = f'import type {{ {", ".join(sorted(referenced & shared))} }} from "./live";'
+    return "\n".join([*lines[:3], imports, "", lines[3]])
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[4]
     document = openapi_document()
     (root / "api/openapi/live.json").write_text(json.dumps(document, indent=2) + "\n")
     (root / "packages/sdk-typescript/src/live.ts").write_text(typescript_document(document))
+    policy_document = policy_openapi_document()
+    (root / "api/openapi/policy.json").write_text(json.dumps(policy_document, indent=2) + "\n")
+    (root / "packages/sdk-typescript/src/policy.ts").write_text(
+        policy_typescript_document(policy_document, document)
+    )
 
 
 if __name__ == "__main__":

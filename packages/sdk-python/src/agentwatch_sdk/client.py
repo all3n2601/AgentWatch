@@ -1,6 +1,7 @@
 """Synchronous producer client. Retry with the same identities after uncertain outcomes."""
 
 import math
+import re
 from urllib.request import Request, urlopen
 from uuid import UUID
 
@@ -17,8 +18,22 @@ from agentwatch_sdk.live import (
     RunPage,
     RunSnapshot,
 )
+from agentwatch_sdk.policy import (
+    PolicyChange,
+    PolicyChangeResult,
+    PolicyPage,
+    PolicyVersion,
+    RunPolicy,
+)
 
 MAX_RESPONSE_BYTES = 8_388_608
+POLICY_TARGET_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+
+
+def _policy_path(target: str) -> str:
+    if type(target) is not str or POLICY_TARGET_PATTERN.fullmatch(target) is None:
+        raise ValueError("Invalid policy target")
+    return f"/v1/policies/concurrency/{target}"
 
 
 class LiveClient:
@@ -81,3 +96,26 @@ class LiveClient:
             raise ValueError("Invalid live history cursor/page size")
         query = f"?limit={limit}" + (f"&before={before}" if before is not None else "")
         return self._request("/v1/live/runs" + query, RunPage)
+
+    def get_policy(self, target: str = "coding-agent") -> PolicyVersion:
+        return self._request(_policy_path(target), PolicyVersion)
+
+    def list_policy_versions(
+        self, target: str = "coding-agent", before: int | None = None, limit: int = 50
+    ) -> PolicyPage:
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= 100
+            or (before is not None and (type(before) is not int or not 0 <= before <= MAX_CURSOR))
+        ):
+            raise ValueError("Invalid policy history cursor/page size")
+        query = f"?limit={limit}" + (f"&before={before}" if before is not None else "")
+        return self._request(_policy_path(target) + "/versions" + query, PolicyPage)
+
+    def change_policy(
+        self, change: PolicyChange, target: str = "coding-agent"
+    ) -> PolicyChangeResult:
+        return self._request(_policy_path(target) + "/versions", PolicyChangeResult, change)
+
+    def get_run_policy(self, run_id: UUID) -> RunPolicy:
+        return self._request(f"/v1/live/runs/{UUID(str(run_id))}/policy", RunPolicy)
