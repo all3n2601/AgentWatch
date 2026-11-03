@@ -264,3 +264,16 @@ def test_sampling_overhead_reads_one_dcgm_identity_for_every_request(tmp_path, m
     first, second = captured["probes"](server), captured["probes"](server)
     assert [p.resource.service_id for p in first] == ["vllm", "nvidia-dcgm"]
     assert first[1].resource.resource_id == second[1].resource.resource_id
+
+
+@pytest.mark.parametrize("value", ["vLLM", "olama", ""])
+def test_a_mistyped_backend_in_the_environment_is_refused(monkeypatch, value):
+    # argparse checks `choices` only on the command line; the default must be checked too.
+    monkeypatch.setenv("AGENTWATCH_MODEL_BACKEND", value)
+    with pytest.raises(SystemExit):
+        cli.parser().parse_args(["run", "--task", "x"])
+
+
+def test_a_valid_backend_in_the_environment_is_used(monkeypatch):
+    monkeypatch.setenv("AGENTWATCH_MODEL_BACKEND", "vllm")
+    assert cli.parser().parse_args(["run", "--task", "x"]).model_backend == "vllm"

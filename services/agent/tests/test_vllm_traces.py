@@ -149,3 +149,19 @@ def test_a_file_rotated_away_mid_read_is_skipped(tmp_path):
     current = tmp_path / "vllm-traces.jsonl"
     current.write_text(span_line(TRACE, STEP_A, "c-1"))
     assert len(request_spans([missing, current], TRACE)) == 1
+
+
+def test_unreadable_trace_files_leave_every_call_unavailable_instead_of_failing(
+    tmp_path, monkeypatch
+):
+    # A run whose work completed must not become a runner error over its server timing.
+    monkeypatch.setattr(vllm_traces, "MAX_TRACE_BYTES", 10)
+    path = tmp_path / "vllm-traces.jsonl"
+    path.write_text(span_line(TRACE, STEP_A, "c-1"))
+    collected = collect_request_timings(
+        path, TRACE, {STEP_A: "c-1"}, wait_seconds=5, sleep=lambda _s: pytest.fail("waited")
+    )
+    assert (collected["complete"], collected["spans_found"]) == (False, None)
+    call = collected["calls"][STEP_A]
+    assert call["status"] == "unavailable"
+    assert call["problems"][0].startswith("vLLM traces unreadable (trace files exceed")

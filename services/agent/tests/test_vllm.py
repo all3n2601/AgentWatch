@@ -306,3 +306,10 @@ def test_an_unreported_context_length_is_unknown_not_a_mismatch():
         placement = VllmChatModel(server.url, MODEL, num_ctx=4096).observe_placement()
     assert placement["status"] == "measured"
     assert placement["context_matches_num_ctx"] is None
+
+
+def test_a_stream_chunk_that_is_not_json_is_a_bad_reply():
+    with FakeVllm([text_reply("hello")]) as server:
+        server.broken_chunk = True
+        with pytest.raises(VllmResponseError, match="not valid JSON"):
+            vllm_chat(server.url, payload(), timeout_seconds=5, on_event=lambda _event: None)

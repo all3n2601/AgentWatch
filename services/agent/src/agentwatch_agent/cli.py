@@ -145,11 +145,22 @@ def choice_list(choices: tuple[str, ...]):
     return parse
 
 
+def model_backend(value: str) -> str:
+    # argparse applies `type` to a string default but checks `choices` only on the
+    # command line, so this also refuses a mistyped AGENTWATCH_MODEL_BACKEND.
+    if value not in MODEL_BACKENDS:
+        raise argparse.ArgumentTypeError(
+            f"must be one of {', '.join(MODEL_BACKENDS)}, got {value!r}"
+        )
+    return value
+
+
 def add_model_arguments(command: argparse.ArgumentParser) -> None:
     """The model server a command talks to; --model defaults per backend."""
     command.add_argument(
         "--model-backend",
         choices=MODEL_BACKENDS,
+        type=model_backend,
         default=os.environ.get("AGENTWATCH_MODEL_BACKEND", "ollama"),
     )
     command.add_argument(

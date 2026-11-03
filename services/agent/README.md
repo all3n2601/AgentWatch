@@ -47,9 +47,10 @@ make dcgm-up                    # optional: DCGM device fields on 127.0.0.1:9400
 uv run --package agentwatch-agent python -m agentwatch_agent run --task fix-mean-empty   --model-backend vllm --dcgm-url http://127.0.0.1:9400/metrics
 ```
 
-`--model-backend vllm` (or `AGENTWATCH_MODEL_BACKEND=vllm`) serves `VLLM_MODEL`
-(`Qwen/Qwen3-1.7B@70d244cc86cc`, BF16 at a pinned revision) from `VLLM_URL`
-(`http://127.0.0.1:8000`). `run`, `experiment` and `sampling-overhead` accept it; the
+`--model-backend vllm` (or `AGENTWATCH_MODEL_BACKEND=vllm`) calls `VLLM_MODEL`
+(`Qwen/Qwen3-1.7B@70d244cc86cc`, BF16 at a pinned revision) at `VLLM_URL`
+(`http://127.0.0.1:8000`). The Compose service fixes that name with its weights, so
+changing `VLLM_MODEL` alone makes the calls fail rather than relabel the model. `run`, `experiment` and `sampling-overhead` accept it; the
 inference injector then sends competing OpenAI-compatible chat requests
 (`competing-openai-chat-v1`). Each model call carries its step's trace context, vLLM's
 per-request span (measured queue, prefill, decode, first token, end to end) is read from
