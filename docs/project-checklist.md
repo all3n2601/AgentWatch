@@ -715,7 +715,10 @@ from M3 through M6 and do not renumber the implementation milestones above.
   typecheck and build clean. Web viewport/accessibility checked 2026-11-03 (controller browser
   check, Playwright, `next dev`): 768, 640 (1280 px at 200% zoom) and 384 (768 px at 200% zoom)
   CSS px wide with no horizontal overflow; 13 focusable controls reachable in logical order with
-  visible focus; no control under 44 px at 768. Remote PR CI is not yet verified. Run links
+  visible focus; no control under 44 px at 768. Follow-up review on 2026-11-03 added a same-origin
+  JSON check and streaming byte limit to the policy proxy and kept malformed limit input visible
+  for validation. Playwright covers cross-origin and oversized requests and malformed form input.
+  Run links
   record the version *active while the run was open*, not enforcement. Still open: enforcement
   (O03), the finished controls UI (O05), real-hardware evaluation (O06) and `opt-contract-v1`
   acceptance (O01).

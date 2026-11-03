@@ -25,7 +25,7 @@ import {
 /** Versions per history page; the worker accepts 1–100. */
 export const POLICY_HISTORY_PAGE_LIMIT = 20;
 /** Policy change bodies are a few hundred bytes; anything far larger is not a change. */
-export const MAX_POLICY_BODY_CHARS = 16_384;
+export const MAX_POLICY_BODY_BYTES = 16_384;
 
 export type PolicyFailure = {
   kind: LiveApiFailure["kind"] | "conflict";

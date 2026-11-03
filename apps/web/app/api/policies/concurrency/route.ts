@@ -2,7 +2,7 @@ import { liveRunsUrl, policyUrl } from "@/lib/experiments";
 import { parseListQuery } from "@/lib/live-api";
 import {
   createPolicyApi,
-  MAX_POLICY_BODY_CHARS,
+  MAX_POLICY_BODY_BYTES,
   policyFailureResponse,
 } from "@/lib/policy-api";
 import { policyChangeSchema } from "@/lib/policy-api-schema";
@@ -34,15 +34,69 @@ export async function GET(request: Request) {
 
 /** Records a validated policy change; 201 when stored, 200 when the request was a replay. */
 export async function POST(request: Request) {
-  const text = await request.text();
-  if (text.length > MAX_POLICY_BODY_CHARS)
-    return policyFailureResponse({
-      kind: "invalid_request",
-      message: "The policy change is too large.",
-    });
+  const origin = request.headers.get("origin");
+  // Next can normalize the URL to its listening hostname. Host is the authority the client used.
+  const url = new URL(request.url);
+  const requestOrigin = `${url.protocol}//${request.headers.get("host") ?? url.host}`;
+  if (
+    request.headers.get("sec-fetch-site") === "cross-site" ||
+    (origin !== null && origin !== requestOrigin)
+  ) {
+    return Response.json(
+      {
+        kind: "invalid_request",
+        error: "Cross-origin policy changes are forbidden.",
+      },
+      { status: 403 },
+    );
+  }
+  const mediaType = request.headers
+    .get("content-type")
+    ?.split(";")[0]
+    .trim()
+    .toLowerCase();
+  if (mediaType !== "application/json") {
+    return Response.json(
+      {
+        kind: "invalid_request",
+        error: "Policy changes require application/json.",
+      },
+      { status: 415 },
+    );
+  }
+
+  const reader = request.body?.getReader();
+  const bytes = new Uint8Array(MAX_POLICY_BODY_BYTES);
+  let length = 0;
+  if (reader) {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (length + value.byteLength > bytes.length) {
+          await reader.cancel();
+          return Response.json(
+            {
+              kind: "invalid_request",
+              error: "The policy change is too large.",
+            },
+            { status: 413 },
+          );
+        }
+        bytes.set(value, length);
+        length += value.byteLength;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
   let body: unknown;
   try {
-    body = JSON.parse(text);
+    body = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        bytes.subarray(0, length),
+      ),
+    );
   } catch {
     return policyFailureResponse({
       kind: "invalid_request",

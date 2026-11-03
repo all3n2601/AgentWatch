@@ -11,7 +11,6 @@ import {
 } from "@/lib/policy-api";
 import {
   MAX_OPERATOR_LENGTH,
-  MAX_POLICY_LIMIT,
   MAX_REASON_LENGTH,
   type PolicyChangeRequest,
   type PolicyControls,
@@ -308,11 +307,8 @@ export function ConcurrencyControls() {
             <label className="space-y-1 text-xs">
               <span>Inference requests</span>
               <Input
-                type="number"
+                type="text"
                 inputMode="numeric"
-                min={1}
-                max={MAX_POLICY_LIMIT}
-                step={1}
                 placeholder="No limit"
                 className="min-h-11"
                 {...field("inference")}
@@ -321,11 +317,8 @@ export function ConcurrencyControls() {
             <label className="space-y-1 text-xs">
               <span>Test jobs</span>
               <Input
-                type="number"
+                type="text"
                 inputMode="numeric"
-                min={1}
-                max={MAX_POLICY_LIMIT}
-                step={1}
                 placeholder="No limit"
                 className="min-h-11"
                 {...field("tests")}
