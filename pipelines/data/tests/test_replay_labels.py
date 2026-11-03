@@ -10,6 +10,15 @@ from agentwatch_data.replay_labels import (
     load_replay_config,
     task_group,
 )
+from agentwatch_data.schema import (
+    COLUMNS,
+    REPLAY_CONDITIONS,
+    REPLAY_LABEL_COLUMNS,
+    SCHEMA_VERSION,
+    Role,
+    check_value,
+    feature_columns,
+)
 from replay_fixtures import PASSING_CHECKS, write_experiment
 
 VALID_RULES = """
@@ -467,3 +476,64 @@ def test_unusable_solo_copy_rejects_mixed_step(tmp_path, config):
         "experiment synthetic-exp replay 08 step model-call-1": "mixed_solo_evidence_missing",
     }
     assert row_for(rows, "mixed", "tool-call-1")["label_basis"] == "mixed_below_threshold"
+
+
+def labeled_rows(tmp_path, config):
+    rows, _ = label(experiment(tmp_path, controls={"cpu": steps(1.5)}), config)
+    assert rows
+    return rows
+
+
+def test_replay_columns_describe_every_row_key(tmp_path, config):
+    assert tuple(column.name for column in REPLAY_LABEL_COLUMNS) == ROW_KEYS
+    by_name = {column.name: column for column in REPLAY_LABEL_COLUMNS}
+    for row in labeled_rows(tmp_path, config):
+        for key, value in row.items():
+            # An unlabeled step has no confirmed resources: "" is the documented empty list,
+            # which the nonempty-string rule of check_value would otherwise reject.
+            if key == "label_resources" and value == "":
+                continue
+            assert check_value(by_name[key], value) is None, (key, value)
+
+
+def test_replay_label_metadata_is_never_a_feature():
+    metadata = {
+        "task_group",
+        "experiment",
+        "plan_sha256",
+        "replay_index",
+        "role",
+        "condition",
+        "label_resource",
+        "label_resources",
+        "label_basis",
+        "control_exceeded_noise",
+        "injection_method",
+    }
+    assert metadata.isdisjoint(feature_columns())
+    assert all(column.role != Role.FEATURE for column in REPLAY_LABEL_COLUMNS)
+
+
+# The release columns as of steps-v1.2; replay label columns must not change them.
+RELEASE_COLUMN_COUNT = 40
+RELEASE_FIRST_AND_LAST = ("run_id", "source_sha256")
+
+
+def test_release_schema_is_unchanged():
+    names = tuple(column.name for column in COLUMNS)
+    assert SCHEMA_VERSION == "steps-v1.2"
+    assert len(names) == RELEASE_COLUMN_COUNT
+    assert (names[0], names[-1]) == RELEASE_FIRST_AND_LAST
+    assert not {"replay_index", "task_group", "label_resources"} & set(names)
+
+
+def test_replay_step_ids_carry_no_condition(tmp_path, config):
+    directory = experiment(tmp_path, controls={"cpu": steps(1.5)})
+    rows, _ = label(directory, config)
+    names = {row["step_id"] for row in rows} | {
+        path.name for path in (directory / "replays").iterdir()
+    }
+    leaking = {
+        name for name in names for token in REPLAY_CONDITIONS if token != "clean" and token in name
+    }
+    assert not leaking
