@@ -270,6 +270,133 @@ release (`pipelines/data/src/agentwatch_data/splits.py`).
   `allow_unchecked_leakage=True`, which skips only that check; its results must not be reported
   as an evaluation.
 
+## Replay labels (`labels-v2`)
+
+Status: tested library code, not yet used by any release. `make dataset` and every build still
+use `labels-v1.1` and `split-v1`. `labels-v2` and `split-v2` become part of releases when D03
+wires them in, after Rohit accepts `eval-contract-v2` (see
+[the proposal](evaluation-contract-v2-proposal.md)). Rules are in
+`pipelines/data/src/agentwatch_data/labels-v2.toml`; the label version is `labels-v2` plus an
+8-hex fingerprint of the rule values and the labeling code, pinned in
+`pipelines/data/tests/test_replay_labels.py` (`PINNED_REPLAY_LABEL_VERSION`, currently
+`labels-v2+528cb806`). `labels.toml` and `labels-v1.1` are untouched.
+
+Usage: `python -m agentwatch_data.replay_labels <experiment directory>`. It labels one
+`agent-replay-experiment-v1` directory (`experiment.json`, `injections/`, per-replay
+`agent-evidence.json` and `live-journal.jsonl`) and prints rows and rejections. Output is
+deterministic: the same evidence gives the same rows and `label_version`.
+
+**Which evidence is labeled.**
+
+- Experiment: `status` must be `completed` and the checks `baseline_replays_complete`,
+  `stable_baseline`, `same_steps_every_replay` and `injectors_cleaned_up` must all be `true`.
+  A missing blocking check counts as failed. Failing any rejects every row with
+  `protocol_checks_failed`; these are protocol-validity checks, not rule outcomes. Other failed
+  checks are listed in `failed_checks` and do not block labels.
+- Replay: warm-ups are never labeled. A replay needs `state == "completed"`,
+  `task_passed is True` and a recorded `run_id`, and a contended replay needs
+  `injection_active`. Replays with a duplicate or negative index are rejected, and so is a
+  replay whose injector `contended_resource_class` disagrees with its condition.
+- Step: only leaf steps (no child steps) are labeled, because parent steps cover their
+  children's time. A step must be `completed` with a finite positive `total_seconds`. A step
+  whose `matches_source` is false did different work and is rejected
+  (`output_differs_from_source`); a differing baseline step is left out of the reference.
+
+Rejections use one of `experiment_not_completed`, `protocol_checks_failed`,
+`replay_not_succeeded`, `injection_inactive`, `resource_class_mismatch`, `step_not_completed`,
+`output_differs_from_source`, `baseline_reference_missing`, `mixed_solo_evidence_missing`.
+Evidence is never dropped silently.
+
+**Reference and noise.** For each `step_id`, B is the mean `total_seconds` over the baseline
+replays where that step is usable, and the threshold is
+`max(0.01 s, 3.0 × sample stdev)`, the `labels-v1.1` values. Fewer than two usable baseline
+values is `baseline_reference_missing`. A step exceeds noise only when `T − B` is strictly
+greater than the threshold; exactly at the threshold is not exceeded. Total time is the labeled
+quantity, as in `labels-v1.1`; queue and execution time stay separate columns.
+
+**Labels.** `cpu` maps to `cpu_sandbox`, `inference` to `inference`, `retrieval` to
+`retrieval`. A step slowed by two contentions shows both resources, and each resource in a mixed
+label needs its own evidence: the same step, replayed under that resource's contention alone,
+must also have exceeded noise.
+
+| Replay role / condition | Step outcome | `label_resources` | `label_resource` | `label_basis` |
+|---|---|---|---|---|
+| `baseline` | any | empty | `none` | `baseline_reference` |
+| `clean_control` | within noise | empty | `none` | `clean_within_noise` |
+| `clean_control` | exceeded noise | empty | `none` | `clean_exceeded_noise` |
+| solo `X` | within noise | empty | `none` | `contention_below_threshold` |
+| solo `X` | exceeded noise | `X` | `X` | `contention_exceeded_threshold` |
+| `mixed` | within noise | empty | `none` | `mixed_below_threshold` |
+| `mixed` | exceeded; every member's solo step exceeded | all members | `mixed` | `mixed_confirmed` |
+| `mixed` | exceeded; some members' solo steps exceeded | those members | that class if one, else `mixed` | `mixed_partial` |
+| `mixed` | exceeded; no member's solo step exceeded | all members | `mixed` | `mixed_joint_only` |
+
+- `label_resources` is a sorted, comma-separated list of classes and is the multi-resource
+  target. It uses the empty string `""` for none. D03 must allow the empty string when merging
+  the column into `steps-v1.3`, because the release value check rejects empty strings.
+- `label_resource` is the single class when one resource is listed, `mixed` when two or more,
+  and `none` when empty. `mixed` is a label value only; it is not added to `RESOURCE_CLASSES`.
+- No resource is ranked above another, so there are no ties to break. `mixed_joint_only` steps
+  slowed only when both contentions ran, so each was necessary; the distinct basis lets
+  evaluation report them separately.
+- A mixed step needs exactly one labelable solo replay per mixed member class. Zero or more
+  than one, or a solo copy of the step that is not a usable leaf, rejects the step with
+  `mixed_solo_evidence_missing`.
+- `control_exceeded_noise` records whether the clean control after a contended replay exceeded
+  noise on the same step (null when the control is unusable). It never changes a label.
+- `injection_method` is the solo method, the sorted member methods joined by `+` for mixed, or
+  `none`.
+- Step type is not filtered: a model call slowed by the CPU injector is `cpu_sandbox`. The
+  label names the contention that was applied, an operational proxy (see Known limitations).
+  `step_type` stays on every row for per-type reporting.
+
+**Regression target.** `label_excess_fraction = max(0, min(1, (T − B) / T))` against the
+per-step baseline. For a mixed step it is the whole step's excess and is never split by
+resource, because the evidence has one total duration per step.
+
+**Identity and non-features.** Each row carries the real `task_id` and `task_group`, the task
+name without its `-r<revision>` suffix. The replay label columns are declared in
+`REPLAY_LABEL_COLUMNS` in `schema.py`, outside `COLUMNS`, so the release schema and frozen TFDV
+schema are unchanged. `label_resources`, `label_basis`, `control_exceeded_noise`,
+`injection_method`, `role`, `condition`, `task_group` and the injection-log fields are `LABEL`,
+`LINEAGE` or `ID` columns and never features; tests assert none is in `feature_columns()` and
+that replay step IDs and evidence directory names carry no condition. The replay timings
+recorded under contention (`duration_seconds`, `queue_seconds`, `execution_seconds`) stay
+features, so D03 must check they do not encode the condition another way.
+
+## Frozen split assignment (`split-v2`)
+
+`split-v2` is used only when the evaluation contract selects it; `eval-contract-v1` does not,
+so `split-v1` runs exactly as described under [Splits](#splits). The assignment is
+`pipelines/data/src/agentwatch_data/split_assignment.py` plus the data-owned file
+`split-assignment.toml`, versioned and hashed into every split:
+
+- `held_out_injection_methods = ["worker_queue_blocker"]`. Every task group with a row using a
+  held-out method goes entirely to test. Training learns `cpu_sandbox` from
+  `cpu-spin-processes-v1`. Holding out `cpu-spin-processes-v1` instead would send every mixed
+  row to test, and the only inference or retrieval method cannot be held out without removing
+  that class from training.
+- `test_task_groups = ["fix-window-count"]`. With two agent tasks, 70/15/15 hashing cannot place
+  one in test reliably, so the test task is declared. The rule was fixed before any label was
+  seen: the highest `split-v1:<name>` hash position (`fix-window-count` 0.502, `fix-mean-empty`
+  0.476).
+- Other groups use the `split-v1` hash and the contract's fractions, so new tasks never move
+  frozen ones. Changing the file requires `split-v3` and a new test split.
+
+Checks, delivered as functions over labeled rows (D03 records them in the split file and has
+`make_split` and `load_split` recompute them):
+
+- **Independence (fails the split):** no `task_group`, `run_id` or `plan_sha256` appears in more
+  than one split.
+- **Held-out method:** each declared method appears only in test, and training has another
+  method for each class it produces in test. Otherwise `not_met`. The classes come from
+  `label_resource` of the held-out rows, excluding `none` and `mixed`.
+- **Mixed in test:** the test split has mixed-condition rows. Otherwise `not_met`.
+
+The existing gates stay: quality-gate recheck, reconstruct-and-compare on read, measured-only
+test sources, the training leakage check, and the contract's count minimums. With two tasks,
+validation is empty, and that is recorded.
+
 ## Versioning
 
 The evidence store and the dataset store (releases, build reports, quality-gate attempts, and
@@ -466,7 +593,9 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 - Runs with unknown conditions, unknown or mixed kinds, repeated step IDs, fewer than two
   baseline steps, other than exactly one clean and one contended step, or any duration that
   is not a finite positive number (NaN, infinity, zero, booleans, or non-numeric) fail
-  labeling instead of being guessed. Mixed contention is not defined in `labels-v1.1`.
+  labeling instead of being guessed. Mixed contention is not defined in `labels-v1.1`; it is
+  defined in `labels-v2` (see [Replay labels](#replay-labels-labels-v2)), which no release uses
+  yet.
   Flattening always yields exactly one clean and one contended row per run, because the
   ingestion contract has one of each, so that check only guards direct callers of
   `label_rows` and changes no label the pipeline produces.
@@ -611,3 +740,13 @@ The main ones:
   split is empty, and the leakage check is `inconclusive`.
 - Hardware telemetry is unavailable on macOS hosts.
 - Experiment labels are operational proxies and still need natural-overload validation.
+- **Step-type spillover.** `labels-v2` names the contention that was applied, not the step's
+  type. The CPU injector also slows model calls (CPU load slows the model server), and the
+  retrieval flood slows every runner thread, so a step of another type can carry the label.
+  `step_type` stays on each row so evaluation can report each class by step type.
+- **Only two agent tasks exist** (`fix-mean-empty-r1`, `fix-window-count-r1`), so a `split-v2`
+  validation split is empty and the test split is one task.
+- **No recorded replay experiment is in the evidence store.** `labels-v2` and `split-v2` are
+  verified on synthetic fixtures in tests only; acceptance on real replays is open.
+- **Replay timings under contention are features.** D03 must check that they do not encode the
+  injected condition another way.
