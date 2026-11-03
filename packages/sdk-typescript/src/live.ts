@@ -14,6 +14,11 @@ export interface ChangeResult {
   changed: boolean;
 }
 
+export interface ControlledService {
+  service_id: string;
+  resource_class: "cpu_sandbox" | "inference" | "retrieval";
+}
+
 export interface CreateResult {
   run_id: string;
   created: boolean;
@@ -32,6 +37,25 @@ export interface Gap {
 
 export interface LiveBatch {
   records: Array<StepEvent | ResourceSample>;
+}
+
+export interface PolicyLimits {
+  inference_requests?: number | null;
+  test_jobs?: number | null;
+}
+
+export interface PolicyVersion {
+  target: string;
+  version: number;
+  action: "baseline" | "set" | "disable" | "restore";
+  limits: PolicyLimits;
+  restored_from: number | null;
+  operator: string | null;
+  reason: string | null;
+  request_id: string | null;
+  created_at: string | null;
+  controlled_services: Record<string, ControlledService>;
+  enforcement_scope: "runner_process";
 }
 
 export interface RecordAcknowledgement {
@@ -115,6 +139,13 @@ export interface RunCreate {
 export interface RunPage {
   runs: Array<RunSummary>;
   next_cursor: number | null;
+}
+
+export interface RunPolicy {
+  run_id: string;
+  target: string;
+  applicable: boolean;
+  versions: Array<PolicyVersion>;
 }
 
 export interface RunRegistrationSnapshot {
