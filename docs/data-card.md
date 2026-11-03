@@ -366,10 +366,12 @@ features, so D03 must check they do not encode the condition another way.
 
 ## Frozen split assignment (`split-v2`)
 
-`split-v2` is used only when the evaluation contract selects it; `eval-contract-v1` does not,
-so `split-v1` runs exactly as described under [Splits](#splits). The assignment is
+`split-v2` is meant to be used only when the evaluation contract selects it; `eval-contract-v1`
+does not, and `splits.py` does not implement `split-v2` yet, so `split-v1` runs exactly as
+described under [Splits](#splits). The assignment is
 `pipelines/data/src/agentwatch_data/split_assignment.py` plus the data-owned file
-`split-assignment.toml`, versioned and hashed into every split:
+`split-assignment.toml`, versioned and hashed (`Assignment.sha256`) so D03 can record it in each
+split:
 
 - `held_out_injection_methods = ["worker_queue_blocker"]`. Every task group with a row using a
   held-out method goes entirely to test. Training learns `cpu_sandbox` from
@@ -386,16 +388,16 @@ so `split-v1` runs exactly as described under [Splits](#splits). The assignment 
 Checks, delivered as functions over labeled rows (D03 records them in the split file and has
 `make_split` and `load_split` recompute them):
 
-- **Independence (fails the split):** no `task_group`, `run_id` or `plan_sha256` appears in more
+- **Independence (raises `AssignmentError` in `partition_v2`):** no `task_group`, `run_id` or `plan_sha256` appears in more
   than one split.
 - **Held-out method:** each declared method appears only in test, and training has another
   method for each class it produces in test. Otherwise `not_met`. The classes come from
   `label_resource` of the held-out rows, excluding `none` and `mixed`.
 - **Mixed in test:** the test split has mixed-condition rows. Otherwise `not_met`.
 
-The existing gates stay: quality-gate recheck, reconstruct-and-compare on read, measured-only
+The existing `split-v1` gates stay as they are today and D03 applies them to `split-v2`: quality-gate recheck, reconstruct-and-compare on read, measured-only
 test sources, the training leakage check, and the contract's count minimums. With two tasks,
-validation is empty, and that is recorded.
+validation would be empty, and D03 records that.
 
 ## Versioning
 

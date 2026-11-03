@@ -17,8 +17,11 @@ keeps building `labels-v1.1` releases with `split-v1`, and every threshold is un
    F1, and define how a four-class prediction is scored on a `mixed` step (for example,
    whether naming one confirmed member is correct). Rohit decides the scoring rule before any
    evaluation. Steps with basis `mixed_joint_only` are reported separately.
-3. **Select `split-v2`.** Set `[splits]` to `method = "split-v2"`, `group_key = "task_group"`
-   and `assignment = "pipelines/data/src/agentwatch_data/split-assignment.toml"`. The file
+3. **Select `split-v2`.** This is a schema change, not a value edit: add `method` and
+   `assignment` keys to `[splits]`, and allow `task_group` as a group key (today `splits.py`
+   accepts only `task_id`; a D03 code change). Then set `method = "split-v2"`,
+   `group_key = "task_group"` and
+   `assignment = "pipelines/data/src/agentwatch_data/split-assignment.toml"`. The file
    holds out injection method `worker_queue_blocker` and task group `fix-window-count`; changing
    it requires `split-v3`.
 4. **Leave every threshold unchanged.**
@@ -28,6 +31,6 @@ keeps building `labels-v1.1` releases with `split-v1`, and every threshold is un
 - D03 ingests replay experiments into releases (`steps-v1.3`) with these labels and wires
   `split-v2`; it follows acceptance.
 - No recorded replay experiment is in the evidence store, so none of this is verified on real
-  replays. Benoy records at least one per task.
+  replays. Benoy records at least one per task, per the A05 board notes.
 - With two agent tasks, validation is empty and tuning data is unavailable; the contract's
   count minimums make the dependent gates `inconclusive` rather than passed.

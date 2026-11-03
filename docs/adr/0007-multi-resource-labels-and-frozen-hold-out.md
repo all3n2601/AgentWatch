@@ -38,7 +38,9 @@ retrieval method cannot be held out without removing that class from training. W
 tasks, hashing cannot place one in test reliably, so the test task is declared by a rule fixed
 before any label was seen (highest `split-v1:<name>` hash position). Task groups drop the
 `-r<revision>` suffix so revisions of a task never cross splits, and independence of
-`task_group`, `run_id` and `plan_sha256` across splits is checked on every write and read.
+`task_group`, `run_id` and `plan_sha256` across splits is checked by
+`split_assignment.independence` (via `partition_v2`). D03 wires it into `make_split` and
+`load_split` so each split write and read recomputes it.
 Changing the file requires `split-v3` and a new test split.
 
 **Scope.** D02 changes `pipelines/data` and documentation only. `make dataset` keeps building
