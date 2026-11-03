@@ -13,6 +13,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { PanelHeading } from "@/components/run-views";
 import { duration } from "@/lib/dashboard-data";
+import { createPolicyBrowserApi, type PolicyResult } from "@/lib/policy-api";
+import type { RunPolicyView } from "@/lib/policy-api-schema";
+import { runPolicyText } from "@/lib/policy-view";
 import {
   activeSteps,
   failedSteps,
@@ -37,6 +40,7 @@ import type {
 import { cn } from "@/lib/utils";
 
 const FRESHNESS_CHECK_INTERVAL_MS = 5_000;
+const policyApi = createPolicyBrowserApi();
 
 const stateStyles: Record<
   StepState,
@@ -391,12 +395,38 @@ function useBrowserClock(ticking: boolean) {
   return now;
 }
 
+/**
+ * The concurrency policy versions active while the run was open. Read again when the run
+ * closes, since a policy change while it is open adds a version.
+ */
+function RunPolicyLine({ runId, closed }: { runId: string; closed: boolean }) {
+  const key = `${runId}:${closed}`;
+  const [policy, setPolicy] = useState<{
+    key: string;
+    result: PolicyResult<RunPolicyView>;
+  } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    void policyApi.runPolicy(runId, controller.signal).then((result) => {
+      if (!controller.signal.aborted) setPolicy({ key, result });
+    });
+    return () => controller.abort();
+  }, [key, runId]);
+  return (
+    <p className="text-xs text-muted-foreground">
+      {runPolicyText(policy?.key === key ? policy.result : null)}
+    </p>
+  );
+}
+
 /** Run state, feed freshness, gaps, totals and steps of one live run. */
 export function LiveRunSteps({
+  runId,
   run,
   view,
   receipt,
 }: {
+  runId: string;
   run: RunStatus;
   view: LiveRunView;
   /** When the browser last received new records for this run; null before any. */
@@ -415,6 +445,10 @@ export function LiveRunSteps({
   const failed = failedSteps(view);
   return (
     <>
+      <RunPolicyLine
+        runId={runId}
+        closed={outcome !== "active" && outcome !== "unknown"}
+      />
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatusTile
           label="Run state"

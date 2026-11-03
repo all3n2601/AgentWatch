@@ -15,6 +15,9 @@ export function apiUrl() {
 }
 /** The B01 live runs collection; live runs are not part of saved run history. */
 export const liveRunsUrl = () => `${apiUrl()}/v1/live/runs`;
+/** The O02 concurrency policy of the only supported target, `coding-agent`. */
+export const policyUrl = () =>
+  `${apiUrl()}/v1/policies/concurrency/coding-agent`;
 const historySchema = z.object({
   runs: z.array(
     z.object({

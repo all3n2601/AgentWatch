@@ -29,6 +29,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 import {
@@ -45,6 +46,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { AgentRun } from "@/components/agent-run";
+import { ConcurrencyControls } from "@/components/concurrency-controls";
 import { LiveFeed } from "@/components/live-feed";
 import {
   PanelHeading,
@@ -111,6 +113,12 @@ const navigation = [
     label: "Compare runs",
     icon: GitCompareArrows,
     detail: "Evaluate timing differences between recorded workloads",
+  },
+  {
+    id: "controls",
+    label: "Controls",
+    icon: SlidersHorizontal,
+    detail: "Versioned manual concurrency limits for coding-agent runs",
   },
   {
     id: "settings",
@@ -357,9 +365,11 @@ export function Dashboard({
   const source =
     page === "live" && live
       ? { badge: "LIVE API", description: "live run read API" }
-      : data.source === "database"
-        ? { badge: "HISTORY", description: "saved run history" }
-        : { badge: "LOCAL FILES", description: "local artifact fallback" };
+      : page === "controls"
+        ? { badge: "POLICY API", description: "concurrency policy API" }
+        : data.source === "database"
+          ? { badge: "HISTORY", description: "saved run history" }
+          : { badge: "LOCAL FILES", description: "local artifact fallback" };
   return (
     <div
       className={cn(
@@ -531,7 +541,7 @@ export function Dashboard({
                 {meta.detail}
               </p>
             </div>
-            {page !== "settings" && page !== "live" && (
+            {page !== "settings" && page !== "live" && page !== "controls" && (
               <Filters
                 label="Time range"
                 options={[
@@ -845,6 +855,7 @@ export function Dashboard({
                 }
               />
             ))}
+          {page === "controls" && <ConcurrencyControls />}
           {page === "compare" && (
             <ComparePage runs={runs} current={selected} baseline={baseline} />
           )}

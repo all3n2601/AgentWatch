@@ -625,7 +625,12 @@ function SelectedRun({
             for run <span className="font-mono break-all">{feed.runId}</span>.
           </p>
           <Resources run={run} />
-          <LiveRunSteps run={run.run} view={run.view} receipt={feed.receipt} />
+          <LiveRunSteps
+            runId={feed.runId}
+            run={run.run}
+            view={run.view}
+            receipt={feed.receipt}
+          />
           <LiveEvidence runId={feed.runId} />
         </>
       ) : (
