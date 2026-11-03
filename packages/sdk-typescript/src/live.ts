@@ -40,8 +40,8 @@ export interface LiveBatch {
 }
 
 export interface PolicyLimits {
-  inference_requests?: number | null;
-  test_jobs?: number | null;
+  inference_requests?: number;
+  test_jobs?: number;
 }
 
 export interface PolicyVersion {

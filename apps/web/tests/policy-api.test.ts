@@ -10,6 +10,7 @@ import {
   limitsText,
   policyStatusText,
   runPolicyText,
+  versionLimitsText,
 } from "../lib/policy-view";
 import { fakeFetch, RUN_ID } from "./live-fixtures";
 
@@ -208,11 +209,24 @@ test("policy status shows the active version and its limits", () => {
 });
 
 test("limitsText describes absent controls as no limit", () => {
-  assert.equal(limitsText({}), "No limits (baseline)");
+  assert.equal(limitsText({}), "No limits");
   assert.equal(limitsText({ test_jobs: 2 }), "Inference: no limit · Tests: 2");
   assert.equal(
     limitsText({ inference_requests: 1, test_jobs: 4 }),
     "Inference: 1 · Tests: 4",
+  );
+});
+
+test("only version 0 is labelled as the baseline", () => {
+  assert.equal(
+    versionLimitsText({ version: 0, limits: {} }),
+    "No limits (baseline)",
+  );
+  // A disable or restore-to-baseline version has no limits but is not the baseline.
+  assert.equal(versionLimitsText({ version: 3, limits: {} }), "No limits");
+  assert.equal(
+    versionLimitsText({ version: 4, limits: { inference_requests: 2 } }),
+    "Inference: 2 · Tests: no limit",
   );
 });
 

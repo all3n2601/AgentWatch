@@ -288,6 +288,21 @@ def test_failed_change_rolls_back(client, policies, monkeypatch):
     assert link_count(client) == links_before
 
 
+@pytest.mark.parametrize(
+    ("action", "restored_from"), [("restore", None), ("set", 0), ("disable", 0)]
+)
+def test_restored_from_required_exactly_for_restore(client, action, restored_from):
+    store = client.app.state.store
+    with pytest.raises(psycopg.errors.CheckViolation), store.connect() as conn:
+        conn.execute(
+            "INSERT INTO concurrency_policy_versions(target,version,action,limits,"
+            "restored_from,operator,reason,request_id,request,controlled_services,"
+            "enforcement_scope) VALUES (%s,1,%s,'{}',%s,'op','reason',%s,'{}','{}',"
+            "'runner_process')",
+            (TARGET, action, restored_from, uuid4()),
+        )
+
+
 def test_migration_upgrades_populated_0003_schema(client):
     schema = "aw_upgrade_" + uuid4().hex
     dsn = client.app.state.store.dsn
@@ -324,7 +339,13 @@ def test_migration_upgrades_populated_0003_schema(client):
         assert LiveStore(upgraded).get(UUID(run["run_id"]))["state"] == "queued"
         upgraded_policies = PolicyStore(upgraded)
         assert upgraded_policies.active(TARGET)["version"] == 0
-        assert upgraded_policies.run_policy(UUID(run["run_id"]))["applicable"] is True
+        legacy_policy = upgraded_policies.run_policy(legacy_run_id)
+        assert legacy_policy["applicable"] is True
+        assert legacy_policy["versions"] == []
+        # The still-queued legacy run is linked to later changes like any open agent run.
+        upgraded_policies.change(TARGET, change(0, limits={"test_jobs": 1}))
+        linked = upgraded_policies.run_policy(legacy_run_id)["versions"]
+        assert [version["version"] for version in linked] == [1]
     finally:
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))

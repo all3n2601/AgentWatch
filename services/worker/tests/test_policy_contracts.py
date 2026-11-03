@@ -57,6 +57,14 @@ def test_limits_omit_absent_controls_when_serialized():
     assert PolicyLimits().model_dump_json() == "{}"
 
 
+def test_published_limits_schema_advertises_integers_only():
+    for document in (openapi_document(), policy_openapi_document()):
+        limits = document["components"]["schemas"]["PolicyLimits"]["properties"]
+        for name, field in limits.items():
+            assert field["type"] == "integer", name
+            assert "anyOf" not in field and "default" not in field, name
+
+
 @pytest.mark.parametrize(
     "limits",
     [

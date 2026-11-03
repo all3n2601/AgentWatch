@@ -94,7 +94,15 @@ def get_run(
         raise HTTPException(404, str(error)) from error
 
 
-@router.get("/{run_id}/policy", response_model=RunPolicy, responses=MISSING_RUN)
+@router.get(
+    "/{run_id}/policy",
+    response_model=RunPolicy,
+    responses=MISSING_RUN,
+    description="Concurrency policy versions active while this run was open (queued or "
+    "running), oldest first. Links record configuration only and are not evidence of "
+    "enforcement. `versions` is empty for runs that are not coding-agent runs or that were "
+    "registered before policy tracking.",
+)
 def get_run_policy(run_id: UUID, request: Request):
     try:
         return PolicyStore(request.app.state.store).run_policy(run_id)

@@ -301,6 +301,7 @@
           "live lifecycle"
         ],
         "summary": "Get Run Policy",
+        "description": "Concurrency policy versions active while this run was open (queued or running), oldest first. Links record configuration only and are not evidence of enforcement. `versions` is empty for runs that are not coding-agent runs or that were registered before policy tracking.",
         "operationId": "get_run_policy_v1_live_runs__run_id__policy_get",
         "parameters": [
           {
@@ -809,29 +810,15 @@
       "PolicyLimits": {
         "properties": {
           "inference_requests": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1024.0,
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
+            "maximum": 1024.0,
+            "minimum": 1.0,
             "title": "Inference Requests"
           },
           "test_jobs": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1024.0,
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
+            "maximum": 1024.0,
+            "minimum": 1.0,
             "title": "Test Jobs"
           }
         },
@@ -1539,7 +1526,8 @@
           "applicable",
           "versions"
         ],
-        "title": "RunPolicy"
+        "title": "RunPolicy",
+        "description": "Policy versions linked to one live run.\n\n`versions` lists, oldest first, every policy version that was active while the run was\nopen (queued or running): the version active at registration plus each later change.\nThis records what was configured, not evidence that any limit was enforced; O02 stores\npolicy only. `applicable` is true when the run registered the target's runner service\n(a coding-agent run). `versions` is empty for non-applicable runs and for runs registered\nbefore policy tracking existed."
       },
       "RunRegistrationSnapshot": {
         "properties": {

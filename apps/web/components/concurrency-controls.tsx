@@ -19,8 +19,8 @@ import {
 } from "@/lib/policy-api-schema";
 import {
   limitsFromForm,
-  limitsText,
   policyStatusText,
+  versionLimitsText,
 } from "@/lib/policy-view";
 
 // Minimal O02 controls: plain layout, complete states. Styling is refined in O05.
@@ -78,7 +78,7 @@ function VersionRow({
           )}
           {active && <Badge>Active</Badge>}
         </div>
-        <p>{limitsText(version.limits)}</p>
+        <p>{versionLimitsText(version)}</p>
         <p className="break-words text-muted-foreground">
           {version.created_at ? (
             <time dateTime={version.created_at} suppressHydrationWarning>
@@ -267,7 +267,8 @@ export function ConcurrencyControls() {
         <div>
           <h2 className="text-sm font-semibold">Active policy</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Target coding-agent · enforced per runner process
+            Target coding-agent · Scope: runner process · recorded only, not
+            enforced until O03
           </p>
         </div>
         <p role="status" className="text-lg font-semibold">
@@ -349,8 +350,9 @@ export function ConcurrencyControls() {
             </label>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            Leave a limit empty for no limit. Changes apply to agent runs that
-            start afterwards and are checked against version{" "}
+            Leave a limit empty for no limit. A new version is recorded and
+            linked to coding-agent runs open now or registered later; nothing
+            enforces it yet. Changes are checked against version{" "}
             {active ? active.version : "–"}.
           </p>
           <div className="flex flex-wrap gap-2">

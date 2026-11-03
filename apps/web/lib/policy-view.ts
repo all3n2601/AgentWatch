@@ -10,9 +10,17 @@ import {
 
 export function limitsText(limits: PolicyLimitsView) {
   const { inference_requests: inference, test_jobs: tests } = limits;
-  if (inference === undefined && tests === undefined)
-    return "No limits (baseline)";
+  if (inference === undefined && tests === undefined) return "No limits";
   return `Inference: ${inference ?? "no limit"} · Tests: ${tests ?? "no limit"}`;
+}
+
+/** Limits of a returned version; only the synthesized version 0 is the baseline. */
+export function versionLimitsText(policy: {
+  version: number;
+  limits: PolicyLimitsView;
+}) {
+  const text = limitsText(policy.limits);
+  return policy.version === 0 ? `${text} (baseline)` : text;
 }
 
 function failureText(failure: PolicyFailure) {
@@ -27,7 +35,7 @@ export function policyStatusText(
 ) {
   if (result === null) return "Loading policy…";
   if (!result.ok) return failureText(result);
-  return `Version ${result.data.version}: ${limitsText(result.data.limits)}`;
+  return `Version ${result.data.version}: ${versionLimitsText(result.data)}`;
 }
 
 /** The policy versions active while a live run was open; `null` while loading. */

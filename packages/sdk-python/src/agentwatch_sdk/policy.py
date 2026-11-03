@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
 from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from agentwatch_sdk.live import Identifier, LiveModel, Reason, ResourceClass
 
@@ -29,8 +30,10 @@ PolicyAction = Literal["set", "disable", "restore"]
 class PolicyLimits(LiveModel):
     """Per-control limits; an omitted control means no limit."""
 
-    inference_requests: Limit | None = None
-    test_jobs: Limit | None = None
+    # None is only the in-memory "absent" marker: input rejects null and output drops it, so
+    # the published schema advertises integers only.
+    inference_requests: Limit | SkipJsonSchema[None] = None
+    test_jobs: Limit | SkipJsonSchema[None] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -104,6 +107,16 @@ class PolicyPage(LiveModel):
 
 
 class RunPolicy(LiveModel):
+    """Policy versions linked to one live run.
+
+    `versions` lists, oldest first, every policy version that was active while the run was
+    open (queued or running): the version active at registration plus each later change.
+    This records what was configured, not evidence that any limit was enforced; O02 stores
+    policy only. `applicable` is true when the run registered the target's runner service
+    (a coding-agent run). `versions` is empty for non-applicable runs and for runs registered
+    before policy tracking existed.
+    """
+
     run_id: UUID
     target: str
     applicable: bool

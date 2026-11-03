@@ -14,7 +14,8 @@ CREATE TABLE concurrency_policy_versions (
     enforcement_scope TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (target, version),
-    UNIQUE (target, request_id)
+    UNIQUE (target, request_id),
+    CHECK ((action = 'restore') = (restored_from IS NOT NULL))
 );
 CREATE TABLE live_run_policy_links (
     run_id UUID NOT NULL REFERENCES live_runs(run_id),

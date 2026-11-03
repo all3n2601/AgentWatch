@@ -112,7 +112,7 @@ class PolicyStore:
         with self.connect() as conn:
             rows = conn.execute(
                 f"SELECT {VERSION_COLUMNS} FROM concurrency_policy_versions "
-                "WHERE target=%s AND (%s::integer IS NULL OR version < %s) "
+                "WHERE target=%s AND (%s::bigint IS NULL OR version < %s::bigint) "
                 "ORDER BY version DESC LIMIT %s",
                 (target, before, before, limit + 1),
             ).fetchall()
@@ -206,11 +206,18 @@ class PolicyStore:
         Callers creating runs already hold lock 730502; taking 730503 here keeps the
         documented lock order and stops a concurrent change from missing this run.
         """
-        conn.execute("SELECT pg_advisory_xact_lock(%s)", (POLICY_LOCK_KEY,))
         services = {resource["service_id"] for resource in registration["resources"]}
-        for target, definition in SUPPORTED_TARGETS.items():
-            if definition["runner_service_id"] not in services:
-                continue
+        targets = [
+            target
+            for target, definition in SUPPORTED_TARGETS.items()
+            if definition["runner_service_id"] in services
+        ]
+        if not targets:
+            # Non-agent runs never link, so they need not serialize behind policy writes.
+            return
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (POLICY_LOCK_KEY,))
+        for target in targets:
+            # Read only after taking the lock so a concurrent change cannot be missed.
             version = PolicyStore.current(conn, target)["version"]
             conn.execute(
                 "INSERT INTO live_run_policy_links(run_id,target,version) VALUES (%s,%s,%s) "

@@ -12,6 +12,7 @@
           "concurrency policy"
         ],
         "summary": "Get Active Policy",
+        "description": "The active policy version; version 0 is the no-limit baseline. Policy is stored and versioned only; nothing enforces these limits yet.",
         "operationId": "get_active_policy_v1_policies_concurrency__target__get",
         "parameters": [
           {
@@ -84,6 +85,7 @@
           "concurrency policy"
         ],
         "summary": "List Policy Versions",
+        "description": "Policy history newest first, ending with the version 0 baseline. Policy is stored and versioned only; nothing enforces these limits yet.",
         "operationId": "list_policy_versions_v1_policies_concurrency__target__versions_get",
         "parameters": [
           {
@@ -184,6 +186,7 @@
           "concurrency policy"
         ],
         "summary": "Change Policy",
+        "description": "Append a set, disable or restore version and link it to open coding-agent runs; an identical retry returns 200. Policy is stored and versioned only; nothing enforces these limits yet.",
         "operationId": "change_policy_v1_policies_concurrency__target__versions_post",
         "parameters": [
           {
@@ -450,29 +453,15 @@
       "PolicyLimits": {
         "properties": {
           "inference_requests": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1024.0,
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
+            "maximum": 1024.0,
+            "minimum": 1.0,
             "title": "Inference Requests"
           },
           "test_jobs": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1024.0,
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
+            "maximum": 1024.0,
+            "minimum": 1.0,
             "title": "Test Jobs"
           }
         },

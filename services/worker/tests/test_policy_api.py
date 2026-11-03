@@ -2,6 +2,8 @@
 
 from uuid import uuid4
 
+import pytest
+from agentwatch_sdk.live import MAX_CURSOR
 from agentwatch_sdk.policy import RUNNER_SERVICE_ID
 
 BASE = "/v1/policies/concurrency/coding-agent"
@@ -106,6 +108,17 @@ def test_history_pagination(client):
     ).json()
     assert [item["version"] for item in second["versions"]] == [1, 0]
     assert second["next_before"] is None
+
+
+@pytest.mark.parametrize("before", [2**31, MAX_CURSOR])
+def test_history_accepts_cursor_beyond_integer_range(client, before):
+    for version in range(2):
+        assert client.post(f"{BASE}/versions", json=body(version)).status_code == 201
+    response = client.get(f"{BASE}/versions", params={"before": before})
+    assert response.status_code == 200
+    page = response.json()
+    assert [item["version"] for item in page["versions"]] == [2, 1, 0]
+    assert page["next_before"] is None
 
 
 def test_history_rejects_out_of_range_limit(client):

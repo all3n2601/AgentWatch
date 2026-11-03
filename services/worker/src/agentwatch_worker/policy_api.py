@@ -49,7 +49,15 @@ def store(request: Request) -> PolicyStore:
     return PolicyStore(request.app.state.store)
 
 
-@router.get("/{target}", response_model=PolicyVersion, responses=UNSUPPORTED_TARGET)
+NOT_ENFORCED = "Policy is stored and versioned only; nothing enforces these limits yet."
+
+
+@router.get(
+    "/{target}",
+    response_model=PolicyVersion,
+    responses=UNSUPPORTED_TARGET,
+    description=f"The active policy version; version 0 is the no-limit baseline. {NOT_ENFORCED}",
+)
 def get_active_policy(target: str, request: Request):
     try:
         return store(request).active(target)
@@ -57,7 +65,12 @@ def get_active_policy(target: str, request: Request):
         raise HTTPException(404, str(error)) from error
 
 
-@router.get("/{target}/versions", response_model=PolicyPage, responses=UNSUPPORTED_TARGET)
+@router.get(
+    "/{target}/versions",
+    response_model=PolicyPage,
+    responses=UNSUPPORTED_TARGET,
+    description=f"Policy history newest first, ending with the version 0 baseline. {NOT_ENFORCED}",
+)
 def list_policy_versions(
     target: str,
     request: Request,
@@ -75,6 +88,8 @@ def list_policy_versions(
     status_code=201,
     response_model=PolicyChangeResult,
     responses={**WRITE_ERRORS, **UNSUPPORTED_TARGET, 200: {"model": PolicyChangeResult}},
+    description="Append a set, disable or restore version and link it to open coding-agent "
+    f"runs; an identical retry returns 200. {NOT_ENFORCED}",
 )
 def change_policy(target: str, change: PolicyChange, request: Request, response: Response):
     try:
