@@ -26,6 +26,23 @@ LABEL_BASES = (
     "contention_exceeded_threshold",
     "contention_below_threshold",
 )
+# Replay-experiment labels (labels-v2). `mixed` is a label value only: it is not a
+# resource class, so rule predictions and the model package keep RESOURCE_CLASSES.
+MIXED = "mixed"
+LABEL_RESOURCE_VALUES = (*RESOURCE_CLASSES, MIXED)
+REPLAY_CONDITIONS = ("clean", "cpu", "inference", "retrieval", "mixed")
+REPLAY_ROLES = ("baseline", "contended", "clean_control")
+REPLAY_LABEL_BASES = (
+    "baseline_reference",
+    "clean_within_noise",
+    "clean_exceeded_noise",
+    "contention_below_threshold",
+    "contention_exceeded_threshold",
+    "mixed_below_threshold",
+    "mixed_confirmed",
+    "mixed_partial",
+    "mixed_joint_only",
+)
 INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
 FLOAT64_EXACT_INTEGER = 2**53
 

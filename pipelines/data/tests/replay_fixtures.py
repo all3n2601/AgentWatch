@@ -20,6 +20,13 @@ MIXED_KINDS = ("cpu", "inference")
 STEP_TYPES = {ROOT_STEP: "agent_run", "model-call-1": "model_call", "tool-call-1": "tool_call"}
 
 DEFAULT_STEPS = {ROOT_STEP: 1.0, "model-call-1": 0.6, "tool-call-1": 0.2}
+# The protocol checks labeling requires; the real manifest always records every check.
+PASSING_CHECKS = {
+    "baseline_replays_complete": True,
+    "stable_baseline": True,
+    "same_steps_every_replay": True,
+    "injectors_cleaned_up": True,
+}
 
 
 def write_experiment(
@@ -131,7 +138,7 @@ def write_experiment(
     manifest = {
         "protocol": "agent-replay-experiment-v1",
         "status": status,
-        "checks": checks if checks is not None else {"baseline_replays_complete": True},
+        "checks": checks if checks is not None else dict(PASSING_CHECKS),
         "plan": {"task_id": task_id, "plan_sha256": "0" * 64, "model": "synthetic-model"},
         "replays": replays,
     }
