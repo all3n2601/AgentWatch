@@ -47,7 +47,8 @@ system exists, so `operator` is self-reported.
 | `restore` | `restored_from`; no `limits` | Copied from that earlier version; version 0 is allowed and equals disable |
 
 Restoring creates a new version that references `restored_from`; the earlier row is untouched.
-A nonexistent `restored_from` returns `422`.
+A nonexistent `restored_from` returns `422`. The table also enforces that `restored_from` is set
+exactly on `restore` rows.
 
 ## Idempotency and conflicts
 
@@ -58,7 +59,8 @@ A nonexistent `restored_from` returns `422`.
 - `expected_version` must equal the active version, otherwise `409` and nothing is written.
   Refresh the active policy before issuing a new command with a new `request_id`.
 - Writers are serialized by a transaction-scoped advisory lock, key `730503`. Live run creation
-  uses `730502` and migrations `730501`; the lock order is always 730502 then 730503.
+  uses `730502` and migrations `730501`; the lock order is always 730502 then 730503. Only
+  coding-agent run registrations take `730503`; other registrations do not wait on policy writes.
 - Errors follow B01: `400` unparseable body, `408`/`413` body time/size bounds (shared with live
   writes), `409` conflict, `422` validation (without echoing the body), `503` database
   unavailable or lock/statement timeout, `500` unexpected storage failure.
@@ -76,7 +78,8 @@ the runner applied it. Per-step application is O03's evidence.
   report `applicable: false` with an empty list, never a fabricated baseline.
 - Runs registered before migration `0004` report `applicable: true` with an **empty** versions
   list. Their pre-policy history is unknown, not baseline. The dashboard shows
-  "No recorded policy (registered before policy tracking)".
+  "No recorded policy (registered before policy tracking)". If such a run is still queued or
+  running when a new version is created, that version is linked to it as usual.
 - A missing policy service must never be displayed as "no limits"; the dashboard shows an error
   instead.
 
@@ -84,7 +87,9 @@ the runner applied it. Per-step application is O03's evidence.
 
 The Controls page (`apps/web/components/concurrency-controls.tsx`) is a deliberately plain
 working screen: active limits, a form (two optional limits, operator, reason), disable,
-restore-per-row, history, and conflict/validation errors as text. Server-side proxy routes under
+restore-per-row, history, and conflict/validation errors as text. It states that policy is
+recorded only and not enforced until O03. Empty limits read "No limits"; only version 0 adds
+"(baseline)", so a `disable` version is not mislabelled. Server-side proxy routes under
 `apps/web/app/api/policies/concurrency` and `apps/web/app/api/live/runs/[runId]/policy` validate
 with zod; the live run view shows the selected run's policy history for its UUID. The finished
 controls UI and comparisons are O05 (Meghana).

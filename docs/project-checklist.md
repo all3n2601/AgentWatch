@@ -705,14 +705,20 @@ from M3 through M6 and do not renumber the implementation milestones above.
   [versioned manual concurrency policy](concurrency-policy.md), migration
   `0004_concurrency_policy.sql`, immutable audit versions, request-id idempotency, optimistic
   `expected_version`, links to live coding-agent runs, SDK/OpenAPI/TypeScript contracts and a plain
-  Controls screen. Verified locally 2026-11-03 with PostgreSQL: 64 policy tests passed
-  (`services/worker/tests/test_policy_contracts.py` 35, `test_policy_store.py` 19,
-  `test_policy_api.py` 10) and 10 web tests (`apps/web/tests/policy-api.test.ts`); full local runs
-  were 1,535 Python passed/0 skipped and 82 web tests passed, with lint, typecheck, build, Go
-  and Compose checks clean. Remote PR CI is not yet verified. Run links record the version
-  *active while the run was open*, not enforcement. Still open: enforcement (O03), the finished
-  controls UI (O05), real-hardware evaluation (O06), `opt-contract-v1` acceptance (O01), and the
-  web viewport/accessibility checks at 768 px, 200% zoom and a keyboard pass.
+  Controls screen. Verified locally 2026-11-03 with PostgreSQL: full local runs were 1,535 Python
+  passed/0 skipped and 82 web tests passed, with lint, typecheck, build, Go and Compose checks
+  clean. After the final review fixes (2026-11-03: full `before` cursor range, "not enforced"
+  wording in UI/API/SDK docs, integer-only limit schema, restore/`restored_from` table check),
+  re-verified locally: 70 policy tests passed (`services/worker/tests/test_policy_contracts.py`
+  36, `test_policy_store.py` 22, `test_policy_api.py` 12), `services/worker/tests` 280 passed/0
+  skipped, and 83 web tests passed (11 in `apps/web/tests/policy-api.test.ts`) with lint,
+  typecheck and build clean. Web viewport/accessibility checked 2026-11-03 (controller browser
+  check, Playwright, `next dev`): 768, 640 (1280 px at 200% zoom) and 384 (768 px at 200% zoom)
+  CSS px wide with no horizontal overflow; 13 focusable controls reachable in logical order with
+  visible focus; no control under 44 px at 768. Remote PR CI is not yet verified. Run links
+  record the version *active while the run was open*, not enforcement. Still open: enforcement
+  (O03), the finished controls UI (O05), real-hardware evaluation (O06) and `opt-contract-v1`
+  acceptance (O01).
 - [ ] O03 — Akshayaa: bounded runner admission and cleanup after O02/A02/A03.
 - [ ] O04 — Akshay: paired-run manifests and comparison validation after O01/D02.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
