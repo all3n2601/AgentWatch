@@ -131,3 +131,28 @@ def test_unreadable_steps_stay_empty(tmp_path):
 
     edit_manifest(directory, change)
     assert read_experiment(directory).replays[1].steps == {}
+
+
+def test_negative_durations_are_rejected_and_zero_is_kept(tmp_path):
+    directory = synthetic(tmp_path)
+
+    def set_queue(value):
+        def change(manifest):
+            manifest["replays"][1]["steps"]["agent-run"]["queue_seconds"] = value
+
+        edit_manifest(directory, change)
+
+    set_queue(0)
+    assert read_experiment(directory).replays[1].steps["agent-run"].queue_seconds == 0.0
+    set_queue(-5)
+    with pytest.raises(ReplayEvidenceError, match="negative"):
+        read_experiment(directory)
+
+
+@pytest.mark.parametrize("line", ["[1]", "3"])
+def test_non_object_journal_row_is_rejected(tmp_path, line):
+    directory = synthetic(tmp_path)
+    with (directory / "replays" / "01" / "live-journal.jsonl").open("a") as journal:
+        journal.write(line + "\n")
+    with pytest.raises(ReplayEvidenceError, match="must be an object"):
+        read_experiment(directory)

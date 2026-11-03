@@ -160,7 +160,9 @@ def _parent_step_ids(journal: Path) -> set[str]:
     except ValueError as error:
         raise ReplayEvidenceError(f"{journal.name}: {error}") from error
     parents = set()
-    for row in rows:
+    for number, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise ReplayEvidenceError(f"{journal.name} row {number} must be an object")
         payload = row.get("payload") if row.get("kind") == "record" else None
         if isinstance(payload, dict) and payload.get("record_type") == "step_event":
             parent = payload.get("parent_step_id")
@@ -243,10 +245,12 @@ def _optional_bool(container: dict, key: str) -> bool | None:
 
 
 def _duration(container: dict, key: str) -> float | None:
-    """A finite number of seconds, or None when the evidence did not record one."""
+    """A finite, nonnegative number of seconds, or None when the evidence did not record one."""
     value = container.get(key)
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
         raise ReplayEvidenceError(f"{key} must be a finite number or null, got {value!r}")
+    if value < 0:
+        raise ReplayEvidenceError(f"{key} must not be negative, got {value!r}")
     return float(value)
