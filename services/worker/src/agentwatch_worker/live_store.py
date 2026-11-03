@@ -80,6 +80,11 @@ class LiveStore:
                 "INSERT INTO live_runs(run_id,request_id,registration) VALUES (%s,%s,%s)",
                 (run_id, registration.request_id, Jsonb(payload)),
             )
+            # Imported locally: policy_store imports MissingRunError from this module.
+            from agentwatch_worker.policy_store import PolicyStore
+
+            # Same transaction, after 730502; link_new_run takes 730503 (order 730502 -> 730503).
+            PolicyStore.link_new_run(conn, run_id, payload)
         return {"run_id": str(run_id), "created": True}
 
     @staticmethod

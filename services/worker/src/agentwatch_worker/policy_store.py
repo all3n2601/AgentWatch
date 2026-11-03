@@ -156,18 +156,26 @@ class PolicyStore:
                     f"Policy changed: expected version {change.expected_version}, "
                     f"active version is {current}"
                 )
-            # PolicyChange guarantees set carries limits and restore carries restored_from.
-            if change.action == "set" and change.limits is not None:
+            if change.action == "set":
+                if change.limits is None:
+                    raise ValueError("A set change requires limits")
                 limits = change.limits.model_dump(exclude_none=True)
-            elif change.action == "disable" or change.restored_from == 0:
+            elif change.action == "disable":
                 limits = {}
+            elif change.action == "restore":
+                if change.restored_from is None:
+                    raise ValueError("A restore change requires restored_from")
+                if change.restored_from == 0:
+                    limits = {}
+                else:
+                    source = self.stored_version(conn, target, change.restored_from)
+                    if source is None:
+                        raise InvalidRestoreError(
+                            f"Policy version {change.restored_from} does not exist"
+                        )
+                    limits = source["limits"]
             else:
-                source = self.stored_version(conn, target, change.restored_from)
-                if source is None:
-                    raise InvalidRestoreError(
-                        f"Policy version {change.restored_from} does not exist"
-                    )
-                limits = source["limits"]
+                raise ValueError(f"Unsupported policy action {change.action}")
             version = current + 1
             row = conn.execute(
                 "INSERT INTO concurrency_policy_versions(target,version,action,limits,"
@@ -234,7 +242,10 @@ class PolicyStore:
                     else self.stored_version(conn, target, link["version"])
                 )
                 if row is None:
-                    raise ConflictError("Run is linked to a missing policy version")
+                    raise RuntimeError(
+                        f"Data integrity error: run {run_id} is linked to a missing policy "
+                        f"version {link['version']}"
+                    )
                 versions.append(present(row))
         return {
             "run_id": str(run_id),

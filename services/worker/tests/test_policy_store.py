@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
-from agentwatch_sdk.live import RunCreate
+from agentwatch_sdk.live import RunChange, RunCreate
 from agentwatch_sdk.policy import RUNNER_SERVICE_ID, PolicyChange
 from agentwatch_worker.live_store import LiveStore, MissingRunError
 from agentwatch_worker.policy_store import (
@@ -17,6 +17,7 @@ from agentwatch_worker.policy_store import (
 from agentwatch_worker.store import ConflictError, RunStore
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
+from psycopg.types.json import Jsonb
 
 TARGET = "coding-agent"
 
@@ -182,15 +183,15 @@ def test_new_version_links_only_active_agent_runs(client, policies):
     agent_policy = policies.run_policy(agent)
     assert agent_policy["applicable"] is True
     assert agent_policy["target"] == TARGET
-    assert [v["version"] for v in agent_policy["versions"]] == [1]
-    assert agent_policy["versions"][0]["limits"] == {"inference_requests": 1}
+    assert [v["version"] for v in agent_policy["versions"]] == [0, 1]
+    assert agent_policy["versions"][1]["limits"] == {"inference_requests": 1}
     assert policies.run_policy(other) == {
         "run_id": str(other),
         "target": TARGET,
         "applicable": False,
         "versions": [],
     }
-    assert policies.run_policy(finished)["versions"] == []
+    assert [v["version"] for v in policies.run_policy(finished)["versions"]] == [0]
     with pytest.raises(MissingRunError):
         policies.run_policy(uuid4())
 
@@ -210,8 +211,70 @@ def test_link_new_run_records_active_version(client, policies):
     assert [v["version"] for v in policies.run_policy(agent)["versions"]] == [0, 1]
 
 
+def test_runs_record_version_active_at_registration(client, policies):
+    run_a = create_run(client)
+    policies.change(TARGET, change(0, limits={"test_jobs": 1}))
+    run_b = create_run(client)
+    assert [v["version"] for v in policies.run_policy(run_a)["versions"]] == [0, 1]
+    assert [v["version"] for v in policies.run_policy(run_b)["versions"]] == [1]
+
+
+def test_terminal_runs_not_linked_to_later_versions(client, policies):
+    run_id = create_run(client)
+    live = LiveStore(client.app.state.store)
+    for revision, state in enumerate(("running", "completed")):
+        live.change(
+            run_id,
+            RunChange.model_validate(
+                {
+                    "change_id": str(uuid4()),
+                    "expected_revision": revision,
+                    "state": state,
+                    "reason": None,
+                }
+            ),
+        )
+    policies.change(TARGET, change(0, limits={"test_jobs": 1}))
+    assert [v["version"] for v in policies.run_policy(run_id)["versions"]] == [0]
+
+
+def test_non_agent_runs_not_applicable(client, policies):
+    other = create_run(client, service_id="fixture-service")
+    policies.change(TARGET, change(0, limits={"test_jobs": 1}))
+    assert policies.run_policy(other) == {
+        "run_id": str(other),
+        "target": TARGET,
+        "applicable": False,
+        "versions": [],
+    }
+    assert link_count(client) == 0
+
+
+def test_retried_registration_does_not_duplicate_links(client):
+    registration = run_registration(RUNNER_SERVICE_ID)
+    first = client.post("/v1/live/runs", json=registration)
+    second = client.post("/v1/live/runs", json=registration)
+    assert first.status_code == 201
+    assert second.json()["run_id"] == first.json()["run_id"]
+    assert link_count(client) == 1
+
+
+def test_run_policy_unknown_run(policies):
+    with pytest.raises(MissingRunError):
+        policies.run_policy(uuid4())
+
+
+def test_run_policy_missing_stored_version_is_integrity_error(client, policies):
+    run_id = create_run(client)
+    with client.app.state.store.connect() as conn:
+        conn.execute("INSERT INTO live_run_policy_links VALUES (%s,%s,%s)", (run_id, TARGET, 7))
+    with pytest.raises(RuntimeError, match="missing policy version"):
+        policies.run_policy(run_id)
+
+
 def test_failed_change_rolls_back(client, policies, monkeypatch):
     create_run(client)
+    links_before = link_count(client)
     original = PolicyStore.link_active_runs
 
     def link_then_fail(conn, target, version):
@@ -222,7 +285,7 @@ def test_failed_change_rolls_back(client, policies, monkeypatch):
     with pytest.raises(RuntimeError):
         policies.change(TARGET, change(0, limits={"test_jobs": 1}))
     assert policies.active(TARGET)["version"] == 0
-    assert link_count(client) == 0
+    assert link_count(client) == links_before
 
 
 def test_migration_upgrades_populated_0003_schema(client):
@@ -245,9 +308,18 @@ def test_migration_upgrades_populated_0003_schema(client):
                     prepare=False,
                 )
                 conn.execute("INSERT INTO schema_migrations VALUES (%s)", (name,))
-        run = LiveStore(upgraded).create(
-            RunCreate.model_validate(run_registration(RUNNER_SERVICE_ID))
-        )
+            # Seed a pre-policy run directly: LiveStore.create now needs the policy tables.
+            registration = RunCreate.model_validate(run_registration(RUNNER_SERVICE_ID))
+            legacy_run_id = uuid4()
+            conn.execute(
+                "INSERT INTO live_runs(run_id,request_id,registration) VALUES (%s,%s,%s)",
+                (
+                    legacy_run_id,
+                    registration.request_id,
+                    Jsonb(registration.model_dump(mode="json")),
+                ),
+            )
+        run = {"run_id": str(legacy_run_id)}
         upgraded.migrate()
         assert LiveStore(upgraded).get(UUID(run["run_id"]))["state"] == "queued"
         upgraded_policies = PolicyStore(upgraded)
