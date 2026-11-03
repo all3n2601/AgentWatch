@@ -51,7 +51,7 @@ def test_packaged_replay_rules_load(config):
 # bump `version` in labels-v2.toml, which also needs an evaluation-contract change.
 # Otherwise (a comment or refactor) keep the version, and say why in the PR. Either way,
 # update the pin in the same PR.
-PINNED_REPLAY_LABEL_VERSION = "labels-v2+0c15744b"
+PINNED_REPLAY_LABEL_VERSION = "labels-v2+528cb806"
 
 
 def test_replay_label_version_is_pinned(config):
@@ -437,3 +437,33 @@ def test_cli_prints_rows(tmp_path, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "experiment.json" in captured.err
+
+
+def test_replay_without_run_id_is_rejected(tmp_path, config):
+    directory = experiment(tmp_path)
+    edit_manifest(directory, lambda m: m["replays"][4].update(run_id=None))
+    rows, rejections = label(directory, config)
+    assert codes(rejections) == ["replay_not_succeeded"]
+    assert "no run_id" in rejections[0].reason
+    assert [r for r in rows if r["replay_index"] == 4] == []
+    assert all(r["run_id"] is not None for r in rows)
+
+
+def test_below_threshold_mixed_step_without_solo_member_is_rejected(tmp_path, config):
+    directory = experiment(tmp_path, {"cpu": steps(1.5), "mixed": steps(1.01)})
+    rows, rejections = label(directory, config)
+    assert [r for r in rows if r["condition"] == "mixed"] == []
+    assert "experiment synthetic-exp replay 06 step model-call-1" in {r.origin for r in rejections}
+    assert set(codes(rejections)) == {"mixed_solo_evidence_missing"}
+
+
+def test_unusable_solo_copy_rejects_mixed_step(tmp_path, config):
+    contended = {"cpu": steps(1.5), "inference": steps(1.4), "mixed": steps(1.9)}
+    directory = experiment(tmp_path, contended, mismatched=[(6, "model-call-1")])
+    rows, rejections = label(directory, config)
+    by_origin = {r.origin: r.reason.split(": ", 1)[0] for r in rejections}
+    assert by_origin == {
+        "experiment synthetic-exp replay 06 step model-call-1": "output_differs_from_source",
+        "experiment synthetic-exp replay 08 step model-call-1": "mixed_solo_evidence_missing",
+    }
+    assert row_for(rows, "mixed", "tool-call-1")["label_basis"] == "mixed_below_threshold"

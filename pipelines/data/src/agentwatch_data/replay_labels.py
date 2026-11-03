@@ -215,6 +215,9 @@ def replay_problem(replay: Replay, config: ReplayLabelConfig) -> UnlabelableErro
         return UnlabelableError(
             "replay_not_succeeded", f"state {replay.state!r}, task_passed {replay.task_passed!r}"
         )
+    # Every labeled row must trace to its recorded run.
+    if replay.run_id is None:
+        return UnlabelableError("replay_not_succeeded", "no run_id was recorded")
     classes = [injector.resource_class for injector in replay.injectors]
     if replay.role != CONTENDED:
         if replay.condition != CLEAN or classes:

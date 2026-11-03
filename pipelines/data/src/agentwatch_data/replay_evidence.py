@@ -81,6 +81,12 @@ def read_experiment(directory: Path) -> Experiment:
     entries = manifest.get("replays")
     if not isinstance(entries, list):
         raise ReplayEvidenceError("replays must be a list")
+    replays = tuple(_read_replay(root, _object(entry, "replay")) for entry in entries)
+    # Labels look replays up by index (a clean control follows its contended replay), so a
+    # repeated index would silently hide one replay's evidence.
+    indexes = [replay.index for replay in replays]
+    if len(set(indexes)) != len(indexes):
+        raise ReplayEvidenceError(f"Replay indexes must be unique, got {indexes}")
     return Experiment(
         name=directory.name,
         status=_text(manifest, "status"),
@@ -88,7 +94,7 @@ def read_experiment(directory: Path) -> Experiment:
         task_id=_text(plan, "task_id"),
         plan_sha256=_text(plan, "plan_sha256"),
         model=_text(plan, "model"),
-        replays=tuple(_read_replay(root, _object(entry, "replay")) for entry in entries),
+        replays=replays,
     )
 
 
@@ -99,8 +105,8 @@ def _read_replay(root: Path, entry: dict) -> Replay:
     if condition not in CONDITIONS:
         raise ReplayEvidenceError(f"Unknown replay condition {condition!r}")
     index = entry.get("index")
-    if not isinstance(index, int) or isinstance(index, bool):
-        raise ReplayEvidenceError("Replay index must be an integer")
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        raise ReplayEvidenceError(f"Replay index must be a nonnegative integer, got {index!r}")
     raw_steps = entry.get("steps")
     steps: dict[str, StepTiming] = {}
     if raw_steps is not None:

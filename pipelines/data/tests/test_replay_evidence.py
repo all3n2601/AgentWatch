@@ -156,3 +156,18 @@ def test_non_object_journal_row_is_rejected(tmp_path, line):
         journal.write(line + "\n")
     with pytest.raises(ReplayEvidenceError, match="must be an object"):
         read_experiment(directory)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda m: m["replays"][2].update(index=m["replays"][1]["index"]),
+        lambda m: m["replays"][0].update(index=-1),
+    ],
+    ids=["duplicate", "negative"],
+)
+def test_duplicate_or_negative_replay_index_is_rejected(tmp_path, change):
+    directory = synthetic(tmp_path)
+    edit_manifest(directory, change)
+    with pytest.raises(ReplayEvidenceError, match="Replay index"):
+        read_experiment(directory)
