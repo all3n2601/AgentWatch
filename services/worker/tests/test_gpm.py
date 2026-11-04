@@ -225,6 +225,24 @@ def test_an_overrun_skips_missed_slots_instead_of_sampling_back_to_back(tmp_path
     assert sampler.sampled_at[:4] == pytest.approx([0.0, 0.25, 1.0, 1.25])
 
 
+def test_a_window_runs_from_sample_to_sample(tmp_path):
+    # Sample 2 ends at 0.85 s (it took 0.6 s) and sample 3 at 1.0 s: the window is 0.15 s, not
+    # the 0.75 s between the clock reads taken before each sample.
+    clock = FakeTime()
+    output = tmp_path / "gpm.prom"
+    export(
+        SlowSampler(clock),
+        output,
+        gpu_index=0,
+        interval_seconds=0.25,
+        duration_seconds=1.1,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+        cpu_seconds=lambda: 0.0,
+    )
+    assert 'agentwatch_gpm_window_seconds{gpu="0"} 0.150000' in output.read_text()
+
+
 def test_each_exporter_process_names_a_new_instance(tmp_path):
     instances = set()
     for _ in range(2):

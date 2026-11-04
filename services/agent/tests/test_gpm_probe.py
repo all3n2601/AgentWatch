@@ -1,5 +1,8 @@
 """The runner's GPM file probe, against files the real exporter's renderer writes (synthetic)."""
 
+import os
+import time
+
 import pytest
 from agentwatch_agent.service_probes import GPM_METRICS, GpmFileProbe
 from agentwatch_sdk.live import METRICS, ResourceRegistration
@@ -132,3 +135,31 @@ def test_an_out_of_range_percentage_is_malformed(tmp_path):
     probe = primed(path)
     write(path, 1, {"dram_bw_util": MetricResult(140.0, 0)})
     assert readings(probe)["gpu.gpm.dram_bw_util.v1"][1] == "malformed"
+
+
+def test_windows_written_between_rounds_are_counted_as_skipped(tmp_path):
+    path = tmp_path / "gpm.prom"
+    probe = primed(path)
+    write(path, 3)  # windows 1 and 2 were never read
+    readings(probe)
+    write(path, 1, instance="b2")  # a restart: what the old process wrote last is unknown
+    readings(probe)
+    described = probe.describe()
+    assert (described["windows_used"], described["skipped_windows"]) == (2, 2)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a FIFO to block a read")
+def test_a_stalled_file_read_is_abandoned_within_its_bound_and_not_repeated(tmp_path):
+    # Opening a FIFO for reading blocks until a writer opens it: a stalled /mnt/c read.
+    path = tmp_path / "gpm.prom"
+    os.mkfifo(path)
+    probe = GpmFileProbe(GPU, path, read_timeout_seconds=0.05)
+    started = time.monotonic()
+    first = readings(probe)["gpu.gpm.sm_util.v1"]
+    assert time.monotonic() - started < 1.0
+    assert first == (None, "unavailable", "GPM exporter file unreadable (TimeoutError)")
+    # The blocked read is still pending, so the next round does not start another.
+    assert readings(probe)["gpu.gpm.sm_util.v1"][1] == "unavailable"
+    assert probe.describe()["abandoned_reads"] == 1
+    with path.open("wb"):  # release the blocked reader so its thread ends
+        pass

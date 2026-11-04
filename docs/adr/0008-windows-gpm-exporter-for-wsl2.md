@@ -20,13 +20,16 @@ name that differs from the expected one is reported as refused, never under our 
 
 **A file, not a socket, crosses the boundary.** WSL2 cannot reach a plain Windows `localhost`
 port on this host, and opening one to the WSL network would need a firewall rule. The exporter
-instead replaces `.data/gpm/gpm.prom` atomically with a Prometheus text exposition, and the
-runner reads it through `/mnt/c`. The file carries a random `instance` per exporter process, a
+instead replaces `.data/gpm/gpm.prom` with a Prometheus text exposition (`os.replace`, atomic
+on the Windows side), and the runner reads it through `/mnt/c`. That a reader through the WSL2
+file layer never sees a partial file is assumed, not measured; a torn read would lack its
+instance or sequence and be recorded `unavailable`. The file carries a random `instance` per exporter process, a
 `sequence`, the window's length, each metric's NVML status and the exporter's own CPU time. A metric NVML refused is omitted, never
 written as zero.
 
-**Each window is used once.** The runner's `GpmFileProbe` reads the file on the HTTP-probe thread
-(ADR 0007) as nine `gpu.gpm.*.v1` metrics on their own resource (service `nvidia-nvml-gpm`).
+**Each window is used once.** The runner's `GpmFileProbe` reads the file for the HTTP-probe thread
+(ADR 0007), on a daemon thread bounded like the HTTP fetches (0.2 s; a read still blocked
+from an earlier round is not repeated) as nine `gpu.gpm.*.v1` metrics on their own resource (service `nvidia-nvml-gpm`).
 When the instance and sequence have not changed since the previous round, every reading is
 `unavailable` ("no new GPM window"), so no window is re-reported at a new tick; a restarted
 exporter, which counts from 1 again, is told apart by its instance. The first window a run reads

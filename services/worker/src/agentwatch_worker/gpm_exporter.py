@@ -111,8 +111,10 @@ def export(
     previous_at: float | None = None
     sequence = write_failures = consecutive_failures = 0
     while duration_seconds is None or monotonic() - started < duration_seconds:
-        sampled_at = monotonic()
         results = sampler.window()
+        # Read right after the sample, so a window's length runs from sample to sample and
+        # excludes the time spent rendering and writing the previous window.
+        sampled_at = monotonic()
         if results is not None and previous_at is not None:
             sequence += 1
             # A failed write cannot publish itself: readers see it in the next window written.

@@ -15,6 +15,7 @@ import http.client
 import json
 import math
 import statistics
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -371,6 +372,49 @@ GPM_METRICS = tuple(
 _GPM_NAMES = {metric: name for metric, _unit, name in _GPM}
 
 
+class BoundedFileRead:
+    """Read the exporter's file on a daemon thread, waiting at most `timeout_seconds`.
+
+    The file is read through `/mnt/c`, so a stalled Windows side (a suspended exporter, a
+    filesystem scan) could otherwise hold the probe round, and vLLM's metrics with it. A blocked
+    read cannot be cancelled, only abandoned: until it returns, later rounds do not start another
+    and record the file unavailable.
+    """
+
+    def __init__(self, path: Path, timeout_seconds: float):
+        self.path, self.timeout_seconds = path, timeout_seconds
+        self.abandoned_reads = 0
+        self._blocked: threading.Thread | None = None
+
+    def __call__(self) -> Exposition:
+        if self._blocked is not None and self._blocked.is_alive():
+            raise TimeoutError("an earlier GPM file read is still blocked")
+        exposition: Exposition | None = None
+        failure: BaseException | None = None
+
+        def read() -> None:
+            nonlocal exposition, failure
+            try:
+                exposition = read_exposition_file(self.path)
+            except FETCH_ERRORS as error:  # re-raised on the probe thread below
+                failure = error
+
+        thread = threading.Thread(target=read, name="gpm-file-read", daemon=True)
+        thread.start()
+        thread.join(self.timeout_seconds)
+        if thread.is_alive():
+            self._blocked = thread
+            self.abandoned_reads += 1
+            raise TimeoutError(f"GPM file read exceeded {self.timeout_seconds} s")
+        self._blocked = None
+        if failure is not None:
+            raise failure
+        if exposition is None:
+            # Not an expected file error (the thread reported it): a defect, not unavailability.
+            raise RuntimeError("the GPM file read failed unexpectedly")
+        return exposition
+
+
 class GpmFileProbe(ExpositionProbe):
     """GPM windows from the exporter's text file (`agentwatch_worker.gpm_exporter`, ADR 0008).
 
@@ -383,11 +427,18 @@ class GpmFileProbe(ExpositionProbe):
     file's latency; no clock mapping is applied.
     """
 
-    def __init__(self, resource: ResourceRegistration, path: Path, gpu_index: int = 0):
+    def __init__(
+        self,
+        resource: ResourceRegistration,
+        path: Path,
+        gpu_index: int = 0,
+        read_timeout_seconds: float = DEFAULT_FETCH_TIMEOUT_SECONDS,
+    ):
+        self._reader = BoundedFileRead(path, read_timeout_seconds)
         super().__init__(
             resource,
-            fetch=lambda: read_exposition_file(path),
-            fetch_details={"file": path.name},
+            fetch=self._reader,
+            fetch_details={"file": path.name, "fetch_timeout_seconds": read_timeout_seconds},
             source="GPM exporter",
             entries=GPM_METRICS,
             labels={"gpu": str(gpu_index)},
@@ -399,6 +450,8 @@ class GpmFileProbe(ExpositionProbe):
         self._label = {"gpu": str(gpu_index)}
         self._last_window: tuple[str, float] | None = None
         self.repeated_windows = 0
+        # Windows the exporter wrote between two rounds, never seen: the sampling density.
+        self.skipped_windows = 0
         self._windows: list[float] = []
         # Each exporter instance's own CPU readings, so a restart never yields a negative cost.
         self._exporter_cpu: dict[str, list[float]] = {}
@@ -441,6 +494,8 @@ class GpmFileProbe(ExpositionProbe):
         if window == previous:
             self.repeated_windows += 1
             return self._all(None, "unavailable", "No new GPM window since the previous round")
+        if instance == previous[0] and sequence > previous[1] + 1:
+            self.skipped_windows += int(sequence - previous[1] - 1)
         window_seconds = self._one(exposition, "window_seconds", self._label)
         if window_seconds is not None:
             self._windows.append(window_seconds)
@@ -463,6 +518,8 @@ class GpmFileProbe(ExpositionProbe):
         return super().describe() | {
             "windows_used": len(self._windows),
             "repeated_windows": self.repeated_windows,
+            "skipped_windows": self.skipped_windows,
+            "abandoned_reads": self._reader.abandoned_reads,
             "exporter_instances": len(self._exporter_cpu),
             "window_median_seconds": statistics.median(self._windows) if self._windows else None,
             "window_max_seconds": max(self._windows) if self._windows else None,
