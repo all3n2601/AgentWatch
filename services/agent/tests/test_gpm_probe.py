@@ -30,8 +30,11 @@ def readings(probe):
 
 
 def primed(path):
-    """A probe that has already read one baseline window, as after a run's first round."""
-    write(path, 0)
+    """A probe that has already read one baseline window, as after a run's first round.
+
+    The baseline comes from another exporter instance, so each test starts its own sequence.
+    """
+    write(path, 1, instance="p0")
     probe = GpmFileProbe(GPU, path)
     readings(probe)
     return probe
@@ -140,12 +143,14 @@ def test_an_out_of_range_percentage_is_malformed(tmp_path):
 def test_windows_written_between_rounds_are_counted_as_skipped(tmp_path):
     path = tmp_path / "gpm.prom"
     probe = primed(path)
-    write(path, 3)  # windows 1 and 2 were never read
+    write(path, 1)
+    readings(probe)
+    write(path, 4)  # windows 2 and 3 were never read
     readings(probe)
     write(path, 1, instance="b2")  # a restart: what the old process wrote last is unknown
     readings(probe)
     described = probe.describe()
-    assert (described["windows_used"], described["skipped_windows"]) == (2, 2)
+    assert (described["windows_used"], described["skipped_windows"]) == (3, 2)
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a FIFO to block a read")
@@ -163,3 +168,30 @@ def test_a_stalled_file_read_is_abandoned_within_its_bound_and_not_repeated(tmp_
     assert probe.describe()["abandoned_reads"] == 1
     with path.open("wb"):  # release the blocked reader so its thread ends
         pass
+
+
+def test_a_window_older_than_one_already_read_is_never_used_again(tmp_path):
+    path = tmp_path / "gpm.prom"
+    probe = primed(path)
+    for sequence in (8, 9):
+        write(path, sequence)
+        assert readings(probe)["gpu.gpm.sm_util.v1"][1] == "measured"
+    write(path, 8)  # the same instance going back: window 8 was already used
+    stale = readings(probe)["gpu.gpm.sm_util.v1"]
+    assert stale == (None, "unavailable", "GPM window is older than one this run already read")
+    write(path, 9)
+    assert readings(probe)["gpu.gpm.sm_util.v1"] == (None, "unavailable", REPEATED)
+    described = probe.describe()
+    assert (described["windows_used"], described["stale_windows"]) == (2, 1)
+
+
+@pytest.mark.parametrize("sequence", [0, -3, 2.5])
+def test_a_sequence_that_is_not_a_positive_integer_is_malformed(tmp_path, sequence):
+    path = tmp_path / "gpm.prom"
+    probe = primed(path)
+    write(path, sequence)
+    assert readings(probe)["gpu.gpm.sm_util.v1"] == (
+        None,
+        "malformed",
+        "GPM exporter window sequence is not a positive integer",
+    )

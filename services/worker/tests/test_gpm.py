@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 from agentwatch_worker import gpm_exporter
 from agentwatch_worker.gpm import METRICS, GpmSampler, _MetricsGet, _Support
-from agentwatch_worker.gpm_exporter import ExportFailed, export, render, replace_atomically
+from agentwatch_worker.gpm_exporter import (
+    ExportFailed,
+    export,
+    render,
+    replace_atomically,
+    single_writer,
+)
 from agentwatch_worker.nvml import NvmlError, NvmlUnavailable
 
 
@@ -190,7 +196,7 @@ def test_a_file_held_by_a_reader_is_counted_not_fatal(tmp_path, monkeypatch):
     )
     assert counts["write_failures"] == counts["windows"] >= 1
     assert counts["windows_written"] == 0
-    assert not list(tmp_path.iterdir())
+    assert [p.name for p in tmp_path.iterdir()] == [".gpm.prom.lock"]
 
 
 class SlowSampler(ScriptedSampler):
@@ -312,7 +318,7 @@ def test_an_output_that_stays_unwritable_stops_the_exporter(tmp_path, monkeypatc
             sleep=clock.sleep,
             cpu_seconds=lambda: 0.0,
         )
-    assert not list(tmp_path.iterdir())
+    assert [p.name for p in tmp_path.iterdir()] == [".gpm.prom.lock"]
 
 
 def test_the_exporter_exits_nonzero_with_the_reason_when_its_output_fails(
@@ -346,3 +352,47 @@ def test_the_exporter_exits_nonzero_with_the_reason_when_its_output_fails(
     assert gpm_exporter.main(["--output", str(tmp_path / "gpm.prom")]) == 1
     assert "could not be written to gpm.prom" in capsys.readouterr().err
     assert sorted(closed) == ["device", "sampler"]
+
+
+def test_a_second_exporter_on_the_same_file_is_refused(tmp_path):
+    output = tmp_path / "gpm.prom"
+    with single_writer(output):
+        clock = FakeTime()
+        with pytest.raises(ExportFailed, match="another exporter is writing gpm.prom"):
+            export(
+                ScriptedSampler(),
+                output,
+                gpu_index=0,
+                interval_seconds=0.25,
+                duration_seconds=1.0,
+                monotonic=clock.monotonic,
+                sleep=clock.sleep,
+                cpu_seconds=lambda: 0.0,
+            )
+    assert not output.exists()  # the refused exporter wrote nothing
+    with single_writer(output):  # released once the first writer is done
+        pass
+
+
+def test_each_instance_stages_under_its_own_name(tmp_path, monkeypatch):
+    staged = []
+    original = Path.write_text
+
+    def recording(self, *args, **kwargs):
+        staged.append(self.name)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", recording)
+    clock = FakeTime()
+    export(
+        ScriptedSampler(),
+        tmp_path / "gpm.prom",
+        gpu_index=0,
+        interval_seconds=0.25,
+        duration_seconds=0.6,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+        cpu_seconds=lambda: 0.0,
+        instance="a1b2",
+    )
+    assert staged and set(staged) == {".gpm.prom.a1b2.tmp"}

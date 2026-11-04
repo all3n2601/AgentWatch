@@ -448,8 +448,11 @@ class GpmFileProbe(ExpositionProbe):
             ),
         )
         self._label = {"gpu": str(gpu_index)}
-        self._last_window: tuple[str, float] | None = None
+        # The newest sequence read from each exporter instance: a window counts only once, and
+        # only when it is newer than every window that instance has already shown this run.
+        self._newest: dict[str, int] = {}
         self.repeated_windows = 0
+        self.stale_windows = 0
         # Windows the exporter wrote between two rounds, never seen: the sampling density.
         self.skipped_windows = 0
         self._windows: list[float] = []
@@ -482,20 +485,29 @@ class GpmFileProbe(ExpositionProbe):
             return self._all(
                 None, "unavailable", "GPM exporter file has no exporter instance or window sequence"
             )
-        window, previous = (instance, sequence), self._last_window
-        self._last_window = window
-        if previous is None:
+        if sequence != int(sequence) or sequence < 1:
+            return self._all(
+                None, "malformed", "GPM exporter window sequence is not a positive integer"
+            )
+        first_read, newest = not self._newest, self._newest.get(instance)
+        self._newest[instance] = max(int(sequence), newest or 0)
+        if first_read:
             return self._all(
                 None,
                 "unavailable",
                 "First GPM window of this run, kept as a baseline: the file may be left by a "
                 "stopped exporter",
             )
-        if window == previous:
+        if newest is not None and sequence == newest:
             self.repeated_windows += 1
             return self._all(None, "unavailable", "No new GPM window since the previous round")
-        if instance == previous[0] and sequence > previous[1] + 1:
-            self.skipped_windows += int(sequence - previous[1] - 1)
+        if newest is not None and sequence < newest:
+            self.stale_windows += 1
+            return self._all(
+                None, "unavailable", "GPM window is older than one this run already read"
+            )
+        if newest is not None and sequence > newest + 1:
+            self.skipped_windows += int(sequence) - newest - 1
         window_seconds = self._one(exposition, "window_seconds", self._label)
         if window_seconds is not None:
             self._windows.append(window_seconds)
@@ -519,6 +531,7 @@ class GpmFileProbe(ExpositionProbe):
             "windows_used": len(self._windows),
             "repeated_windows": self.repeated_windows,
             "skipped_windows": self.skipped_windows,
+            "stale_windows": self.stale_windows,
             "abandoned_reads": self._reader.abandoned_reads,
             "exporter_instances": len(self._exporter_cpu),
             "window_median_seconds": statistics.median(self._windows) if self._windows else None,

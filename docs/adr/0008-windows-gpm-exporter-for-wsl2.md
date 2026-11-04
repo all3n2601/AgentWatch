@@ -30,9 +30,11 @@ written as zero.
 **Each window is used once.** The runner's `GpmFileProbe` reads the file for the HTTP-probe thread
 (ADR 0007), on a daemon thread bounded like the HTTP fetches (0.2 s; a read still blocked
 from an earlier round is not repeated) as nine `gpu.gpm.*.v1` metrics on their own resource (service `nvidia-nvml-gpm`).
-When the instance and sequence have not changed since the previous round, every reading is
-`unavailable` ("no new GPM window"), so no window is re-reported at a new tick; a restarted
-exporter, which counts from 1 again, is told apart by its instance. The first window a run reads
+A window counts only when its sequence is newer than every window the same exporter instance has
+shown this run. Otherwise every reading is `unavailable` ("no new GPM window", or older than one
+already read), so no window is re-reported at a new tick; a restarted exporter, which counts from
+1 again, is told apart by its instance. A sequence that is not a positive integer is `malformed`.
+The first window a run reads
 is only a baseline, also `unavailable`: a file left by a stopped exporter looks the same as a live
 one, and seeing the file change needs no clock shared with Windows. A missing or unreadable file,
 a file without an instance or sequence, and a refused metric are `unavailable` with their reason;
@@ -49,7 +51,10 @@ counters open to the user running it (`RmProfilingAdminOnly=0` was set when this
 whether Windows requires it was not tested). A reader can hold the file while the exporter
 replaces it; after three attempts that window is dropped and counted (`write_failures_total`).
 Any other file error, such as a full disk, drops the window at once; after 40 failed windows in a
-row (10 s at 250 ms) the exporter exits with an error, and readers see no new window.
+row (10 s at 250 ms) the exporter exits with an error, and readers see no new window. One exporter
+writes a file: it holds a lock beside it (`.gpm.prom.lock`, released by the operating system when
+the process ends) and stages each window under its own instance's name, so a second exporter on
+the same file exits with an error instead of interleaving windows or removing a staged file.
 On a native Linux host DCGM's own profiling fields apply instead, and this exporter is not needed.
 Not established: GPM on any other device or driver, the exporter's effect on vLLM timing beyond the
 measured sampling overhead, and a clock mapping that would align windows with steps.

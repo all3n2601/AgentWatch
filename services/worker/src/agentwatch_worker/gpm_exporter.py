@@ -13,16 +13,38 @@ omitted, never written as zero. The file names no host paths.
 """
 
 import argparse
+import contextlib
 import math
 import os
 import secrets
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from agentwatch_worker.gpm import GpmSampler, MetricResult
 from agentwatch_worker.nvml import NvmlDevice, NvmlError, NvmlUnavailable
+
+if os.name == "nt":
+    import msvcrt
+
+    def _lock(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _unlock(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _lock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
 
 PREFIX = "agentwatch_gpm"
 DEFAULT_INTERVAL_SECONDS = 0.25
@@ -65,13 +87,37 @@ def render(
     return "\n".join(lines) + "\n"
 
 
-def replace_atomically(path: Path, text: str, sleep: Callable[[float], None]) -> OSError | None:
+@contextlib.contextmanager
+def single_writer(output: Path) -> Iterator[None]:
+    """Hold the destination's lock for as long as this exporter writes it.
+
+    Two exporters on one file would interleave windows from different devices or instances and
+    could remove each other's staged file. The operating system releases the lock when the
+    process ends, so a crashed exporter never blocks the next one; the lock file itself stays.
+    """
+    lock_path = output.with_name(f".{output.name}.lock")
+    with lock_path.open("a+b") as lock:
+        try:
+            _lock(lock.fileno())
+        except OSError as error:
+            raise ExportFailed(
+                f"another exporter is writing {output.name} (its lock {lock_path.name} is held)"
+            ) from error
+        try:
+            yield
+        finally:
+            _unlock(lock.fileno())
+
+
+def replace_atomically(
+    path: Path, text: str, sleep: Callable[[float], None], staging_name: str = "tmp"
+) -> OSError | None:
     """Replace `path` with `text`; return None once written, else the error that dropped it.
 
     A held file (PermissionError) is retried; any other file error, such as a full disk, drops
     the window at once. The temporary file never outlives a failed attempt.
     """
-    temporary = path.with_name(f".{path.name}.tmp")
+    temporary = path.with_name(f".{path.name}.{staging_name}.tmp")
     try:
         temporary.write_text(text, encoding="utf-8")
         for attempt in range(REPLACE_ATTEMPTS):
@@ -106,53 +152,55 @@ def export(
     """Write windows until the duration ends (or forever); return counts for the operator."""
     units = {metric.name: metric.unit for metric in sampler.metrics}
     instance = instance or secrets.token_hex(8)
-    started = monotonic()
-    next_due = started
-    previous_at: float | None = None
-    sequence = write_failures = consecutive_failures = 0
-    while duration_seconds is None or monotonic() - started < duration_seconds:
-        results = sampler.window()
-        # Read right after the sample, so a window's length runs from sample to sample and
-        # excludes the time spent rendering and writing the previous window.
-        sampled_at = monotonic()
-        if results is not None and previous_at is not None:
-            sequence += 1
-            # A failed write cannot publish itself: readers see it in the next window written.
-            text = render(
-                gpu_index,
-                instance,
-                sequence,
-                sampled_at - previous_at,
-                results,
-                units,
-                cpu_seconds(),
-                write_failures,
-            )
-            error = replace_atomically(output, text, sleep)
-            if error is None:
-                consecutive_failures = 0
-            else:
-                write_failures += 1
-                consecutive_failures += 1
-                if consecutive_failures >= MAX_CONSECUTIVE_WRITE_FAILURES:
-                    raise ExportFailed(
-                        f"{consecutive_failures} windows in a row could not be written to "
-                        f"{output.name} ({type(error).__name__}: {error})"
-                    )
-        previous_at = sampled_at
-        # A fixed cadence, so slow windows do not accumulate drift. An overrun skips the slots it
-        # missed instead of sampling back to back to catch up.
-        next_due += interval_seconds
-        now = monotonic()
-        if next_due < now:
-            next_due += math.ceil((now - next_due) / interval_seconds) * interval_seconds
-        sleep(next_due - now)
-    # `windows` counts every window computed, including the ones whose write failed.
-    return {
-        "windows": sequence,
-        "windows_written": sequence - write_failures,
-        "write_failures": write_failures,
-    }
+    with single_writer(output):
+        started = monotonic()
+        next_due = started
+        previous_at: float | None = None
+        sequence = write_failures = consecutive_failures = 0
+        while duration_seconds is None or monotonic() - started < duration_seconds:
+            results = sampler.window()
+            # Read right after the sample, so a window's length runs from sample to sample and
+            # excludes the time spent rendering and writing the previous window.
+            sampled_at = monotonic()
+            if results is not None and previous_at is not None:
+                sequence += 1
+                # A failed write cannot publish itself: readers see it in the next window written.
+                text = render(
+                    gpu_index,
+                    instance,
+                    sequence,
+                    sampled_at - previous_at,
+                    results,
+                    units,
+                    cpu_seconds(),
+                    write_failures,
+                )
+                # Staged under this instance's name, so no other process can touch the staged file.
+                error = replace_atomically(output, text, sleep, staging_name=instance)
+                if error is None:
+                    consecutive_failures = 0
+                else:
+                    write_failures += 1
+                    consecutive_failures += 1
+                    if consecutive_failures >= MAX_CONSECUTIVE_WRITE_FAILURES:
+                        raise ExportFailed(
+                            f"{consecutive_failures} windows in a row could not be written to "
+                            f"{output.name} ({type(error).__name__}: {error})"
+                        )
+            previous_at = sampled_at
+            # A fixed cadence, so slow windows do not accumulate drift. An overrun skips the slots it
+            # missed instead of sampling back to back to catch up.
+            next_due += interval_seconds
+            now = monotonic()
+            if next_due < now:
+                next_due += math.ceil((now - next_due) / interval_seconds) * interval_seconds
+            sleep(next_due - now)
+        # `windows` counts every window computed, including the ones whose write failed.
+        return {
+            "windows": sequence,
+            "windows_written": sequence - write_failures,
+            "write_failures": write_failures,
+        }
 
 
 def positive_seconds(value: str) -> float:
