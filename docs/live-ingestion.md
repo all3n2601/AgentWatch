@@ -126,6 +126,18 @@ The metric registry (`METRICS` in `agentwatch_sdk.live`) accepts:
 | `gpu.nvml.memory.used_bytes.v1` | `inference` | bytes ≥ 0 | Device memory in use by every process |
 | `gpu.nvml.power.usage_watts.v1` | `inference` | watts ≥ 0 | Device power draw gauge |
 | `gpu.nvml.clock.sm_mhz.v1` | `inference` | megahertz ≥ 0 | Current SM clock |
+| `inference.vllm.requests_running.v1` | `inference` | requests ≥ 0 | vLLM requests in the engine's batch |
+| `inference.vllm.requests_waiting.v1` | `inference` | requests ≥ 0 | vLLM requests waiting in its queue |
+| `inference.vllm.kv_cache_usage.v1` | `inference` | fraction 0–1 | Share of vLLM's KV-cache blocks in use |
+| `inference.vllm.request_<phase>.seconds_total.v1` | `inference` | seconds ≥ 0 | Cumulative `queue`, `prefill`, `decode` or `e2e` time of finished requests |
+| `inference.vllm.request_<phase>.requests_total.v1` | `inference` | requests ≥ 0 | Finished requests counted by the matching sum |
+| `inference.vllm.first_token.seconds_total.v1`, `….requests_total.v1` | `inference` | seconds, requests ≥ 0 | Cumulative time to first token, and its count |
+| `inference.vllm.preemptions_total.v1` | `inference` | preemptions ≥ 0 | Cumulative engine preemptions |
+| `inference.vllm.prompt_tokens_total.v1`, `….generation_tokens_total.v1` | `inference` | tokens ≥ 0 | Cumulative prompt and generated tokens |
+| `gpu.dcgm.utilization.gpu.v1`, `gpu.dcgm.utilization.mem_copy.v1` | `inference` | percent 0–100 | DCGM device utilization and memory-copy utilization |
+| `gpu.dcgm.energy.total_mj.v1` | `inference` | millijoules ≥ 0 | Cumulative device energy since boot |
+| `gpu.dcgm.temperature.gpu_c.v1` | `inference` | celsius ≥ 0 | GPU temperature |
+| `gpu.dcgm.prof.{sm_active,sm_occupancy,tensor_active,dram_active}.v1` | `inference` | fraction 0–1 | DCGM profiling ratios, where the device supports them |
 
 The three cumulative CPU counters (A04, [ADR 0005](adr/0005-cpu-counters-retrieval-timing-and-step-correlation.md))
 measure a window by their increase across it; any decrease is a reset with no delta. Host PSI
@@ -133,14 +145,20 @@ covers the whole kernel (in WSL2 the whole VM, including Docker) and the cgroup 
 the producer's whole cgroup, so none is step-exclusive. GPU entries (A04,
 [ADR 0003](adr/0003-gpu-and-inference-measurement.md)) are whole-device
 NVML gauges, never per process, and NVML utilization cannot resolve activity shorter than its
-own period or establish saturation. New signals (DCGM, vLLM, retrieval) need new versioned
-names; a definition never changes meaning in place. The change is additive, but an older
+own period or establish saturation. vLLM entries (M2,
+[ADR 0007](adr/0007-vllm-request-traces-and-server-metrics.md)) describe the whole server for
+the run's served model: the cumulative ones sum every finished request, so a window's increase
+covers all requests completed in it, not one step's own wait, which comes from vLLM's request
+span in local evidence. DCGM entries are whole-device and sit on their own `nvidia-dcgm`
+resource; on the GPU laptop the profiling ratios are always `unavailable`. New signals (for
+example retrieval) need new versioned names; a definition never changes meaning in place. The change is additive, but an older
 service refuses metrics it does not define, and **every** agent `run` sends all of them: it
 always registers the GPU and reports it as `unsupported` where NVML is missing (macOS,
 CPU-only hosts), and a CPU counter a host lacks as `unsupported` or `unavailable`. Deploy the
 service first; a runner reporting to an older service ends every run with refused records
 (exit 5). With 10 records per round, the longest `--run-timeout` the per-run sample budget
-allows at 250 ms is 2,000 s on every host (4,000 s for the CPU-only `overhead` protocol). All five availability
+allows at 250 ms is 2,000 s on every host (4,000 s for the CPU-only `overhead` protocol). A vLLM
+run adds 16 records per round (769 s), and DCGM 8 more (588 s with both). All five availability
 states survive history; absent readings never become measured zero. B02 alignment, deltas and
 coverage are defined in [shared step features](step-features.md); `step-features-v1` reads only
 `cpu.psi.some.avg10.v1` and `cpu.cgroup.throttled_usec.v1`, so the GPU readings and the newer

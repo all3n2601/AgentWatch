@@ -188,6 +188,34 @@ METRICS = {
     "gpu.nvml.memory.used_bytes.v1": ("inference", "bytes", 0, None),
     "gpu.nvml.power.usage_watts.v1": ("inference", "watts", 0, None),
     "gpu.nvml.clock.sm_mhz.v1": ("inference", "megahertz", 0, None),
+    # M2 (ADR 0007): vLLM server gauges and cumulative counters, read from its /metrics for
+    # the run's served model. Counters sum every finished request's server-measured phase, so
+    # a window's increase covers all requests completed in it, not one step's request.
+    "inference.vllm.requests_running.v1": ("inference", "requests", 0, None),
+    "inference.vllm.requests_waiting.v1": ("inference", "requests", 0, None),
+    "inference.vllm.kv_cache_usage.v1": ("inference", "fraction", 0, 1),
+    "inference.vllm.request_queue.seconds_total.v1": ("inference", "seconds", 0, None),
+    "inference.vllm.request_queue.requests_total.v1": ("inference", "requests", 0, None),
+    "inference.vllm.request_prefill.seconds_total.v1": ("inference", "seconds", 0, None),
+    "inference.vllm.request_prefill.requests_total.v1": ("inference", "requests", 0, None),
+    "inference.vllm.request_decode.seconds_total.v1": ("inference", "seconds", 0, None),
+    "inference.vllm.request_decode.requests_total.v1": ("inference", "requests", 0, None),
+    "inference.vllm.first_token.seconds_total.v1": ("inference", "seconds", 0, None),
+    "inference.vllm.first_token.requests_total.v1": ("inference", "requests", 0, None),
+    "inference.vllm.request_e2e.seconds_total.v1": ("inference", "seconds", 0, None),
+    "inference.vllm.request_e2e.requests_total.v1": ("inference", "requests", 0, None),
+    "inference.vllm.preemptions_total.v1": ("inference", "preemptions", 0, None),
+    "inference.vllm.prompt_tokens_total.v1": ("inference", "tokens", 0, None),
+    "inference.vllm.generation_tokens_total.v1": ("inference", "tokens", 0, None),
+    # M2 (ADR 0007): whole-device DCGM fields beside NVML; profiling ratios are 0-1.
+    "gpu.dcgm.utilization.gpu.v1": ("inference", "percent", 0, 100),
+    "gpu.dcgm.utilization.mem_copy.v1": ("inference", "percent", 0, 100),
+    "gpu.dcgm.energy.total_mj.v1": ("inference", "millijoules", 0, None),
+    "gpu.dcgm.temperature.gpu_c.v1": ("inference", "celsius", 0, None),
+    "gpu.dcgm.prof.sm_active.v1": ("inference", "fraction", 0, 1),
+    "gpu.dcgm.prof.sm_occupancy.v1": ("inference", "fraction", 0, 1),
+    "gpu.dcgm.prof.tensor_active.v1": ("inference", "fraction", 0, 1),
+    "gpu.dcgm.prof.dram_active.v1": ("inference", "fraction", 0, 1),
 }
 
 

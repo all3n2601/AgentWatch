@@ -18,7 +18,7 @@ import json
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
-from agentwatch_agent.config import RunConfiguration
+from agentwatch_agent.config import MODEL_BACKENDS, RunConfiguration
 from agentwatch_agent.errors import RunFailure
 from agentwatch_agent.model import ModelResponseError, RequestedCall, parse_reply
 from agentwatch_agent.runner import EVIDENCE_FILE, AgentRunner, _RunContext
@@ -82,6 +82,8 @@ class ReplayPlan:
     chat_options: dict
     tools: tuple[dict, ...]
     turns: tuple[ReplayTurn, ...]
+    # Runners before agent-runner-v3 recorded no backend: they only spoke to Ollama.
+    model_backend: str = "ollama"
 
     @property
     def tool_call_count(self) -> int:
@@ -202,6 +204,8 @@ def load_replay_plan(run_dir: Path, task: Task) -> ReplayPlan:
     )
     run_id = evidence.get("run_id")
     _require(isinstance(run_id, str) and run_id, "Source evidence has no run ID")
+    backend = configuration.get("model_backend", "ollama")
+    _require(backend in MODEL_BACKENDS, "Source configuration names an unknown model backend")
     return ReplayPlan(
         source_run_id=run_id,
         source_evidence_sha256=hashlib.sha256(raw).hexdigest(),
@@ -211,6 +215,7 @@ def load_replay_plan(run_dir: Path, task: Task) -> ReplayPlan:
         chat_options=options,
         tools=tuple(tools),
         turns=_turns(messages, model_calls),
+        model_backend=backend,
     )
 
 
@@ -232,6 +237,8 @@ class ReplayRunner(AgentRunner):
     def __init__(self, *, plan: ReplayPlan, **settings):
         if settings["model"].name != plan.model:
             raise ValueError(f"Replay plan was recorded with model {plan.model!r}")
+        if settings["model"].backend != plan.model_backend:
+            raise ValueError(f"Replay plan was recorded on {plan.model_backend}")
         if settings.get("chat_options") not in (None, plan.chat_options):
             raise ValueError("A replay uses the source run's chat options")
         super().__init__(**(settings | {"chat_options": plan.chat_options}))

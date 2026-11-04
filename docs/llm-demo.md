@@ -61,8 +61,10 @@ the runner read exported environment variables; they do not load `.env` automati
 ## Limits
 
 The model server runs on Docker CPU by default and on an NVIDIA GPU with the optional override. It does
-not sample GPU resources, attribute inference contention, or validate vLLM queues, retrieval
-contention, L4/GCP performance, or production model quality. Model placement shows where Ollama
+not sample GPU resources, attribute inference contention, or validate retrieval
+contention, L4/GCP performance, or production model quality. Measured inference queueing needs the
+optional vLLM backend instead of Ollama ([ADR 0007](adr/0007-vllm-request-traces-and-server-metrics.md),
+`make vllm-up`). Model placement shows where Ollama
 loaded the model, not GPU utilization or saturation. The first request after creating the
 GPU container was 53–64 s on the verified laptop, for an unexplained reason. Request
 wall time includes transport and inference; Ollama's server durations are kept as reported

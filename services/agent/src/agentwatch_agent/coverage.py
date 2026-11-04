@@ -41,6 +41,7 @@ from agentwatch_sdk.live import ResourceSample, StepEvent
 from pydantic import ValidationError
 
 from agentwatch_agent.resources import COUNTER_METRICS, interval_summary
+from agentwatch_agent.service_probes import SERVICE_COUNTER_METRICS
 
 # v3 lists `sampling` and `context` as entries carrying their full identity; v2 keyed them by
 # resource ID alone. The method names the output shape, so recorded documents stay readable.
@@ -106,7 +107,7 @@ def _aggregate(metric: str, readings: list[tuple[int, float]]) -> dict:
     if not readings:
         return {"measured": 0}
     values = [value for _tick, value in readings]
-    if metric in COUNTER_METRICS:
+    if metric in COUNTER_METRICS or metric in SERVICE_COUNTER_METRICS:
         if len(readings) < 2:
             # One reading has nothing to subtract from: an increase of 0 would be invented.
             return {"measured": 1, "increase": None, "increase_span_seconds": None}
@@ -301,11 +302,12 @@ def coverage_report(run_dir: Path) -> dict:
         if record.get("record_type") == "resource_sample":
             target = (record["resource_id"], record["service_id"])
             rounds[target][(record["clock_id"], record["tick_ns"])].append(record)
-    sampling_summary = evidence.get("resource_sampling") or {}
     # Scope describes what the resource measures, so every service of a resource shares it.
+    # Host probes and HTTP service probes (agent-runner-v3) each have their own summary.
     scopes = {
         entry["resource_id"]: entry.get("scope")
-        for entry in sampling_summary.get("resources", [])
+        for key in ("resource_sampling", "service_sampling")
+        for entry in (evidence.get(key) or {}).get("resources", [])
         if isinstance(entry, dict) and isinstance(entry.get("resource_id"), str)
     }
     # One entry per target and clock domain: ticks of different clocks are never compared.

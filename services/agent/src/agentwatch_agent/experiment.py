@@ -181,7 +181,8 @@ def build_injectors(
     settings: ExperimentSettings,
     plan: ReplayPlan,
     task: Task,
-    ollama_url: str,
+    model_url: str,
+    model_backend: str,
 ) -> list[BoundedInjector]:
     """The real injectors for one condition, all recording ticks in the replay's clock."""
     injectors: list[BoundedInjector] = []
@@ -193,12 +194,14 @@ def build_injectors(
                 CompetingInferenceInjector(
                     clock,
                     bound_seconds,
-                    url=ollama_url,
+                    url=model_url,
                     model=plan.model,
-                    # The run's own context size, so Ollama never reloads the model for it.
-                    num_ctx=plan.chat_options.get("num_ctx"),
+                    # The run's own context size, so Ollama never reloads the model for it;
+                    # vLLM fixed its context at startup.
+                    num_ctx=plan.chat_options.get("num_ctx") if model_backend == "ollama" else None,
                     concurrency=settings.inference_concurrency,
                     num_predict=settings.inference_num_predict,
+                    server=model_backend,
                 )
             )
         elif kind == "retrieval":
@@ -562,7 +565,8 @@ LIMITATIONS = [
     ),
     (
         "Inference contention shares the model server's request slots and device; Ollama reports "
-        "no queue wait, so waiting inside it is not directly observed"
+        "no queue wait, so waiting inside it is not directly observed, while vLLM measures each "
+        "request's queue wait in its trace span"
     ),
     "Temperature 0 does not guarantee identical model output; mismatches are counted per replay",
 ]
