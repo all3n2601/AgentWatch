@@ -414,7 +414,7 @@ def test_migration_preserves_populated_legacy_history(client, evidence, live):
     assert snapshot(client, live)["state"] == "queued"
     assert client.get(f"/v1/runs/{live}").status_code == 404
     with client.app.state.store.connect() as conn:
-        assert len(conn.execute("SELECT version FROM schema_migrations").fetchall()) == 3
+        assert len(conn.execute("SELECT version FROM schema_migrations").fetchall()) == 4
 
 
 def test_migration_upgrades_existing_schema(client, evidence):

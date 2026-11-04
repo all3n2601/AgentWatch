@@ -295,6 +295,80 @@
         }
       }
     },
+    "/v1/live/runs/{run_id}/policy": {
+      "get": {
+        "tags": [
+          "live lifecycle"
+        ],
+        "summary": "Get Run Policy",
+        "description": "Concurrency policy versions active while this run was open (queued or running), oldest first. Links record configuration only and are not evidence of enforcement. `versions` is empty for runs that are not coding-agent runs or that were registered before policy tracking.",
+        "operationId": "get_run_policy_v1_live_runs__run_id__policy_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunPolicy"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or semantic validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal storage failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database unavailable or statement/lock timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Selected live run does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/live/runs/{run_id}/records": {
       "post": {
         "tags": [
@@ -603,6 +677,30 @@
         ],
         "title": "ChangeResult"
       },
+      "ControlledService": {
+        "properties": {
+          "service_id": {
+            "type": "string",
+            "title": "Service Id"
+          },
+          "resource_class": {
+            "type": "string",
+            "enum": [
+              "cpu_sandbox",
+              "inference",
+              "retrieval"
+            ],
+            "title": "Resource Class"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "service_id",
+          "resource_class"
+        ],
+        "title": "ControlledService"
+      },
       "CreateResult": {
         "properties": {
           "run_id": {
@@ -708,6 +806,136 @@
           "records"
         ],
         "title": "LiveBatch"
+      },
+      "PolicyLimits": {
+        "properties": {
+          "inference_requests": {
+            "type": "integer",
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Inference Requests"
+          },
+          "test_jobs": {
+            "type": "integer",
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Test Jobs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PolicyLimits",
+        "description": "Per-control limits; an omitted control means no limit."
+      },
+      "PolicyVersion": {
+        "properties": {
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "baseline",
+              "set",
+              "disable",
+              "restore"
+            ],
+            "title": "Action"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/PolicyLimits"
+          },
+          "restored_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restored From"
+          },
+          "operator": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "controlled_services": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ControlledService"
+            },
+            "type": "object",
+            "title": "Controlled Services"
+          },
+          "enforcement_scope": {
+            "type": "string",
+            "const": "runner_process",
+            "title": "Enforcement Scope"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "target",
+          "version",
+          "action",
+          "limits",
+          "restored_from",
+          "operator",
+          "reason",
+          "request_id",
+          "created_at",
+          "controlled_services",
+          "enforcement_scope"
+        ],
+        "title": "PolicyVersion"
       },
       "RecordAcknowledgement": {
         "properties": {
@@ -1266,6 +1494,40 @@
           "next_cursor"
         ],
         "title": "RunPage"
+      },
+      "RunPolicy": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "applicable": {
+            "type": "boolean",
+            "title": "Applicable"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyVersion"
+            },
+            "type": "array",
+            "title": "Versions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "target",
+          "applicable",
+          "versions"
+        ],
+        "title": "RunPolicy",
+        "description": "Policy versions linked to one live run.\n\n`versions` lists, oldest first, every policy version that was active while the run was\nopen (queued or running): the version active at registration plus each later change.\nThis records what was configured, not evidence that any limit was enforced; O02 stores\npolicy only. `applicable` is true when the run registered the target's runner service\n(a coding-agent run). `versions` is empty for non-applicable runs and for runs registered\nbefore policy tracking existed."
       },
       "RunRegistrationSnapshot": {
         "properties": {

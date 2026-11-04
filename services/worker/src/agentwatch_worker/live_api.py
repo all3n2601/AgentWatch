@@ -14,10 +14,12 @@ from agentwatch_sdk.live import (
     RunPage,
     RunSnapshot,
 )
+from agentwatch_sdk.policy import RunPolicy
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from agentwatch_worker.live_limits import BODY_TIMEOUT_SECONDS, MAX_BODY_BYTES
 from agentwatch_worker.live_store import LiveStore, MissingRunError
+from agentwatch_worker.policy_store import PolicyStore
 from agentwatch_worker.store import ConflictError
 
 WRITE_ERRORS = {
@@ -88,6 +90,22 @@ def get_run(
 ):
     try:
         return store(request).get(run_id, after, limit)
+    except MissingRunError as error:
+        raise HTTPException(404, str(error)) from error
+
+
+@router.get(
+    "/{run_id}/policy",
+    response_model=RunPolicy,
+    responses=MISSING_RUN,
+    description="Concurrency policy versions active while this run was open (queued or "
+    "running), oldest first. Links record configuration only and are not evidence of "
+    "enforcement. `versions` is empty for runs that are not coding-agent runs or that were "
+    "registered before policy tracking.",
+)
+def get_run_policy(run_id: UUID, request: Request):
+    try:
+        return PolicyStore(request.app.state.store).run_policy(run_id)
     except MissingRunError as error:
         raise HTTPException(404, str(error)) from error
 

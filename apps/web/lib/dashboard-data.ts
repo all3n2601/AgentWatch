@@ -7,6 +7,7 @@ export const pages = [
   "agents",
   "resources",
   "compare",
+  "controls",
   "settings",
 ] as const;
 export type Page = (typeof pages)[number];

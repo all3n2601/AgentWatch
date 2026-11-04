@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from agentwatch_worker.contracts import RunIngest, TelemetryBatch
 from agentwatch_worker.live_api import router as live_router
 from agentwatch_worker.live_limits import LiveBodyLimit
+from agentwatch_worker.policy_api import router as policy_router
 from agentwatch_worker.store import ConflictError, RunStore
 
 
@@ -27,14 +28,18 @@ async def lifespan(app):
     yield
 
 
+# Live and policy bodies can carry operator text or producer evidence that must not be echoed.
+LIVE_API_PREFIXES = ("/v1/live/", "/v1/policies/")
+
 app = FastAPI(title="AgentWatch Ingestion API", version="0.3.0", lifespan=lifespan)
 app.include_router(live_router)
+app.include_router(policy_router)
 app.add_middleware(LiveBodyLimit)
 
 
 @app.exception_handler(RequestValidationError)
 async def invalid_request(request: Request, error: RequestValidationError):
-    if request.url.path.startswith("/v1/live/"):
+    if request.url.path.startswith(LIVE_API_PREFIXES):
         # Validation input can contain nonfinite numbers or sensitive producer evidence.
         # Return actionable locations/messages without reflecting the entire supplied record.
         return JSONResponse(
@@ -51,7 +56,7 @@ async def invalid_request(request: Request, error: RequestValidationError):
 
 @app.exception_handler(psycopg.Error)
 async def unavailable_storage(request, error):
-    if request.url.path.startswith("/v1/live/"):
+    if request.url.path.startswith(LIVE_API_PREFIXES):
         if isinstance(error, psycopg.DataError) and request.method == "POST":
             return JSONResponse(status_code=422, content={"detail": "Invalid live database value"})
         if not isinstance(error, (psycopg.OperationalError, psycopg.InterfaceError)):

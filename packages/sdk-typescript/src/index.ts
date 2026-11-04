@@ -5,3 +5,4 @@ export interface HealthResponse {
 
 export type * from "./live";
 
+export type * from "./policy";

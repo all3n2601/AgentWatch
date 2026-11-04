@@ -16,7 +16,7 @@ class LiveBodyLimit:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if (
             scope["type"] != "http"
-            or not scope["path"].startswith("/v1/live/")
+            or not scope["path"].startswith(("/v1/live/", "/v1/policies/"))
             or (scope["method"] not in {"POST", "PUT", "PATCH"})
         ):
             await self.app(scope, receive, send)
