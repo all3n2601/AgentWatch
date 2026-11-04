@@ -146,7 +146,9 @@ they are not assumed available because an enum exists. A04 registered five whole
 GPU gauges for `inference` resources and three cumulative CPU stall and usage counters for
 `cpu_sandbox` resources ([the registry](live-ingestion.md)). M2 registered sixteen
 server-wide vLLM metrics and eight whole-device DCGM metrics for `inference` resources
-([ADR 0007](adr/0007-vllm-request-traces-and-server-metrics.md)). No retrieval metric is
+([ADR 0007](adr/0007-vllm-request-traces-and-server-metrics.md)), and nine whole-device NVML GPM
+metrics read on the Windows host for WSL2 runs
+([ADR 0008](adr/0008-windows-gpm-exporter-for-wsl2.md)). No retrieval metric is
 registered: the in-process index has nothing to sample, and its per-request service time is
 local evidence (`retrieval-timing-v1`). Cumulative counters and host-wide
 PSI must not be presented as step-exclusive duration. Sampling configuration records both

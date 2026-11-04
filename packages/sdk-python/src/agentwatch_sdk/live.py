@@ -216,6 +216,17 @@ METRICS = {
     "gpu.dcgm.prof.sm_occupancy.v1": ("inference", "fraction", 0, 1),
     "gpu.dcgm.prof.tensor_active.v1": ("inference", "fraction", 0, 1),
     "gpu.dcgm.prof.dram_active.v1": ("inference", "fraction", 0, 1),
+    # M2 (ADR 0008): NVML GPM activity of the whole device over the Windows-side exporter's
+    # latest window, for WSL2 hosts that refuse GPM; percentages and PCIe throughput.
+    "gpu.gpm.graphics_active.v1": ("inference", "percent", 0, 100),
+    "gpu.gpm.sm_util.v1": ("inference", "percent", 0, 100),
+    "gpu.gpm.sm_occupancy.v1": ("inference", "percent", 0, 100),
+    "gpu.gpm.tensor_active.v1": ("inference", "percent", 0, 100),
+    "gpu.gpm.dram_bw_util.v1": ("inference", "percent", 0, 100),
+    "gpu.gpm.fp32_util.v1": ("inference", "percent", 0, 100),
+    "gpu.gpm.fp16_util.v1": ("inference", "percent", 0, 100),
+    "gpu.gpm.pcie_tx.v1": ("inference", "mebibytes_per_second", 0, None),
+    "gpu.gpm.pcie_rx.v1": ("inference", "mebibytes_per_second", 0, None),
 }
 
 

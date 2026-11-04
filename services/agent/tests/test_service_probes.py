@@ -3,7 +3,7 @@ import json
 import pytest
 from agentwatch_agent import service_probes
 from agentwatch_agent.clock import MonotonicClock
-from agentwatch_agent.prometheus_text import parse_exposition
+from agentwatch_agent.prometheus_text import fetch_exposition, parse_exposition
 from agentwatch_agent.resources import COUNTER_METRICS
 from agentwatch_agent.service_probes import (
     DCGM_METRICS,
@@ -107,7 +107,7 @@ def test_a_probe_reads_its_series_from_the_endpoint():
     with MetricsServer(VLLM_TEXT.encode()) as server:
         probe = ExpositionProbe(
             SERVER,
-            url=server.url,
+            fetch=lambda: fetch_exposition(server.url, 2),
             source="vLLM",
             entries=(WAITING, KV),
             labels={"model_name": "m@1"},
