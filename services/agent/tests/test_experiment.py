@@ -274,7 +274,8 @@ def test_real_injectors_are_built_with_the_replays_settings(mean_task, plan):
         settings=settings,
         plan=plan,
         task=mean_task,
-        ollama_url="http://127.0.0.1:11435",
+        model_url="http://127.0.0.1:11435",
+        model_backend="ollama",
     )
     assert isinstance(cpu, CpuSpinInjector) and cpu.workers == 1
     assert isinstance(inference, CompetingInferenceInjector)
@@ -296,7 +297,8 @@ def test_real_injectors_are_built_with_the_replays_settings(mean_task, plan):
             settings=settings,
             plan=plan,
             task=mean_task,
-            ollama_url="http://192.168.1.20:11434",
+            model_url="http://192.168.1.20:11434",
+            model_backend="ollama",
         )
 
 

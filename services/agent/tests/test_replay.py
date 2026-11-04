@@ -143,6 +143,28 @@ def test_a_replay_must_use_the_source_model_and_options(mean_task, server, tmp_p
         replay(mean_task, server, plan, tmp_path, "r", chat_options={"temperature": 1})
 
 
+def test_a_replay_must_use_the_source_backend(mean_task, server, tmp_path):
+    source, _ = record_source(mean_task, server, tmp_path)
+    plan = load_replay_plan(source, mean_task)
+    assert plan.model_backend == "ollama"
+    with pytest.raises(ValueError, match="recorded on vllm"):
+        replay(mean_task, server, dataclasses.replace(plan, model_backend="vllm"), tmp_path, "r")
+
+
+def test_evidence_without_a_backend_was_recorded_on_ollama(mean_task, server, tmp_path):
+    # Runners before agent-runner-v3 recorded no backend; they only spoke to Ollama.
+    source, _ = record_source(mean_task, server, tmp_path)
+    evidence_path = source / EVIDENCE_FILE
+    evidence = json.loads(evidence_path.read_text())
+    del evidence["configuration"]["model_backend"]
+    evidence_path.write_text(json.dumps(evidence))
+    assert load_replay_plan(source, mean_task).model_backend == "ollama"
+    evidence["configuration"]["model_backend"] = "tgi"
+    evidence_path.write_text(json.dumps(evidence))
+    with pytest.raises(ReplayPlanError, match="unknown model backend"):
+        load_replay_plan(source, mean_task)
+
+
 def test_a_plan_beyond_the_run_limits_is_refused(mean_task, server, tmp_path):
     from agentwatch_agent.config import RunLimits
 

@@ -186,6 +186,15 @@ class NvmlDevice:
         )
         return cls(library, handle, identity)
 
+    @property
+    def library(self) -> object:
+        """The initialized library, for bindings of further entry points (`gpm`)."""
+        return self._library
+
+    @property
+    def handle(self) -> ctypes.c_void_p:
+        return self._handle
+
     def utilization_percent(self) -> tuple[int, int]:
         """(kernel-busy, memory-controller-busy) percent over NVML's own sample period."""
         rates = _Utilization()
