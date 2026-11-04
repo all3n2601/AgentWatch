@@ -20,6 +20,7 @@ from agentwatch_sdk.live import (
     validate_transition,
 )
 from agentwatch_worker.nvml import GpuIdentity, NvmlError
+from agentwatch_worker.ollama import request_timing
 
 TERMINAL = {"completed", "failed", "cancelled"}
 
@@ -190,12 +191,15 @@ class ScriptedModel:
 
     name = "scripted-test-double"
     endpoint = "test://scripted"
+    backend = "ollama"
+    service_id = "ollama"
 
     def __init__(
         self, responses, block: threading.Event | None = None, block_on: int | None = None
     ):
         self.responses = list(responses)
         self.payloads: list[dict] = []
+        self.trace_contexts: list[str | None] = []
         self.block = block
         self.block_on = block_on
         self.blocked = threading.Event()  # set once the blocking request is in progress
@@ -203,8 +207,13 @@ class ScriptedModel:
         self.placement_delay_seconds = 0.0
         self.placement_started = threading.Event()
 
-    def chat(self, payload):
+    def chat(self, payload, *, trace_context=None, on_event=None):
         self.payloads.append(json.loads(json.dumps(payload)))
+        self.trace_contexts.append(trace_context)
+        if on_event is not None:
+            # A one-chunk stream, so the runner's stream timing is exercised.
+            for event in ("response", "chunk", "output"):
+                on_event(event)
         if self.block is not None and len(self.payloads) == self.block_on:
             self.blocked.set()
             self.block.wait(30)
@@ -223,6 +232,9 @@ class ScriptedModel:
             # A slow but successful /api/ps read; must never count as model request time.
             threading.Event().wait(self.placement_delay_seconds)
         return {"source": "test double", "status": "unavailable", "reason": "not a model server"}
+
+    def request_timing(self, metrics, client_wall_seconds):
+        return request_timing(metrics, client_wall_seconds)
 
 
 SOLVE_MEAN = [
