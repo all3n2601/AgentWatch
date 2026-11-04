@@ -106,8 +106,22 @@ def _spans(document: object) -> list[dict]:
     ]
 
 
+def _attributes(span: dict) -> tuple[dict[str, object], list[str]]:
+    """A span's attributes by key, and what made any of them unusable (untrusted input)."""
+    raw = span.get("attributes")
+    if raw is None:
+        return {}, []
+    if not isinstance(raw, list):
+        return {}, ["span attributes are not a list"]
+    usable = [a for a in raw if isinstance(a, dict) and isinstance(a.get("key"), str)]
+    problems = []
+    if len(usable) < len(raw):
+        problems.append(f"{len(raw) - len(usable)} span attributes are not keyed objects")
+    return {a["key"]: _value(a) for a in usable}, problems
+
+
 def span_timing(span: dict, response_id: object) -> dict:
-    attributes = {a.get("key"): _value(a) for a in span.get("attributes") or []}
+    attributes, problems = _attributes(span)
     timing: dict = {
         "method": REQUEST_TIMING_METHOD,
         "span_id": span.get("spanId"),
@@ -116,7 +130,6 @@ def span_timing(span: dict, response_id: object) -> dict:
         "server_end_unix_nano": span.get("endTimeUnixNano"),
         "clock": "vLLM engine timestamps for this request; not comparable with runner ticks",
     }
-    problems = []
     for key, field in DURATIONS.items():
         value = attributes.get(key)
         valid = isinstance(value, float | int) and not isinstance(value, bool)
@@ -138,7 +151,10 @@ def join_spans(spans: list[dict], calls: dict[str, object]) -> dict[str, dict]:
     """Per model-call span ID (the step), its vLLM timing or why there is none."""
     by_parent: dict[str, list[dict]] = {}
     for span in spans:
-        by_parent.setdefault(span.get("parentSpanId"), []).append(span)
+        parent = span.get("parentSpanId")
+        # Untrusted input: a parent that is not a string cannot name any step.
+        if isinstance(parent, str):
+            by_parent.setdefault(parent, []).append(span)
     joined = {}
     for span_id, response_id in calls.items():
         found = by_parent.get(span_id, [])
