@@ -165,3 +165,32 @@ def test_unreadable_trace_files_leave_every_call_unavailable_instead_of_failing(
     call = collected["calls"][STEP_A]
     assert call["status"] == "unavailable"
     assert call["problems"][0].startswith("vLLM traces unreadable (trace files exceed")
+
+
+@pytest.mark.parametrize(
+    ("attributes", "problem"),
+    [
+        ([None], "1 span attributes are not keyed objects"),
+        ([{"key": ["x"], "value": {}}], "1 span attributes are not keyed objects"),
+        ({"key": "x"}, "span attributes are not a list"),
+    ],
+)
+def test_unusable_attributes_make_only_that_call_malformed(attributes, problem):
+    spans = spans_in(span_line(TRACE, STEP_A, "c-1") + span_line(TRACE, STEP_B, "c-2"))
+    if isinstance(attributes, list):
+        spans[0]["attributes"] = spans[0]["attributes"] + attributes
+    else:
+        spans[0]["attributes"] = attributes
+    joined = join_spans(spans, {STEP_A: "c-1", STEP_B: "c-2"})
+    assert joined[STEP_A]["status"] == "malformed"
+    assert problem in joined[STEP_A]["problems"]
+    assert joined[STEP_B]["status"] == "measured"
+
+
+@pytest.mark.parametrize("parent", [["a"], {"id": STEP_A}, 7, None])
+def test_a_span_whose_parent_is_not_a_string_joins_no_step(parent):
+    spans = spans_in(span_line(TRACE, STEP_A, "c-1") + span_line(TRACE, STEP_B, "c-2"))
+    spans[0]["parentSpanId"] = parent
+    joined = join_spans(spans, {STEP_A: "c-1", STEP_B: "c-2"})
+    assert joined[STEP_A]["status"] == "unavailable"
+    assert joined[STEP_B]["status"] == "measured"
