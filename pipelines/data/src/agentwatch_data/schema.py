@@ -5,6 +5,10 @@ labels reproducible without leaking experiment design into predictions.
 
 steps-v1.1 and steps-v1.2 add columns to steps-v1 without changing any existing column, so
 v1 readers remain valid for the columns they know.
+
+REPLAY_LABEL_COLUMNS describes the rows of replay-experiment labels (replay_labels.py). It is
+not part of the release schema: COLUMNS, contract() and schema.json are unchanged, and D03 adds
+these columns with steps-v1.3.
 """
 
 import math
@@ -25,6 +29,23 @@ LABEL_BASES = (
     "clean_exceeded_noise",
     "contention_exceeded_threshold",
     "contention_below_threshold",
+)
+# Replay-experiment labels (labels-v2). `mixed` is a label value only: it is not a
+# resource class, so rule predictions and the model package keep RESOURCE_CLASSES.
+MIXED = "mixed"
+LABEL_RESOURCE_VALUES = (*RESOURCE_CLASSES, MIXED)
+REPLAY_CONDITIONS = ("clean", "cpu", "inference", "retrieval", "mixed")
+REPLAY_ROLES = ("baseline", "contended", "clean_control")
+REPLAY_LABEL_BASES = (
+    "baseline_reference",
+    "clean_within_noise",
+    "clean_exceeded_noise",
+    "contention_below_threshold",
+    "contention_exceeded_threshold",
+    "mixed_below_threshold",
+    "mixed_confirmed",
+    "mixed_partial",
+    "mixed_joint_only",
 )
 INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
 FLOAT64_EXACT_INTEGER = 2**53
@@ -200,6 +221,75 @@ COLUMNS = (
 )
 
 COLUMNS_BY_NAME = {column.name: column for column in COLUMNS}
+
+# Replay label rows (replay_labels.ROW_KEYS, in that order). A name shared with COLUMNS reuses
+# its definition unless the replay row's values differ; the replay variants below widen
+# label_resource to include `mixed` and extend condition and label_basis. Every column here
+# is an ID, LABEL or LINEAGE except the three shared timings, which keep their release FEATURE
+# role; the experiment design (condition, role, injection, label metadata) is never a feature.
+REPLAY_LABEL_COLUMNS = (
+    Column("experiment", "string", Role.ID, "Experiment name; replays are grouped by it"),
+    COLUMNS_BY_NAME["task_id"],
+    Column("task_group", "string", Role.ID, "Task family; splits keep related tasks together"),
+    Column("plan_sha256", "string", Role.ID, "SHA-256 of the experiment plan the replays ran"),
+    COLUMNS_BY_NAME["agent_model"],
+    COLUMNS_BY_NAME["run_id"],
+    Column("replay_index", "int64", Role.ID, "Position of the replay in the experiment", minimum=0),
+    Column(
+        "role",
+        "string",
+        Role.LINEAGE,
+        "Replay role: baseline, contended, clean_control",
+        allowed=REPLAY_ROLES,
+    ),
+    Column(
+        "condition",
+        "string",
+        Role.LINEAGE,
+        f"Injected condition: {', '.join(REPLAY_CONDITIONS)}",
+        allowed=REPLAY_CONDITIONS,
+    ),
+    COLUMNS_BY_NAME["step_id"],
+    Column("step_type", "string", Role.ID, "Kind of step recorded by the agent run"),
+    COLUMNS_BY_NAME["duration_seconds"],
+    COLUMNS_BY_NAME["queue_seconds"],
+    COLUMNS_BY_NAME["execution_seconds"],
+    Column(
+        "label_resource",
+        "string",
+        Role.LABEL,
+        f"Resource that caused excess waiting: {', '.join(LABEL_RESOURCE_VALUES)}",
+        allowed=LABEL_RESOURCE_VALUES,
+    ),
+    Column(
+        "label_resources",
+        "string",
+        Role.LABEL,
+        "Sorted comma-separated confirmed contended resources; the empty string means none. "
+        "D03 must allow the empty string when merging this into steps-v1.3: the release "
+        "value check rejects empty strings",
+    ),
+    COLUMNS_BY_NAME["label_excess_fraction"],
+    Column(
+        "label_basis",
+        "string",
+        Role.LINEAGE,
+        "Why the step received its label",
+        allowed=REPLAY_LABEL_BASES,
+    ),
+    COLUMNS_BY_NAME["injection_method"],
+    COLUMNS_BY_NAME["baseline_mean_seconds"],
+    COLUMNS_BY_NAME["noise_threshold_seconds"],
+    Column(
+        "control_exceeded_noise",
+        "bool",
+        Role.LINEAGE,
+        "Whether the clean control exceeded noise on this step; null when no usable control",
+        True,
+    ),
+    COLUMNS_BY_NAME["failed_checks"],
+    COLUMNS_BY_NAME["label_version"],
+)
 
 # Columns that encode the experiment design or its answer; never model inputs.
 LEAKY_COLUMNS = frozenset(

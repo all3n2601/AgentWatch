@@ -1,0 +1,12 @@
+# Frozen split-v2 assignment. A change to this file requires split-v3 and a new test split.
+version = "split-v2"
+
+# Every task group with a row using one of these methods goes entirely to test. Holding out
+# cpu-spin-processes-v1 instead would send every mixed row to test, and the only inference or
+# retrieval method cannot be held out without removing that class from training.
+held_out_injection_methods = ["worker_queue_blocker"]
+
+# With two agent tasks, 70/15/15 hashing cannot place one in test reliably, so the test task
+# is declared. Selection rule, fixed before any label was seen: the highest split-v1:<name>
+# hash position (fix-window-count 0.502 vs fix-mean-empty 0.476).
+test_task_groups = ["fix-window-count"]
