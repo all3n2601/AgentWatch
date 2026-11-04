@@ -595,7 +595,20 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
 
 - [ ] Define labels, slowdown thresholds, noise treatment, mixed-resource labels, and ties.
   Single-resource labels, thresholds, and noise treatment are defined in `labels-v1.1`; mixed
-  contention and ties are not yet defined and fail labeling.
+  contention and ties are not defined there and fail labeling.
+  2026-11-02 (D02, branch `feature/d02-label-rules-splits`, not merged): `labels-v2` (every
+  confirmed resource in `label_resources`, noise, `mixed` and ties; fingerprint pinned) and
+  frozen `split-v2` (held-out method `worker_queue_blocker`, test task `fix-window-count`,
+  independence checks) are implemented as library code with synthetic-fixture tests in
+  `pipelines/data/tests/test_replay_evidence.py`, `test_replay_labels.py` and
+  `test_split_assignment.py`. Review fixes on 2026-11-03 reject symlinked files and conflicting
+  replay identities, fingerprint the evidence reader and labeling dependencies, and label
+  within-noise mixed steps without solo confirmation. All 700 data pipeline tests passed.
+  Releases still use `labels-v1.1` and `split-v1`. Open: labeling
+  a real recorded replay experiment (none is in the evidence store), Rohit's acceptance of
+  [`eval-contract-v2`](evaluation-contract-v2-proposal.md), D03 wiring into releases, and
+  split-v2 reproduction (build twice, identical split id and `rows_sha256`), possible only after
+  D03 wires `make_split`.
 - [ ] Choose whether the regression target is observed queue time or estimated excess latency.
 - [ ] Generate clean, isolated-contention, and mixed-contention replays over fixed tasks.
   2026-10-25 (A05): `make agent-experiment` writes clean, `cpu`, `inference`, `retrieval` and
