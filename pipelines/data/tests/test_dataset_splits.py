@@ -3,6 +3,7 @@ import hashlib
 import json
 import shutil
 import stat
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from agentwatch_data.splits import (
     SPLITS,
     SplitError,
     assign,
+    check_compatibility,
     held_out_methods,
     leakage_check,
     load_contract,
@@ -32,7 +34,10 @@ from agentwatch_data.splits import (
 from dataset_fixtures import make_result, write_run
 
 REPOSITORY = Path(__file__).resolve().parents[3]
+# The committed contract is eval-contract-v2 (split-v2); split-v1 behavior is tested with the
+# kept eval-contract-v1 file and the steps.pbtxt frozen schema it was validated against.
 CONTRACT = REPOSITORY / "pipelines" / "model" / "evaluation-contract.toml"
+V1 = REPOSITORY / "pipelines" / "model" / "evaluation-contract-v1.toml"
 FROZEN = REPOSITORY / "pipelines" / "validation" / "schema" / "steps.pbtxt"
 GOLDEN = Path(__file__).parent / "fixtures"
 NOW = datetime(2026, 10, 14, tzinfo=UTC)
@@ -45,7 +50,7 @@ def cpu_task(iterations: int) -> str:
 
 def iterations_in(split: str, count: int) -> list[int]:
     """Work sizes whose interim task_id hashes into the given split."""
-    fractions = load_contract(CONTRACT).fractions
+    fractions = load_contract(V1).fractions
     found = [n for n in range(1, 500) if assign(cpu_task(n), fractions) == split]
     return found[:count]
 
@@ -93,12 +98,12 @@ def release(evidence, tmp_path):
     return path
 
 
-def split_of(release: Path, contract: Path = CONTRACT, frozen: Path = FROZEN):
+def split_of(release: Path, contract: Path = V1, frozen: Path = FROZEN):
     return make_split(release, contract, frozen)
 
 
-def edited_contract(tmp_path, *edits: tuple[str, str]) -> Path:
-    text = CONTRACT.read_text()
+def edited_contract(tmp_path, *edits: tuple[str, str], base: Path = V1) -> Path:
+    text = base.read_text()
     for old, new in edits:
         assert old in text
         text = text.replace(old, new)
@@ -116,7 +121,7 @@ def resign(release: Path) -> None:
 def rows_of(path: Path, name: str) -> list[dict]:
     """The synthetic release's queue timing separates its classes, so its leakage check is
     blocked; tests that read its rows opt in explicitly."""
-    return load_split(path, name, CONTRACT, FROZEN, allow_unchecked_leakage=True)
+    return load_split(path, name, V1, FROZEN, allow_unchecked_leakage=True)
 
 
 def resigned(directory: Path, split: dict) -> Path:
@@ -154,7 +159,7 @@ def test_assignment_is_stable_as_tasks_are_added(evidence, release, tmp_path):
 
 
 def test_fractions_hold_across_many_tasks():
-    fractions = load_contract(CONTRACT).fractions
+    fractions = load_contract(V1).fractions
     drawn = [assign(f"task-{n}", fractions) for n in range(20_000)]
     for split, fraction in fractions.items():
         assert drawn.count(split) / len(drawn) == pytest.approx(fraction, abs=0.01)
@@ -166,11 +171,11 @@ def test_a_run_with_two_tasks_is_refused():
         {"run_id": "r", "task_id": "b", "source": "measured"},
     ]
     with pytest.raises(SplitError, match="more than one task_id"):
-        partition(rows, load_contract(CONTRACT))
+        partition(rows, load_contract(V1))
 
 
 def test_sources_not_allowed_in_test_are_excluded_not_moved():
-    contract = load_contract(CONTRACT)
+    contract = load_contract(V1)
     [test_task] = [cpu_task(n) for n in iterations_in("test", 1)]
     [train_task] = [cpu_task(n) for n in iterations_in("train", 1)]
     rows = [
@@ -209,7 +214,7 @@ def test_separation_is_mann_whitney_auc_folded():
 def test_a_separating_feature_blocks_evaluation():
     train = [row("none", queue_fraction=0.01 * n) for n in range(5)]
     train += [row("cpu_sandbox", queue_fraction=0.9 + 0.01 * n) for n in range(5)]
-    check = leakage_check(train, load_contract(CONTRACT))
+    check = leakage_check(train, load_contract(V1))
     assert check["status"] == BLOCKED and "queue_fraction" in check["reason"]
     assert check["features"][0] == {"feature": "queue_fraction", "class": "none", "auc": 1.0}
     assert check["classes"] == ["none", "cpu_sandbox"]
@@ -217,7 +222,7 @@ def test_a_separating_feature_blocks_evaluation():
 
 def test_an_auc_just_above_the_bound_is_not_rounded_away():
     """5/6 = 0.8333333... rounds to the bound 0.833333 but is still above it."""
-    contract = dataclasses.replace(load_contract(CONTRACT), max_single_feature_auc=0.833333)
+    contract = dataclasses.replace(load_contract(V1), max_single_feature_auc=0.833333)
     train = [row("none", queue_fraction=v) for v in (0, 1, 2, 3, 4, 10)]
     train.append(row("cpu_sandbox", queue_fraction=5))
     check = leakage_check(train, contract)
@@ -228,7 +233,7 @@ def test_an_auc_just_above_the_bound_is_not_rounded_away():
 def test_overlapping_features_pass():
     train = [row("none", queue_fraction=v) for v in (0.1, 0.4, 0.5, 0.8)]
     train += [row("cpu_sandbox", queue_fraction=v) for v in (0.2, 0.3, 0.6, 0.7)]
-    check = leakage_check(train, load_contract(CONTRACT))
+    check = leakage_check(train, load_contract(V1))
     assert check["status"] == PASSED and check["reason"] is None
     assert {item["feature"] for item in check["features"]} == set(FEATURES)
     assert max(item["auc"] for item in check["features"]) <= 0.98
@@ -239,7 +244,7 @@ def test_overlapping_features_pass():
     [([], "the training split is empty"), ([row("none"), row("none")], "only one class")],
 )
 def test_leakage_is_inconclusive_without_two_classes(train, reason):
-    check = leakage_check(train, load_contract(CONTRACT))
+    check = leakage_check(train, load_contract(V1))
     assert check["status"] == INCONCLUSIVE and reason in check["reason"]
 
 
@@ -294,7 +299,7 @@ def test_split_file_is_deterministic_and_reused(release):
 def test_split_records_its_provenance(release):
     split = split_of(release).split
     manifest = json.loads((release / MANIFEST_FILE).read_text())
-    contract = load_contract(CONTRACT)
+    contract = load_contract(V1)
     assert split["dataset_version"] == release.name == split["release"]
     assert split["release_parquet_sha256"] == manifest["parquet_sha256"]
     assert split["label_version"] == manifest["label_version"]
@@ -303,14 +308,13 @@ def test_split_records_its_provenance(release):
     assert split["frozen_schema_sha256"] == hashlib.sha256(FROZEN.read_bytes()).hexdigest()
 
 
-def test_contract_hash_follows_the_contract_definition():
-    import tomllib
-
-    parsed = tomllib.loads(CONTRACT.read_text())
+@pytest.mark.parametrize("path", [CONTRACT, V1], ids=["v2", "v1"])
+def test_contract_hash_follows_the_contract_definition(path):
+    parsed = tomllib.loads(path.read_text())
     expected = hashlib.sha256(
         json.dumps(parsed, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:8]
-    assert load_contract(CONTRACT).sha256 == expected
+    assert load_contract(path).sha256 == expected
 
 
 def test_split_rows_hash_identifies_the_rows(release):
@@ -361,7 +365,7 @@ def test_a_resigned_split_that_differs_from_its_rebuild_is_refused(release, chan
     result = split_of(release)
     split = edit(json.loads(result.path.read_text()), change)
     with pytest.raises(SplitError, match=REBUILT):
-        load_split(resigned(result.path.parent, split), "train", CONTRACT, FROZEN, True)
+        load_split(resigned(result.path.parent, split), "train", V1, FROZEN, True)
 
 
 def test_a_split_made_under_another_contract_is_refused(release, tmp_path):
@@ -398,7 +402,7 @@ def test_splits_without_a_passing_leakage_check_are_refused_by_default(release):
     result = split_of(release)
     assert result.split["leakage"]["status"] == BLOCKED
     with pytest.raises(SplitError, match="leakage check is blocked; the contract blocks"):
-        load_split(result.path, "train", CONTRACT, FROZEN)
+        load_split(result.path, "train", V1, FROZEN)
     assert len(rows_of(result.path, "train")) == 10  # explicit opt-in for exploration
 
 
@@ -406,7 +410,7 @@ def test_splits_with_a_passing_leakage_check_load(release, monkeypatch):
     passed = {"status": PASSED, "reason": None}
     monkeypatch.setattr(splits_module, "leakage_check", lambda train, contract: passed)
     result = split_of(release)
-    assert len(load_split(result.path, "validation", CONTRACT, FROZEN)) == 10
+    assert len(load_split(result.path, "validation", V1, FROZEN)) == 10
 
 
 @pytest.fixture
@@ -415,7 +419,7 @@ def usable_split(release, monkeypatch):
     passed = {"status": PASSED, "reason": None}
     monkeypatch.setattr(splits_module, "leakage_check", lambda train, contract: passed)
     path = split_of(release).path
-    assert len(load_split(path, "train", CONTRACT, FROZEN)) == 10
+    assert len(load_split(path, "train", V1, FROZEN)) == 10
     return path
 
 
@@ -428,13 +432,13 @@ def test_an_existing_split_is_refused_after_a_later_failed_verdict(release, usab
     )
     for allow in (False, True):  # the leakage opt-in never bypasses the gate
         with pytest.raises(SplitError, match="failed its latest quality gate"):
-            load_split(usable_split, "train", CONTRACT, FROZEN, allow_unchecked_leakage=allow)
+            load_split(usable_split, "train", V1, FROZEN, allow_unchecked_leakage=allow)
 
 
 def test_an_existing_split_is_refused_once_its_verdict_is_gone(release, usable_split):
     shutil.rmtree(release.parent / "validations")
     with pytest.raises(SplitError, match="has no quality-gate verdict"):
-        load_split(usable_split, "test", CONTRACT, FROZEN)
+        load_split(usable_split, "test", V1, FROZEN)
 
 
 def test_an_existing_split_is_refused_under_a_changed_frozen_schema(
@@ -443,7 +447,7 @@ def test_an_existing_split_is_refused_under_a_changed_frozen_schema(
     changed = tmp_path / "steps.pbtxt"
     changed.write_text(FROZEN.read_text() + "# reviewed change\n")
     with pytest.raises(SplitError, match="validated against a different schema"):
-        load_split(usable_split, "train", CONTRACT, changed)
+        load_split(usable_split, "train", V1, changed)
     # Revalidated under the new schema, the release passes, but this split predates it.
     write_verdict(
         release,
@@ -452,12 +456,12 @@ def test_an_existing_split_is_refused_under_a_changed_frozen_schema(
         validated_at="2026-10-02T00:00:00+00:00",
     )
     with pytest.raises(SplitError, match=REBUILT):
-        load_split(usable_split, "train", CONTRACT, changed)
+        load_split(usable_split, "train", V1, changed)
 
 
 def test_unknown_split_names_are_refused(release):
     with pytest.raises(SplitError, match="Unknown split"):
-        load_split(split_of(release).path, "holdout", CONTRACT, FROZEN)
+        load_split(split_of(release).path, "holdout", V1, FROZEN)
 
 
 def test_a_failed_write_leaves_nothing(release, monkeypatch):
@@ -625,10 +629,186 @@ def test_exact_schema_versions_are_required_without_minor_compatibility(release,
 # The evaluation contract
 
 
-def test_the_committed_contract_loads():
-    contract = load_contract(CONTRACT)
+def test_the_v1_contract_loads_as_split_v1():
+    contract = load_contract(V1)
+    assert (contract.version, contract.status) == ("eval-contract-v1", "proposed")
+    assert contract.method == "split-v1" and contract.assignment is None  # no method key: v1
+    assert contract.label_rules == ("labels-v1.1",)  # a TOML string becomes a 1-tuple
     assert contract.group_key == "task_id" and contract.test_sources == ("measured",)
     assert contract.max_single_feature_auc == 0.98 and contract.held_out_injection_methods == 1
+    assert (
+        contract.min_test_steps_per_class,
+        contract.min_clean_test_steps,
+        contract.min_mixed_test_steps,
+    ) == (30, 100, 30)
+
+
+def test_v1_contract_file_keeps_the_v1_identifier():
+    # 3022770b identifies pipelines/model/evaluation-contract.toml at commit c6b4333, the
+    # eval-contract-v1 that split-v1+58e921fa846a and the #45/#46 results record.
+    assert load_contract(V1).sha256 == "3022770b"
+
+
+def test_v2_contract_selects_split_v2_with_both_label_rules():
+    c = load_contract(CONTRACT)
+    assert (c.version, c.status, c.schema_version) == ("eval-contract-v2", "accepted", "steps-v1.3")
+    assert (c.method, c.group_key, c.label_rules) == (
+        "split-v2",
+        "task_group",
+        ("labels-v1.1", "labels-v2"),
+    )
+    assert c.assignment.name == "split-assignment.toml" and c.assignment.is_file()
+    assert c.assignment == REPOSITORY / "pipelines/data/src/agentwatch_data/split-assignment.toml"
+
+
+def test_v2_changes_only_the_accepted_items():
+    """Thresholds, fractions, sources and every other value stay as eval-contract-v1 set them."""
+    v1, v2 = tomllib.loads(V1.read_text()), tomllib.loads(CONTRACT.read_text())
+    changed = {
+        ("version",): "eval-contract-v2",
+        ("status",): "accepted",
+        ("dataset", "schema_version"): "steps-v1.3",
+        ("dataset", "label_rules"): ["labels-v1.1", "labels-v2"],
+        ("splits", "method"): "split-v2",
+        ("splits", "group_key"): "task_group",
+        ("splits", "assignment"): "../data/src/agentwatch_data/split-assignment.toml",
+    }
+    for keys, value in changed.items():
+        table_v1, table_v2 = v1, v2
+        for key in keys[:-1]:
+            table_v1, table_v2 = table_v1[key], table_v2[key]
+        assert table_v2.pop(keys[-1]) == value
+        table_v1.pop(keys[-1], None)
+    assert v2 == v1
+
+
+def test_the_assignment_resolves_against_the_contract_directory(tmp_path):
+    copied = tmp_path / "contract.toml"
+    copied.write_text(
+        CONTRACT.read_text().replace(
+            'assignment = "../data/src/agentwatch_data/split-assignment.toml"',
+            'assignment = "assignment.toml"',
+        )
+    )
+    assert load_contract(copied).assignment == tmp_path / "assignment.toml"
+
+
+@pytest.mark.parametrize(
+    ("label_version", "accepted"),
+    [
+        ("labels-v1.1+2c495a72", True),
+        ("labels-v2+d803a9c6", True),
+        ("labels-v1.1+2c495a72,labels-v2+d803a9c6", True),
+        ("labels-v1.1+2c495a72,labels-v3+00000000", False),
+        ("labels-v3+00000000", False),
+        ("labels-v1.1+2c495a72,", False),  # an empty part names no accepted rule
+        (None, False),
+    ],
+)
+def test_release_with_an_unlisted_label_rule_is_refused(label_version, accepted):
+    contract = load_contract(CONTRACT)
+    manifest = {"schema_version": "steps-v1.3", "label_version": label_version}
+    if accepted:
+        check_compatibility(contract, manifest)
+    else:
+        with pytest.raises(SplitError, match="are not accepted by eval-contract-v2"):
+            check_compatibility(contract, manifest)
+
+
+def test_the_v1_contract_still_refuses_labels_v2():
+    manifest = {"schema_version": "steps-v1.3", "label_version": "labels-v1.1+a,labels-v2+b"}
+    with pytest.raises(SplitError, match="are not accepted by eval-contract-v1"):
+        check_compatibility(load_contract(V1), manifest)
+
+
+def test_split_v1_contract_with_an_assignment_is_refused(tmp_path):
+    contract = edited_contract(
+        tmp_path, ('group_key = "task_id"', 'group_key = "task_id"\nassignment = "a.toml"')
+    )
+    with pytest.raises(SplitError, match="split-v1 .*must not name an assignment"):
+        load_contract(contract)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ('method = "split-v2"', 'method = "split-v3"', "method 'split-v3' is not one of"),
+        ('method = "split-v2"', "method = 2", "must be str"),
+        ('assignment = "../data/src/agentwatch_data/split-assignment.toml"', "", "needs an"),
+        (
+            'assignment = "../data/src/agentwatch_data/split-assignment.toml"',
+            "assignment = 1",
+            "must be str",
+        ),
+        ('label_rules = ["labels-v1.1", "labels-v2"]', "label_rules = []", "label_rules"),
+        ('label_rules = ["labels-v1.1", "labels-v2"]', "label_rules = [1]", "label_rules"),
+        ('group_key = "task_group"', 'group_key = "run_id"', "is not one of"),
+        ("min_clean_test_steps = 100", "min_clean_test_steps = -1", "min_clean_test_steps"),
+        ("min_test_steps_per_class = 30", "min_test_steps_per_class = 3.0", "must be int"),
+        ("min_mixed_contention_test_steps = 30", "", "min_mixed_contention_test_steps"),
+    ],
+)
+def test_invalid_v2_contracts_are_refused(tmp_path, old, new, message):
+    contract = edited_contract(tmp_path, (old, new), base=CONTRACT)
+    with pytest.raises(SplitError, match=message):
+        load_contract(contract)
+
+
+def test_split_v2_is_not_split_until_it_is_wired(release):
+    """make_split and load_split refuse a split-v2 contract rather than split it as split-v1.
+
+    The fixture's steps-v1.3, labels-v1.1 release is compatible with eval-contract-v2, so the
+    method is the only thing refused.
+    """
+    with pytest.raises(SplitError, match="split-v2 is wired in a later change"):
+        split_of(release, contract=CONTRACT)
+    made = split_of(release)  # under eval-contract-v1
+    with pytest.raises(SplitError, match="split-v2 is wired in a later change"):
+        load_split(made.path, "train", CONTRACT, FROZEN, allow_unchecked_leakage=True)
+
+
+def test_v1_2_release_and_split_still_load_with_the_v1_files(release):
+    """A split made with eval-contract-v1 and steps.pbtxt is the split-v1 document as before.
+
+    Split ids hash the whole document, so pinning the contract-derived parts and the exact set
+    of fields proves the new contract fields leave every split-v1 id unchanged.
+    """
+    made = split_of(release, contract=V1, frozen=FROZEN)
+    split = made.split
+    content = {key: value for key, value in split.items() if key != "split_id"}
+    assert split["split_id"] == f"split-v1+{canonical_sha256(content)[:12]}"
+    assert split["split_method"] == "split-v1"
+    assert sorted(content) == [
+        "contract",
+        "dataset_version",
+        "excluded_runs",
+        "frozen_schema_sha256",
+        "groups",
+        "held_out_injection_methods",
+        "label_version",
+        "leakage",
+        "release",
+        "release_parquet_sha256",
+        "split_method",
+        "splits",
+    ]
+    assert split["contract"] == {
+        "version": "eval-contract-v1",
+        "status": "proposed",
+        "sha256": "3022770b",
+        "group_key": "task_id",
+        "fractions": {"train": 0.7, "validation": 0.15, "test": 0.15},
+        "test_sources": ["measured"],
+    }
+    assert split_of(release, contract=V1, frozen=FROZEN).reused  # same id on a rebuild
+    for name in SPLITS:
+        rows = load_split(made.path, name, V1, FROZEN, allow_unchecked_leakage=True)
+        assert split["splits"][name]["rows_sha256"] == canonical_sha256(
+            {
+                "dataset_version": release.name,
+                "rows": sorted([row["run_id"], row["step_id"]] for row in rows),
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -681,7 +861,7 @@ def test_the_recorded_run_splits_honestly(tmp_path):
 
 
 def test_cli_prints_the_split_and_its_leakage_status(release, capsys):
-    args = ["--release", str(release), "--contract", str(CONTRACT), "--frozen-schema", str(FROZEN)]
+    args = ["--release", str(release), "--contract", str(V1), "--frozen-schema", str(FROZEN)]
     assert main(args) == 0
     captured = capsys.readouterr()
     assert (
@@ -695,10 +875,28 @@ def test_cli_prints_the_split_and_its_leakage_status(release, capsys):
 def test_cli_reports_a_passing_leakage_check_quietly(release, capsys, monkeypatch):
     passed = {"status": PASSED, "reason": None}
     monkeypatch.setattr(splits_module, "leakage_check", lambda train, contract: passed)
-    args = ["--release", str(release), "--contract", str(CONTRACT), "--frozen-schema", str(FROZEN)]
+    args = ["--release", str(release), "--contract", str(V1), "--frozen-schema", str(FROZEN)]
     assert main(args) == 0
     captured = capsys.readouterr()
     assert "leakage: passed\n" in captured.out and captured.err == ""
+
+
+def test_cli_defaults_to_the_committed_contract_and_the_steps_v1_3_schema(tmp_path, monkeypatch):
+    seen = []
+
+    def refuse(release, contract, frozen_schema):
+        seen.append((contract, frozen_schema))
+        raise SplitError("stop")
+
+    monkeypatch.setattr(splits_module, "make_split", refuse)
+    assert main(["--release", str(tmp_path)]) == 1
+    assert seen == [
+        (
+            Path("pipelines/model/evaluation-contract.toml"),
+            Path("pipelines/validation/schema/steps-v1.3.pbtxt"),
+        )
+    ]
+    assert all((REPOSITORY / path).is_file() for path in seen[0])
 
 
 def test_cli_exits_one_when_the_split_fails(tmp_path, capsys):
@@ -710,7 +908,7 @@ def test_module_runs_as_a_command(release, monkeypatch):
     import runpy
     import sys
 
-    argv = ["agentwatch_data.splits", "--release", str(release), "--contract", str(CONTRACT)]
+    argv = ["agentwatch_data.splits", "--release", str(release), "--contract", str(V1)]
     monkeypatch.setattr(sys, "argv", argv + ["--frozen-schema", str(FROZEN)])
     monkeypatch.delitem(sys.modules, "agentwatch_data.splits", raising=False)
     with pytest.raises(SystemExit) as exited:

@@ -55,7 +55,7 @@ add-evidence: ## Validate recorded runs and copy them into the versioned evidenc
 dataset: ## Build a versioned step dataset release from the evidence store (DATASET_SOURCES="local:data/evidence api:http://127.0.0.1:8090")
 	$(DATA).build $(foreach source,$(DATASET_SOURCES),--source $(source)) --output $(DATASET_OUTPUT)
 
-VALIDATION_SCHEMA ?= pipelines/validation/schema/steps.pbtxt
+VALIDATION_SCHEMA ?= pipelines/validation/schema/steps-v1.3.pbtxt
 LATEST_RELEASE = $(DATA).releases --output $(DATASET_OUTPUT)
 
 validate-dataset: ## Check the newest published release with the TFDV quality gate (Python 3.13; exits 1 on anomalies)

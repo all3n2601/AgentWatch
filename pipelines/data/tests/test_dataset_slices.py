@@ -334,6 +334,28 @@ def test_a_split_grouped_by_an_unknown_key_is_refused(tmp_path):
         load_assignment(split, tmp_path / RELEASE)
 
 
+def test_a_release_before_task_group_still_slices_by_task_id(tmp_path):
+    release = write_release(tmp_path, balanced())  # no task_group column, as in steps-v1.2
+    split = write_split(tmp_path, {CPU_TASK: "train", CODING_TASK: "test"})
+    report = slice_release(release, split, tmp_path / "out").report
+    assert report["split_rows"] == {"train": 60, "test": 60}
+
+
+def test_a_split_grouped_by_task_group_slices_a_release_that_has_it(tmp_path):
+    rows = [row | {"task_group": row["kind"]} for row in balanced()]
+    release = write_release(tmp_path, rows)
+    split = write_split(tmp_path, {"cpu": "train", "coding": "test"}, group_key="task_group")
+    report = slice_release(release, split, tmp_path / "out").report
+    assert report["split_rows"] == {"train": 60, "test": 60}
+
+
+def test_a_split_grouped_by_a_column_the_release_lacks_is_refused(tmp_path):
+    release = write_release(tmp_path, balanced())
+    split = write_split(tmp_path, {"cpu": "train"}, group_key="task_group")
+    with pytest.raises(SliceError, match="groups by 'task_group', which .* lacks"):
+        slice_release(release, split, tmp_path / "out")
+
+
 def test_newest_split_picks_the_latest_split_file_of_the_release(tmp_path):
     import os
 

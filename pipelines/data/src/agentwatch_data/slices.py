@@ -56,7 +56,10 @@ NO_RESOURCE = "none"  # the label of a step no resource slowed
 RULE = "rule_prediction"
 # Nullable readings: null means the reading was missing or unsupported, never zero.
 READINGS = ("telemetry_coverage", "cpu_pressure_max_avg10", "cgroup_throttled_usec_delta")
-REQUIRED_COLUMNS = tuple(dict.fromkeys(("run_id", RULE, *ATTRIBUTES, *READINGS, *GROUP_KEYS)))
+REQUIRED_COLUMNS = tuple(dict.fromkeys(("run_id", RULE, *ATTRIBUTES, *READINGS, GROUP_KEYS[0])))
+# Later group keys are read when the release has them: task_group exists from steps-v1.3, and a
+# split grouped by a column its release lacks is refused in slice_release.
+OPTIONAL_GROUP_KEYS = tuple(key for key in GROUP_KEYS if key not in REQUIRED_COLUMNS)
 # condition and injection_method decide the label by design (contended runs are the positives),
 # so single-class slices and label-rate gaps across them are expected, not bias; the target
 # cannot be compared with itself.
@@ -147,7 +150,8 @@ def load_rows(release: Path) -> list[dict[str, object]]:
         raise SliceError(f"{path} lacks columns the slices need: {missing}")
     if table.num_rows == 0:
         raise SliceError(f"{path} has no rows to slice")
-    return table.select(list(REQUIRED_COLUMNS)).to_pylist()
+    present = [key for key in OPTIONAL_GROUP_KEYS if key in table.column_names]
+    return table.select([*REQUIRED_COLUMNS, *present]).to_pylist()
 
 
 def load_assignment(split: Path, release: Path) -> Assignment:
@@ -374,6 +378,10 @@ def markdown(report: dict) -> str:
 def slice_release(release: Path, split: Path | None, output: Path) -> SliceReport:
     rows = load_rows(release)
     splits = load_assignment(split, release) if split is not None else None
+    if splits is not None and splits.group_key not in rows[0]:  # load_rows refuses no rows
+        raise SliceError(
+            f"split file {split} groups by {splits.group_key!r}, which {release.name} lacks"
+        )
     report = analyze(rows, release.name, splits)
     json_path, markdown_path = output / "slices.json", output / "slices.md"
     try:

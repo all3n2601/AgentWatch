@@ -3,18 +3,25 @@
 # Never edit a threshold after seeing test-split results; change the version instead.
 # Reports identify this file by SHA-256 of its parsed contents as canonical JSON, so line
 # endings and comments do not change the identifier.
-version = "eval-contract-v1"
-# "proposed" until reviewed; values marked "proposed" below have no supporting data yet.
-status = "proposed"
+# eval-contract-v1 is kept unchanged in evaluation-contract-v1.toml, so splits and results made
+# under it still rebuild. v2 adopts docs/evaluation-contract-v2-proposal.md: labels-v2 is
+# evaluated (mixed stays a label value outside the four classes), split-v2 groups by
+# task_group with the frozen assignment file, and every threshold is unchanged.
+version = "eval-contract-v2"
+# Accepted by Rohit (M02 owner), told to the owner directly on 2026-11-05; Rohit's approval of
+# the pull request that adds this file is the written confirmation. Values marked "proposed"
+# below still have no supporting data.
+status = "accepted"
 
 [dataset]
 # Later compatible minor versions (steps-v1.x, which only add columns) are also accepted.
-schema_version = "steps-v1.1"
+schema_version = "steps-v1.3"
 accept_compatible_minor_versions = true
-# Pinned exactly: a label-rule change can change labels, so schema compatibility never
-# permits a different label version. Reports record the full label_version with its
-# fingerprint, for example labels-v1.1+740e0355.
-label_rules = "labels-v1.1"
+# Each rule is pinned exactly: a label-rule change can change labels, so schema compatibility
+# never permits a different label version. A release is accepted when every label version it
+# holds is listed here. Reports record the release's full label_version with each fingerprint,
+# for example labels-v1.1+2c495a72,labels-v2+d803a9c6.
+label_rules = ["labels-v1.1", "labels-v2"]
 # Must match RESOURCE_CLASSES in pipelines/data/src/agentwatch_data/schema.py.
 classes = ["none", "cpu_sandbox", "inference", "retrieval"]
 classification_target = "label_resource"
@@ -23,7 +30,11 @@ regression_target = "label_excess_fraction"
 test_sources = ["measured"]
 
 [splits]
-group_key = "task_id"
+# split-v2 partitions by the frozen assignment file, resolved against this file's directory;
+# changing that file requires split-v3 and a new test split.
+method = "split-v2"
+group_key = "task_group"
+assignment = "../data/src/agentwatch_data/split-assignment.toml"
 train_fraction = 0.70
 validation_fraction = 0.15
 test_fraction = 0.15

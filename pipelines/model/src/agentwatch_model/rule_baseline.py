@@ -23,9 +23,9 @@ from agentwatch_model.metrics import CLASSES, is_number
 from agentwatch_model.report import blocked_report, build_report, dataset_version
 from agentwatch_model.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 
-# pipelines/validation/schema/steps.pbtxt beside this package's source tree. This default holds
-# for the workspace (editable) install; the Makefile always passes the path explicitly.
-DEFAULT_SCHEMA = Path(__file__).resolve().parents[3] / "validation" / "schema" / "steps.pbtxt"
+# pipelines/validation/schema/steps-v1.3.pbtxt beside this package's source tree. This default
+# holds for the workspace (editable) install; the Makefile always passes the path explicitly.
+DEFAULT_SCHEMA = Path(__file__).resolve().parents[3] / "validation" / "schema" / "steps-v1.3.pbtxt"
 DEFAULT_OUTPUT = Path(".data/rule-baseline")
 REPORT = "report.json"
 PREDICTIONS = "predictions.jsonl"

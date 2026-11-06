@@ -161,3 +161,9 @@ def test_main_exits_two_on_unusable_rows(tmp_path, monkeypatch, capsys):
     args = ["--split", str(tmp_path / "split.json"), "--output", str(tmp_path / "out")]
     assert main(args) == 2
     assert "unknown label 'gpu'" in capsys.readouterr().err
+
+
+def test_the_default_frozen_schema_is_the_steps_v1_3_schema():
+    from agentwatch_model.rule_baseline import DEFAULT_SCHEMA
+
+    assert DEFAULT_SCHEMA.name == "steps-v1.3.pbtxt" and DEFAULT_SCHEMA.is_file()

@@ -51,11 +51,13 @@ from agentwatch_data.labels import NO_INJECTION
 from agentwatch_data.schema import RESOURCE_CLASSES, SOURCES, feature_columns
 
 SPLIT_METHOD = "split-v1"  # hashed with each group key; a new value redraws every split
+# split-v2 partitions by a frozen assignment file instead of hashing alone (split_assignment).
+METHODS = (SPLIT_METHOD, "split-v2")
 SPLITS = ("train", "validation", "test")
 SPLITS_DIR, VALIDATIONS_DIR, RESULT_FILE = "splits", "validations", "result.json"
 FEATURES = tuple(feature_columns())  # the schema decides what may be a model input
 # Grouping must keep a task's baselines and replays together, so only task-level keys qualify.
-GROUP_KEYS = ("task_id",)
+GROUP_KEYS = ("task_id", "task_group")
 VERSION = re.compile(r"(?P<name>[a-z]+)-v(?P<major>\d+)\.(?P<minor>\d+)")
 PASSED, BLOCKED, INCONCLUSIVE = "passed", "blocked", "inconclusive"
 
@@ -71,13 +73,19 @@ class Contract:
     sha256: str  # the contract identifier: first 8 hex digits, as evaluation reports record it
     schema_version: str
     accept_compatible_minor_versions: bool
-    label_rules: str
+    label_rules: tuple[str, ...]  # label-rule versions evaluated, each pinned exactly
     classes: tuple[str, ...]
     target: str
     test_sources: tuple[str, ...]
+    method: str
     group_key: str
+    # The frozen split-assignment file, resolved against the contract's directory; split-v2 only.
+    assignment: Path | None
     fractions: dict[str, float]
     held_out_injection_methods: int
+    min_test_steps_per_class: int
+    min_clean_test_steps: int
+    min_mixed_test_steps: int
     max_single_feature_auc: float
 
 
@@ -94,6 +102,38 @@ def require(table: dict, key: str, kind: type, where: str):
     if type(value) is not kind:
         raise SplitError(f"Contract {where}.{key} must be {kind.__name__}")
     return value
+
+
+def count(table: dict, key: str, where: str) -> int:
+    value = require(table, key, int, where)
+    if value < 0:
+        raise SplitError(f"Contract {where}.{key} must be >= 0")
+    return value
+
+
+def label_rules(dataset: dict) -> tuple[str, ...]:
+    """eval-contract-v1 names one rule as a string; later contracts list several."""
+    value = dataset.get("label_rules")
+    rules = [value] if isinstance(value, str) else value
+    if not isinstance(rules, list) or not rules or not all(isinstance(r, str) and r for r in rules):
+        raise SplitError("Contract dataset.label_rules must be a name or a non-empty list of names")
+    return tuple(rules)
+
+
+def split_method(splits: dict, path: Path) -> tuple[str, Path | None]:
+    """The split method and its assignment file; contracts before split-v2 name no method."""
+    method = require(splits, "method", str, "splits") if "method" in splits else SPLIT_METHOD
+    if method not in METHODS:
+        raise SplitError(f"Contract split method {method!r} is not one of {list(METHODS)}")
+    if method == SPLIT_METHOD:
+        if "assignment" in splits:
+            raise SplitError(
+                f"Contract method {method} hashes groups and must not name an assignment"
+            )
+        return method, None
+    if "assignment" not in splits:
+        raise SplitError(f"Contract method {method} needs an assignment file in [splits]")
+    return method, (path.parent / require(splits, "assignment", str, "splits")).resolve()
 
 
 def load_contract(path: Path) -> Contract:
@@ -126,6 +166,7 @@ def load_contract(path: Path) -> Contract:
         sum(fractions.values()), 1.0
     ):
         raise SplitError(f"Contract split fractions must be in (0, 1) and sum to 1: {fractions}")
+    method, assignment = split_method(splits, path)
     held_out = require(splits, "held_out_injection_methods", int, "splits")
     bound = require(leakage, "max_single_feature_auc", float, "leakage")
     if held_out < 0 or not 0.5 <= bound <= 1:
@@ -138,13 +179,18 @@ def load_contract(path: Path) -> Contract:
         accept_compatible_minor_versions=require(
             dataset, "accept_compatible_minor_versions", bool, "dataset"
         ),
-        label_rules=require(dataset, "label_rules", str, "dataset"),
+        label_rules=label_rules(dataset),
         classes=classes,
         target=target,
         test_sources=test_sources,
+        method=method,
         group_key=group_key,
+        assignment=assignment,
         fractions=fractions,
         held_out_injection_methods=held_out,
+        min_test_steps_per_class=count(splits, "min_test_steps_per_class", "splits"),
+        min_clean_test_steps=count(splits, "min_clean_test_steps", "splits"),
+        min_mixed_test_steps=count(splits, "min_mixed_contention_test_steps", "splits"),
         max_single_feature_auc=bound,
     )
 
@@ -164,8 +210,10 @@ def check_compatibility(contract: Contract, manifest: dict) -> None:
     )
     if not compatible:
         raise SplitError(f"Schema {schema} is not accepted by {contract.version}")
-    # Label versions are pinned exactly; only the fingerprint after "+" may vary.
-    if str(label).split("+", 1)[0] != contract.label_rules:
+    # A release holding several label versions names them comma-joined. Each must be one the
+    # contract pins exactly; only the fingerprint after "+" may vary.
+    bases = {part.split("+", 1)[0] for part in str(label).split(",")}
+    if not bases <= set(contract.label_rules):
         raise SplitError(f"Labels {label} are not accepted by {contract.version}")
 
 
@@ -423,9 +471,16 @@ def held_out_methods(members: dict[str, list[dict]], required: int) -> dict:
     }
 
 
+def require_split_v1(contract: Contract) -> None:
+    # D03 Task 7 partitions split-v2 contracts with split_assignment.partition_v2.
+    if contract.method != SPLIT_METHOD:
+        raise SplitError(f"{contract.method} is wired in a later change; use a split-v1 contract")
+
+
 def describe(
     release: Path, manifest: dict, rows: list[dict], contract: Contract, schema_sha256: str
 ) -> dict:
+    require_split_v1(contract)
     groups, members, excluded = partition(rows, contract)
     version = manifest["dataset_version"]
     document = {
@@ -462,6 +517,7 @@ def describe(
 def make_split(release: Path, contract_path: Path, frozen_schema: Path) -> SplitResult:
     """Split a release that passed the quality gate, or reuse its identical existing split."""
     contract = load_contract(contract_path)
+    require_split_v1(contract)
     manifest, rows = load_release(release)
     check_compatibility(contract, manifest)
     require_passing_verdict(release, manifest, frozen_schema)
@@ -519,6 +575,7 @@ def load_split(
         raise SplitError(f"Unknown split {name!r}; expected one of {list(SPLITS)}")
     split = read_split_file(path)
     contract = load_contract(contract_path)
+    require_split_v1(contract)
     release = path.parents[2] / path.parent.name
     manifest, rows = load_release(release)
     check_compatibility(contract, manifest)
@@ -545,7 +602,9 @@ def main(argv: list[str] | None = None) -> int:
         "--contract", type=Path, default=Path("pipelines/model/evaluation-contract.toml")
     )
     parser.add_argument(
-        "--frozen-schema", type=Path, default=Path("pipelines/validation/schema/steps.pbtxt")
+        "--frozen-schema",
+        type=Path,
+        default=Path("pipelines/validation/schema/steps-v1.3.pbtxt"),
     )
     args = parser.parse_args(argv)
     try:
