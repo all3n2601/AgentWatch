@@ -6,9 +6,11 @@ import pytest
 from agentwatch_data.build import DATASET_FILE
 from agentwatch_data.slices import (
     ABSENT_FROM_SPLIT,
+    ATTRIBUTES,
     EXCLUDED,
     MISSING_READINGS_GAP,
     MITIGATIONS,
+    OPTIONAL_ATTRIBUTES,
     POSITIVE_RATE_GAP,
     SINGLE_CLASS,
     UNASSIGNED,
@@ -317,7 +319,7 @@ def test_the_markdown_lists_flags_and_one_table_per_attribute():
     assert "Rows per split: test 60, train 60." in text
     assert "- **absent_from_split** — kind = coding: no rows in the train split." in text
     assert "| cpu | 60 | 50.0% | 50.0% | 100.0% |" in text
-    assert text.count("\n## ") == 1 + 12  # flags, then each attribute
+    assert text.count("\n## ") == 1 + len(ATTRIBUTES)  # flags, then each attribute
     assert "Train / test" in text
 
 
@@ -416,8 +418,31 @@ def test_a_split_grouped_by_an_unknown_key_is_refused(tmp_path):
         load_assignment(split, tmp_path / RELEASE)
 
 
+def v1_2_rows() -> list[dict[str, object]]:
+    """balanced() rows shaped like a steps-v1.2 release: without the steps-v1.3 columns."""
+    rows = [
+        {name: value for name, value in row.items() if name not in OPTIONAL_ATTRIBUTES}
+        for row in balanced()
+    ]
+    assert all(name not in row for row in rows for name in (*OPTIONAL_ATTRIBUTES, "task_group"))
+    return rows
+
+
+def test_a_v1_2_release_without_replay_columns_is_still_sliced(tmp_path):
+    release = write_release(tmp_path, v1_2_rows())
+    split = write_split(tmp_path, {CPU_TASK: "train", CODING_TASK: "test"})
+    report = slice_release(release, split, tmp_path / "out").report
+    assert list(report["attributes"]) == [
+        name for name in ATTRIBUTES if name not in OPTIONAL_ATTRIBUTES
+    ]
+    assert report["split_rows"] == {"train": 60, "test": 60}
+    text = (tmp_path / "out" / "slices.md").read_text()
+    assert text.count("\n## ") == 1 + len(report["attributes"])
+    assert "feature_version" not in text  # omitted, not filled with an unrecorded slice
+
+
 def test_a_release_before_task_group_still_slices_by_task_id(tmp_path):
-    release = write_release(tmp_path, balanced())  # no task_group column, as in steps-v1.2
+    release = write_release(tmp_path, v1_2_rows())  # no task_group column, as in steps-v1.2
     split = write_split(tmp_path, {CPU_TASK: "train", CODING_TASK: "test"})
     report = slice_release(release, split, tmp_path / "out").report
     assert report["split_rows"] == {"train": 60, "test": 60}

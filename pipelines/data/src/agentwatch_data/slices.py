@@ -41,7 +41,7 @@ from agentwatch_data.files import json_text, write_atomic
 from agentwatch_data.splits import GROUP_KEYS, SPLITS, SPLITS_DIR
 
 SLICE_METHOD = "slices-v2"  # bump when attributes, metrics, or thresholds change
-ATTRIBUTES = (
+REQUIRED_ATTRIBUTES = (
     "task_id",
     "kind",
     "label_resource",
@@ -52,18 +52,26 @@ ATTRIBUTES = (
     "telemetry_status",
     "cpu_pressure_available",
     "cgroup_available",
-    "feature_version",
-    "replay_condition",
 )
+# Columns steps-v1.3 added for agent replays. A release without them (steps-v1.2) is still
+# sliced, by the attributes it has; they are omitted for it, never filled with made-up values.
+OPTIONAL_ATTRIBUTES = ("feature_version", "replay_condition")
+ATTRIBUTES = (*REQUIRED_ATTRIBUTES, *OPTIONAL_ATTRIBUTES)
 TARGET = "label_resource"
 NO_RESOURCE = "none"  # the label of a step no resource slowed
 RULE = "rule_prediction"
 # Nullable readings: null means the reading was missing or unsupported, never zero.
 READINGS = ("telemetry_coverage", "cpu_pressure_max_avg10", "cgroup_throttled_usec_delta")
-REQUIRED_COLUMNS = tuple(dict.fromkeys(("run_id", RULE, *ATTRIBUTES, *READINGS, GROUP_KEYS[0])))
-# Later group keys are read when the release has them: task_group exists from steps-v1.3, and a
-# split grouped by a column its release lacks is refused in slice_release.
-OPTIONAL_GROUP_KEYS = tuple(key for key in GROUP_KEYS if key not in REQUIRED_COLUMNS)
+REQUIRED_COLUMNS = tuple(
+    dict.fromkeys(("run_id", RULE, *REQUIRED_ATTRIBUTES, *READINGS, GROUP_KEYS[0]))
+)
+# Later group keys and the optional attributes are read when the release has them: task_group
+# exists from steps-v1.3, and a split grouped by a column its release lacks is refused in
+# slice_release.
+OPTIONAL_COLUMNS = (
+    *OPTIONAL_ATTRIBUTES,
+    *(key for key in GROUP_KEYS if key not in REQUIRED_COLUMNS),
+)
 # condition and injection_method decide the label by design (contended runs are the positives),
 # so single-class slices and label-rate gaps across them are expected, not bias; the target
 # cannot be compared with itself.
@@ -154,7 +162,7 @@ def load_rows(release: Path) -> list[dict[str, object]]:
         raise SliceError(f"{path} lacks columns the slices need: {missing}")
     if table.num_rows == 0:
         raise SliceError(f"{path} has no rows to slice")
-    present = [key for key in OPTIONAL_GROUP_KEYS if key in table.column_names]
+    present = [name for name in OPTIONAL_COLUMNS if name in table.column_names]
     return table.select([*REQUIRED_COLUMNS, *present]).to_pylist()
 
 
@@ -302,6 +310,8 @@ def analyze(rows: list[dict[str, object]], release: str, splits: Assignment | No
         split_rows = Counter(splits.split_of(row) for row in rows)
     attributes, flags = {}, []
     for attribute in ATTRIBUTES:
+        if not all(attribute in row for row in rows):
+            continue  # a release before steps-v1.3 has no such column
         grouped: dict[str, list[dict[str, object]]] = {}
         for row in rows:
             grouped.setdefault(slice_value(row[attribute]), []).append(row)
