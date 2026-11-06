@@ -279,7 +279,7 @@ wires them in, after Rohit accepts `eval-contract-v2` (see
 `pipelines/data/src/agentwatch_data/labels-v2.toml`; the label version is `labels-v2` plus an
 8-hex fingerprint of the rule values and the labeling code, pinned in
 `pipelines/data/tests/test_replay_labels.py` (`PINNED_REPLAY_LABEL_VERSION`, currently
-`labels-v2+8c1a0a1c`). `labels.toml` and `labels-v1.1` are untouched.
+`labels-v2+45d40cc0`). `labels.toml` and `labels-v1.1` are untouched.
 
 Usage: `python -m agentwatch_data.replay_labels <experiment directory>`. It labels one
 `agent-replay-experiment-v1` directory (`experiment.json`, `injections/`, per-replay

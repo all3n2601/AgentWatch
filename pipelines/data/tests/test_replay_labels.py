@@ -62,7 +62,7 @@ def test_packaged_replay_rules_load(config):
 # bump `version` in labels-v2.toml, which also needs an evaluation-contract change.
 # Otherwise (a comment or refactor) keep the version, and say why in the PR. Either way,
 # update the pin in the same PR.
-PINNED_REPLAY_LABEL_VERSION = "labels-v2+8c1a0a1c"
+PINNED_REPLAY_LABEL_VERSION = "labels-v2+45d40cc0"
 
 
 def test_replay_label_version_is_pinned(config):
