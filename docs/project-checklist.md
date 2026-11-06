@@ -755,6 +755,15 @@ from M3 through M6 and do not renumber the implementation milestones above.
   acceptance (O01).
 - [ ] O03 — Akshayaa: bounded runner admission and cleanup after O02/A02/A03.
 - [ ] O04 — Akshay: paired-run manifests and comparison validation after O01/D02.
+  Implemented 2026-11-05 on branch `feature/optimization-evidence`:
+  [optimization experiment evidence](optimization-evidence.md), preregistration manifests checked
+  against `opt-contract-v1` (contract hash, frozen tasks, model/hardware/power/state identity,
+  arrivals, one-control candidates, queue bounds, repetitions), policy hashes, a seeded paired
+  schedule, batch records rejected with a code on any identity, schedule, policy or task mismatch,
+  and deterministic paired comparison records that keep failed, rejected and unpaired attempts and
+  leave unobserved values null. Gates stay `not_evaluated` (O06). Verified on synthetic experiments
+  only (`pipelines/data/tests/test_optimization_{manifest,batches,comparison}.py`). Open until O06
+  records a real experiment in this format.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
 - [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates

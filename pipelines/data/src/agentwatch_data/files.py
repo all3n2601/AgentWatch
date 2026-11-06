@@ -9,7 +9,41 @@ import hashlib
 import json
 import os
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePath
+
+
+def confined_path(root: Path, relative: str, error: type[Exception]) -> Path:
+    """Resolve an untrusted relative path inside root; reject absolute, linked and escaping paths.
+
+    `error` is the caller's exception type, so each reader keeps reporting its own errors.
+    """
+    if PurePath(relative).is_absolute():
+        raise error(f"Path {relative!r} is outside the experiment directory")
+    path = root / relative
+    if any(part.is_symlink() for part in (path, *path.parents) if part.is_relative_to(root)):
+        raise error(f"Path {relative!r} contains a symlink")
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise error(f"Path {relative!r} is outside the experiment directory")
+    return resolved
+
+
+def read_bounded_text(path: Path, max_bytes: int, error: type[Exception]) -> str:
+    """UTF-8 text of an untrusted regular file of at most max_bytes; symlinks are refused."""
+    if path.is_symlink() or not path.is_file():
+        raise error(f"{path.name} must be a regular file without symlinks")
+    try:
+        # Read one byte past the limit so an oversize file is detected without loading it all.
+        with path.open("rb") as handle:
+            raw = handle.read(max_bytes + 1)
+    except OSError as cause:
+        raise error(f"{path.name} cannot be read: {cause}") from cause
+    if len(raw) > max_bytes:
+        raise error(f"{path.name} is larger than {max_bytes} bytes")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as cause:
+        raise error(f"{path.name} is not valid UTF-8: {cause}") from cause
 
 
 def file_sha256(path: Path) -> str:
