@@ -129,6 +129,11 @@ row, joins features:
   the same replay's `agent-evidence.json`; when it is missing, coverage stays null.
 - Join on `(run_id, step_id)`. A labeled step with no terminal feature row is rejected
   (`feature_row_missing`).
+- A read defect in any labeled replay rejects every labeled step of its experiment (see
+  Non-goals): an unreadable journal (`feature_evidence_unreadable`) or an invalid declared
+  interval (`declared_interval_invalid`), naming the defective replay. Journal lines recording
+  delivery outcomes (`rejected`, `remote_closure`) are validated but add no records; records
+  the live API refused still feed the features, since the journal is the agent's measurement.
 - Consistency gate: the feature row's duration, queue and execution seconds must equal the
   `experiment.json` timings the label used, within 1e-6 s. A mismatch rejects the step
   (`feature_timing_mismatch`): its label and features would describe different windows. The

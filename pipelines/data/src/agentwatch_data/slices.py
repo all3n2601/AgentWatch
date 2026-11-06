@@ -72,13 +72,14 @@ OPTIONAL_COLUMNS = (
     *OPTIONAL_ATTRIBUTES,
     *(key for key in GROUP_KEYS if key not in REQUIRED_COLUMNS),
 )
-# condition and injection_method decide the label by design (contended runs are the positives),
-# so single-class slices and label-rate gaps across them are expected, not bias; the target
-# cannot be compared with itself.
-LABEL_GAP_EXEMPT = (TARGET, "condition", "injection_method")
-# They also split the rows exactly as the label does, so their missing-readings gaps repeat the
-# label's; the label alone reports them, so one finding is not counted three times.
-MISSING_GAP_EXEMPT = ("condition", "injection_method")
+# condition, injection_method and replay_condition decide the label by design (contended runs
+# and replays are the positives, clean replays never are), so single-class slices and label-rate
+# gaps across them are expected, not bias; the target cannot be compared with itself.
+LABEL_DEFINING = ("condition", "injection_method", "replay_condition")
+LABEL_GAP_EXEMPT = (TARGET, *LABEL_DEFINING)
+# They also split the rows as the label does, so their missing-readings gaps repeat the label's;
+# the label alone reports them, so one finding is not counted once per attribute.
+MISSING_GAP_EXEMPT = LABEL_DEFINING
 # An availability flag defines whether its reading is missing, so that gap is a tautology.
 READING_AVAILABILITY = {
     "cpu_pressure_available": "cpu_pressure_max_avg10",

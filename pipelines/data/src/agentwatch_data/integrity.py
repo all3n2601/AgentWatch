@@ -66,6 +66,7 @@ from agentwatch_data.evidence import (
     EvidenceError,
     entry_name,
     experiment_entry_name,
+    hidden_entries,
     read_bounded,
     read_entry,
     read_stored_experiment,
@@ -206,6 +207,8 @@ def check_experiment_entry(path: Path, report: Report, stored_as: dict[str, str]
         return
     try:
         experiment, hashes = read_stored_experiment(path)
+        # Skipped by read_stored_experiment and counted, as inside run entries.
+        report.hidden += len(hidden_entries(path))
         manifest = read_bounded(path / EXPERIMENT_MANIFEST)
         if path.name != experiment_entry_name(manifest, experiment):
             report.problems.append(f"{label}: stored under the wrong name")

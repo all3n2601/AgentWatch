@@ -315,3 +315,23 @@ def run_change(run_id: str, expected_revision: int, state: str) -> dict:
             "reason": None,
         },
     }
+
+
+# Delivery outcomes the agent runner journals beside its records (agentwatch_agent.delivery
+# and session): a batch the live API refused, and a closure another actor made.
+REFUSED_STATUS = 422
+REFUSED_DETAIL = "Metric is not registered in live-contracts-v1"
+
+
+def rejected_line(record_ids: Iterable[str], status: int = REFUSED_STATUS) -> dict:
+    """A `rejected` line as LiveDelivery._settle writes it: record IDs beside the payload."""
+    return {
+        "kind": "rejected",
+        "payload": {"status": status, "detail": REFUSED_DETAIL},
+        "record_ids": list(record_ids),
+    }
+
+
+def remote_closure_line(state: str = "cancelled", reason: str | None = "Cancelled") -> dict:
+    """A `remote_closure` line as RunSession.adopt_remote_closure writes it."""
+    return {"kind": "remote_closure", "payload": {"state": state, "reason": reason}}

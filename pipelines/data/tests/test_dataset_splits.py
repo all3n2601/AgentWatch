@@ -903,6 +903,7 @@ def test_cli_prints_the_split_and_its_leakage_status(release, capsys):
         captured.out.startswith("split: ") and "  train: 10 rows, 2 runs, 2 groups" in captured.out
     )
     assert "leakage: blocked (features above 0.98" in captured.out
+    assert "class balance" not in captured.out and "independence" not in captured.out  # split-v1
     assert "Evaluation must not use this split" in captured.err
     assert main(args) == 0 and "(reused)" in capsys.readouterr().out
 
@@ -1100,6 +1101,23 @@ def test_split_v2_records_its_assignment_and_class_balance(v1_3_release):
     # A handful of synthetic steps meets no minimum.
     assert balance["below"] == ["none", "cpu_sandbox", "inference", "retrieval", "clean", "mixed"]
     assert balance["status"] == "not_met"
+
+
+def test_cli_prints_class_balance_and_the_split_v2_checks(v1_3_release, capsys):
+    args = ["--release", str(v1_3_release), "--frozen-schema", str(FROZEN_V1_3)]
+    assert main([*args, "--contract", str(CONTRACT)]) == 0
+    out = capsys.readouterr().out
+    balance = split_v2(v1_3_release).split["class_balance"]
+    per_class = balance["per_class"]
+    expected_below = ", ".join(
+        [f"{name} {per_class[name]} < 30" for name in ("none", "cpu_sandbox", "inference")]
+        + [f"retrieval {per_class['retrieval']} < 30"]
+        + [f"clean {balance['clean']} < 100", f"mixed {balance['mixed']} < 30"]
+    )
+    assert f"class balance: not_met (below the minimum: {expected_below})\n" in out
+    assert "independence: passed\n" in out
+    assert "held-out methods (split-v2): met\n" in out
+    assert "mixed in test: met (2 rows)\n" in out
 
 
 def test_split_v2_summaries_report_missing_features_per_feature_version(v1_3_release):

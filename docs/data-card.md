@@ -484,7 +484,9 @@ make retire-release RELEASE=<release>  # remove a never-versioned release the pi
 - **Nothing half-written or hidden is versioned.** `.dvcignore` excludes the hidden staging
   names every command writes before renaming its output into place (`.building-*`,
   `.adding-*`, `.attempt-*`, `.*.tmp`) and every other hidden entry inside the stores, such as
-  macOS `.DS_Store` files; the dataset build skips hidden directories too.
+  macOS `.DS_Store` files; the dataset build skips hidden directories too. Integrity skips and
+  counts hidden entries inside run and replay experiment entries alike, and adding an
+  experiment never copies its hidden files into the store.
 - **Snapshots are incremental and history stays retrievable.** Every store file is
   immutable and new releases add new directories, so a new version uploads only new files, and
   checking out an older commit and pulling restores the stores exactly as they were then.
@@ -708,10 +710,10 @@ release, so it lives outside the versioned stores.
   - missing-readings gap above 20 points between values of one attribute, per reading;
   - absent from the train or test split while that split has rows.
 
-  `condition` and `injection_method` decide the label by design, so they are not checked for
-  single-class slices or label-rate gaps. They also split the rows as the label does, so their
-  missing-readings gaps are reported once, under `label_resource`. An availability flag is not
-  compared with its own reading.
+  `condition`, `injection_method` and `replay_condition` decide the label by design, so they
+  are not checked for single-class slices or label-rate gaps. They also split the rows as the
+  label does, so their missing-readings gaps are reported once, under `label_resource`. An
+  availability flag is not compared with its own reading.
 - **Mitigation.** Each flag carries its mitigation, and each attribute carries balancing
   weights (`total / (values × slice rows)`) that give every value the same total weight for
   re-weighted training.

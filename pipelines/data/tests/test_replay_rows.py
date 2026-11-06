@@ -15,7 +15,13 @@ from agentwatch_data.replay_rows import (
     replay_source_sha256,
 )
 from agentwatch_data.schema import SCHEMA_VERSION, validate_rows
-from replay_fixtures import DEFAULT_STEPS, configuration_digest, live_id, write_experiment
+from replay_fixtures import (
+    DEFAULT_STEPS,
+    configuration_digest,
+    live_id,
+    rejected_line,
+    write_experiment,
+)
 
 # write_experiment's default schedule: 00 warm-up, 01-03 baselines, 04 cpu, 05 clean control.
 CONTENDED, CONTROL = 4, 5
@@ -132,22 +138,39 @@ def test_missing_declared_interval_leaves_interval_and_coverage_null(tmp_path, c
     assert row_for(rows, CONTROL, "tool-call-1")["sampling_interval_seconds"] == 0.25
 
 
-def test_invalid_declared_interval_rejects_that_replays_steps(tmp_path, config):
-    directory = experiment(tmp_path)
-    path = directory / "replays" / f"{CONTENDED:02d}" / "agent-evidence.json"
+def all_labeled_steps() -> list[str]:
+    return [origin(index, step) for index in LABELED_REPLAYS for step in LEAF_STEPS]
+
+
+def edit_evidence(directory: Path, index: int, change) -> None:
+    path = directory / "replays" / f"{index:02d}" / "agent-evidence.json"
     evidence = json.loads(path.read_text())
-    evidence["configuration"]["sampling_interval_seconds"] = "0.25"
+    change(evidence)
     path.write_text(json.dumps(evidence))
 
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda evidence: evidence["configuration"].update(sampling_interval_seconds="0.25"),
+        lambda evidence: evidence["configuration"].update(sampling_interval_seconds=True),
+        lambda evidence: evidence.update(configuration=[0.25]),
+    ],
+    ids=["string", "boolean", "not-an-object"],
+)
+def test_invalid_declared_interval_rejects_the_whole_experiment(tmp_path, config, change):
+    """A read defect in one replay rejects its experiment, not just that replay (D03 spec)."""
+    directory = experiment(tmp_path)
+    edit_evidence(directory, CONTENDED, change)
+
     rows, rejections = experiment_rows(directory, config)
-    assert {r["replay_index"] for r in rows} == set(LABELED_REPLAYS) - {CONTENDED}
-    assert [r.origin for r in rejections["replay_features"]] == [
-        origin(CONTENDED, step) for step in LEAF_STEPS
-    ]
+    assert rows == []
+    assert [r.origin for r in rejections["replay_features"]] == all_labeled_steps()
     assert all(
-        r.reason.startswith("feature_row_missing:") and "sampling_interval_seconds" in r.reason
+        r.reason.startswith(f"declared_interval_invalid: replay {CONTENDED:02d} ")
         for r in rejections["replay_features"]
     )
+    assert not rejections["replay_label"] and not rejections["replay_schema"]
 
 
 @pytest.mark.parametrize(
@@ -213,19 +236,66 @@ def test_swapped_journals_never_attribute_features_to_the_wrong_replay(tmp_path,
         assert "run_id" in rejection.reason
 
 
-def test_unreadable_journal_rejects_that_replays_steps(tmp_path, config):
-    directory = experiment(tmp_path)
+def unknown_journal_line(directory: Path) -> None:
     path = journal_path(directory, CONTENDED)
     write_lines(path, [*read_lines(path), {"kind": "surprise", "payload": {}}])
 
+
+def out_of_contract_sample(directory: Path) -> None:
+    path = journal_path(directory, CONTENDED)
+    lines = read_lines(path)
+    lines[-2]["payload"]["value"] = 150.0  # pressure is a percentage
+    write_lines(path, lines)
+
+
+@pytest.mark.parametrize(
+    ("damage", "detail"),
+    [(unknown_journal_line, "unknown kind"), (out_of_contract_sample, "resource_sample")],
+    ids=["unknown-kind", "out-of-contract-record"],
+)
+def test_unreadable_feature_evidence_rejects_the_whole_experiment(tmp_path, config, damage, detail):
+    directory = experiment(tmp_path)
+    damage(directory)
+
     rows, rejections = experiment_rows(directory, config)
-    assert {r["replay_index"] for r in rows} == set(LABELED_REPLAYS) - {CONTENDED}
-    assert [r.origin for r in rejections["replay_features"]] == [
-        origin(CONTENDED, step) for step in LEAF_STEPS
-    ]
+    assert rows == []
+    assert [r.origin for r in rejections["replay_features"]] == all_labeled_steps()
     for rejection in rejections["replay_features"]:
-        assert rejection.reason.startswith("feature_row_missing:")
-        assert "unknown kind" in rejection.reason
+        assert rejection.reason.startswith(f"feature_evidence_unreadable: replay {CONTENDED:02d} ")
+        assert detail in rejection.reason
+
+
+def test_main_counts_an_experiment_rejected_for_unreadable_evidence(tmp_path, capsys):
+    directory = experiment(tmp_path)
+    unknown_journal_line(directory)
+    assert main([str(directory)]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["rows"] == 0
+    assert printed["rejections"]["replay_features"] == {
+        "feature_evidence_unreadable": len(all_labeled_steps())
+    }
+
+
+def test_records_the_live_api_refused_still_feed_their_rows(tmp_path, config):
+    """A refused delivery is not a measurement defect: the rows keep the journal's readings."""
+    directory = experiment(tmp_path)
+    before, _ = experiment_rows(directory, config)
+    path = journal_path(directory, CONTENDED)
+    lines = read_lines(path)
+    samples = [
+        line["payload"]["sample_id"]
+        for line in lines
+        if line["kind"] == "record" and line["payload"]["record_type"] == "resource_sample"
+    ]
+    write_lines(path, [*lines[:-1], rejected_line(samples), lines[-1]])
+
+    rows, rejections = experiment_rows(directory, config)
+    assert all(not found for found in rejections.values())
+    digest = ("source_sha256",)  # the journal's bytes changed, so only its digest differs
+    assert [{k: v for k, v in r.items() if k not in digest} for r in rows] == [
+        {k: v for k, v in r.items() if k not in digest} for r in before
+    ]
+    assert row_for(rows, CONTENDED, "tool-call-1")["telemetry_sample_count"] > 0
 
 
 def test_zero_duration_step_is_rejected_at_replay_schema(tmp_path, config):

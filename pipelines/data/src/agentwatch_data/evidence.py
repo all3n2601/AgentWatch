@@ -8,7 +8,9 @@ samples.jsonl copied byte for byte. A replay experiment (a directory with an exp
 is one directory named replay-<task_id>-<started_at in UTC>-<first 6 hex of the SHA-256 of
 experiment.json>, holding exactly the experiment's evidence files (EXPERIMENT_FILE) byte for
 byte. The experiment's own content names it, so the same experiment delivered under two folder
-names is one entry.
+names is one entry. Hidden files and directories (a name starting with ".", such as a Finder
+.DS_Store) are tool state, not evidence: they are never copied into an entry, and inside a
+stored entry they are skipped, as inside run entries and by .dvcignore.
 
 Evidence is validated before it is added: a run with the same rules as dataset extraction, an
 experiment with `read_experiment` and every journal read strictly. An experiment that failed
@@ -29,13 +31,14 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from agentwatch_data.extract import (
     RESULTS_FILE,
     SAMPLES_FILE,
     RawRun,
     directory_prefix,
+    parse_json,
     read_run,
     read_run_files,
     run_from_bytes,
@@ -227,27 +230,64 @@ def read_experiment_entry(path: Path) -> tuple[Experiment, dict[str, str]]:
         for name in experiment_files(path)
     }
     experiment = read_experiment(path)
+    refuse_hidden_references(read_bounded(path / MANIFEST_FILE))
     for name in hashes:
         if name.endswith(f"/{JOURNAL_FILE}"):
             read_journal(path / name)
     return experiment, hashes
 
 
+def refuse_hidden_references(manifest: bytes) -> None:
+    """Refuse a manifest that names a hidden or relative path for a replay's evidence.
+
+    Hidden entries are skipped, so no hash would cover the files such a path points at.
+    read_experiment has already validated the manifest's structure.
+    """
+    for entry in parse_json(manifest.decode("utf-8"))["replays"]:
+        for key in ("evidence_dir", "injection_log"):
+            value = entry.get(key)
+            if isinstance(value, str) and any(
+                part.startswith(".") for part in PurePosixPath(value).parts
+            ):
+                raise ReplayEvidenceError(f"{MANIFEST_FILE} names hidden path {value!r}")
+
+
 def experiment_files(directory: Path) -> list[str]:
     """The experiment's files as relative POSIX paths; anything but EXPERIMENT_FILE is refused.
 
     Raises ValueError for a symlink, a special file or an unexpected file. Directories carry
-    no evidence of their own and are not stored; only the files in them are.
+    no evidence of their own and are not stored; only the files in them are. Hidden entries
+    are skipped (see hidden_entries).
     """
+    return walk_experiment(directory)[0]
+
+
+def hidden_entries(directory: Path) -> list[str]:
+    """The hidden files and directories experiment_files skips; a hidden directory counts once.
+
+    Raises ValueError like experiment_files.
+    """
+    return walk_experiment(directory)[1]
+
+
+def walk_experiment(directory: Path) -> tuple[list[str], list[str]]:
+    """(evidence files, skipped hidden entries) of an experiment, as relative POSIX paths."""
     if directory.is_symlink() or not directory.is_dir():
         raise ReplayEvidenceError(f"{directory.name} must be a directory without symlinks")
-    names = []
+    names, hidden = [], []
 
     def unreadable(error: OSError) -> None:
         raise error  # os.walk would otherwise skip an unreadable directory silently
 
     for current, directories, files in os.walk(directory, onerror=unreadable):
-        for entry in sorted(directories + files):
+        # Hidden directories are pruned in place, so os.walk never descends into them.
+        hidden.extend(
+            Path(current, entry).relative_to(directory).as_posix()
+            for entry in sorted(directories + files)
+            if entry.startswith(".")
+        )
+        directories[:] = [entry for entry in directories if not entry.startswith(".")]
+        for entry in sorted(directories + [file for file in files if not file.startswith(".")]):
             path = Path(current, entry)
             name = path.relative_to(directory).as_posix()
             mode = path.lstat().st_mode
@@ -258,7 +298,7 @@ def experiment_files(directory: Path) -> list[str]:
             if not stat.S_ISREG(mode) or not EXPERIMENT_FILE.fullmatch(name):
                 raise ReplayEvidenceError(f"{name} is not an experiment evidence file")
             names.append(name)
-    return sorted(names)
+    return sorted(names), sorted(hidden)
 
 
 def read_bounded(path: Path) -> bytes:

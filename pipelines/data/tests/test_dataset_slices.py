@@ -214,6 +214,21 @@ def test_replay_rows_are_sliced_by_feature_version_and_replay_condition():
     assert attributes["label_resource"]["slices"]["mixed"]["rows"] == 4
 
 
+def test_replay_condition_decides_the_label_so_its_gaps_are_not_flagged():
+    """Clean replays are all negatives by design; their gaps repeat the label's, not bias."""
+    rows = balanced()
+    rows += [
+        replay_step(index, "none") | {"replay_condition": "clean", "telemetry_coverage": None}
+        for index in range(40)
+    ]
+    rows += [replay_step(index, "cpu_sandbox") for index in range(40)]
+    report = analyze(rows, RELEASE, None)
+    assert report["attributes"]["replay_condition"]["slices"]["clean"]["labels"] == {"none": 40}
+    assert kinds(report, "replay_condition") == []
+    # The label itself still reports the missing-readings gap once.
+    assert MISSING_READINGS_GAP in [kind for kind, _ in kinds(report, "label_resource")]
+
+
 def test_a_split_v2_split_places_run_and_replay_rows_by_task_group(tmp_path):
     rows = [row | {"task_group": row["kind"]} for row in balanced()]
     rows += [replay_step(index, "cpu_sandbox") for index in range(10)]

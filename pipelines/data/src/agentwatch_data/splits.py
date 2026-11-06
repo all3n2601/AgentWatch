@@ -798,7 +798,43 @@ def main(argv: list[str] | None = None) -> int:
     )
     if leakage["status"] != PASSED:
         print("Evaluation must not use this split until the leakage check passes", file=sys.stderr)
+    for line in split_v2_lines(split):
+        print(line)
     return 0
+
+
+def split_v2_lines(split: dict) -> list[str]:
+    """The class balance and split-v2 check statuses; a split-v1 document has neither."""
+    lines = []
+    balance = split.get("class_balance")
+    if balance is not None:
+        minimums, per_class = balance["minimums"], balance["per_class"]
+        below = [
+            f"{name} {per_class[name]} < {minimums['per_class']}"
+            if name in per_class
+            else f"{name} {balance[name]} < {minimums[name]}"
+            for name in balance["below"]
+        ]
+        lines.append(
+            f"class balance: {balance['status']}"
+            + (f" (below the minimum: {', '.join(below)})" if below else "")
+        )
+    checks = split.get("split_v2_checks")
+    if checks is not None:
+        independent, held_out, mixed = (
+            checks["independence"],
+            checks["held_out"],
+            checks["mixed_in_test"],
+        )
+        shared = [f"{key} {len(found)}" for key, found in independent["shared"].items() if found]
+        lines += [
+            f"independence: {independent['status']}"
+            + (f" (values in more than one split: {', '.join(shared)})" if shared else ""),
+            f"held-out methods (split-v2): {held_out['status']}"
+            + (f" ({held_out['reason']})" if held_out["reason"] else ""),
+            f"mixed in test: {mixed['status']} ({mixed['rows']} rows)",
+        ]
+    return lines
 
 
 if __name__ == "__main__":

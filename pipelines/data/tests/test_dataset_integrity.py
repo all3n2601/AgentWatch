@@ -1130,6 +1130,19 @@ def test_extra_file_in_experiment_entry_is_reported(replay_stores):
     assert len(found) == 2
 
 
+def test_hidden_files_in_an_experiment_entry_are_skipped_and_counted(replay_stores):
+    """Finder or editor state inside a stored experiment is not evidence, as in run entries."""
+    evidence, datasets, _, entry = replay_stores
+    (entry / ".DS_Store").write_text("")
+    (entry / "replays" / "01" / ".DS_Store").write_text("")
+    (entry / "replays" / ".cache").mkdir()
+    (entry / "replays" / ".cache" / "notes.txt").write_text("not evidence")  # not descended
+    report = verify(evidence, datasets)
+    assert report.problems == []
+    assert (report.experiment_entries, report.rebuilt) == (1, 1)
+    assert report.hidden == 3
+
+
 def test_replay_entry_under_wrong_name_is_reported(replay_stores):
     evidence, datasets, _, entry = replay_stores
     renamed = entry.with_name("replay-fix-a-r1-20261105T000000Z-000000")

@@ -20,7 +20,12 @@ from agentwatch_data.evidence import (
 from agentwatch_data.replay_evidence import ReplayEvidenceError, read_experiment
 from agentwatch_data.replay_journal import read_journal
 from agentwatch_features import compute_feature_rows
-from replay_fixtures import write_experiment
+from replay_fixtures import (
+    REFUSED_DETAIL,
+    rejected_line,
+    remote_closure_line,
+    write_experiment,
+)
 
 
 def experiment(tmp_path: Path, **kwargs) -> Path:
@@ -177,6 +182,47 @@ def test_stored_experiment_with_an_extra_file_is_refused(tmp_path):
         read_stored_experiment(tmp_path / "store" / stored.name)
 
 
+def add_hidden_files(directory: Path) -> None:
+    (directory / ".DS_Store").write_text("")
+    (directory / "replays" / "02" / "._live-journal.jsonl").write_text("resource fork")
+    (directory / ".git").mkdir()
+    (directory / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+
+
+def test_a_stored_experiment_skips_hidden_files(tmp_path):
+    exp = experiment(tmp_path)
+    stored = add(exp, tmp_path / "store")
+    entry = tmp_path / "store" / stored.name
+    expected = read_stored_experiment(entry)
+    add_hidden_files(entry)
+    assert read_stored_experiment(entry) == expected
+    assert add(exp, tmp_path / "store") == Stored(stored.name, added=False)
+
+
+def test_a_stored_manifest_naming_a_hidden_directory_is_refused(tmp_path):
+    """A hidden directory is skipped, so evidence the manifest reads from it has no hash."""
+    exp = experiment(tmp_path)
+    stored = add(exp, tmp_path / "store")
+    entry = tmp_path / "store" / stored.name
+    shutil.move(entry / "replays" / "02", entry / "replays" / ".02")
+    manifest = json.loads((entry / "experiment.json").read_text())
+    manifest["replays"][2]["evidence_dir"] = "replays/.02"
+    (entry / "experiment.json").write_text(json.dumps(manifest))
+    with pytest.raises(EvidenceError, match=r"names hidden path 'replays/\.02'"):
+        read_stored_experiment(entry)
+
+
+def test_hidden_files_in_a_delivery_folder_are_never_stored(tmp_path):
+    exp = experiment(tmp_path)
+    clean = entry_files(exp)
+    add_hidden_files(exp)
+    stored = add(exp, tmp_path / "store")
+    assert stored.added is True
+    entry = tmp_path / "store" / stored.name
+    assert entry_files(entry) == clean  # byte for byte, and nothing hidden was copied
+    assert not [path for path in entry.rglob(".*")]
+
+
 def test_a_copy_that_does_not_match_what_was_read_is_never_published(tmp_path, monkeypatch):
     real = evidence_module.fsync_file
 
@@ -313,4 +359,109 @@ def test_journal_refuses_a_record_that_fails_the_sdk_contract(tmp_path):
 
     edit_lines(path, change)
     with pytest.raises(ReplayEvidenceError, match=r"line \d+: resource_sample"):
+        read_journal(path)
+
+
+def record_ids(lines: list[dict]) -> list[str]:
+    return [
+        line["payload"].get("event_id") or line["payload"]["sample_id"]
+        for line in lines
+        if line["kind"] == "record"
+    ]
+
+
+def test_delivery_outcome_lines_are_read_and_their_records_still_count(tmp_path):
+    """A refused delivery is a delivery outcome; the journal still recorded the measurement."""
+    path = experiment(tmp_path) / "replays" / "04" / "live-journal.jsonl"
+    before = read_journal(path)
+
+    def change(lines):
+        refused = record_ids(lines)[-3:]
+        lines.insert(-1, rejected_line(refused[:2]))
+        lines.insert(-1, rejected_line(refused[2:]))
+        lines.append(remote_closure_line("cancelled", "Cancelled from the dashboard"))
+        lines.append(remote_closure_line("completed", None))
+
+    edit_lines(path, change)
+    after = read_journal(path)
+    assert after == before  # every record line still feeds the features
+
+
+def test_an_experiment_with_refused_deliveries_is_added(tmp_path):
+    exp = experiment(tmp_path)
+    for index in ("00", "04"):
+        edit_lines(
+            exp / "replays" / index / "live-journal.jsonl",
+            lambda lines: lines.insert(-1, rejected_line(record_ids(lines)[-1:])),
+        )
+    stored = add(exp, tmp_path / "store")
+    assert stored.added is True
+    assert read_stored_experiment(tmp_path / "store" / stored.name)[1] == {
+        name: hashlib.sha256(data).hexdigest() for name, data in entry_files(exp).items()
+    }
+
+
+ONE_ID = "00000000-0000-4000-8000-000000000001"
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ({"kind": "rejected", "payload": {"status": 422, "detail": "x"}}, "record_ids"),
+        (rejected_line([]), "record_ids"),
+        (rejected_line(["not-a-uuid"]), "record_ids"),
+        (rejected_line([ONE_ID.replace("-", "")]), "record_ids"),
+        (rejected_line([ONE_ID, ONE_ID]), "record_ids"),
+        (rejected_line([7]), "record_ids"),
+        (rejected_line([ONE_ID]) | {"replayed": True}, "unexpected keys"),
+        (rejected_line([ONE_ID], status=True), "status"),
+        (rejected_line([ONE_ID], status=99), "status"),
+        (
+            {
+                "kind": "rejected",
+                "payload": {"status": "422", "detail": "x"},
+                "record_ids": [ONE_ID],
+            },
+            "status",
+        ),
+        (
+            {"kind": "rejected", "payload": {"status": 422, "detail": 5}, "record_ids": [ONE_ID]},
+            "detail",
+        ),
+        (
+            {
+                "kind": "rejected",
+                "payload": {"status": 422, "detail": REFUSED_DETAIL, "extra": 1},
+                "record_ids": [ONE_ID],
+            },
+            "payload keys",
+        ),
+        (remote_closure_line("closed", None), "state"),
+        (remote_closure_line("cancelled", 5), "reason"),
+        ({"kind": "remote_closure", "payload": {"state": "failed"}}, "payload keys"),
+        (remote_closure_line() | {"record_ids": [ONE_ID]}, "unexpected keys"),
+    ],
+    ids=[
+        "no-record-ids",
+        "empty-record-ids",
+        "record-id-not-uuid",
+        "record-id-not-canonical",
+        "repeated-record-id",
+        "record-id-not-string",
+        "rejected-extra-key",
+        "status-bool",
+        "status-out-of-range",
+        "status-string",
+        "detail-not-string",
+        "rejected-payload-extra",
+        "closure-unknown-state",
+        "closure-reason-not-string",
+        "closure-missing-reason",
+        "closure-extra-key",
+    ],
+)
+def test_malformed_delivery_outcome_lines_are_refused(tmp_path, line, message):
+    path = experiment(tmp_path) / "replays" / "00" / "live-journal.jsonl"
+    edit_lines(path, lambda lines: lines.insert(-1, line))
+    with pytest.raises(ReplayEvidenceError, match=rf"line \d+: {line['kind']} .*{message}"):
         read_journal(path)

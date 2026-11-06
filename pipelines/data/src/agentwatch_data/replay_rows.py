@@ -2,9 +2,14 @@
 
 Each labeled step is joined, on (run_id, step_id), to the feature row computed from its own
 replay's `live-journal.jsonl`. The join is refused, rejecting only the affected steps, when the
-journal belongs to another run, cannot be read, or has no terminal row for the step, and when
-the feature row's timings differ from the `experiment.json` timings the label used: the label
-and the features would then describe different windows. Readings the journal lacks stay null.
+journal belongs to another run or has no terminal row for the step, and when the feature row's
+timings differ from the `experiment.json` timings the label used: the label and the features
+would then describe different windows. Readings the journal lacks stay null.
+
+A read defect is not tolerated per replay: when any labeled replay's journal or
+`agent-evidence.json` cannot be read (`feature_evidence_unreadable`) or its declared sampling
+interval is invalid (`declared_interval_invalid`), every labeled step of the experiment is
+rejected with that code, naming the defective replay.
 
 Rows hold every release column except dataset_version, which the release build adds. Each row
 is validated on its own, so one invalid step rejects only itself.
@@ -53,6 +58,11 @@ LABEL_STAGE, FEATURE_STAGE, SCHEMA_STAGE = REPLAY_STAGES
 JOINED_TIMINGS = ("duration_seconds", "queue_seconds", "execution_seconds")
 FEATURE_ROW_MISSING = "feature_row_missing"
 FEATURE_TIMING_MISMATCH = "feature_timing_mismatch"
+FEATURE_EVIDENCE_UNREADABLE = "feature_evidence_unreadable"
+DECLARED_INTERVAL_INVALID = "declared_interval_invalid"
+# Read defects reject the whole experiment (the D03 spec allows no per-replay read tolerance);
+# the other codes reject only the affected replay or step.
+EXPERIMENT_DEFECTS = (FEATURE_EVIDENCE_UNREADABLE, DECLARED_INTERVAL_INVALID)
 
 
 class FeatureJoinError(Exception):
@@ -60,6 +70,8 @@ class FeatureJoinError(Exception):
 
     def __init__(self, code: str, detail: str) -> None:
         super().__init__(f"{code}: {detail}")
+        self.code = code
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -111,20 +123,25 @@ def evidence_dirs(directory: Path) -> dict[int, str]:
 
 def declared_interval_seconds(replay_dir: Path) -> float | None:
     """The replay's configured sampling interval, or None when it was not recorded."""
-    evidence = parse_json(read_evidence_text(replay_dir / EVIDENCE_FILE))
+    try:
+        evidence = parse_json(read_evidence_text(replay_dir / EVIDENCE_FILE))
+    except ValueError as error:  # ReplayEvidenceError is a ValueError too
+        raise FeatureJoinError(
+            FEATURE_EVIDENCE_UNREADABLE, f"{EVIDENCE_FILE} cannot be read: {error}"
+        ) from error
     configuration = evidence.get("configuration") if isinstance(evidence, dict) else None
     if configuration is None:
         return None
     if not isinstance(configuration, dict):
         raise FeatureJoinError(
-            FEATURE_ROW_MISSING, f"{EVIDENCE_FILE} configuration is not an object"
+            DECLARED_INTERVAL_INVALID, f"{EVIDENCE_FILE} configuration is not an object"
         )
     value = configuration.get("sampling_interval_seconds")
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
         raise FeatureJoinError(
-            FEATURE_ROW_MISSING,
+            DECLARED_INTERVAL_INVALID,
             f"{EVIDENCE_FILE} configuration.sampling_interval_seconds must be a finite number, "
             f"got {value!r}",
         )
@@ -139,13 +156,19 @@ def same_run(manifest_run_id: str, journal_run_id: UUID) -> bool:
 
 
 def replay_features(directory: Path, evidence_dir: str, run_id: str) -> ReplayFeatures:
-    """Compute the features of one replay's own run; FeatureJoinError rejects all its steps."""
+    """Compute the features of one replay's own run.
+
+    FeatureJoinError rejects all the replay's steps, or with an EXPERIMENT_DEFECTS code all the
+    experiment's labeled steps.
+    """
     replay_dir = directory / evidence_dir
+    declared = declared_interval_seconds(replay_dir)
     try:
-        declared = declared_interval_seconds(replay_dir)
         journal = read_journal(replay_dir / JOURNAL_FILE)
-    except (ReplayEvidenceError, ValueError) as error:
-        raise FeatureJoinError(FEATURE_ROW_MISSING, f"evidence cannot be read: {error}") from error
+    except ValueError as error:  # ReplayEvidenceError is a ValueError too
+        raise FeatureJoinError(
+            FEATURE_EVIDENCE_UNREADABLE, f"{JOURNAL_FILE} cannot be read: {error}"
+        ) from error
     records = (*journal.events, *journal.samples)
     # read_journal guarantees every record shares one run; it must be the manifest's run.
     if records and not same_run(run_id, records[0].run_id):
@@ -277,16 +300,31 @@ def experiment_rows(
         rejections[stage].append(Rejection(where, reason))
 
     directories = evidence_dirs(root) if labels else {}
-    rows = []
-    for index, group in groupby(labels, key=lambda label: label["replay_index"]):
-        replay_labels = list(group)
+    replays = [
+        (index, list(group))
+        for index, group in groupby(labels, key=lambda label: label["replay_index"])
+    ]
+    # Every labeled replay is read before any row is kept, so a read defect in one replay can
+    # reject the whole experiment.
+    computed: dict[int, ReplayFeatures | FeatureJoinError] = {}
+    for index, replay_labels in replays:
+        if index not in directories:
+            raise ReplayEvidenceError(f"{MANIFEST_FILE} changed while it was being read")
         try:
-            if index not in directories:
-                raise ReplayEvidenceError(f"{MANIFEST_FILE} changed while it was being read")
-            features = replay_features(root, directories[index], replay_labels[0]["run_id"])
+            computed[index] = replay_features(root, directories[index], replay_labels[0]["run_id"])
         except FeatureJoinError as error:
+            if error.code in EXPERIMENT_DEFECTS:
+                reason = f"{error.code}: replay {index:02d} {error.detail}"
+                for label in labels:
+                    reject(FEATURE_STAGE, label, reason)
+                return [], rejections
+            computed[index] = error
+    rows = []
+    for index, replay_labels in replays:
+        features = computed[index]
+        if isinstance(features, FeatureJoinError):
             for label in replay_labels:
-                reject(FEATURE_STAGE, label, str(error))
+                reject(FEATURE_STAGE, label, str(features))
             continue
         for label in replay_labels:
             try:
