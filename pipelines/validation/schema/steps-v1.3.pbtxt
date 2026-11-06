@@ -83,6 +83,10 @@ feature {
 }
 feature {
   name: "recorded_at"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: INT
   presence {
     min_fraction: 0.0
@@ -142,6 +146,10 @@ feature {
 }
 feature {
   name: "cpu_seconds"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: FLOAT
   float_domain {
     min: 0.0
@@ -172,6 +180,10 @@ feature {
 }
 feature {
   name: "workload_iterations"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: INT
   int_domain {
     min: 1
@@ -183,6 +195,10 @@ feature {
 }
 feature {
   name: "tests_per_step"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: INT
   int_domain {
     min: 0
@@ -194,6 +210,10 @@ feature {
 }
 feature {
   name: "worker_capacity"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: INT
   int_domain {
     min: 1
@@ -205,6 +225,10 @@ feature {
 }
 feature {
   name: "cpu_pressure_max_avg10"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: FLOAT
   float_domain {
     min: 0.0
@@ -235,6 +259,10 @@ feature {
 }
 feature {
   name: "cgroup_throttled_usec_delta"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: INT
   int_domain {
     min: 0
@@ -279,6 +307,10 @@ feature {
 }
 feature {
   name: "telemetry_coverage"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: FLOAT
   float_domain {
     min: 0.0
@@ -335,6 +367,10 @@ feature {
 }
 feature {
   name: "rule_prediction"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: BYTES
   string_domain {
     value: "none"
@@ -349,6 +385,10 @@ feature {
 }
 feature {
   name: "rule_version"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: BYTES
   presence {
     min_fraction: 0.0
@@ -406,6 +446,10 @@ feature {
 }
 feature {
   name: "agent_model"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: BYTES
   presence {
     min_fraction: 0.0
@@ -431,6 +475,10 @@ feature {
 }
 feature {
   name: "failed_checks"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: BYTES
   presence {
     min_fraction: 0.0
@@ -476,6 +524,10 @@ feature {
 }
 feature {
   name: "measured_sampling_interval_seconds"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: FLOAT
   float_domain {
     min: 0.0
@@ -633,6 +685,10 @@ feature {
 }
 feature {
   name: "experiment"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: BYTES
   presence {
     min_fraction: 0.0
@@ -641,6 +697,10 @@ feature {
 }
 feature {
   name: "plan_sha256"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: BYTES
   presence {
     min_fraction: 0.0
@@ -649,6 +709,10 @@ feature {
 }
 feature {
   name: "replay_index"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: INT
   int_domain {
     min: 0
@@ -660,6 +724,10 @@ feature {
 }
 feature {
   name: "step_type"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: BYTES
   presence {
     min_fraction: 0.0
@@ -668,6 +736,10 @@ feature {
 }
 feature {
   name: "replay_role"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: BYTES
   string_domain {
     value: "baseline"
@@ -681,6 +753,10 @@ feature {
 }
 feature {
   name: "replay_condition"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: BYTES
   string_domain {
     value: "clean"
@@ -709,6 +785,10 @@ feature {
 }
 feature {
   name: "control_exceeded_noise"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: INT
   int_domain {
     min: 0
@@ -721,6 +801,10 @@ feature {
 }
 feature {
   name: "configuration_sha256"
+  value_count {
+    min: 1
+    max: 1
+  }
   type: BYTES
   presence {
     min_fraction: 0.0
