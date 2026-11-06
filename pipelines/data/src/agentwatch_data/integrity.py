@@ -8,13 +8,19 @@ versioned evidence. Refused, with every problem listed:
 
 - an evidence entry that is not a valid run stored under its own <kind prefix>-<run_id> name,
   holds anything besides results.json and samples.jsonl, or repeats another entry's run ID;
+- a replay experiment entry (replay-...) that holds anything besides its experiment evidence
+  files, cannot be read (every journal strictly), is not stored under the name its own
+  experiment.json gives it, or names a replay run ID that another entry (a run or another
+  experiment's replay) already has: a run ID identifies one run's evidence in every release;
 - a release that does not match its manifest and name (a superseded older release format is
   checked against what that format recorded), whose rows break the frozen column contract of
-  its schema version, or that uses a run whose exact evidence is not in the evidence store;
+  its schema version, or that uses a run (or replay) whose exact evidence is not in the
+  evidence store;
 - a release not yet versioned that is not exactly what its stored evidence builds: its runs
-  are rebuilt under the current label rules and must reproduce its rows (and, for the current
-  format, its Parquet bytes). A versioned release was rebuilt when it was versioned, and the
-  append-only check keeps it unchanged, so a later rule or code change never blocks versioning;
+  and the experiments its rows name are rebuilt under the current label rules (run rules and
+  replay rules) and must reproduce its rows (and, for the current format, its Parquet bytes).
+  A versioned release was rebuilt when it was versioned, and the append-only check keeps it
+  unchanged, so a later rule or code change never blocks versioning;
 - a build report that is unreadable or names a release that does not exist;
 - a quality-gate attempt that is damaged (an unknown verdict), whose statistics do not match
   the hash its result recorded, or that holds unexpected files;
@@ -35,7 +41,7 @@ import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -50,13 +56,27 @@ from agentwatch_data.build import (
     derive_rows,
     parquet_bytes,
     release_digest,
+    release_label_version,
     release_manifest,
     rows_digest,
 )
-from agentwatch_data.evidence import EVIDENCE_FILES, EvidenceError, entry_name, read_entry
-from agentwatch_data.extract import RawRun
+from agentwatch_data.evidence import (
+    EVIDENCE_FILES,
+    REPLAY_PREFIX,
+    EvidenceError,
+    entry_name,
+    experiment_entry_name,
+    read_bounded,
+    read_entry,
+    read_stored_experiment,
+)
+from agentwatch_data.extract import RawRun, summarize
 from agentwatch_data.files import file_sha256
 from agentwatch_data.labels import LabelConfig, load_config
+from agentwatch_data.replay_evidence import EVIDENCE_FILE, JOURNAL_FILE, ReplayEvidenceError
+from agentwatch_data.replay_evidence import MANIFEST_FILE as EXPERIMENT_MANIFEST
+from agentwatch_data.replay_labels import ReplayLabelConfig, load_replay_config
+from agentwatch_data.replay_rows import evidence_dirs, replay_source_sha256
 from agentwatch_data.schema import Column, SchemaError, columns_from, validate_rows
 from agentwatch_data.splits import (
     RESULT_FILE,
@@ -75,6 +95,9 @@ SUPERSEDED_RELEASE_FILES = {DATASET_FILE, MANIFEST_FILE}  # format 1, before sch
 # Recorded by the builder that wrote a release, not derived from its rows.
 NOT_CONTENT_DERIVED = {"builder_version"}
 ATTEMPT_FILES = {RESULT_FILE, STATISTICS_FILE}
+# Stages that reject a run's rows. Replay stages reject some steps of a valid experiment by
+# design (a warm-up, a failed control), so a rebuild compares the rows, not their absence.
+RUN_STAGES = ("flatten", "label", "schema")
 # Every column contract a release was ever built under, by schema version, exactly as the
 # builder shipped it. A schema change freezes the new contract beside the old ones, so the
 # releases of every version stay verifiable (test_dataset_schema enforces this).
@@ -95,6 +118,10 @@ class Report:
     splits: int = 0
     hidden: int = 0
     evidence: dict[str, RawRun] = field(default_factory=dict)  # by run ID
+    experiment_entries: int = 0
+    experiments: dict[str, Path] = field(default_factory=dict)  # by entry name
+    # The source_sha256 every row of a stored replay carries, by replay run ID.
+    replay_digests: dict[str, str] = field(default_factory=dict)
     rebuilt: int = 0  # releases rebuilt from evidence (the rest were already versioned)
 
 
@@ -134,9 +161,12 @@ def visible(directory: Path, report: Report) -> list[Path]:
 
 
 def check_evidence(store: Path, report: Report) -> None:
-    stored_as: dict[str, str] = {}
+    stored_as: dict[str, str] = {}  # entry name by run ID, runs and replays alike
     for path in visible(store, report):
         label = f"evidence/{path.name}"
+        if path.name.startswith(f"{REPLAY_PREFIX}-"):
+            check_experiment_entry(path, report, stored_as)
+            continue
         if not is_directory(path):
             report.problems.append(f"{label}: not a run directory")
             continue
@@ -162,6 +192,53 @@ def check_evidence(store: Path, report: Report) -> None:
         stored_as[run.run_id] = path.name
         report.evidence[run.run_id] = run
         report.runs += 1
+
+
+def check_experiment_entry(path: Path, report: Report, stored_as: dict[str, str]) -> None:
+    """Record a stored replay experiment and its replays' evidence hashes, if it is intact.
+
+    stored_as maps every run ID already accepted to its entry and gains this entry's replay
+    run IDs. A replay without both evidence files can produce no rows, so it has no hash.
+    """
+    label = f"evidence/{path.name}"
+    if not is_directory(path):
+        report.problems.append(f"{label}: not an experiment directory")
+        return
+    try:
+        experiment, hashes = read_stored_experiment(path)
+        manifest = read_bounded(path / EXPERIMENT_MANIFEST)
+        if path.name != experiment_entry_name(manifest, experiment):
+            report.problems.append(f"{label}: stored under the wrong name")
+            return
+        directories = evidence_dirs(path)
+        digests = {}
+        for replay in experiment.replays:
+            if not isinstance(directories.get(replay.index), str):
+                raise ReplayEvidenceError(f"{EXPERIMENT_MANIFEST} changed while it was read")
+            evidence_dir = PurePosixPath(directories[replay.index])
+            files = (f"{evidence_dir}/{EVIDENCE_FILE}", f"{evidence_dir}/{JOURNAL_FILE}")
+            if replay.run_id is not None and all(file in hashes for file in files):
+                digests[replay.run_id] = replay_source_sha256(path, str(evidence_dir))
+    except EvidenceError as error:
+        report.problems.append(f"{label}: {error}")
+        return
+    except (OSError, ValueError) as error:  # changed or unreadable since it was read
+        report.problems.append(
+            f"{label}: Stored evidence {path.name} is unreadable: {summarize(error)}"
+        )
+        return
+    run_ids = sorted(replay.run_id for replay in experiment.replays if replay.run_id is not None)
+    repeated = [run_id for run_id in run_ids if run_id in stored_as]
+    if repeated:
+        report.problems.append(
+            f"{label}: "
+            + "; ".join(f"replay run {run_id} is also {stored_as[run_id]}" for run_id in repeated)
+        )
+        return
+    stored_as.update(dict.fromkeys(run_ids, path.name))
+    report.replay_digests.update(digests)
+    report.experiments[path.name] = path
+    report.experiment_entries += 1
 
 
 def check_release(path: Path, report: Report) -> Release | None:
@@ -253,7 +330,11 @@ def identity_problem(path: Path, manifest: dict, current: bool, rows: list[dict]
         ("label_version", manifest.get("label_version")),
         ("schema_version", manifest.get("schema_version")),
     ):
-        if not isinstance(declared, str) or {row.get(column) for row in rows} != {declared}:
+        if not isinstance(declared, str):
+            return f"rows do not all carry the manifest's {column} {declared!r}"
+        # A release may hold rows of several label rules: its label_version names them all.
+        expected = set(declared.split(",")) if column == "label_version" else {declared}
+        if {row.get(column) for row in rows} != expected:
             return f"rows do not all carry the manifest's {column} {declared!r}"
     digest = rows_digest([{k: v for k, v in row.items() if k != "dataset_version"} for row in rows])
     if current:
@@ -267,7 +348,7 @@ def identity_problem(path: Path, manifest: dict, current: bool, rows: list[dict]
         rows,
         name,
         digest,
-        manifest["label_version"],
+        release_label_version(rows),  # sorted, as the build writes it
         manifest.get("parquet_sha256"),
         manifest.get("schema_sha256"),
         manifest["schema_version"],
@@ -285,10 +366,17 @@ def identity_problem(path: Path, manifest: dict, current: bool, rows: list[dict]
 
 
 def check_reproducible(
-    path: Path, release: Release, report: Report, rules: LabelConfig | None
+    path: Path,
+    release: Release,
+    report: Report,
+    rules: LabelConfig | None,
+    replay_rules: ReplayLabelConfig,
 ) -> None:
     """Every row's run must have exactly the evidence the row names in the evidence store,
     and, unless rules is None (already versioned), the release must be what it builds.
+
+    A replay row's run is one replay of a stored experiment, so its evidence hash is the
+    replay's (Report.replay_digests); run IDs are unique across the store, so each is either.
 
     Checked row by row: one run's rows must all name the same evidence hash, so a row
     attributed to a different source artifact cannot hide behind its run's other rows.
@@ -304,6 +392,7 @@ def check_reproducible(
         )
         return
     stored = {run: entry.source_sha256 for run, entry in report.evidence.items()}
+    stored |= report.replay_digests
     missing = sorted(run for run, [digest] in digests.items() if stored.get(run) != digest)
     if missing:
         report.problems.append(
@@ -313,8 +402,19 @@ def check_reproducible(
         return
     if rules is None:
         return
+    # Rows of a schema version without the experiment column are run rows only.
+    named = sorted({row["experiment"] for row in release.rows if row.get("experiment") is not None})
+    unstored = [name for name in named if name not in report.experiments]
+    if unstored:
+        report.problems.append(
+            f"datasets/{path.name}: names experiments that are not in the evidence store "
+            f"({unstored[:3]}{'...' if len(unstored) > 3 else ''}), so it cannot be rebuilt"
+        )
+        return
     report.rebuilt += 1
-    problem = rebuild_problem(path, release, [report.evidence[run] for run in digests], rules)
+    runs = [report.evidence[run] for run in digests if run in report.evidence]
+    experiments = [report.experiments[name] for name in named]
+    problem = rebuild_problem(path, release, runs, experiments, rules, replay_rules)
     if problem:
         report.problems.append(f"datasets/{path.name}: {problem}")
 
@@ -324,30 +424,45 @@ RETIRE = "; retire it with make retire-release RELEASE={name} and build again"
 
 
 def rebuild_problem(
-    path: Path, release: Release, runs: list[RawRun], rules: LabelConfig
+    path: Path,
+    release: Release,
+    runs: list[RawRun],
+    experiments: list[Path],
+    rules: LabelConfig,
+    replay_rules: ReplayLabelConfig,
 ) -> str | None:
-    """Why building runs (its stored evidence) would not reproduce the release, or None.
+    """Why building runs and experiments (its stored evidence) would not reproduce the
+    release, or None.
 
     Agreeing hashes only prove the release names its evidence; this proves the rows were
     derived from it, so an edited value, a dropped row, or a re-encoded file is refused.
     """
-    labeled = release.rows[0]["label_version"]  # nonempty and uniform: identity checked
-    if labeled != rules.label_version:
+    current = sorted({rules.label_version, replay_rules.label_version})
+    labeled = sorted({row["label_version"] for row in release.rows})  # identity checked
+    outside = [version for version in labeled if version not in current]
+    if outside:
         problem = (
-            f"it was labeled under {labeled}, but this pipeline labels under "
-            f"{rules.label_version}, so it cannot be rebuilt from its evidence"
+            f"it was labeled under {', '.join(outside)}, but this pipeline labels under "
+            f"{' and '.join(current)}, so it cannot be rebuilt from its evidence"
         )
     else:
-        problem = derived_problem(path, release, runs, rules)
+        problem = derived_problem(path, release, runs, experiments, rules, replay_rules)
     return problem and problem + RETIRE.format(name=path.name)
 
 
 def derived_problem(
-    path: Path, release: Release, runs: list[RawRun], rules: LabelConfig
+    path: Path,
+    release: Release,
+    runs: list[RawRun],
+    experiments: list[Path],
+    rules: LabelConfig,
+    replay_rules: ReplayLabelConfig,
 ) -> str | None:
-    rows, stage_rejections = derive_rows(runs, rules)
+    rows, stage_rejections = derive_rows(runs, rules, experiments, replay_rules)
     refused = [
-        f"{stage}: {item.reason}" for stage, items in stage_rejections.items() for item in items
+        f"{stage}: {item.reason}"
+        for stage in RUN_STAGES
+        for item in stage_rejections.get(stage, [])
     ]
     if refused:
         return f"its evidence no longer builds ({refused[0]})"
@@ -366,6 +481,7 @@ def check_datasets(store: Path, report: Report, versioned: set[Path]) -> None:
     # itself, rather than again as "missing" by its reports, gate attempts, and splits.
     releases = set()
     rules = load_config()
+    replay_rules = load_replay_config()
     for path in visible(store, report):
         if path.name in (BUILDS_DIR, VALIDATIONS_DIR, SPLITS_DIR) and is_directory(path):
             continue
@@ -376,7 +492,8 @@ def check_datasets(store: Path, report: Report, versioned: set[Path]) -> None:
         release = check_release(path, report)
         if release is not None:
             files = {(path / name).resolve() for name in (DATASET_FILE, MANIFEST_FILE)}
-            check_reproducible(path, release, report, None if files <= versioned else rules)
+            rebuild = None if files <= versioned else rules
+            check_reproducible(path, release, report, rebuild, replay_rules)
     check_reports(store / BUILDS_DIR, releases, report)
     check_validations(store, releases, report)
     check_splits(store / SPLITS_DIR, releases, report)
@@ -562,7 +679,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Not versioning: {len(report.problems)} problem(s) found", file=sys.stderr)
         return 1
     print(
-        f"verified: {report.runs} runs, {report.releases} releases"
+        f"verified: {report.runs} runs, {report.experiment_entries} experiments,"
+        f" {report.releases} releases"
         f" (+{report.superseded} superseded), {report.reports} build reports,"
         f" {report.attempts} gate attempts, {report.splits} splits;"
         f" {report.rebuilt} releases rebuilt from evidence"

@@ -12,11 +12,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from agentwatch_data.build import Source, build
-from agentwatch_data.evidence import add_run
+from agentwatch_data.evidence import add, add_run
 from agentwatch_data.extract import canonical_sha256
 from agentwatch_data.integrity import main, verify
 from agentwatch_data.schema import SCHEMA_VERSION
 from dataset_fixtures import make_result, write_run
+from replay_fixtures import write_experiment
 
 GOLDEN = next((Path(__file__).parent / "fixtures").iterdir())
 NOW = datetime(2026, 10, 18, tzinfo=UTC)
@@ -364,7 +365,8 @@ def test_cli_exits_zero_with_a_summary(stores, capsys):
     evidence, datasets, _ = stores
     assert main(["--evidence", str(evidence), "--datasets", str(datasets)]) == 0
     assert capsys.readouterr().out == (
-        "verified: 1 runs, 1 releases (+0 superseded), 1 build reports, 0 gate attempts, "
+        "verified: 1 runs, 0 experiments, 1 releases (+0 superseded), 1 build reports, "
+        "0 gate attempts, "
         "0 splits; 1 releases rebuilt from evidence (0 hidden entries excluded)\n"
     )
 
@@ -906,8 +908,9 @@ def test_releases_of_other_label_rules_must_already_be_versioned(stores, monkeyp
     monkeypatch.setattr(integrity, "load_config", lambda: retuned)
     [problem] = problems(evidence, datasets)
     assert problem.startswith(f"datasets/{release.name}: it was labeled under labels-v1.1+")
+    current = sorted([retuned.label_version, integrity.load_replay_config().label_version])
     assert problem.endswith(
-        f"but this pipeline labels under {retuned.label_version}, so it cannot be rebuilt "
+        f"but this pipeline labels under {' and '.join(current)}, so it cannot be rebuilt "
         f"from its evidence{retire_hint(release)}"
     )
     report = verify(evidence, datasets, unchanged(release))
@@ -920,7 +923,7 @@ def test_evidence_that_no_longer_builds_is_reported(stores, monkeypatch):
 
     evidence, datasets, release = stores
     rejection = Rejection("run x", "baseline missing")
-    monkeypatch.setattr(integrity, "derive_rows", lambda runs, rules: ([], {"label": [rejection]}))
+    monkeypatch.setattr(integrity, "derive_rows", lambda *_: ([], {"label": [rejection]}))
     assert problems(evidence, datasets) == [
         f"datasets/{release.name}: its evidence no longer builds (label: baseline missing)"
         + retire_hint(release)
@@ -1065,3 +1068,175 @@ def test_an_unreadable_dvc_status_file_is_refused(stores, tmp_path, capsys):
 def test_malformed_dvc_status_sections_are_ignored(stores, status):
     evidence, datasets, _ = stores
     assert problems(evidence, datasets, status) == []
+
+
+# steps-v1.3: replay experiment entries and releases labeled under two rules (D03). Every
+# experiment here is synthetic (replay_fixtures); the run is the golden recorded fixture.
+
+REPLAY_RUN = "00000000-0000-4000-8000-000000000001"  # replay 01 of every fixture experiment
+
+
+@pytest.fixture
+def replay_stores(tmp_path):
+    """The golden run and one live experiment stored, and a release built from them."""
+    evidence, datasets = tmp_path / "evidence", tmp_path / "datasets"
+    add(GOLDEN, evidence)
+    entry = evidence / add(write_experiment(tmp_path / "in", live=True), evidence).name
+    release = build([Source("local", str(evidence))], datasets, now=NOW).release
+    return evidence, datasets, release, entry
+
+
+def manifest_of(release: Path) -> dict:
+    return json.loads((release / "manifest.json").read_text())
+
+
+def test_v1_3_release_from_runs_and_experiments_verifies(replay_stores):
+    evidence, datasets, release, entry = replay_stores
+    run_rules, replay_rules = manifest_of(release)["label_version"].split(",")
+    assert run_rules.startswith("labels-v1.1+") and replay_rules.startswith("labels-v2+")
+    report = verify(evidence, datasets)
+    assert report.problems == []
+    assert (report.runs, report.experiment_entries, report.releases, report.rebuilt) == (1, 1, 1, 1)
+    assert report.experiments == {entry.name: entry}
+    assert REPLAY_RUN in report.replay_digests
+
+
+def test_edited_experiment_after_build_is_refused(replay_stores):
+    """One sample value changed: the journal is still valid, but no longer the evidence."""
+    evidence, datasets, release, entry = replay_stores
+    journal = entry / "replays" / "01" / "live-journal.jsonl"
+    lines = [json.loads(line) for line in journal.read_text().splitlines()]
+    sample = next(line for line in lines if line["payload"].get("record_type") == "resource_sample")
+    sample["payload"]["value"] = 10.5
+    journal.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(f"datasets/{release.name}: built from evidence that is not in")
+    assert REPLAY_RUN in problem
+
+
+def test_extra_file_in_experiment_entry_is_reported(replay_stores):
+    evidence, datasets, release, entry = replay_stores
+    (entry / "replays" / "01" / "vllm-metrics.txt").write_text("vllm:num_requests_running 1\n")
+    found = problems(evidence, datasets)
+    assert found[0] == (
+        f"evidence/{entry.name}: Stored evidence {entry.name} is unreadable: "
+        "ReplayEvidenceError: replays/01/vllm-metrics.txt is not an experiment evidence file"
+    )
+    # and so the release built from it can no longer be rebuilt from the store
+    assert found[1].startswith(f"datasets/{release.name}: built from evidence that is not in")
+    assert len(found) == 2
+
+
+def test_replay_entry_under_wrong_name_is_reported(replay_stores):
+    evidence, datasets, _, entry = replay_stores
+    renamed = entry.with_name("replay-fix-a-r1-20261105T000000Z-000000")
+    entry.rename(renamed)
+    found = problems(evidence, datasets)
+    assert found[0] == f"evidence/{renamed.name}: stored under the wrong name"
+
+
+def test_an_experiment_entry_that_is_not_a_directory_is_reported(replay_stores):
+    evidence, datasets, _, _ = replay_stores
+    (evidence / "replay-notes").write_text("")
+    assert problems(evidence, datasets)[0] == "evidence/replay-notes: not an experiment directory"
+
+
+def test_replay_run_ids_must_be_unique_across_experiments(replay_stores, tmp_path):
+    """The same replays stored under another entry (here: another start time) are refused."""
+    evidence, datasets, _, entry = replay_stores
+    again = write_experiment(tmp_path / "again", live=True, started_at="2026-11-06T00:00:00+00:00")
+    other = add(again, evidence).name
+    assert entry.name < other  # entries are checked in name order; the first one is kept
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(
+        f"evidence/{other}: replay run 00000000-0000-4000-8000-000000000000 is also {entry.name}"
+    )
+
+
+def test_a_replay_run_id_equal_to_a_stored_run_is_refused(replay_stores, tmp_path):
+    evidence, datasets, release, entry = replay_stores
+    result = make_result() | {"run_id": REPLAY_RUN}
+    write_run(tmp_path / "recorded" / "cpu-run", result)
+    add_run(tmp_path / "recorded" / "cpu-run", evidence)
+    found = problems(evidence, datasets)
+    assert found[0] == f"evidence/{entry.name}: replay run {REPLAY_RUN} is also cpu-{REPLAY_RUN}"
+    assert found[1].startswith(f"datasets/{release.name}: built from evidence that is not in")
+
+
+def test_a_v1_3_manifest_without_statistics_is_refused(replay_stores):
+    """Intermediate code built steps-v1.3 releases without statistics; they do not verify."""
+    evidence, datasets, release, _ = replay_stores
+    manifest = manifest_of(release)
+    del manifest["missing"]
+    (release / "manifest.json").write_text(json.dumps(manifest))
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: manifest fields ['missing'] do not match its rows"
+    ]
+
+
+def test_the_manifest_must_name_every_label_version_sorted(replay_stores):
+    evidence, datasets, release, _ = replay_stores
+    run_rules, replay_rules = manifest_of(release)["label_version"].split(",")
+    resign(release, label_version=f"{replay_rules},{run_rules}")
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: manifest fields ['label_version'] do not match its rows"
+    ]
+    resign(release, label_version=run_rules)
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: rows do not all carry the manifest's label_version {run_rules!r}"
+    ]
+
+
+def test_replay_rows_of_other_replay_rules_must_already_be_versioned(replay_stores, monkeypatch):
+    import dataclasses
+
+    from agentwatch_data import integrity
+
+    evidence, datasets, release, _ = replay_stores
+    replay_rules = manifest_of(release)["label_version"].split(",")[1]
+    retuned = dataclasses.replace(integrity.load_replay_config(), version="labels-v9")
+    monkeypatch.setattr(integrity, "load_replay_config", lambda: retuned)
+    [problem] = problems(evidence, datasets)
+    assert problem == (
+        f"datasets/{release.name}: it was labeled under {replay_rules}, but this pipeline "
+        f"labels under {integrity.load_config().label_version} and {retuned.label_version}, "
+        f"so it cannot be rebuilt from its evidence{retire_hint(release)}"
+    )
+    report = verify(evidence, datasets, unchanged(release))
+    assert report.problems == [] and report.rebuilt == 0
+
+
+def test_rows_naming_an_experiment_that_is_not_stored_are_refused(replay_stores):
+    evidence, datasets, release, _ = replay_stores
+
+    def rename(rows):
+        for row in rows:
+            if row["experiment"] is not None:
+                row["experiment"] = "replay-elsewhere"
+        return rows
+
+    forged = edited_copy(release, datasets, rename)
+    assert problems(evidence, datasets) == [
+        (
+            f"datasets/{forged.name}: names experiments that are not in the evidence store "
+            "(['replay-elsewhere']), so it cannot be rebuilt"
+        )
+    ]
+
+
+def test_replay_stage_rejections_alone_do_not_refuse_a_rebuild(replay_stores, monkeypatch):
+    """A valid experiment rejects some steps by design; only the rows it builds must match."""
+    from agentwatch_data import integrity
+    from agentwatch_data.extract import Rejection
+
+    evidence, datasets, _, _ = replay_stores
+    derive = integrity.derive_rows
+
+    def with_replay_rejection(*args):
+        rows, rejections = derive(*args)
+        warmup = Rejection("experiment x replay 00", "warmup_replay: not labeled")
+        return rows, rejections | {"replay_label": [warmup]}
+
+    monkeypatch.setattr(integrity, "derive_rows", with_replay_rejection)
+    report = verify(evidence, datasets)
+    assert report.problems == [] and report.rebuilt == 1
