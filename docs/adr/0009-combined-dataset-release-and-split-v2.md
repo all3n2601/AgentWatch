@@ -5,7 +5,8 @@ Date: November 6, 2026. Status: proposed for D03 review. Builds on
 [ADR 0007](0007-multi-resource-labels-and-frozen-hold-out.md) (`labels-v2`, `split-v2`).
 
 D02 left `labels-v2` and the frozen `split-v2` assignment as library code with no release using
-them. Benoy then recorded 54 replay experiments on two agent tasks, and Rohit accepted
+them. On top of his four A05 attempts from 2026-10-25, Benoy then recorded 50 more replay
+experiments (54 in total, on two agent tasks), and Rohit accepted
 `eval-contract-v2` on 2026-11-05 (told to the owner directly; his approval of the D03 pull
 request is the written confirmation). M02 needs one immutable, rebuildable dataset release that
 holds the real replays beside the existing CPU and coding runs, with statistics that expose its

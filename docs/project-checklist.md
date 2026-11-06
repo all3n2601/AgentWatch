@@ -615,7 +615,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   `split-v2+2efb6e737ba2` reproduced byte for byte from a copy of the evidence. Still open: the
   `mixed` scoring rule (proposal item 2, M02) and the merge of D02/D03.
 - [ ] D03 — Allen: validated, versioned dataset v1 (`steps-v1.3`) for M02. 2026-11-05 to
-  2026-11-06, branch `feature/d03-dataset-v1` (local, not pushed or merged): 54 replay
+  2026-11-06, branch `feature/d03-dataset-v1` (not merged): 54 replay
   experiments from Benoy's two deliveries (`d03-2026-11-04.zip` `5ee876a3…b5e0`,
   `d03-2026-11-05.zip` `9e82c41b…94b5`) curated into `data/evidence/`; release
   `steps-v1.3+a1b96c4ff2c8` (5,953 rows: 5,603 agent replay with `labels-v2+d803a9c6`, 175 CPU

@@ -49,7 +49,7 @@ DATA = uv run --project "$(AGENTWATCH_ROOT)" --package agentwatch-data python -m
 DVC = uv run --project "$(AGENTWATCH_ROOT)/pipelines/versioning" --frozen dvc
 
 add-evidence: ## Validate recorded run directories or replay experiment directories and copy them into the versioned evidence store (RUN=".data/coding-demo ...")
-	$(if $(RUN),,$(error Set RUN to one or more recorded run directories, for example RUN=.data/coding-demo))
+	$(if $(RUN),,$(error Set RUN to one or more recorded run directories or replay experiment directories, for example RUN=.data/coding-demo))
 	$(DATA).evidence --store $(DATASET_EVIDENCE) $(RUN)
 
 dataset: ## Build a versioned step dataset release from the evidence store (DATASET_SOURCES="local:data/evidence api:http://127.0.0.1:8090")

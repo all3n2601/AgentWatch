@@ -80,8 +80,9 @@ pipelines/
 │   │   ├── stages.py      runs each stage's command in its environment, with timeouts
 │   │   └── alerts.py      Slack alerts
 │   └── tests/
-└── model/evaluation-contract.toml   eval-contract-v2: split method, group key, minimums, leakage bound
-    model/evaluation-contract-v1.toml   eval-contract-v1, kept so steps-v1.2 splits still rebuild
+└── model/
+    ├── evaluation-contract.toml      eval-contract-v2: split method, group key, minimums, leakage bound
+    └── evaluation-contract-v1.toml   eval-contract-v1, kept so steps-v1.2 splits still rebuild
 ```
 
 ## Set up the environment
@@ -200,11 +201,23 @@ Each stage also has its own `make` target, which runs the newest release:
 | `make push-dataset` / `make pull-dataset` | DVC remote |
 | `make dataset-status` | what is not versioned or uploaded yet |
 
-**Expected result on the shared archive.** The run succeeds in about 6 s once warm (10 s on the
-first run after `make pipeline-setup`). It reuses release `steps-v1.2+5954f97ef8b2`, the gate
-passes, the leakage check is `blocked` (expected for this data; see the data card), the slice
-report raises 17 flags, `push` is skipped because pushing is off (see
-[Data versioning with DVC](#data-versioning-with-dvc)), and the summary lists both findings. With a webhook set, the same summary arrives in Slack.
+**Expected result on the shared archive.** The archive holds the 50 CPU and coding runs and the
+`steps-v1.2+5954f97ef8b2` release built from them. The current code builds `steps-v1.3`
+releases and splits under `eval-contract-v2`, so the stages do not reuse that release.
+Reproduced with the underlying stage commands on 2026-11-06 (not with `make pipeline-run`, so
+the version, push and summary stages were not run): the build creates `steps-v1.3+cad82758d117`
+(350 rows, 0 rejections); the gate passes against `steps-v1.3.pbtxt` with drift not compared
+(no earlier release passed against that schema); the split `split-v2+9d83685148b1` sends both
+CPU and coding task groups to test, because their method `worker_queue_blocker` is held out, so
+train and validation are empty, the leakage check is `inconclusive` (the training split is
+empty), class balance is `not_met` (no `inference`, `retrieval` or `mixed` steps, 50 `clean`),
+the held-out check is `not_met` and mixed in test is `not_met`; the slice report (`slices-v2`)
+raises 12 flags. The split is kept as evidence and must not be used for evaluation. In a full
+run, `push` is skipped because pushing is off (see
+[Data versioning with DVC](#data-versioning-with-dvc)), and the leakage check that did not pass
+is reported as a finding. With a webhook set, the summary arrives in Slack. The archive's own
+`steps-v1.2` split (leakage `blocked`) is still in its datasets store and still loads with the
+v1 files (below).
 
 **Dataset v1 (`steps-v1.3`).** With the replay evidence in the store, `make dataset` builds
 `steps-v1.3+a1b96c4ff2c8` (5,953 rows: 5,603 replay, 175 CPU, 175 coding; 411 recorded
@@ -344,7 +357,10 @@ directories, so none touches your data or Airflow home. CI runs all of these on 
   `AIRFLOW__API__PORT=8095 AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://localhost:8095/execution/ make pipeline-ui`.
 - **The first run is slow** without `make pipeline-setup`: TensorFlow's first import in a new
   environment takes 18–25 s on macOS.
-- **The leakage check is `blocked`** on the shared archive. This is expected: two tasks and two
-  classes separate perfectly. The split is kept as evidence and refused for evaluation.
+- **The leakage check is `inconclusive`** on the shared archive alone. This is expected:
+  `split-v2` holds out `worker_queue_blocker`, the method of every CPU and coding run, so the
+  training split is empty. The split is kept as evidence and refused for evaluation. (Its
+  `steps-v1.2` split under `eval-contract-v1` is `blocked`: two tasks and two classes separate
+  perfectly.)
 - **No Slack message**: check `.env` for `AGENTWATCH_ALERT_SLACK_WEBHOOK_URL`. Without it, the
   `alert` task is marked skipped and lists its findings in its log.
