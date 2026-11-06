@@ -535,6 +535,11 @@ content-addressed layout, so files are found through the pointers rather than by
 Only **feature** columns may be model inputs. Labels, rule output, and lineage columns are kept
 for training targets, baseline comparison, and traceability.
 
+`steps-v1.3` keeps every `steps-v1.2` column name, type and role, and appends the agent replay
+columns (`feature_version` through `configuration_sha256`). CPU/coding run rows set
+`feature_version = steps-v1.2`, `task_group = task_id` and `label_resources`, and leave the
+other replay columns null. The release build does not add agent replay rows yet.
+
 ### Identity
 
 | Column | Type | Description |
@@ -545,6 +550,11 @@ for training targets, baseline comparison, and traceability.
 | `kind` | string | Experiment kind recorded by the ingestion API |
 | `source` | string | Data origin, see above |
 | `recorded_at` | timestamp (UTC), nullable | When the run was saved |
+| `task_group` | string | Task family that splits keep together; equals `task_id` on run rows |
+| `experiment` | string, nullable | Replay experiment name; null on run rows |
+| `plan_sha256` | string, nullable | SHA-256 of the experiment plan the replay ran; null on run rows |
+| `replay_index` | int, nullable | Position of the replay in its experiment (at least 0); null on run rows |
+| `step_type` | string, nullable | Kind of step recorded by the agent run; null on run rows |
 
 ### Features
 
@@ -553,11 +563,11 @@ for training targets, baseline comparison, and traceability.
 | `queue_seconds` | float | Measured wait before a worker started |
 | `execution_seconds` | float | Worker start to finish wall time; includes scheduling delays, so it is not pure work |
 | `duration_seconds` | float | Submission to finish wall time |
-| `cpu_seconds` | float | Process and child CPU time |
+| `cpu_seconds` | float, nullable | Process and child CPU time; null when the step recorded none |
 | `queue_fraction` | float | `queue_seconds / duration_seconds` |
-| `workload_iterations` | int | Fixed work size of the step |
+| `workload_iterations` | int, nullable | Fixed work size of the step; null where none is recorded |
 | `tests_per_step` | int, nullable | Tests executed by the tool step |
-| `worker_capacity` | int | Sandbox workers available |
+| `worker_capacity` | int, nullable | Sandbox workers available; null where none is recorded |
 | `cpu_pressure_max_avg10` | float, nullable | Maximum host CPU PSI `some avg10` (%) over the samples inside the step; null unless every one of them carried PSI |
 | `cpu_pressure_available` | bool | Whether every sample inside the step carried a PSI reading (and there was at least one) |
 | `cgroup_throttled_usec_delta` | int, nullable | cgroup v2 throttled time gained between the first and last samples inside the step, a lower bound for the whole step; `telemetry_coverage` shows how much of the step the samples span |
@@ -573,7 +583,8 @@ cgroup v2 readings are always unavailable.
 
 | Column | Type | Description |
 |---|---|---|
-| `label_resource` | string | Resource that caused excess waiting, or `none` |
+| `label_resource` | string | Resource that caused excess waiting, or `none`; `mixed` is a `labels-v2` value only |
+| `label_resources` | string | Sorted, comma-separated confirmed contended resources; the empty string (never null) means none. On run rows it is `label_resource`, or empty for `none`. The only column where an empty string is valid |
 | `label_excess_fraction` | float | `max(0, min(1, (T − B) / T))`, where T is the step duration and B the clean baseline mean |
 
 Labels come from the experiment design and a frozen noise threshold: a step is labeled with a
@@ -634,8 +645,8 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 
 | Column | Type | Description |
 |---|---|---|
-| `rule_prediction` | string | Resource named by the threshold rule (the `resource` field in run results) |
-| `rule_version` | string | Version of the rule that produced it |
+| `rule_prediction` | string, nullable | Resource named by the threshold rule (the `resource` field in run results); null where the evidence has no rule output |
+| `rule_version` | string, nullable | Version of the rule that produced it |
 
 ### Lineage
 
@@ -647,21 +658,27 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 | `agent_model` | string, nullable | Model that invoked the tool in LLM runs, such as `qwen3:1.7b`; null otherwise. Distinguishes LLM-driven coding runs, which share `kind` with direct coding runs |
 | `run_passed` | bool | Whether every experiment check passed |
 | `failed_checks` | string, nullable | Comma-separated names of failed experiment checks, in alphabetical order |
-| `telemetry_status` | string | Run telemetry: `present`, `empty`, `missing` (no samples file), or `no_overlap` (samples exist but none fall inside any step) |
+| `telemetry_status` | string | Run telemetry: `present`, `empty`, `missing` (no samples file), `no_overlap` (samples exist but none fall inside any step), or `unaligned` (a `step-features-v1` status: samples with no clock mapping to the steps) |
 | `sampling_interval_seconds` | float, nullable | Interval the run's sampler declared in its step telemetry (0.25 s for the current worker); null when not recorded. A declared value that is not a finite positive number, or clean and contended values that disagree, rejects the run |
 | `measured_sampling_interval_seconds` | float, nullable | Median gap between the run's samples. Compare with the declared interval to spot sampler drift or bursts; never used for coverage |
 | `baseline_mean_seconds` | float | Clean baseline mean duration B used for the regression label |
 | `noise_threshold_seconds` | float | Run-specific slowdown threshold derived from the frozen rules |
-| `label_basis` | string | Why the step received its label; see the table above |
+| `label_basis` | string | Why the step received its label; see the table above and the `labels-v2` bases |
 | `label_version` | string | Labeling rules version plus fingerprint, for example `labels-v1.1+1a2b3c4d` |
-| `schema_version` | string | Dataset schema version the row was built with (`steps-v1.2`) |
+| `schema_version` | string | Dataset schema version the row was built with (`steps-v1.3`) |
 | `dataset_version` | string | Dataset release this row belongs to |
 | `source_sha256` | string | SHA-256 of the run's results and its samples as received, before contract normalization, serialized as canonical JSON (sorted keys, samples ordered by timestamp, then by content). Any change to a value produces a new hash; key order, sample order, and whitespace do not |
+| `feature_version` | string | Feature definition the row's feature values follow: `steps-v1.2` for run rows, `step-features-v1` for replay rows. The two use different windows and inputs |
+| `replay_role` | string, nullable | Replay role: `baseline`, `contended`, or `clean_control`; null on run rows |
+| `replay_condition` | string, nullable | Injected replay condition: `clean`, `cpu`, `inference`, `retrieval`, or `mixed`; null on run rows |
+| `control_exceeded_noise` | bool, nullable | Whether the clean control exceeded noise on this step; null on run rows and when no usable control exists |
+| `configuration_sha256` | string, nullable | Digest of the replay's registered configuration; null on run rows |
 
 ## Leakage rules
 
 - `step_id`, `condition`, `rule_prediction`, `baseline_mean_seconds`, `label_basis`,
-  `injection_method`, `run_passed`, and `failed_checks` are never features.
+  `injection_method`, `run_passed`, `failed_checks`, `replay_role`, `replay_condition`,
+  `replay_index`, `control_exceeded_noise`, and `experiment` are never features.
 - Injector configuration and logs are used for labeling only.
 - All clean and contended replays of a task stay in the same split.
 - Preprocessing is fitted on the training split only.

@@ -193,6 +193,8 @@ def label_run(rows: list[dict], config: LabelConfig) -> list[dict]:
             row
             | {
                 "label_resource": resource,
+                # One resource at most per run step; "" (not null) records that none was.
+                "label_resources": "" if resource == "none" else resource,
                 "label_excess_fraction": excess_fraction(row["duration_seconds"], baseline_mean),
                 "label_basis": basis,
                 "injection_method": method,

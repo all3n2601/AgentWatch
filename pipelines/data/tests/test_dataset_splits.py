@@ -11,6 +11,7 @@ import pytest
 from agentwatch_data import splits as splits_module
 from agentwatch_data.build import DATASET_FILE, MANIFEST_FILE, SCHEMA_FILE, Source, build
 from agentwatch_data.extract import canonical_sha256
+from agentwatch_data.schema import SCHEMA_VERSION
 from agentwatch_data.splits import (
     BLOCKED,
     FEATURES,
@@ -611,10 +612,12 @@ def test_exact_schema_versions_are_required_without_minor_compatibility(release,
         "accept_compatible_minor_versions = true",
         "accept_compatible_minor_versions = false",
     )
-    with pytest.raises(SplitError, match="Schema steps-v1.2 is not accepted"):
+    with pytest.raises(SplitError, match=f"Schema {SCHEMA_VERSION} is not accepted"):
         split_of(release, contract=edited_contract(tmp_path, no_minor))
     exact = edited_contract(
-        tmp_path, no_minor, ('schema_version = "steps-v1.1"', 'schema_version = "steps-v1.2"')
+        tmp_path,
+        no_minor,
+        ('schema_version = "steps-v1.1"', f'schema_version = "{SCHEMA_VERSION}"'),
     )
     assert split_of(release, contract=exact).split["release"] == release.name
 

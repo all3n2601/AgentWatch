@@ -15,6 +15,7 @@ from agentwatch_data.build import Source, build
 from agentwatch_data.evidence import add_run
 from agentwatch_data.extract import canonical_sha256
 from agentwatch_data.integrity import main, verify
+from agentwatch_data.schema import SCHEMA_VERSION
 from dataset_fixtures import make_result, write_run
 
 GOLDEN = next((Path(__file__).parent / "fixtures").iterdir())
@@ -145,13 +146,13 @@ def test_damaged_releases_and_reports_are_reported(stores):
     evidence, datasets, release = stores
     (release / "steps.parquet").write_bytes(b"tampered")
     (datasets / "stray.txt").write_text("")
-    (datasets / "steps-v1.2+aaaaaaaaaaaa").symlink_to(release, target_is_directory=True)
+    (datasets / f"{SCHEMA_VERSION}+aaaaaaaaaaaa").symlink_to(release, target_is_directory=True)
     (datasets / "builds" / "broken.json").write_text("{damaged")
     (datasets / "builds" / "notes.txt").write_text("{}")
     (datasets / "builds" / "listed.json").write_text(json.dumps({"release": ["x"]}))
     assert problems(evidence, datasets) == [
         f"datasets/{release.name}: Release {release.name} does not match its manifest; rebuild it",
-        "datasets/steps-v1.2+aaaaaaaaaaaa: unexpected entry",
+        f"datasets/{SCHEMA_VERSION}+aaaaaaaaaaaa: unexpected entry",
         "datasets/stray.txt: unexpected entry",
         "datasets/builds/broken.json: unreadable build report",
         "datasets/builds/listed.json: names release ['x'], which is missing",
@@ -170,12 +171,12 @@ def test_a_deleted_release_leaves_its_report_naming_it(stores):
 
 def test_a_renamed_release_is_reported_once(stores):
     evidence, datasets, release = stores
-    release.rename(datasets / "steps-v1.2+bbbbbbbbbbbb")
+    release.rename(datasets / f"{SCHEMA_VERSION}+bbbbbbbbbbbb")
     [report] = list((datasets / "builds").iterdir())
     assert problems(evidence, datasets) == [
         (
-            "datasets/steps-v1.2+bbbbbbbbbbbb: Release steps-v1.2+bbbbbbbbbbbb does not match "
-            "its manifest; rebuild it"
+            f"datasets/{SCHEMA_VERSION}+bbbbbbbbbbbb: Release {SCHEMA_VERSION}+bbbbbbbbbbbb does "
+            "not match its manifest; rebuild it"
         ),
         f"datasets/builds/{report.name}: names release {release.name!r}, which is missing",
     ]
@@ -269,10 +270,10 @@ def test_edited_evidence_no_longer_reproduces_its_release(stores):
 def test_damaged_gate_attempts_are_reported(stores):
     evidence, datasets, release = stores
     write_attempt(datasets, release.name, "a1", result="{damaged")
-    write_attempt(datasets, "steps-v1.2+cccccccccccc", "a1")
+    write_attempt(datasets, f"{SCHEMA_VERSION}+cccccccccccc", "a1")
     found = problems(evidence, datasets)
     assert found[0].startswith(f"datasets/validations/{release.name}: Quality-gate verdict of ")
-    assert found[1:] == ["datasets/validations/steps-v1.2+cccccccccccc: no such release"]
+    assert found[1:] == [f"datasets/validations/{SCHEMA_VERSION}+cccccccccccc: no such release"]
 
 
 def test_gate_attempts_must_hold_their_matching_statistics(stores):
@@ -315,13 +316,13 @@ def test_damaged_splits_are_reported(stores):
     good.write_text(json.dumps(content))
     nan = datasets / "splits" / release.name / "split-v1+000000000000.json"
     nan.write_text(f'{{"split_id": "{nan.stem}", "release": "{release.name}", "x": NaN}}')
-    write_split(datasets, "steps-v1.2+dddddddddddd", {"groups": {}})
+    write_split(datasets, f"{SCHEMA_VERSION}+dddddddddddd", {"groups": {}})
     (datasets / "splits" / "loose.json").write_text("{}")
     assert problems(evidence, datasets) == [  # entries are checked in sorted order
         "datasets/splits/loose.json: no such release",
         f"datasets/splits/{release.name}: Split {nan.name} holds a non-finite number",
         f"datasets/splits/{release.name}: Split {good.name} does not match its content or location",
-        "datasets/splits/steps-v1.2+dddddddddddd: no such release",
+        f"datasets/splits/{SCHEMA_VERSION}+dddddddddddd: no such release",
     ]
 
 
@@ -445,7 +446,7 @@ def test_edited_rows_with_a_resigned_manifest_are_refused(stores):
     rewrite_column(release, "queue_seconds", lambda value: value + 1.0)
     resign(release)
     [problem] = problems(evidence, datasets)
-    assert problem.startswith(f"datasets/{release.name}: its content produces steps-v1.2+")
+    assert problem.startswith(f"datasets/{release.name}: its content produces {SCHEMA_VERSION}+")
     assert problem.endswith("not its name; it was changed after it was built")
 
 
@@ -508,7 +509,7 @@ def test_an_edited_contract_is_refused(stores):
     (release / "schema.json").write_text(json.dumps(contract))
     resign(release)
     assert problems(evidence, datasets) == [
-        f"datasets/{release.name}: schema.json is not the frozen steps-v1.2 column contract"
+        f"datasets/{release.name}: schema.json is not the frozen {SCHEMA_VERSION} column contract"
     ]
 
 
@@ -518,7 +519,7 @@ def test_a_reformatted_contract_is_refused_too(stores):
     contract = json.loads((release / "schema.json").read_text())
     (release / "schema.json").write_text(json.dumps(contract))
     resign(release)
-    assert "schema.json is not the frozen steps-v1.2" in problems(evidence, datasets)[0]
+    assert f"schema.json is not the frozen {SCHEMA_VERSION}" in problems(evidence, datasets)[0]
 
 
 def test_an_edited_superseded_release_is_refused(stores):
@@ -605,7 +606,7 @@ def consistent_release_from(rows: list[dict], datasets: Path, label_version: str
 
     labeled = [{k: v for k, v in row.items() if k != "dataset_version"} for row in rows]
     digest = rows_digest(labeled)
-    version = f"steps-v1.2+{release_digest(digest)[:12]}"
+    version = f"{SCHEMA_VERSION}+{release_digest(digest)[:12]}"
     final = [row | {"dataset_version": version} for row in labeled]
     write_release(datasets / version, final, version, digest, label_version)
     return datasets / version
@@ -659,7 +660,7 @@ def forge(datasets: Path, table: pa.Table, label_version: str) -> Path:
 
     rows = [{k: v for k, v in row.items() if k != "dataset_version"} for row in table.to_pylist()]
     digest = rows_digest(rows)
-    version = f"steps-v1.2+{release_digest(digest)[:12]}"
+    version = f"{SCHEMA_VERSION}+{release_digest(digest)[:12]}"
     release = datasets / version
     release.mkdir()
     index = table.column_names.index("dataset_version")

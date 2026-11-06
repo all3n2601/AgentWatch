@@ -5,7 +5,7 @@
     "clean": 1,
     "contended": 1
   },
-  "dataset_version": "steps-v1.2+75224344f7cb",
+  "dataset_version": "steps-v1.3+2c1d90bf4268",
   "label_basis": {
     "baseline_reference": 5,
     "clean_within_noise": 1,
@@ -15,14 +15,14 @@
     "cpu_sandbox": 1,
     "none": 6
   },
-  "label_version": "labels-v1.1+9d791c89",
-  "parquet_sha256": "398191c797fbd9b5527381f705ab897ed68c7d5c1c5bea8f26ed50343a5f0b4a",
+  "label_version": "labels-v1.1+2c495a72",
+  "parquet_sha256": "ee5782c0d5c6da382cd8c0056746142f0c6bda9eb140bfd1cc28ef978ceb9a28",
   "release_format": 2,
   "rows": 7,
-  "rows_sha256": "c7f59fba93056b73dec9e16dfd7ce2fbcf010b4f94483f19fcc23a9425053a3d",
+  "rows_sha256": "aeda5f1626aacd15810ca417c5fbbdaa059c437e421f6af0ea08467330ceb9b6",
   "runs": 1,
-  "schema_sha256": "2869baf5459f50798ceb9dc40ac094031319358a73a16c8fd5aa5e55f5d72bfb",
-  "schema_version": "steps-v1.2",
+  "schema_sha256": "6acfdedbac3822d32d9438a5ea2cf8e8a44afe67a021e0a0fbb546afa2560f8e",
+  "schema_version": "steps-v1.3",
   "tasks": 1,
   "telemetry_status": {
     "present": 7

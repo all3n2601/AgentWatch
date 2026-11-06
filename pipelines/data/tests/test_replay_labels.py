@@ -16,7 +16,6 @@ from agentwatch_data.schema import (
     REPLAY_CONDITIONS,
     REPLAY_LABEL_COLUMNS,
     RESOURCE_CLASSES,
-    SCHEMA_VERSION,
     Role,
     check_value,
     feature_columns,
@@ -62,7 +61,7 @@ def test_packaged_replay_rules_load(config):
 # bump `version` in labels-v2.toml, which also needs an evaluation-contract change.
 # Otherwise (a comment or refactor) keep the version, and say why in the PR. Either way,
 # update the pin in the same PR.
-PINNED_REPLAY_LABEL_VERSION = "labels-v2+45d40cc0"
+PINNED_REPLAY_LABEL_VERSION = "labels-v2+d803a9c6"
 
 
 def test_replay_label_version_is_pinned(config):
@@ -525,9 +524,9 @@ def test_replay_label_metadata_is_never_a_feature():
     assert metadata.isdisjoint(feature_columns())
 
 
-# The release columns as of steps-v1.2 (identical on origin/main); replay label columns
-# are not part of them until D03 adds them with steps-v1.3.
-RELEASE_COLUMN_NAMES = (
+# The release columns as of steps-v1.2; steps-v1.3 keeps them, in order, and appends the
+# replay columns.
+V1_2_RELEASE_COLUMN_NAMES = (
     "run_id",
     "step_id",
     "task_id",
@@ -571,9 +570,15 @@ RELEASE_COLUMN_NAMES = (
 )
 
 
-def test_release_schema_is_unchanged():
-    assert SCHEMA_VERSION == "steps-v1.2"
-    assert tuple(column.name for column in COLUMNS) == RELEASE_COLUMN_NAMES
+# Replay label keys stored under another release column name: the release condition keeps
+# the baseline/clean/contended design, so the replay's own role and condition are separate.
+RENAMED_IN_RELEASE = {"role": "replay_role", "condition": "replay_condition"}
+
+
+def test_release_keeps_v1_2_columns_and_carries_every_replay_label_column():
+    names = tuple(column.name for column in COLUMNS)
+    assert names[: len(V1_2_RELEASE_COLUMN_NAMES)] == V1_2_RELEASE_COLUMN_NAMES
+    assert {RENAMED_IN_RELEASE.get(key, key) for key in ROW_KEYS} <= set(names)
 
 
 def test_replay_step_ids_carry_no_condition(tmp_path, config):
