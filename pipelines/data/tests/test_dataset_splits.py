@@ -3,6 +3,8 @@ import hashlib
 import json
 import shutil
 import stat
+import subprocess
+import sys
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 from agentwatch_data import splits as splits_module
 from agentwatch_data.build import DATASET_FILE, MANIFEST_FILE, SCHEMA_FILE, Source, build
+from agentwatch_data.evidence import add
 from agentwatch_data.extract import canonical_sha256
 from agentwatch_data.schema import SCHEMA_VERSION
 from agentwatch_data.splits import (
@@ -22,16 +25,23 @@ from agentwatch_data.splits import (
     SplitError,
     assign,
     check_compatibility,
+    class_balance,
+    describe,
+    design_encoding,
     held_out_methods,
+    is_member,
     leakage_check,
     load_contract,
     load_split,
     main,
     make_split,
+    members_for,
     partition,
+    read_split_file,
     separation,
 )
 from dataset_fixtures import make_result, write_run
+from replay_fixtures import write_experiment
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 # The committed contract is eval-contract-v2 (split-v2); split-v1 behavior is tested with the
@@ -39,6 +49,7 @@ REPOSITORY = Path(__file__).resolve().parents[3]
 CONTRACT = REPOSITORY / "pipelines" / "model" / "evaluation-contract.toml"
 V1 = REPOSITORY / "pipelines" / "model" / "evaluation-contract-v1.toml"
 FROZEN = REPOSITORY / "pipelines" / "validation" / "schema" / "steps.pbtxt"
+FROZEN_V1_3 = REPOSITORY / "pipelines" / "validation" / "schema" / "steps-v1.3.pbtxt"
 GOLDEN = Path(__file__).parent / "fixtures"
 NOW = datetime(2026, 10, 14, tzinfo=UTC)
 CPU_WORKLOAD = "fixed SHA-256 CPU task"
@@ -127,7 +138,7 @@ def rows_of(path: Path, name: str) -> list[dict]:
 def resigned(directory: Path, split: dict) -> Path:
     """Write an edited split under the id its content now hashes to, as a forger could."""
     content = {key: value for key, value in split.items() if key != "split_id"}
-    split = split | {"split_id": f"split-v1+{canonical_sha256(content)[:12]}"}
+    split = split | {"split_id": f"{split['split_method']}+{canonical_sha256(content)[:12]}"}
     path = directory / f"{split['split_id']}.json"
     path.write_text(json.dumps(split))
     return path
@@ -754,24 +765,25 @@ def test_invalid_v2_contracts_are_refused(tmp_path, old, new, message):
         load_contract(contract)
 
 
-def test_split_v2_is_not_split_until_it_is_wired(release):
-    """make_split and load_split refuse a split-v2 contract rather than split it as split-v1.
+SPLIT_V1_SUMMARY_KEYS = [
+    "condition",
+    "groups",
+    "injection_method",
+    "label_resource",
+    "rows",
+    "rows_sha256",
+    "runs",
+    "source",
+]
 
-    The fixture's steps-v1.3, labels-v1.1 release is compatible with eval-contract-v2, so the
-    method is the only thing refused.
-    """
-    with pytest.raises(SplitError, match="split-v2 is wired in a later change"):
-        split_of(release, contract=CONTRACT)
-    made = split_of(release)  # under eval-contract-v1
-    with pytest.raises(SplitError, match="split-v2 is wired in a later change"):
-        load_split(made.path, "train", CONTRACT, FROZEN, allow_unchecked_leakage=True)
 
-
-def test_v1_2_release_and_split_still_load_with_the_v1_files(release):
+def test_v1_3_release_splits_as_split_v1_with_the_v1_files(release):
     """A split made with eval-contract-v1 and steps.pbtxt is the split-v1 document as before.
 
-    Split ids hash the whole document, so pinning the contract-derived parts and the exact set
-    of fields proves the new contract fields leave every split-v1 id unchanged.
+    The fixture is a steps-v1.3 release of labels-v1.1 CPU rows, which eval-contract-v1 accepts
+    as a compatible minor version. Split ids hash the whole document, so pinning the
+    contract-derived parts and the exact set of fields proves neither the new contract fields
+    nor split-v2's additions (class balance, design encoding, missingness) reach a split-v1 id.
     """
     made = split_of(release, contract=V1, frozen=FROZEN)
     split = made.split
@@ -792,6 +804,8 @@ def test_v1_2_release_and_split_still_load_with_the_v1_files(release):
         "split_method",
         "splits",
     ]
+    for name in SPLITS:
+        assert sorted(split["splits"][name]) == SPLIT_V1_SUMMARY_KEYS
     assert split["contract"] == {
         "version": "eval-contract-v1",
         "status": "proposed",
@@ -855,6 +869,27 @@ def test_the_recorded_run_splits_honestly(tmp_path):
     assert sum(split["splits"][name]["groups"] for name in SPLITS) == 1
     assert split["leakage"]["status"] == INCONCLUSIVE
     assert split["held_out_injection_methods"]["status"] == "not_met"
+
+
+def test_the_recorded_run_keeps_its_split_v1_id(tmp_path):
+    """A literal guard: the id the recorded run split to before eval-contract-v2 existed.
+
+    Every split-v1 field is hashed into the id, so any change to the split-v1 document, the
+    hash assignment, or the leakage check under eval-contract-v1 changes this value.
+    """
+    release = build([Source("local", str(GOLDEN))], tmp_path / "datasets", now=NOW).release
+    write_verdict(release)
+    assert split_of(release, contract=V1, frozen=FROZEN).split["split_id"] == (
+        "split-v1+eee68b0e3d47"
+    )
+
+
+def test_a_split_v1_contract_needs_its_group_key_column():
+    """A release without the contract's group key column (task_group before steps-v1.3)."""
+    contract = dataclasses.replace(load_contract(V1), group_key="task_group")
+    rows = [{"run_id": "r", "step_id": "s", "task_id": "t", "source": "measured"}]
+    with pytest.raises(SplitError, match="no task_group column"):
+        members_for(rows, contract)
 
 
 # Command line
@@ -972,3 +1007,364 @@ def test_verdict_selection_matches_the_shared_cases(tmp_path, case):
     except SplitError:
         found = "unknown"
     assert found == case["verdict"]
+
+
+# split-v2 under eval-contract-v2. The release is the golden recorded run plus two synthetic
+# (replay_fixtures) live experiments, one per agent task; every replay value is invented.
+
+GOLDEN_RUN = GOLDEN / "coding-macos-2026-10-05"
+GOLDEN_TASK = "coding:fixed Python project: run three tests:600000"
+REPLAY_BASELINES = [
+    {"agent-run": 2.0, "model-call-1": model, "tool-call-1": tool}
+    for model, tool in ((1.0, 0.2), (1.01, 0.21), (0.99, 0.19))
+]
+# Solo contention slows each step's own resource; the mixed replay confirms a mixed model call.
+REPLAY_CONTENDED = {
+    "cpu": {"agent-run": 2.5, "model-call-1": 1.5, "tool-call-1": 0.5},
+    "inference": {"agent-run": 2.5, "model-call-1": 1.4, "tool-call-1": 0.2},
+    "mixed": {"agent-run": 3.0, "model-call-1": 1.9, "tool-call-1": 0.6},
+}
+EXPERIMENTS = {"fix-window-count": "window-exp", "fix-mean-empty": "mean-exp"}
+
+
+def write_store(tmp_path: Path) -> Path:
+    store = tmp_path / "store"
+    add(GOLDEN_RUN, store)
+    for namespace, (group, name) in enumerate(EXPERIMENTS.items(), start=1):
+        experiment = write_experiment(
+            tmp_path / "in",
+            name=name,
+            task_id=f"{group}-r1",
+            live=True,
+            run_namespace=namespace,
+            plan_sha256=f"{namespace}" * 64,
+            baseline=REPLAY_BASELINES,
+            contended=REPLAY_CONTENDED,
+        )
+        add(experiment, store)
+    return store
+
+
+def validated_release(store: Path, datasets: Path) -> Path:
+    release = build([Source("local", str(store))], datasets, now=NOW).release
+    write_verdict(release, frozen=FROZEN_V1_3)
+    return release
+
+
+@pytest.fixture
+def v1_3_release(tmp_path):
+    """A steps-v1.3 release with run and replay rows that passed the quality gate."""
+    return validated_release(write_store(tmp_path), tmp_path / "datasets")
+
+
+def split_v2(release: Path, contract: Path = CONTRACT):
+    return make_split(release, contract, FROZEN_V1_3)
+
+
+def test_split_v2_puts_the_declared_task_and_held_out_method_in_test(v1_3_release):
+    split = split_v2(v1_3_release).split
+    assert split["split_id"].startswith("split-v2+")
+    assert split["split_method"] == "split-v2"
+    # fix-window-count is declared; the golden task holds worker_queue_blocker, held out.
+    assert split["groups"] == {
+        GOLDEN_TASK: "test",
+        "fix-mean-empty": "train",
+        "fix-window-count": "test",
+    }
+    checks = split["split_v2_checks"]
+    assert checks["independence"]["status"] == "passed"
+    assert checks["held_out"]["status"] == "met"
+    assert checks["held_out"]["only_in_test"] == ["worker_queue_blocker"]
+    assert checks["mixed_in_test"] == {"status": "met", "rows": 2}  # by replay_condition
+    assert split["class_balance"]["status"] in ("met", "not_met")
+    assert split["contract"]["group_key"] == "task_group"
+
+
+def test_split_v2_records_its_assignment_and_class_balance(v1_3_release):
+    split = split_v2(v1_3_release).split
+    assignment = load_contract(CONTRACT).assignment
+    canonical = canonical_sha256(tomllib.loads(assignment.read_text()))[:8]
+    assert split["assignment"] == {"version": "split-v2", "sha256": canonical}
+    balance = split["class_balance"]
+    test = load_split(
+        split_v2(v1_3_release).path, "test", CONTRACT, FROZEN_V1_3, allow_unchecked_leakage=True
+    )
+    assert balance["per_class"] == {
+        name: sum(row["label_resource"] == name for row in test)
+        for name in ("none", "cpu_sandbox", "inference", "retrieval")
+    }
+    assert balance["mixed"] == sum(row["label_resource"] == "mixed" for row in test) == 1
+    assert balance["clean"] == sum(row["condition"] == "clean" for row in test)
+    assert balance["mixed_condition_rows"] == 2
+    assert balance["minimums"] == {"per_class": 30, "clean": 100, "mixed": 30}
+    # A handful of synthetic steps meets no minimum.
+    assert balance["below"] == ["none", "cpu_sandbox", "inference", "retrieval", "clean", "mixed"]
+    assert balance["status"] == "not_met"
+
+
+def test_split_v2_summaries_report_missing_features_per_feature_version(v1_3_release):
+    split = split_v2(v1_3_release).split
+    test = load_split(
+        split_v2(v1_3_release).path, "test", CONTRACT, FROZEN_V1_3, allow_unchecked_leakage=True
+    )
+    missing = split["splits"]["test"]["missing"]
+    assert set(missing) == {"steps-v1.2", "step-features-v1"}
+    for version, counts in missing.items():
+        rows = [row for row in test if row["feature_version"] == version]
+        assert counts == {name: sum(row[name] is None for row in rows) for name in FEATURES}
+    assert split["splits"]["validation"]["missing"] == {}  # no rows, no feature version
+
+
+def test_split_v2_reports_design_encoding_on_training_replays(v1_3_release):
+    report = split_v2(v1_3_release).split["design_encoding"]
+    assert report["status"] == "report_only"
+    assert report["rows"] > 0
+    assert {item["feature"] for item in report["features"]} == set(FEATURES)
+    aucs = [(-item["auc"], item["feature"]) for item in report["features"]]
+    assert aucs == sorted(aucs)
+
+
+def test_load_split_v2_rebuilds_and_refuses_an_edited_file(v1_3_release):
+    result = split_v2(v1_3_release)
+    train = load_split(result.path, "train", CONTRACT, FROZEN_V1_3, allow_unchecked_leakage=True)
+    assert train and {row["task_group"] for row in train} == {"fix-mean-empty"}
+    assert result.split["splits"]["train"]["rows_sha256"] == canonical_sha256(
+        {
+            "dataset_version": v1_3_release.name,
+            "rows": sorted([row["run_id"], row["step_id"]] for row in train),
+        }
+    )
+    for change in (
+        lambda s: s["groups"].update({"fix-window-count": "train"}),
+        lambda s: s["class_balance"].update(status="met", below=[]),
+        lambda s: s["split_v2_checks"]["mixed_in_test"].update(rows=99),
+        lambda s: s["assignment"].update(sha256="00000000"),
+        lambda s: s["design_encoding"].update(status="unavailable"),
+    ):
+        split = edit(json.loads(result.path.read_text()), change)
+        forged = resigned(result.path.parent, split)
+        with pytest.raises(SplitError, match=REBUILT):
+            load_split(forged, "train", CONTRACT, FROZEN_V1_3, True)
+        forged.unlink()
+    split = json.loads(result.path.read_text())
+    split["groups"]["fix-window-count"] = "train"
+    result.path.write_text(json.dumps(split))  # not re-signed
+    with pytest.raises(SplitError, match="does not match its content or location"):
+        load_split(result.path, "train", CONTRACT, FROZEN_V1_3, True)
+
+
+def copied_contract(tmp_path: Path) -> Path:
+    """eval-contract-v2 and its assignment file, copied so the assignment can be edited."""
+    directory = tmp_path / "contract"
+    directory.mkdir()
+    shutil.copyfile(load_contract(CONTRACT).assignment, directory / "assignment.toml")
+    contract = directory / "evaluation-contract.toml"
+    contract.write_text(
+        CONTRACT.read_text().replace(
+            'assignment = "../data/src/agentwatch_data/split-assignment.toml"',
+            'assignment = "assignment.toml"',
+        )
+    )
+    return contract
+
+
+def test_changed_assignment_file_is_refused_by_load_split(v1_3_release, tmp_path):
+    contract = copied_contract(tmp_path)
+    result = split_v2(v1_3_release, contract)
+    assert load_split(result.path, "test", contract, FROZEN_V1_3, True)
+    assignment = contract.parent / "assignment.toml"
+    # Moves no task (no such group exists) but is a different frozen assignment.
+    assignment.write_text(
+        assignment.read_text().replace(
+            'test_task_groups = ["fix-window-count"]',
+            'test_task_groups = ["fix-window-count", "fix-other"]',
+        )
+    )
+    with pytest.raises(SplitError, match=REBUILT):
+        load_split(result.path, "test", contract, FROZEN_V1_3, True)
+
+
+def test_an_unreadable_assignment_is_a_split_error(v1_3_release, tmp_path):
+    contract = copied_contract(tmp_path)
+    (contract.parent / "assignment.toml").write_text('version = "split-v3"\n')
+    with pytest.raises(SplitError, match="Split assignment keys"):
+        split_v2(v1_3_release, contract)
+    (contract.parent / "assignment.toml").unlink()
+    with pytest.raises(SplitError, match="cannot be read"):
+        split_v2(v1_3_release, contract)
+
+
+def replay_row(group: str, run: str, **fields) -> dict:
+    return {
+        "run_id": run,
+        "step_id": "s",
+        "task_id": f"{group}-r1",
+        "task_group": group,
+        "source": "measured",
+        "injection_method": "none",
+        "label_resource": "none",
+        "condition": "baseline",
+        "replay_condition": "clean",
+        "plan_sha256": None,
+    } | fields
+
+
+def test_a_run_shared_between_splits_is_a_split_error():
+    rows = [replay_row("fix-window-count", "shared"), replay_row("fix-mean-empty", "shared")]
+    with pytest.raises(SplitError, match="not independent.*run_id"):
+        members_for(rows, load_contract(CONTRACT))
+
+
+def test_split_v2_excludes_untested_sources_from_test_and_rechecks():
+    rows = [
+        replay_row("fix-window-count", "measured", replay_condition="mixed"),
+        replay_row("fix-window-count", "simulated", source="simulated", replay_condition="mixed"),
+        replay_row("fix-mean-empty", "trained", source="simulated"),
+    ]
+    groups, members, excluded, checks = members_for(rows, load_contract(CONTRACT))
+    assert groups == {"fix-mean-empty": "train", "fix-window-count": "test"}
+    assert [row["run_id"] for row in members["test"]] == ["measured"]
+    assert [row["run_id"] for row in members["train"]] == ["trained"]
+    assert excluded == [
+        {
+            "run_id": "simulated",
+            "source": "simulated",
+            "reason": "source simulated is not allowed in the test split",
+        }
+    ]
+    assert checks["mixed_in_test"] == {"status": "met", "rows": 1}  # the excluded run not counted
+
+
+def test_split_v1_members_carry_no_split_v2_checks(release):
+    rows = splits_module.load_release(release)[1]
+    groups, members, excluded, checks = members_for(rows, load_contract(V1))
+    assert checks is None
+    assert (groups, members, excluded) == partition(rows, load_contract(V1))
+
+
+def test_split_twice_reuses_the_same_file_and_rows_sha256(v1_3_release, tmp_path):
+    first = split_v2(v1_3_release)
+    again = split_v2(v1_3_release)
+    assert again.reused and again.path == first.path and again.split == first.split
+    # Building and splitting again into an empty store reproduces the release and split.
+    rebuilt = validated_release(tmp_path / "store", tmp_path / "rebuilt")
+    other = split_v2(rebuilt)
+    assert rebuilt.name == v1_3_release.name
+    assert other.split["split_id"] == first.split["split_id"]
+    assert other.path.read_bytes() == first.path.read_bytes()
+    for name in SPLITS:
+        assert (
+            other.split["splits"][name]["rows_sha256"] == first.split["splits"][name]["rows_sha256"]
+        )
+
+
+def test_a_split_file_with_an_unknown_method_is_refused(v1_3_release):
+    result = split_v2(v1_3_release)
+    split = json.loads(result.path.read_text()) | {"split_method": "split-v9"}
+    content = {key: value for key, value in split.items() if key != "split_id"}
+    split["split_id"] = f"split-v9+{canonical_sha256(content)[:12]}"
+    forged = result.path.parent / f"{split['split_id']}.json"
+    forged.write_text(json.dumps(split))
+    with pytest.raises(SplitError, match="unknown split method 'split-v9'"):
+        read_split_file(forged)
+
+
+def test_split_v1_documents_have_no_split_v2_sections(release):
+    split = describe(
+        release,
+        json.loads((release / MANIFEST_FILE).read_text()),
+        splits_module.load_release(release)[1],
+        load_contract(V1),
+        "0" * 64,
+    )
+    assert not {"assignment", "split_v2_checks", "class_balance", "design_encoding"} & set(split)
+    assert all("missing" not in split["splits"][name] for name in SPLITS)
+
+
+# Membership, class balance, and design encoding
+
+
+def test_membership_reads_label_resources_when_present():
+    mixed = {"label_resource": "mixed", "label_resources": "cpu_sandbox,inference"}
+    assert is_member(mixed, "cpu_sandbox") and is_member(mixed, "inference")
+    assert not is_member(mixed, "none") and not is_member(mixed, "retrieval")
+    none = {"label_resource": "none", "label_resources": ""}
+    assert is_member(none, "none") and not is_member(none, "cpu_sandbox")
+    # Rows before steps-v1.3 (or a null label_resources) fall back to label_resource.
+    assert is_member({"label_resource": "inference"}, "inference")
+    assert is_member({"label_resource": "none", "label_resources": None}, "none")
+
+
+def test_leakage_counts_a_mixed_step_for_each_of_its_resources():
+    train = [row("none", label_resources="", queue_fraction=0.01 * n) for n in range(5)]
+    train += [
+        row("mixed", label_resources="cpu_sandbox,inference", queue_fraction=0.9 + 0.01 * n)
+        for n in range(5)
+    ]
+    check = leakage_check(train, load_contract(CONTRACT))
+    assert check["classes"] == ["none", "cpu_sandbox", "inference"]
+    assert check["status"] == BLOCKED and "queue_fraction" in check["reason"]
+    assert check["features"][0]["auc"] == 1.0
+
+
+def balance_row(label: str, condition: str = "contended", **fields) -> dict:
+    return {"label_resource": label, "condition": condition, "replay_condition": None} | fields
+
+
+def test_class_balance_counts_test_rows_against_the_contract_minimums():
+    test = [balance_row(name) for name in ("none", "cpu_sandbox", "inference", "retrieval")]
+    test += [balance_row("none", "clean"), balance_row("mixed", replay_condition="mixed")]
+    test.append(balance_row("cpu_sandbox", replay_condition="mixed"))
+    contract = dataclasses.replace(
+        load_contract(CONTRACT),
+        min_test_steps_per_class=1,
+        min_clean_test_steps=1,
+        min_mixed_test_steps=1,
+    )
+    balance = class_balance(test, contract)
+    assert balance == {
+        "per_class": {"none": 2, "cpu_sandbox": 2, "inference": 1, "retrieval": 1},
+        "clean": 1,
+        "mixed": 1,
+        "mixed_condition_rows": 2,
+        "minimums": {"per_class": 1, "clean": 1, "mixed": 1},
+        "below": [],
+        "status": "met",
+    }
+    contract = dataclasses.replace(contract, min_test_steps_per_class=2, min_mixed_test_steps=2)
+    balance = class_balance(test, contract)
+    assert balance["below"] == ["inference", "retrieval", "mixed"]
+    assert balance["status"] == "not_met"
+
+
+def encoding_row(role: str, label: str = "none", kind: str = "agent_replay", **features) -> dict:
+    return row(label, kind=kind, replay_role=role) | features
+
+
+def test_design_encoding_contrasts_contended_and_clean_none_replays():
+    train = [encoding_row("contended", queue_fraction=0.9 + 0.01 * n) for n in range(3)]
+    train += [encoding_row("clean_control", queue_fraction=0.01 * n) for n in range(3)]
+    train += [
+        encoding_row("contended", label="cpu_sandbox"),  # not labeled none
+        encoding_row("baseline"),  # not a contended/control pair
+        encoding_row(None, kind="cpu"),  # run rows are not replays
+    ]
+    report = design_encoding(train)
+    assert report["status"] == "report_only" and report["rows"] == 6
+    assert report["features"][0] == {"feature": "queue_fraction", "auc": 1.0}
+    assert {item["feature"] for item in report["features"]} == set(FEATURES)
+
+
+@pytest.mark.parametrize("role", ["contended", "clean_control"])
+def test_design_encoding_is_unavailable_without_both_roles(role):
+    report = design_encoding([encoding_row(role)])
+    assert report["status"] == "unavailable" and report["reason"]
+    assert design_encoding([])["status"] == "unavailable"
+
+
+def test_import_order_has_no_cycle():
+    for modules in (
+        "agentwatch_data.split_assignment, agentwatch_data.splits",
+        "agentwatch_data.splits, agentwatch_data.split_assignment",
+    ):
+        subprocess.run([sys.executable, "-I", "-c", f"import {modules}"], check=True, timeout=60)

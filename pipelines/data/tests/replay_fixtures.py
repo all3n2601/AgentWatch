@@ -62,6 +62,8 @@ def write_experiment(
     live: bool = False,
     started_at: str = "2026-11-05T00:00:00+00:00",
     passed: bool | None = True,
+    run_namespace: int = 0,
+    plan_sha256: str = "0" * 64,
 ) -> Path:
     """Write one synthetic experiment under root/name and return its directory.
 
@@ -69,6 +71,8 @@ def write_experiment(
     contended condition followed by a clean control. Replay indexes start at 0. A control
     defaults to the first baseline's seconds. With `live=True` the manifest timings are the
     journal's tick differences, so features computed from the journal reproduce them exactly.
+    Experiments stored together need distinct run_namespace values (and, to be independent
+    for split-v2, distinct plan_sha256 values), because replay run IDs repeat per index.
     """
     baseline = baseline if baseline is not None else [dict(DEFAULT_STEPS) for _ in range(3)]
     contended = contended if contended is not None else {"cpu": DEFAULT_STEPS}
@@ -90,11 +94,12 @@ def write_experiment(
         replay_dir = directory / "replays" / number
         replay_dir.mkdir(parents=True)
         step_ids = list(seconds)
-        run_id = f"00000000-0000-4000-8000-{index:012d}"
+        # The fourth group keeps the RFC 4122 variant bits (8-b) for every namespace below 0x4000.
+        run_id = f"00000000-0000-4000-{0x8000 + run_namespace:04x}-{index:012d}"
         evidence = {
             "run_id": run_id,
             "replay": {
-                "plan_sha256": "0" * 64,
+                "plan_sha256": plan_sha256,
                 "model_outputs": [
                     {"step_id": step_id, "matches_source": (index, step_id) not in mismatches}
                     for step_id in step_ids
@@ -169,7 +174,7 @@ def write_experiment(
         "started_at": started_at,
         "checks": checks if checks is not None else dict(PASSING_CHECKS),
         "passed": passed,
-        "plan": {"task_id": task_id, "plan_sha256": "0" * 64, "model": "synthetic-model"},
+        "plan": {"task_id": task_id, "plan_sha256": plan_sha256, "model": "synthetic-model"},
         "replays": replays,
     }
     (directory / "experiment.json").write_text(json.dumps(manifest))

@@ -3,25 +3,34 @@
     python -m agentwatch_data.splits --release data/datasets/<version>
 
 Only a release whose latest quality-gate verdict is a pass, for exactly the files it holds now
-and the reviewed frozen schema, can be split. The fractions, group key, test sources, and
-leakage bound come from the evaluation contract (pipelines/model/evaluation-contract.toml), so
-the contract stays the single source of those values.
+and the reviewed frozen schema, can be split. The split method, fractions, group key, test
+sources, class minimums, and leakage bound come from the evaluation contract
+(pipelines/model/evaluation-contract.toml), so the contract stays the single source of those
+values.
 
-Every group (task) is assigned by hashing its key with SPLIT_METHOD, so under the same
-fractions a task keeps its split in every later release: a task once tested is never trained
-on, and new tasks never move old ones. The fractions are part of the split's identity; changing
-them moves tasks near the boundaries, so it needs a new contract version and test split. Runs whose source the contract does not allow in the test split are excluded there, not
-moved, so a task's replays never cross splits.
+Under `split-v1` every group (task) is assigned by hashing its key (split_positions), so under
+the same fractions a task keeps its split in every later release: a task once tested is never
+trained on, and new tasks never move old ones. The fractions are part of the split's identity;
+changing them moves tasks near the boundaries, so it needs a new contract version and test
+split. `split-v2` (eval-contract-v2) groups by task_group and partitions with
+split_assignment.partition_v2: the frozen assignment file's declared test groups and held-out
+injection methods go to test, every other group keeps its `split-v1` hash position, and a run
+or plan shared between splits refuses the split. Under either method, runs whose source the
+contract does not allow in the test split are excluded there, not moved, so a task's replays
+never cross splits.
 
-The split is written to <datasets>/splits/<release>/<split id>.json. Its content is
-deterministic and the split id is derived from it, so rerunning reuses the same file. It
-records the task assignment, a hash of each split's rows (the "test-split hash" evaluation
-reports record), counts, held-out injection methods, and the contract's leakage check on the
-training split. A blocked or inconclusive leakage check does not fail the split, which is kept
-as evidence, but load_split refuses to hand its rows to training or evaluation. load_split
-also rechecks the release's latest quality-gate verdict and rebuilds the split on every read,
-so neither a split made before a later failed validation nor an edited split file can be used
-to bypass the gate or the leakage check.
+The split is written to <datasets>/splits/<release>/<split id>.json; the id is prefixed with
+the split method. Its content is deterministic and the split id is derived from it, so
+rerunning reuses the same file. It records the task assignment, a hash of each split's rows
+(the "test-split hash" evaluation reports record), counts, held-out injection methods, and the
+contract's leakage check on the training split. A `split-v2` file also records the assignment
+file's version and hash, the D02 independence, hold-out, and mixed-in-test checks, the test
+split's class balance against the contract minimums, missing feature readings per feature
+version, and a report-only design-encoding check. A blocked or inconclusive leakage check does
+not fail the split, which is kept as evidence, but load_split refuses to hand its rows to
+training or evaluation. load_split also rechecks the release's latest quality-gate verdict and
+rebuilds the split on every read, so neither a split made before a later failed validation, an
+edited split file, nor a changed assignment file can be used to bypass the gate or the checks.
 """
 
 import argparse
@@ -49,11 +58,25 @@ from agentwatch_data.extract import canonical_sha256
 from agentwatch_data.files import file_sha256, json_text, write_atomic
 from agentwatch_data.labels import NO_INJECTION
 from agentwatch_data.schema import RESOURCE_CLASSES, SOURCES, feature_columns
+from agentwatch_data.split_assignment import (
+    MIXED,
+    Assignment,
+    AssignmentError,
+    held_out_status,
+    independence,
+    load_assignment,
+    mixed_in_test,
+    partition_v2,
+)
+from agentwatch_data.split_assignment import VERSION as SPLIT_V2
+from agentwatch_data.split_positions import HASH_METHOD, SPLITS, assign
 
-SPLIT_METHOD = "split-v1"  # hashed with each group key; a new value redraws every split
+SPLIT_METHOD = HASH_METHOD  # split-v1: groups are assigned by their hash position alone
 # split-v2 partitions by a frozen assignment file instead of hashing alone (split_assignment).
-METHODS = (SPLIT_METHOD, "split-v2")
-SPLITS = ("train", "validation", "test")
+METHODS = (SPLIT_METHOD, SPLIT_V2)
+NO_RESOURCE = RESOURCE_CLASSES[0]  # "none": the class of a step no resource slowed
+# Replay roles the design-encoding report contrasts: injected load against its clean control.
+CONTENDED_ROLE, CONTROL_ROLE = "contended", "clean_control"
 SPLITS_DIR, VALIDATIONS_DIR, RESULT_FILE = "splits", "validations", "result.json"
 FEATURES = tuple(feature_columns())  # the schema decides what may be a model input
 # Grouping must keep a task's baselines and replays together, so only task-level keys qualify.
@@ -331,20 +354,28 @@ def require_passing_verdict(release: Path, manifest: dict, frozen_schema: Path) 
         )
 
 
-def assign(group: str, fractions: dict[str, float]) -> str:
-    """The split of one group, from a hash of its key: stable across releases."""
-    digest = hashlib.sha256(f"{SPLIT_METHOD}:{group}".encode()).digest()
-    position = int.from_bytes(digest[:8], "big") / 2**64
-    cumulative = 0.0
-    for name in SPLITS[:-1]:
-        cumulative += fractions[name]
-        if position < cumulative:
-            return name
-    return SPLITS[-1]
+def exclude_untested(members: dict[str, list[dict]], contract: Contract) -> list[dict]:
+    """Drop test rows whose source the contract does not allow there; returns their runs.
+
+    The rows are excluded, not moved, so a task's replays never cross splits.
+    """
+    excluded = {}
+    kept = []
+    for row in members["test"]:
+        if row["source"] in contract.test_sources:
+            kept.append(row)
+            continue
+        excluded[row["run_id"]] = {
+            "run_id": row["run_id"],
+            "source": row["source"],
+            "reason": f"source {row['source']} is not allowed in the test split",
+        }
+    members["test"] = kept
+    return [excluded[run] for run in sorted(excluded)]
 
 
 def partition(rows: list[dict], contract: Contract) -> tuple[dict, dict, list[dict]]:
-    """Assign rows to splits by group.
+    """Assign rows to splits by the hash of their group (split-v1).
 
     Returns (group -> split, split -> rows, excluded runs). A run must belong to one group,
     or its steps could land in different splits.
@@ -359,24 +390,75 @@ def partition(rows: list[dict], contract: Contract) -> tuple[dict, dict, list[di
         group: assign(group, contract.fractions) for group in {r[contract.group_key] for r in rows}
     }
     members: dict[str, list[dict]] = {name: [] for name in SPLITS}
-    excluded = {}
     for row in rows:
-        split = groups[row[contract.group_key]]
-        if split == "test" and row["source"] not in contract.test_sources:
-            excluded[row["run_id"]] = {
-                "run_id": row["run_id"],
-                "source": row["source"],
-                "reason": f"source {row['source']} is not allowed in the test split",
-            }
-            continue
-        members[split].append(row)
-    return dict(sorted(groups.items())), members, [excluded[run] for run in sorted(excluded)]
+        members[groups[row[contract.group_key]]].append(row)
+    excluded = exclude_untested(members, contract)
+    return dict(sorted(groups.items())), members, excluded
+
+
+def require_group_key(rows: list[dict], contract: Contract) -> None:
+    # task_group exists from steps-v1.3; an older release cannot be grouped by it.
+    if any(contract.group_key not in row for row in rows):
+        raise SplitError(
+            f"Release rows have no {contract.group_key} column, which {contract.version} groups by"
+        )
+
+
+def assignment_for(contract: Contract) -> Assignment | None:
+    """The contract's frozen split assignment; split-v1 has none."""
+    if contract.method == SPLIT_METHOD:
+        return None
+    if contract.assignment is None:
+        raise SplitError(f"Contract method {contract.method} needs an assignment file")
+    try:
+        return load_assignment(contract.assignment)
+    except AssignmentError as error:
+        raise SplitError(str(error)) from error
+
+
+def members_for(
+    rows: list[dict], contract: Contract, assignment: Assignment | None = None
+) -> tuple[dict, dict[str, list[dict]], list[dict], dict | None]:
+    """(group -> split, split -> rows, excluded runs, split-v2 checks) under the contract.
+
+    split-v1 hashes groups (partition) and has no split-v2 checks. split-v2 partitions with
+    the frozen assignment file (assignment, or the contract's file when None), excludes
+    untested sources the same way, then records the independence, hold-out, and
+    mixed-in-test checks on the rows each split keeps.
+    """
+    require_group_key(rows, contract)
+    if contract.method == SPLIT_METHOD:
+        return *partition(rows, contract), None
+    assignment = assignment or assignment_for(contract)
+    try:
+        groups, members, _ = partition_v2(rows, assignment, contract.fractions)
+    except AssignmentError as error:
+        raise SplitError(str(error)) from error
+    excluded = exclude_untested(members, contract)
+    checks = {
+        "independence": independence(members),
+        "held_out": held_out_status(members, assignment),
+        "mixed_in_test": mixed_in_test(members),
+    }
+    return groups, members, excluded, checks
 
 
 def rows_sha256(dataset_version: str, rows: list[dict]) -> str:
     """Identify a split's rows: the release plus each row's (run_id, step_id)."""
     keys = sorted([row["run_id"], row["step_id"]] for row in rows)
     return canonical_sha256({"dataset_version": dataset_version, "rows": keys})
+
+
+def missing_features(rows: list[dict]) -> dict[str, dict[str, int]]:
+    """Null count of each feature per feature_version: the definitions differ, so not pooled."""
+    versions = sorted({row["feature_version"] for row in rows})
+    return {
+        version: {
+            feature: sum(row[feature] is None for row in rows if row["feature_version"] == version)
+            for feature in FEATURES
+        }
+        for version in versions
+    }
 
 
 def summary(rows: list[dict], group_key: str) -> dict:
@@ -418,11 +500,31 @@ def separation(values: list, positive: list[bool]) -> float:
     return max(auc, 1 - auc)
 
 
+def is_member(row: dict, name: str) -> bool:
+    """Whether a row belongs to a class, by its label_resources when it has them.
+
+    A mixed step (label_resources "cpu_sandbox,inference") belongs to each of its resources,
+    and "none" means no resource ("" in label_resources). Rows without label_resources (before
+    steps-v1.3) and CPU and coding rows, whose label_resources equal label_resource, are
+    members of their label_resource only, so split-v1 results do not change.
+    """
+    resources = row.get("label_resources")
+    if resources is None:
+        return row["label_resource"] == name
+    if name == NO_RESOURCE:
+        return resources == ""
+    return name in resources.split(",")
+
+
 def leakage_check(train: list[dict], contract: Contract) -> dict:
-    """The contract's check: no single feature may nearly separate a class on training data."""
+    """The contract's check: no single feature may nearly separate a class on training data.
+
+    Each class is one-vs-rest on membership (is_member), so a mixed step is a positive for
+    every resource it was slowed by rather than label noise against them.
+    """
     bound = contract.max_single_feature_auc
-    labels = [row[contract.target] for row in train]
-    classes = [name for name in contract.classes if 0 < labels.count(name) < len(labels)]
+    membership = {name: [is_member(row, name) for row in train] for name in contract.classes}
+    classes = [name for name in contract.classes if 0 < sum(membership[name]) < len(train)]
     check = {"max_single_feature_auc": bound, "classes": classes, "features": []}
     if not classes:
         reason = "the training split is empty" if not train else "it has only one class"
@@ -430,7 +532,7 @@ def leakage_check(train: list[dict], contract: Contract) -> dict:
     leaking = []
     for feature in FEATURES:
         values = [row[feature] for row in train]
-        scores = {name: separation(values, [label == name for label in labels]) for name in classes}
+        scores = {name: separation(values, membership[name]) for name in classes}
         worst = max(classes, key=lambda name: scores[name])
         if scores[worst] > bound:  # compared before rounding, so nothing just above passes
             leaking.append(feature)
@@ -471,20 +573,80 @@ def held_out_methods(members: dict[str, list[dict]], required: int) -> dict:
     }
 
 
-def require_split_v1(contract: Contract) -> None:
-    # D03 Task 7 partitions split-v2 contracts with split_assignment.partition_v2.
-    if contract.method != SPLIT_METHOD:
-        raise SplitError(f"{contract.method} is wired in a later change; use a split-v1 contract")
+def class_balance(test: list[dict], contract: Contract) -> dict:
+    """The test split's class counts against the contract minimums.
+
+    A class counts the steps whose label_resource is that class. `mixed` counts steps labeled
+    mixed (confirmed slowed by two or more resources), not every step of a mixed-condition
+    replay; those rows are recorded beside it as mixed_condition_rows.
+    """
+    per_class = {
+        name: sum(row["label_resource"] == name for row in test) for name in contract.classes
+    }
+    clean = sum(row["condition"] == "clean" for row in test)
+    mixed = sum(row["label_resource"] == MIXED for row in test)
+    minimums = {
+        "per_class": contract.min_test_steps_per_class,
+        "clean": contract.min_clean_test_steps,
+        "mixed": contract.min_mixed_test_steps,
+    }
+    below = [name for name, found in per_class.items() if found < minimums["per_class"]]
+    below += [name for name, found in (("clean", clean), (MIXED, mixed)) if found < minimums[name]]
+    return {
+        "per_class": per_class,
+        "clean": clean,
+        "mixed": mixed,
+        "mixed_condition_rows": mixed_in_test({"test": test})["rows"],
+        "minimums": minimums,
+        "below": below,
+        "status": "met" if not below else "not_met",
+    }
+
+
+def design_encoding(train: list[dict]) -> dict:
+    """Report-only: how well each feature tells contended from clean-control replay steps.
+
+    Only training replay steps labeled none are compared, so a high AUC means a feature encodes
+    the experiment design (injected load) rather than the label. It is not a gate: live
+    telemetry legitimately sees injected load on steps the load did not slow.
+    """
+    rows = [
+        row
+        for row in train
+        if row["kind"] == "agent_replay"
+        and row["label_resource"] == NO_RESOURCE
+        and row["replay_role"] in (CONTENDED_ROLE, CONTROL_ROLE)
+    ]
+    contended = [row["replay_role"] == CONTENDED_ROLE for row in rows]
+    if not any(contended) or all(contended):
+        return {
+            "status": "unavailable",
+            "reason": "training has no contended and clean-control replay steps labeled none "
+            "to compare",
+        }
+    features = [
+        {"feature": feature, "auc": round(separation([row[feature] for row in rows], contended), 6)}
+        for feature in FEATURES
+    ]
+    features.sort(key=lambda item: (-item["auc"], item["feature"]))
+    return {"status": "report_only", "rows": len(rows), "features": features}
 
 
 def describe(
-    release: Path, manifest: dict, rows: list[dict], contract: Contract, schema_sha256: str
+    release: Path,
+    manifest: dict,
+    rows: list[dict],
+    contract: Contract,
+    schema_sha256: str,
+    assignment: Assignment | None = None,
 ) -> dict:
-    require_split_v1(contract)
-    groups, members, excluded = partition(rows, contract)
+    """The split document; split-v2 reads the contract's assignment file unless one is given."""
+    assignment = assignment or assignment_for(contract)
+    groups, members, excluded, split_v2_checks = members_for(rows, contract, assignment)
     version = manifest["dataset_version"]
+    split_v2 = split_v2_checks is not None  # only split-v2 partitions by an assignment
     document = {
-        "split_method": SPLIT_METHOD,
+        "split_method": contract.method,
         "release": release.name,
         "dataset_version": version,
         "label_version": manifest["label_version"],
@@ -503,6 +665,7 @@ def describe(
         "splits": {
             name: summary(members[name], contract.group_key)
             | {"rows_sha256": rows_sha256(version, members[name])}
+            | ({"missing": missing_features(members[name])} if split_v2 else {})
             for name in SPLITS
         },
         "held_out_injection_methods": held_out_methods(
@@ -510,14 +673,22 @@ def describe(
         ),
         "leakage": leakage_check(members["train"], contract),
     }
-    split_id = f"{SPLIT_METHOD}+{canonical_sha256(document)[:12]}"
+    if split_v2:
+        # The assignment file is outside the contract's hash, so its own hash is recorded:
+        # a changed assignment changes the rebuilt document, and load_split refuses the file.
+        document |= {
+            "assignment": {"version": assignment.version, "sha256": assignment.sha256},
+            "split_v2_checks": split_v2_checks,
+            "class_balance": class_balance(members["test"], contract),
+            "design_encoding": design_encoding(members["train"]),
+        }
+    split_id = f"{contract.method}+{canonical_sha256(document)[:12]}"
     return {"split_id": split_id} | document
 
 
 def make_split(release: Path, contract_path: Path, frozen_schema: Path) -> SplitResult:
     """Split a release that passed the quality gate, or reuse its identical existing split."""
     contract = load_contract(contract_path)
-    require_split_v1(contract)
     manifest, rows = load_release(release)
     check_compatibility(contract, manifest)
     require_passing_verdict(release, manifest, frozen_schema)
@@ -539,9 +710,12 @@ def read_split_file(path: Path) -> dict:
     also rebuilds it from the release and contract.
     """
     split = read_object(path, "Split")
+    method = split.get("split_method")
+    if method not in METHODS:
+        raise SplitError(f"Split {path.name} names unknown split method {method!r}")
     content = {key: value for key, value in split.items() if key != "split_id"}
     try:
-        expected = f"{SPLIT_METHOD}+{canonical_sha256(content)[:12]}"
+        expected = f"{method}+{canonical_sha256(content)[:12]}"
     except ValueError as error:  # json accepts NaN and Infinity, which canonical JSON refuses
         raise SplitError(f"Split {path.name} holds a non-finite number") from error
     if (
@@ -575,13 +749,14 @@ def load_split(
         raise SplitError(f"Unknown split {name!r}; expected one of {list(SPLITS)}")
     split = read_split_file(path)
     contract = load_contract(contract_path)
-    require_split_v1(contract)
     release = path.parents[2] / path.parent.name
     manifest, rows = load_release(release)
     check_compatibility(contract, manifest)
     # The verdict can change after the split was made, so it is checked on every read.
     require_passing_verdict(release, manifest, frozen_schema)
-    expected = describe(release, manifest, rows, contract, text_sha256(frozen_schema))
+    # Read once, so the rows returned are partitioned by the assignment the rebuild verified.
+    assignment = assignment_for(contract)
+    expected = describe(release, manifest, rows, contract, text_sha256(frozen_schema), assignment)
     if json.loads(json_text(expected)) != split:
         raise SplitError(
             f"Split {path.name} is not what {release.name}, {contract.version}, and "
@@ -592,7 +767,7 @@ def load_split(
         raise SplitError(
             f"Split {path.name}: its leakage check is {leakage}; the contract blocks evaluation"
         )
-    return partition(rows, contract)[1][name]
+    return members_for(rows, contract, assignment)[1][name]
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -40,7 +40,7 @@ def problems(evidence, datasets, status=None):
 
 def write_split(datasets: Path, release: str, content: dict) -> Path:
     """A split file whose id hashes its content, as split-dataset writes it."""
-    document = {"release": release} | content
+    document = {"split_method": "split-v1", "release": release} | content
     split_id = f"split-v1+{canonical_sha256(document)[:12]}"
     path = datasets / "splits" / release / f"{split_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -316,7 +316,10 @@ def test_damaged_splits_are_reported(stores):
     content["groups"] = {"task": "train"}  # edited without a new id
     good.write_text(json.dumps(content))
     nan = datasets / "splits" / release.name / "split-v1+000000000000.json"
-    nan.write_text(f'{{"split_id": "{nan.stem}", "release": "{release.name}", "x": NaN}}')
+    nan.write_text(
+        f'{{"split_id": "{nan.stem}", "split_method": "split-v1", "release": "{release.name}", '
+        '"x": NaN}'
+    )
     write_split(datasets, f"{SCHEMA_VERSION}+dddddddddddd", {"groups": {}})
     (datasets / "splits" / "loose.json").write_text("{}")
     assert problems(evidence, datasets) == [  # entries are checked in sorted order

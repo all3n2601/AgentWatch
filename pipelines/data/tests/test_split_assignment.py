@@ -207,6 +207,23 @@ def test_mixed_in_test_reported():
     assert mixed_in_test(members) == {"status": "met", "rows": 1}
 
 
+def test_mixed_in_test_reads_replay_condition_on_release_rows():
+    """Release rows keep the role in condition and the injected condition in replay_condition."""
+    replay = row("g", "r1", condition="contended") | {"replay_condition": "mixed"}
+    run = row("cpu", "r2", condition="contended") | {"replay_condition": None}
+    solo = row("g", "r3", condition="contended") | {"replay_condition": "cpu"}
+    members = {"train": [], "validation": [], "test": [replay, run, solo]}
+    assert mixed_in_test(members) == {"status": "met", "rows": 1}
+
+
+def test_split_positions_are_the_split_v1_hash():
+    from agentwatch_data import split_positions
+
+    assert split_positions.HASH_METHOD == "split-v1"
+    assert split_positions.SPLITS == splits.SPLITS == ("train", "validation", "test")
+    assert splits.assign is split_positions.assign
+
+
 def step_keys(rows):
     return [(r["run_id"], r["step_id"]) for r in rows]
 
