@@ -6,12 +6,14 @@
 The dataset has no demographic attributes. Its slices are the attributes along which the data,
 or a model trained on it, could be skewed: the task, the experiment kind, the label, the
 condition and injection method, the agent model, the source, the telemetry status, and the
-availability of PSI and cgroup readings. Availability is not the host platform: Linux hosts can
-lack cgroup readings too, so a slice without them is not a macOS slice.
+availability of PSI and cgroup readings, and, for agent replays, the feature version and replay
+condition. Availability is not the host platform: Linux hosts can lack cgroup readings too, so
+a slice without them is not a macOS slice.
 
 For each slice the report records its rows, runs, and share of the release; its label balance;
 how often each nullable reading is missing (missing stays distinct from a measured zero); its
-rows in each split; and how often the rule baseline agrees with the label. It then flags
+rows in each split; and how often the rule baseline agrees with the label, over the rows that have a rule prediction
+(agent-replay rows have none; "rule_rows" counts the rows used). It then flags
 slices against thresholds declared before any model is evaluated, and lists a mitigation for
 each flag, with per-slice balancing weights for re-weighting.
 
@@ -38,7 +40,7 @@ from agentwatch_data.build import DATASET_FILE
 from agentwatch_data.files import json_text, write_atomic
 from agentwatch_data.splits import GROUP_KEYS, SPLITS, SPLITS_DIR
 
-SLICE_METHOD = "slices-v1"  # bump when attributes, metrics, or thresholds change
+SLICE_METHOD = "slices-v2"  # bump when attributes, metrics, or thresholds change
 ATTRIBUTES = (
     "task_id",
     "kind",
@@ -50,6 +52,8 @@ ATTRIBUTES = (
     "telemetry_status",
     "cpu_pressure_available",
     "cgroup_available",
+    "feature_version",
+    "replay_condition",
 )
 TARGET = "label_resource"
 NO_RESOURCE = "none"  # the label of a step no resource slowed
@@ -201,6 +205,7 @@ def describe(rows: list[dict[str, object]], total: int, splits: Assignment | Non
     """Counts and rates for one slice's rows."""
     labels = Counter(str(row[TARGET]) for row in rows)
     positives = sum(count for label, count in labels.items() if label != NO_RESOURCE)
+    ruled = [row for row in rows if row[RULE] is not None]
     described: dict[str, object] = {
         "rows": len(rows),
         "runs": len({row["run_id"] for row in rows}),
@@ -211,7 +216,12 @@ def describe(rows: list[dict[str, object]], total: int, splits: Assignment | Non
             reading: round(sum(row[reading] is None for row in rows) / len(rows), 6)
             for reading in READINGS
         },
-        "rule_agreement": round(sum(row[RULE] == row[TARGET] for row in rows) / len(rows), 6),
+        "rule_rows": len(ruled),
+        # Agent-replay rows carry no rule output; they are not disagreements, and a slice with
+        # no rule output has no agreement to report (null, never zero).
+        "rule_agreement": (
+            round(sum(row[RULE] == row[TARGET] for row in ruled) / len(ruled), 6) if ruled else None
+        ),
     }
     if splits is not None:
         per_split = Counter(splits.split_of(row) for row in rows)
@@ -354,12 +364,13 @@ def markdown(report: dict) -> str:
             missing = ", ".join(
                 f"{reading} {rate:.0%}" for reading, rate in described["missing_rate"].items()
             )
+            agreement = described["rule_agreement"]
             cells = [
                 table_cell(value),
                 str(described["rows"]),
                 f"{described['share']:.1%}",
                 f"{described['positive_rate']:.1%}",
-                f"{described['rule_agreement']:.1%}",
+                "n/a" if agreement is None else f"{agreement:.1%}",
                 missing,
             ]
             if has_splits:
@@ -368,8 +379,9 @@ def markdown(report: dict) -> str:
     lines += [
         "",
         (
-            "Rule agreement is not a model evaluation: on CPU-only data the label is the "
-            "rule's prediction on every row."
+            "Rule agreement is over rows with a rule prediction (n/a when a slice has none, "
+            "as agent-replay rows do) and is not a model evaluation: on CPU-only data the "
+            "label is the rule's prediction on every row."
         ),
     ]
     return "\n".join(lines) + "\n"

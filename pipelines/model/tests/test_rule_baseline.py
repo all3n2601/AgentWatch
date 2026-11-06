@@ -155,6 +155,12 @@ def test_rows_with_unusable_labels_or_versions_are_refused(tmp_path, change, mes
         run(tmp_path / "split.json", tmp_path / "out", loader=loader)
 
 
+def test_v1_3_split_with_mixed_labels_is_refused_with_a_clear_reason(tmp_path):
+    loader = fake_loader([], {"train": TRAIN, "test": [row(), row() | {"label_resource": "mixed"}]})
+    with pytest.raises(RowError, match="test row 1 is labeled 'mixed'.*M02"):
+        run(tmp_path / "split.json", tmp_path / "out", loader=loader)
+
+
 def test_main_exits_two_on_unusable_rows(tmp_path, monkeypatch, capsys):
     loader = fake_loader([], {"train": TRAIN, "test": [row(label="gpu")]})
     monkeypatch.setattr("agentwatch_model.rule_baseline.load_split", loader)

@@ -16,6 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from agentwatch_data.files import file_sha256, json_text, write_atomic
+from agentwatch_data.schema import MIXED
 from agentwatch_data.splits import SplitError, load_split
 
 from agentwatch_model.contract import DEFAULT_CONTRACT, ContractError, load_contract
@@ -62,6 +63,11 @@ def validate_rows(rows: list[dict], split: str) -> None:
         if key in seen:
             raise RowError(f"{split} has more than one row for run {key[0]} step {key[1]}")
         seen.add(key)
+        if row["label_resource"] == MIXED:
+            raise RowError(
+                f"{split} row {index} is labeled 'mixed', which has no scoring rule until M02 "
+                "defines one"
+            )
         if row["label_resource"] not in CLASSES:
             raise RowError(f"{split} row {index} has unknown label {row['label_resource']!r}")
         fraction = row["label_excess_fraction"]

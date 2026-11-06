@@ -45,6 +45,8 @@ def step(index: int, kind: str, label: str, **overrides: object) -> dict[str, ob
         "telemetry_status": "present",
         "cpu_pressure_available": True,
         "cgroup_available": True,
+        "feature_version": None,
+        "replay_condition": None,
         "telemetry_coverage": 0.9,
         "cpu_pressure_max_avg10": 1.5,
         "cgroup_throttled_usec_delta": 0,
@@ -159,6 +161,86 @@ def test_rule_agreement_counts_rows_where_the_rule_matches_the_label():
     assert report["attributes"]["kind"]["slices"]["cpu"]["rule_agreement"] == 0.8
 
 
+def replay_step(index: int, label: str, **overrides: object) -> dict[str, object]:
+    """One synthetic agent-replay row (test fixture): no rule output, a replay condition."""
+    return step(
+        index,
+        "agent_replay",
+        label,
+        task_id="agent:task:1",
+        task_group="agent:group:1",
+        rule_prediction=None,
+        feature_version="step-features-v1",
+        replay_condition="mixed" if label == "mixed" else "cpu",
+        **overrides,
+    )
+
+
+def test_replay_rows_without_rule_output_do_not_count_as_disagreement():
+    rows = [step(index, "cpu", "none") for index in range(2)]
+    rows += [replay_step(index, "cpu_sandbox") for index in range(2)]
+    report = analyze(rows, RELEASE, None)
+    slices = report["attributes"]["kind"]["slices"]
+    assert slices["cpu"]["rule_agreement"] == 1.0
+    assert slices["cpu"]["rule_rows"] == 2
+    # Replay rows have no rule output: agreement is unknown, not zero, and not 100%.
+    assert slices["agent_replay"]["rule_agreement"] is None
+    assert slices["agent_replay"]["rule_rows"] == 0
+
+
+def test_rule_agreement_is_over_rows_with_a_rule_prediction_in_a_mixed_slice():
+    rows = [step(0, "cpu", "none"), step(1, "cpu", "none", rule_prediction="cpu_sandbox")]
+    rows += [replay_step(index, "cpu_sandbox") | {"kind": "cpu"} for index in range(2)]
+    cpu = analyze(rows, RELEASE, None)["attributes"]["kind"]["slices"]["cpu"]
+    assert (cpu["rows"], cpu["rule_rows"], cpu["rule_agreement"]) == (4, 2, 0.5)
+
+
+def test_replay_rows_are_sliced_by_feature_version_and_replay_condition():
+    rows = [step(index, "cpu", "none") for index in range(2)]
+    rows += [replay_step(index, "cpu_sandbox") for index in range(3)]
+    rows += [replay_step(index, "mixed") for index in range(4)]
+    attributes = analyze(rows, RELEASE, None)["attributes"]
+    assert {v: s["rows"] for v, s in attributes["replay_condition"]["slices"].items()} == {
+        UNRECORDED: 2,
+        "cpu": 3,
+        "mixed": 4,
+    }
+    assert {v: s["rows"] for v, s in attributes["feature_version"]["slices"].items()} == {
+        UNRECORDED: 2,
+        "step-features-v1": 7,
+    }
+    assert attributes["label_resource"]["slices"]["mixed"]["rows"] == 4
+
+
+def test_a_split_v2_split_places_run_and_replay_rows_by_task_group(tmp_path):
+    rows = [row | {"task_group": row["kind"]} for row in balanced()]
+    rows += [replay_step(index, "cpu_sandbox") for index in range(10)]
+    release = write_release(tmp_path, rows)
+    document = {
+        "release": RELEASE,
+        "contract": {"group_key": "task_group"},
+        "split_method": "split-v2",
+        "groups": {"cpu": "train", "coding": "validation", "agent:group:1": "test"},
+        "excluded_runs": [],
+    }
+    split = tmp_path / "split.json"
+    split.write_text(json.dumps(document))
+    report = slice_release(release, split, tmp_path / "out").report
+    assert report["split_rows"] == {"test": 10, "train": 60, "validation": 60}
+    by_kind = report["attributes"]["kind"]["slices"]
+    assert by_kind["agent_replay"]["splits"]["test"] == 10
+    assert by_kind["cpu"]["splits"]["train"] == 60
+    assert by_kind["coding"]["splits"]["validation"] == 60
+    assert by_kind["agent_replay"]["rule_agreement"] is None
+
+
+def test_the_markdown_shows_unknown_rule_agreement_as_n_a_not_zero():
+    rows = [step(0, "cpu", "none"), replay_step(0, "cpu_sandbox")]
+    text = markdown(analyze(rows, RELEASE, None))
+    assert "| agent_replay | 1 | 50.0% | 100.0% | n/a |" in text
+    assert "| cpu | 1 | 50.0% | 0.0% | 100.0% |" in text
+
+
 def test_a_missing_readings_gap_is_flagged_and_missing_is_not_zero():
     rows = balanced()
     for row in rows:
@@ -235,7 +317,7 @@ def test_the_markdown_lists_flags_and_one_table_per_attribute():
     assert "Rows per split: test 60, train 60." in text
     assert "- **absent_from_split** — kind = coding: no rows in the train split." in text
     assert "| cpu | 60 | 50.0% | 50.0% | 100.0% |" in text
-    assert text.count("\n## ") == 1 + 10  # flags, then each attribute
+    assert text.count("\n## ") == 1 + 12  # flags, then each attribute
     assert "Train / test" in text
 
 
