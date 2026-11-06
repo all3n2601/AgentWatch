@@ -11,6 +11,10 @@ import os
 import tempfile
 from pathlib import Path, PurePath
 
+# Readers of untrusted evidence directories. replay_evidence.py keeps its own copies on purpose:
+# its source is fingerprinted into the labels-v2 label version, so moving them there would
+# change a frozen label version without changing any label.
+
 
 def confined_path(root: Path, relative: str, error: type[Exception]) -> Path:
     """Resolve an untrusted relative path inside root; reject absolute, linked and escaping paths.
@@ -28,8 +32,8 @@ def confined_path(root: Path, relative: str, error: type[Exception]) -> Path:
     return resolved
 
 
-def read_bounded_text(path: Path, max_bytes: int, error: type[Exception]) -> str:
-    """UTF-8 text of an untrusted regular file of at most max_bytes; symlinks are refused."""
+def read_bounded_bytes(path: Path, max_bytes: int, error: type[Exception]) -> bytes:
+    """The bytes of an untrusted regular file of at most max_bytes; symlinks are refused."""
     if path.is_symlink() or not path.is_file():
         raise error(f"{path.name} must be a regular file without symlinks")
     try:
@@ -40,10 +44,19 @@ def read_bounded_text(path: Path, max_bytes: int, error: type[Exception]) -> str
         raise error(f"{path.name} cannot be read: {cause}") from cause
     if len(raw) > max_bytes:
         raise error(f"{path.name} is larger than {max_bytes} bytes")
+    return raw
+
+
+def decode_utf8(raw: bytes, name: str, error: type[Exception]) -> str:
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as cause:
-        raise error(f"{path.name} is not valid UTF-8: {cause}") from cause
+        raise error(f"{name} is not valid UTF-8: {cause}") from cause
+
+
+def read_bounded_text(path: Path, max_bytes: int, error: type[Exception]) -> str:
+    """UTF-8 text of an untrusted regular file of at most max_bytes; symlinks are refused."""
+    return decode_utf8(read_bounded_bytes(path, max_bytes, error), path.name, error)
 
 
 def file_sha256(path: Path) -> str:

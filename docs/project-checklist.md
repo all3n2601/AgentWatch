@@ -761,8 +761,12 @@ from M3 through M6 and do not renumber the implementation milestones above.
   arrivals, one-control candidates, queue bounds, repetitions), policy hashes, a seeded paired
   schedule, batch records rejected with a code on any identity, schedule, policy or task mismatch,
   and deterministic paired comparison records that keep failed, rejected and unpaired attempts and
-  leave unobserved values null. Gates stay `not_evaluated` (O06). Verified on synthetic experiments
-  only (`pipelines/data/tests/test_optimization_{manifest,batches,comparison}.py`). Open until O06
+  leave unobserved values null. Batches must also match the condition's injection state, the
+  preregistered arrivals (within a declared tolerance) and the schedule order, and admission waits
+  are judged against the declared queue bounds. Failures in failed or aborted batches still count,
+  and any rejected, missing or unpaired evidence makes a comparison insufficient. Gates stay
+  `not_evaluated` (O06). Verified on synthetic experiments only: 118 cases in
+  `pipelines/data/tests/test_optimization_{manifest,batches,comparison}.py`. Open until O06
   records a real experiment in this format.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
 - [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.

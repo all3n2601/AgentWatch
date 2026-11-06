@@ -19,7 +19,8 @@ CONTRACT = contract()
 
 
 def read(root, manifest):
-    return read_batches(root.resolve(), manifest, schedule(manifest), CONTRACT)
+    reading = read_batches(root.resolve(), manifest, schedule(manifest), CONTRACT)
+    return reading.records, reading.rejections
 
 
 def rejected_codes(rejections) -> dict[str, str]:
@@ -264,7 +265,7 @@ def test_the_batches_directory_must_be_a_real_directory(tmp_path):
         lambda record: record.update(batch_id="not-a-uuid"),
         lambda record: record["tasks"][0].update(run_id=7),
         lambda record: record.update(finished_at="yesterday"),
-        lambda record: record["tasks"][0].update(admission_wait_seconds=float("inf")),
+        lambda record: record["tasks"][0]["admission_waits"].update(test_jobs=float("inf")),
     ],
 )
 def test_malformed_fields_reject_only_their_record(tmp_path, edit):
@@ -304,3 +305,133 @@ def test_linked_evidence_without_a_run_id_is_not_the_tasks_run(tmp_path):
     write_json(tmp_path / "runs" / "one" / "agent-evidence.json", [])
     _, rejections = read(tmp_path, manifest)
     assert rejected_codes(rejections) == {"002.json": "task_identity_mismatch"}
+
+
+@pytest.mark.parametrize(
+    ("condition", "injection"),
+    [
+        ("contended", {"active": False, "cleanup_confirmed": True}),
+        ("contended", {"active": True, "cleanup_confirmed": None}),
+        ("contended", {"active": None, "cleanup_confirmed": None}),
+        ("clean", {"active": True, "cleanup_confirmed": True}),
+    ],
+)
+def test_injection_must_match_the_condition(tmp_path, condition, injection):
+    slot = first_slot(parse_manifest(manifest_document(CONTRACT), CONTRACT), condition)
+    manifest = write_experiment(
+        tmp_path,
+        CONTRACT,
+        change=only_changing(slot.index, lambda record: record.update(injection=injection)),
+    )
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {f"{slot.index:03d}.json": "injection_mismatch"}
+
+
+def test_injection_flags_are_booleans_or_null(tmp_path):
+    def edit(record):
+        record["injection"]["cleanup_confirmed"] = "banana"
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(2, edit))
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {"002.json": "malformed"}
+
+
+def test_submissions_follow_the_preregistered_arrivals(tmp_path):
+    def edit(record):
+        record["tasks"][1]["submitted_tick_ns"] = 0  # preregistered at +1.5 s
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(4, edit))
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {"004.json": "arrival_mismatch"}
+
+
+def test_submissions_within_the_declared_tolerance_are_accepted(tmp_path):
+    def edit(record):
+        record["tasks"][1]["submitted_tick_ns"] += 200_000_000  # 0.2 s late; tolerance 0.25 s
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(4, edit))
+    assert read(tmp_path, manifest)[1] == []
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda record: record.update(started_at="2026-99-99T99:99:99Z"),
+        lambda record: record.update(started_at=None),
+        lambda record: record.update(finished_at="2026-11-05T15:00:00Z"),
+    ],
+)
+def test_batch_times_must_be_valid_and_ordered(tmp_path, edit):
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(5, edit))
+    _, rejections = read(tmp_path, manifest)
+    assert set(rejected_codes(rejections)) == {"005.json"}
+    assert rejected_codes(rejections)["005.json"] in ("malformed", "inconsistent_status")
+
+
+def test_a_batch_overlapping_the_previous_one_is_rejected(tmp_path):
+    def edit(record):
+        record["started_at"] = "2026-11-05T15:11:25Z"  # batch 4 runs 15:11:20-15:11:30
+        record["finished_at"] = "2026-11-05T15:11:45Z"
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(5, edit))
+    records, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {"005.json": "order_mismatch"}
+    assert 6 in {record.slot.index for record in records}  # later batches still compare
+
+
+def test_a_never_started_batch_has_no_times(tmp_path):
+    def edit(record):
+        record.update(status="not_started", reason="Registration failed")
+        for task in record["tasks"]:
+            task.update(state="not_started", finished_tick_ns=None)
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(6, edit))
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {"006.json": "inconsistent_status"}
+
+
+def test_two_tasks_of_one_batch_cannot_share_a_run(tmp_path):
+    def edit(record):
+        record["tasks"][1]["run_id"] = record["tasks"][0]["run_id"]
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(3, edit))
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {"003.json": "duplicate_identity"}
+
+
+@pytest.mark.parametrize("pair_index", [True, 1.0, "1"])
+def test_pair_index_is_a_strict_integer(tmp_path, pair_index):
+    manifest = parse_manifest(manifest_document(CONTRACT), CONTRACT)
+    slot = next(slot for slot in schedule(manifest) if slot.pair_index == 1)
+    manifest = write_experiment(
+        tmp_path,
+        CONTRACT,
+        change=only_changing(slot.index, lambda record: record.update(pair_index=pair_index)),
+    )
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections)[f"{slot.index:03d}.json"] in (
+        "malformed",
+        "schedule_mismatch",
+    )
+
+
+def test_linked_evidence_cannot_escape_with_dot_dot(tmp_path):
+    write_json(tmp_path / "outside" / "agent-evidence.json", {})
+    root = tmp_path / "experiment"
+
+    def link(record):
+        record["tasks"][0]["evidence_dir"] = "../outside"
+
+    manifest = write_experiment(root, CONTRACT, change=only_changing(1, link))
+    _, rejections = read(root, manifest)
+    assert rejected_codes(rejections) == {"001.json": "task_identity_mismatch"}
+
+
+def test_the_record_hash_is_of_the_bytes_that_were_parsed(tmp_path):
+    import hashlib
+
+    manifest = write_experiment(tmp_path, CONTRACT)
+    records, _ = read(tmp_path, manifest)
+    first = next(record for record in records if record.slot.index == 0)
+    raw = (tmp_path / "batches" / "000.json").read_bytes()
+    assert first.file_sha256 == hashlib.sha256(raw).hexdigest()

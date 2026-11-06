@@ -271,3 +271,36 @@ def test_a_manifest_file_must_be_bounded_strict_json(tmp_path):
     path.write_text('{"format": 1, "format": 2}')
     with pytest.raises(ManifestError, match="manifest.json"):
         read_manifest(path, CONTRACT)
+
+
+def test_revisions_of_a_development_task_are_not_new_evaluation_tasks():
+    document = edited("workload.development_tasks", ["fix-mean-empty-r2"])
+    with pytest.raises(ManifestError, match=r"shared \['fix-mean-empty'\]"):
+        parse_manifest(document, CONTRACT)
+
+
+@pytest.mark.parametrize(
+    ("repetitions", "message"),
+    [
+        ({"pairs": 10**7, "warmup_batches": 1, "seed": 1}, "at most 1000"),
+        ({"pairs": 10, "warmup_batches": 10**9, "seed": 1}, "at most 100"),
+    ],
+)
+def test_repetitions_are_bounded(repetitions, message):
+    with pytest.raises(ManifestError, match=message):
+        parse_manifest(broken(repetitions=repetitions), CONTRACT)
+
+
+def test_arrivals_declare_a_positive_tolerance():
+    document = manifest_document(CONTRACT)
+    del document["workload"]["arrivals"]["tolerance_seconds"]
+    with pytest.raises(ManifestError, match="tolerance_seconds"):
+        parse_manifest(document, CONTRACT)
+    with pytest.raises(ManifestError, match="positive"):
+        parse_manifest(edited("workload.arrivals.tolerance_seconds", 0), CONTRACT)
+
+
+def test_queue_bounds_are_kept_for_the_comparison():
+    manifest = parse_manifest(manifest_document(CONTRACT), CONTRACT)
+    assert manifest.queue_bounds == {"inference_requests": (8, 120.0), "test_jobs": (4, 60.0)}
+    assert manifest.arrival_tolerance_seconds == 0.25

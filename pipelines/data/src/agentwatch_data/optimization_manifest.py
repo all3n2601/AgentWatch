@@ -39,6 +39,10 @@ INJECTOR_KINDS = ("cpu", "inference", "retrieval")
 ARRIVAL_METHOD = "fixed_offsets_v1"
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_SEED = 2**63 - 1
+# Size bounds on untrusted input; far above any experiment the contract describes.
+MAX_TASKS = 256
+MAX_PAIRS = 1000
+MAX_WARMUP_BATCHES = 100
 SHA256 = re.compile(r"[0-9a-f]{64}")
 TASK_ID = re.compile(r"[a-z0-9][a-z0-9-]*-r\d+")
 NAME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
@@ -87,7 +91,6 @@ class OptimizationContract:
     min_completed_tasks: int
     bootstrap_resamples: int
     interval_level: float
-    max_baseline_cv: float
     enforcement_scope: str
 
 
@@ -118,6 +121,8 @@ class Manifest:
     purpose: str
     tasks: tuple[Task, ...]
     arrivals: dict[str, float]  # task_id -> seconds after the batch's first submission
+    arrival_tolerance_seconds: float  # how far a recorded submission may stray from its offset
+    queue_bounds: dict[str, tuple[int, float]]  # control -> (max_length, max_wait_seconds)
     model: dict
     hardware: dict
     power: dict
@@ -182,13 +187,14 @@ def load_optimization_contract(path: Path) -> OptimizationContract:
             min_limit=policy["min_limit"],
             candidate_limits=tuple(workload["candidate_limits"]),
             conditions=tuple(workload["conditions"]),
+            # The improvement gate's conditions are the contended ones: each preregisters an
+            # injector set (require_preregistered_contention), and the rest run clean.
             contended_conditions=tuple(gates["improvement_conditions"]),
             min_evaluation_tasks=workload["min_evaluation_tasks"],
             min_paired_batches=repetitions["min_paired_batches"],
             min_completed_tasks=repetitions["min_completed_tasks_per_configuration"],
             bootstrap_resamples=gates["bootstrap_resamples"],
             interval_level=gates["interval_level"],
-            max_baseline_cv=gates["max_baseline_root_step_cv"],
             enforcement_scope=policy["enforcement_scope"],
         )
     except KeyError as error:
@@ -370,13 +376,17 @@ def read_policies(value, contract: OptimizationContract) -> tuple[Policy, tuple[
     return baseline, tuple(candidates)
 
 
-def read_queue_bounds(value, contract: OptimizationContract) -> None:
+def read_queue_bounds(value, contract: OptimizationContract) -> dict[str, tuple[int, float]]:
     bounds = require_object(value, "queue_bounds", set(contract.controls))
+    declared = {}
     for control in contract.controls:
         name = f"queue_bounds.{control}"
         entry = require_object(bounds[control], name, {"max_length", "max_wait_seconds"})
-        require_int(entry["max_length"], f"{name}.max_length", 1)
-        require_seconds(entry["max_wait_seconds"], f"{name}.max_wait_seconds", positive=True)
+        declared[control] = (
+            require_int(entry["max_length"], f"{name}.max_length", 1),
+            require_seconds(entry["max_wait_seconds"], f"{name}.max_wait_seconds", positive=True),
+        )
+    return declared
 
 
 # --- Workload and design ----------------------------------------------------------------------
@@ -384,7 +394,10 @@ def read_queue_bounds(value, contract: OptimizationContract) -> None:
 
 def read_tasks(value) -> tuple[Task, ...]:
     tasks = []
-    for index, entry in enumerate(require_list(value, "workload.tasks", 1)):
+    entries = require_list(value, "workload.tasks", 1)
+    if len(entries) > MAX_TASKS:
+        raise ManifestError(f"workload.tasks must list at most {MAX_TASKS} tasks")
+    for index, entry in enumerate(entries):
         name = f"workload.tasks[{index}]"
         entry = require_object(entry, name, {"task_id", "content_sha256", "configuration_digest"})
         tasks.append(
@@ -402,9 +415,19 @@ def read_tasks(value) -> tuple[Task, ...]:
     return tuple(tasks)
 
 
-def read_arrivals(value, tasks: tuple[Task, ...]) -> dict[str, float]:
-    arrivals = require_object(value, "workload.arrivals", {"method", "offsets"})
+def task_name(task_id: str) -> str:
+    """A task without its `-r<revision>` suffix: revisions of one task are the same task."""
+    return task_id.rsplit("-r", 1)[0]
+
+
+def read_arrivals(value, tasks: tuple[Task, ...]) -> tuple[dict[str, float], float]:
+    arrivals = require_object(
+        value, "workload.arrivals", {"method", "offsets", "tolerance_seconds"}
+    )
     require_choice(arrivals["method"], "workload.arrivals.method", (ARRIVAL_METHOD,))
+    tolerance = require_seconds(
+        arrivals["tolerance_seconds"], "workload.arrivals.tolerance_seconds", positive=True
+    )
     offsets = {}
     for index, entry in enumerate(require_list(arrivals["offsets"], "workload.arrivals.offsets")):
         name = f"workload.arrivals.offsets[{index}]"
@@ -418,26 +441,34 @@ def read_arrivals(value, tasks: tuple[Task, ...]) -> dict[str, float]:
     if min(offsets.values()) != 0:
         # A batch's time runs from its first submission, so the schedule starts at zero.
         raise ManifestError("workload.arrivals must start at offset 0")
-    return offsets
+    return offsets, tolerance
 
 
-def read_workload(document: dict, contract: OptimizationContract) -> tuple[tuple[Task, ...], dict]:
+def read_workload(
+    document: dict, contract: OptimizationContract
+) -> tuple[tuple[Task, ...], tuple[dict[str, float], float]]:
     workload = require_object(
         document["workload"], "workload", {"unit", "tasks", "arrivals"}, {"development_tasks"}
     )
     require_choice(workload["unit"], "workload.unit", ("batch",))
     tasks = read_tasks(workload["tasks"])
-    task_ids = {task.task_id for task in tasks}
     development = [
         require_text(task_id, "workload.development_tasks entry", TASK_ID)
         for task_id in require_list(workload.get("development_tasks", []), "development_tasks")
     ]
     if document["purpose"] == "evaluation":
-        # Settings are chosen on development tasks; frozen evaluation tasks are used once.
+        # Settings are chosen on development tasks and frozen evaluation tasks are disjoint,
+        # by task name, so another revision of a development task is not a new task. "Used
+        # once" across experiments is not checked here: no registry of used tasks exists yet.
         if not development:
             raise ManifestError("An evaluation manifest must name its development_tasks")
-        if task_ids & set(development):
-            raise ManifestError("Evaluation tasks must be disjoint from development_tasks")
+        overlap = {task_name(task.task_id) for task in tasks} & {
+            task_name(task_id) for task_id in development
+        }
+        if overlap:
+            raise ManifestError(
+                f"Evaluation tasks must be disjoint from development_tasks; shared {sorted(overlap)}"
+            )
         if len(tasks) < contract.min_evaluation_tasks:
             raise ManifestError(
                 f"An evaluation needs at least {contract.min_evaluation_tasks} frozen tasks"
@@ -475,8 +506,10 @@ def read_conditions(value, contract: OptimizationContract) -> tuple[Condition, .
 
 def read_repetitions(value, tasks: tuple[Task, ...], contract: OptimizationContract) -> dict:
     repetitions = require_object(value, "repetitions", {"pairs", "warmup_batches", "seed"})
-    pairs = require_int(repetitions["pairs"], "repetitions.pairs", contract.min_paired_batches)
-    require_int(repetitions["warmup_batches"], "repetitions.warmup_batches", 0)
+    pairs = require_int(
+        repetitions["pairs"], "repetitions.pairs", contract.min_paired_batches, MAX_PAIRS
+    )
+    require_int(repetitions["warmup_batches"], "repetitions.warmup_batches", 0, MAX_WARMUP_BATCHES)
     require_int(repetitions["seed"], "repetitions.seed", 0, MAX_SEED)
     if pairs * len(tasks) < contract.min_completed_tasks:
         raise ManifestError(
@@ -505,6 +538,15 @@ TOP_LEVEL_KEYS = {
 }
 
 
+def manifest_sha256(document: dict) -> str:
+    try:
+        return canonical_sha256(document)
+    except ValueError as error:
+        # Free-form values such as injector intensity may hold NaN or infinity, which have no
+        # canonical JSON form; such a manifest cannot be identified, so it is refused.
+        raise ManifestError(f"manifest is not canonical JSON: {error}") from error
+
+
 def parse_manifest(document, contract: OptimizationContract) -> Manifest:
     document = require_object(document, "manifest", TOP_LEVEL_KEYS)
     require_choice(document["format"], "format", (MANIFEST_FORMAT,))
@@ -520,16 +562,18 @@ def parse_manifest(document, contract: OptimizationContract) -> Manifest:
     require_timestamp(document["created_at"], "created_at")
     require_object(document["runner"], "runner", {"version"})
     require_text(document["runner"]["version"], "runner.version")
-    tasks, arrivals = read_workload(document, contract)
+    tasks, (arrivals, tolerance) = read_workload(document, contract)
     baseline, candidates = read_policies(document["policies"], contract)
-    read_queue_bounds(document["queue_bounds"], contract)
+    queue_bounds = read_queue_bounds(document["queue_bounds"], contract)
     repetitions = read_repetitions(document["repetitions"], tasks, contract)
     return Manifest(
-        sha256=canonical_sha256(document),
+        sha256=manifest_sha256(document),
         experiment_id=require_uuid(document["experiment_id"], "experiment_id"),
         purpose=document["purpose"],
         tasks=tasks,
         arrivals=arrivals,
+        arrival_tolerance_seconds=tolerance,
+        queue_bounds=queue_bounds,
         model=model_identity(document["model"]),
         hardware=hardware_identity(document["hardware"]),
         power=power_identity(document["power"]),

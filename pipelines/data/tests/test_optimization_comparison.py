@@ -1,5 +1,5 @@
-"""Comparison records: only complete pairs are compared, every attempt is kept, and missing
-measurements stay missing."""
+"""Comparison records: only complete pairs are compared, every attempt is kept, failures in
+broken batches are still counted, and missing measurements stay missing."""
 
 import json
 
@@ -7,9 +7,10 @@ import pytest
 from agentwatch_data import optimization_comparison as comparison_module
 from agentwatch_data.files import json_text
 from agentwatch_data.optimization_comparison import (
-    bootstrap_median,
+    bootstrap,
     compare,
     main,
+    median_time_reduction,
     nearest_rank,
 )
 from agentwatch_data.optimization_manifest import (
@@ -35,34 +36,50 @@ from optimization_fixtures import (
 CONTRACT = contract()
 
 
-def planned():
+def planned(**changes):
     """The fixture manifest, parsed without writing any batch."""
-    return parse_manifest(manifest_document(CONTRACT), CONTRACT)
+    return parse_manifest(manifest_document(CONTRACT, **changes), CONTRACT)
 
 
 def entry(report, condition) -> dict:
     return next(item for item in report["comparisons"] if item["condition"] == condition)
 
 
+def editing(index, edit):
+    def change(slot, record):
+        if slot.index == index:
+            edit(record)
+        return record
+
+    return change
+
+
 def test_paired_effects_on_a_complete_experiment(tmp_path):
     write_experiment(tmp_path, CONTRACT)
     report = compare(tmp_path, CONTRACT)
-    assert report["missing_batches"] == []
+    assert report["missing_batches"] == [] and report["hidden_files"] == []
     assert all(batch["accepted"] for batch in report["batches"])
     contended = entry(report, "contended")
     assert contended["pairs"] == {"scheduled": 10, "complete": 10, "unpaired": []}
     assert contended["sufficient"] and contended["insufficient_reasons"] == []
     effects = contended["effects"]
     # 10 s baseline batches against 8 s candidate batches in every pair.
-    assert effects["median_reduction"] == pytest.approx(0.2)
-    assert effects["reduction_interval"]["low"] == pytest.approx(0.2)
-    assert effects["reduction_interval"]["high"] == pytest.approx(0.2)
-    assert effects["reduction_interval"]["seed"] == 20261105
+    assert effects["median_batch_time_reduction"] == pytest.approx(0.2)
+    assert effects["median_pair_reduction"] == pytest.approx(0.2)
+    interval = effects["median_batch_time_reduction_interval"]
+    assert (interval["low"], interval["high"]) == (pytest.approx(0.2), pytest.approx(0.2))
+    assert (interval["seed"], interval["resamples"]) == (20261105, CONTRACT.bootstrap_resamples)
     assert effects["throughput_ratio"] == pytest.approx(1.25)
     assert effects["baseline"]["completed_tasks"] == 20
-    assert effects["new_failures"] == effects["newly_failing_acceptance"] == 0
+    assert contended["outcome_changes"] == {
+        "pairs_compared": 10,
+        "new_failures": 0,
+        "new_timeouts": 0,
+        "newly_failing_acceptance": 0,
+        "acceptance_unknown": 0,
+    }
     clean = entry(report, "clean")
-    assert clean["effects"]["median_reduction"] == pytest.approx(0)
+    assert clean["effects"]["median_batch_time_reduction"] == pytest.approx(0)
     assert clean["effects"]["throughput_ratio"] == pytest.approx(1)
     for item in report["comparisons"]:
         assert item["gates"]["status"] == "not_evaluated"
@@ -84,32 +101,51 @@ def test_the_record_is_deterministic_and_names_its_lineage(tmp_path):
     assert len(set(batch_ids)) == len(batch_ids) == len(schedule(manifest))
 
 
+def test_an_aborted_candidate_batch_still_counts_the_failures_it_caused(tmp_path):
+    slot = first_slot(planned(), "contended", CANDIDATE)
+
+    def abort(record):
+        record.update(status="aborted", reason="Candidate deadlocked under its limit")
+        for task in record["tasks"]:
+            task["state"] = "timed_out"
+            task["acceptance"] = "failed"
+
+    write_experiment(tmp_path, CONTRACT, change=editing(slot.index, abort))
+    contended = entry(compare(tmp_path, CONTRACT), "contended")
+    assert contended["pairs"]["complete"] == 9
+    assert contended["outcome_changes"]["pairs_compared"] == 10
+    assert contended["outcome_changes"]["new_timeouts"] == 2
+    assert contended["outcome_changes"]["newly_failing_acceptance"] == 2
+    assert contended["attempts"][CANDIDATE]["batches_by_status"] == {"aborted": 1, "completed": 9}
+    assert contended["attempts"][CANDIDATE]["tasks_by_state"] == {"completed": 18, "timed_out": 2}
+    assert not contended["sufficient"]
+    assert "1 scheduled pairs are unpaired" in contended["insufficient_reasons"]
+
+
 def test_a_failed_candidate_batch_leaves_its_pair_unpaired_but_listed(tmp_path):
-    manifest = planned()
-    slot = first_slot(manifest, "contended", CANDIDATE)
+    slot = first_slot(planned(), "contended", CANDIDATE)
 
-    def change(scheduled, record):
-        if scheduled.index == slot.index:
-            record.update(status="failed", reason="Model server stopped responding")
-            record["tasks"][0]["state"] = "failed"
-        return record
+    def fail(record):
+        record.update(status="failed", reason="Model server stopped responding")
+        record["tasks"][0]["state"] = "failed"
 
-    write_experiment(tmp_path, CONTRACT, change=change)
+    write_experiment(tmp_path, CONTRACT, change=editing(slot.index, fail))
     report = compare(tmp_path, CONTRACT)
     contended = entry(report, "contended")
-    assert contended["pairs"]["complete"] == 9
     (unpaired,) = contended["pairs"]["unpaired"]
     assert unpaired["pair_id"] == slot.pair_id
     assert f"candidate batch {slot.index} is failed" in unpaired["reason"]
+    assert contended["outcome_changes"]["new_failures"] == 1
     kept = next(batch for batch in report["batches"] if batch["index"] == slot.index)
     assert (kept["status"], kept["reason"]) == ("failed", "Model server stopped responding")
     # 9 pairs of 2 tasks complete 18 per configuration: below the contract's 20.
-    assert not contended["sufficient"]
     assert any("18 completed" in reason for reason in contended["insufficient_reasons"])
 
 
-def test_missing_and_rejected_batches_make_pairs_unpaired(tmp_path):
-    manifest = planned()
+def test_rejected_or_missing_evidence_keeps_every_comparison_insufficient(tmp_path):
+    # Two extra pairs, so the remaining pairs still reach the contract's minimums.
+    repetitions = {"pairs": 12, "warmup_batches": 1, "seed": 3}
+    manifest = planned(repetitions=repetitions)
     missing = first_slot(manifest, "clean", BASELINE)
     rejected = first_slot(manifest, "contended", BASELINE)
 
@@ -120,28 +156,35 @@ def test_missing_and_rejected_batches_make_pairs_unpaired(tmp_path):
             record["hardware"]["host_id"] = "another-laptop"
         return record
 
-    write_experiment(tmp_path, CONTRACT, change=change)
+    document = manifest_document(CONTRACT, repetitions=repetitions)
+    write_experiment(tmp_path, CONTRACT, document=document, change=change)
     report = compare(tmp_path, CONTRACT)
     assert report["missing_batches"] == [missing.index]
+    for condition in ("clean", "contended"):
+        item = entry(report, condition)
+        assert item["pairs"]["complete"] == 11
+        assert not item["sufficient"]
+        reasons = item["insufficient_reasons"]
+        assert "the experiment has rejected batch records (1 hardware_mismatch)" in reasons
+        assert "1 scheduled batches have no record" in reasons
     (clean,) = entry(report, "clean")["pairs"]["unpaired"]
     assert clean["reason"] == f"baseline batch {missing.index} has no record"
     (contended,) = entry(report, "contended")["pairs"]["unpaired"]
     assert "rejected (hardware_mismatch)" in contended["reason"]
-    rejected_entry = next(
-        batch for batch in report["batches"] if batch["file"] == f"{rejected.index:03d}.json"
-    )
+    file = f"{rejected.index:03d}.json"
+    rejected_entry = next(batch for batch in report["batches"] if batch["file"] == file)
     assert rejected_entry == {
-        "file": f"{rejected.index:03d}.json",
+        "file": file,
         "sha256": rejected_entry["sha256"],
         "accepted": False,
         "code": "hardware_mismatch",
         "detail": "hardware differs from the manifest in ['host_id']",
     }
+    assert len(rejected_entry["sha256"]) == 64
 
 
 def test_missing_task_ticks_never_become_a_batch_time(tmp_path):
-    manifest = planned()
-    slot = first_slot(manifest, "contended", CANDIDATE)
+    slot = first_slot(planned(), "contended", CANDIDATE)
 
     def timing(scheduled, task_id):
         if scheduled.index == slot.index and task_id == TASKS[1][0]:
@@ -149,43 +192,55 @@ def test_missing_task_ticks_never_become_a_batch_time(tmp_path):
         return default_timing(scheduled, task_id)
 
     write_experiment(tmp_path, CONTRACT, timing=timing)
-    report = compare(tmp_path, CONTRACT)
-    (unpaired,) = entry(report, "contended")["pairs"]["unpaired"]
+    (unpaired,) = entry(compare(tmp_path, CONTRACT), "contended")["pairs"]["unpaired"]
     assert "no positive measured batch time" in unpaired["reason"]
 
 
-def test_unobserved_admission_statistics_stay_unavailable(tmp_path):
-    write_experiment(tmp_path, CONTRACT)
+def test_admission_waits_are_judged_against_the_declared_bounds(tmp_path):
+    slot = first_slot(planned(), "contended", CANDIDATE)
+
+    def starve(record):
+        record["tasks"][1]["admission_waits"]["inference_requests"] = 200.0  # bound is 120 s
+
+    write_experiment(tmp_path, CONTRACT, change=editing(slot.index, starve))
     effects = entry(compare(tmp_path, CONTRACT), "contended")["effects"]
+    inference = effects["candidate"]["admission_waits"]["inference_requests"]
+    assert inference["over_declared_max_wait"] == 1
+    assert inference["declared_max_wait_seconds"] == 120
+    assert inference["max_seconds"] == 200.0 and inference["unobserved"] == 0
+    # Waits the runner did not observe stay unobserved: never zero, never "within bounds".
+    assert effects["candidate"]["admission_waits"]["test_jobs"] == {
+        "median_seconds": None,
+        "max_seconds": None,
+        "declared_max_wait_seconds": 60,
+        "over_declared_max_wait": 0,
+        "unobserved": 20,
+    }
     assert effects["baseline"]["starved_admissions"] is None  # not recorded, not zero
     assert effects["candidate"]["starved_admissions"] == 0
-    assert effects["baseline"]["tasks_without_admission_wait"] == 20
-    assert effects["baseline"]["median_admission_wait_seconds"] is None
 
 
 def test_cold_requests_are_excluded_from_warm_tail_latency(tmp_path):
-    manifest = planned()
-    slot = first_slot(manifest, "contended", BASELINE)
+    slot = first_slot(planned(), "contended", BASELINE)
 
     def timing(scheduled, task_id):
         if scheduled.index == slot.index and task_id == TASKS[0][0]:
             return 0, 60 * SECOND_NS  # one slow cold start
         return default_timing(scheduled, task_id)
 
-    def change(scheduled, record):
-        if scheduled.index == slot.index:
-            record["tasks"][0]["cold"] = True
-        return record
-
-    write_experiment(tmp_path, CONTRACT, timing=timing, change=change)
+    write_experiment(
+        tmp_path,
+        CONTRACT,
+        timing=timing,
+        change=editing(slot.index, lambda record: record["tasks"][0].update(cold=True)),
+    )
     baseline = entry(compare(tmp_path, CONTRACT), "contended")["effects"]["baseline"]
     assert baseline["cold_tasks"] == 1
     assert baseline["p95_warm_task_latency_seconds"] == pytest.approx(9.0)
 
 
 def test_new_failures_timeouts_and_acceptance_regressions_are_counted(tmp_path):
-    manifest = planned()
-    slots = [slot for slot in schedule(manifest) if slot.condition == "contended"]
+    slots = [slot for slot in schedule(planned()) if slot.condition == "contended"]
     candidates = [slot.index for slot in slots if slot.configuration == CANDIDATE][:3]
 
     def change(scheduled, record):
@@ -198,12 +253,15 @@ def test_new_failures_timeouts_and_acceptance_regressions_are_counted(tmp_path):
         return record
 
     write_experiment(tmp_path, CONTRACT, change=change)
-    effects = entry(compare(tmp_path, CONTRACT), "contended")["effects"]
-    assert effects["new_failures"] == 1
-    assert effects["new_timeouts"] == 1
-    assert effects["newly_failing_acceptance"] == 1
-    assert effects["acceptance_unknown"] == 1
-    assert effects["candidate"]["completed_tasks"] == 18
+    contended = entry(compare(tmp_path, CONTRACT), "contended")
+    assert contended["outcome_changes"] == {
+        "pairs_compared": 10,
+        "new_failures": 1,
+        "new_timeouts": 1,
+        "newly_failing_acceptance": 1,
+        "acceptance_unknown": 1,
+    }
+    assert contended["effects"]["candidate"]["completed_tasks"] == 18
 
 
 def test_development_experiments_are_never_sufficient_for_gating(tmp_path):
@@ -211,61 +269,75 @@ def test_development_experiments_are_never_sufficient_for_gating(tmp_path):
     del document["workload"]["development_tasks"]
     write_experiment(tmp_path, CONTRACT, document=document)
     contended = entry(compare(tmp_path, CONTRACT), "contended")
-    assert not contended["sufficient"]
     assert contended["insufficient_reasons"] == [
         "development experiments choose settings and are never gated"
     ]
 
 
-def test_nearest_rank_and_bootstrap_are_reproducible():
+def test_hidden_and_oddly_named_files_are_reported_not_crashed_on(tmp_path):
+    write_experiment(tmp_path, CONTRACT)
+    (tmp_path / "batches" / ".001.json.tmp").write_text("{}")
+    (tmp_path / "batches" / "²²².json").write_text("{}")  # digits, but not ASCII
+    report = compare(tmp_path, CONTRACT)
+    assert report["hidden_files"] == [".001.json.tmp"]
+    (rejected,) = [batch for batch in report["batches"] if not batch["accepted"]]
+    assert (rejected["file"], rejected["code"]) == ("²²².json", "malformed")
+
+
+def test_the_improvement_statistic_is_the_contracts_median_batch_time_reduction():
+    # The median of per-pair reductions is 0.10 here, but the contract's statistic, the relative
+    # reduction of the median batch time, is 1 - 11/12.
+    pairs = [(10.0, 9.0), (12.0, 12.0), (14.0, 11.0)]
+    assert median_time_reduction(pairs) == pytest.approx(1 - 11 / 12)
+    interval = bootstrap(pairs, median_time_reduction, 2000, 0.95, seed=1)
+    assert interval == bootstrap(pairs, median_time_reduction, 2000, 0.95, seed=1)
+    low, high = interval
+    assert low <= median_time_reduction(pairs) <= high and low < high
+    assert bootstrap(pairs[:1], median_time_reduction, 2000, 0.95, seed=1) is None
+
+
+def test_nearest_rank_percentile():
     assert nearest_rank([], 0.95) is None
     assert nearest_rank([3.0, 1.0, 2.0], 0.95) == 3.0
     assert nearest_rank([float(value) for value in range(1, 21)], 0.95) == 19.0
-    values = [0.05, 0.12, 0.2, 0.18, 0.09]
-    assert bootstrap_median(values, 2000, 0.95, 1) == bootstrap_median(values, 2000, 0.95, 1)
-    low, high = bootstrap_median(values, 2000, 0.95, 1)
-    assert 0.05 <= low <= high <= 0.2
-    assert bootstrap_median([0.1], 2000, 0.95, 1) is None  # one pair has no interval
 
 
 def test_cli_writes_the_record_and_refuses_an_invalid_manifest(tmp_path, capsys):
     experiment = tmp_path / "experiment"
     write_experiment(experiment, CONTRACT)
     output = tmp_path / "reports"
-    assert (
-        main(
-            ["compare", str(experiment), "--contract", str(CONTRACT_PATH), "--output", str(output)]
-        )
-        == 0
-    )
+    command = [
+        "compare",
+        str(experiment),
+        "--contract",
+        str(CONTRACT_PATH),
+        "--output",
+        str(output),
+    ]
+    assert main(command) == 0
     written = json.loads((output / "comparison.json").read_text())
     assert written == compare(experiment, CONTRACT)
     assert "contended inference-1: 10/10 pairs, sufficient" in capsys.readouterr().out
-    assert (
-        main(
-            [
-                "schedule",
-                "--manifest",
-                str(experiment / "manifest.json"),
-                "--contract",
-                str(CONTRACT_PATH),
-            ]
-        )
-        == 0
-    )
-    planned = json.loads(capsys.readouterr().out)
-    assert len(planned["batches"]) == 42
-    assert {batch["limits"].get("inference_requests") for batch in planned["batches"]} == {None, 1}
+    manifest = str(experiment / "manifest.json")
+    assert main(["schedule", "--manifest", manifest, "--contract", str(CONTRACT_PATH)]) == 0
+    planned_batches = json.loads(capsys.readouterr().out)["batches"]
+    assert len(planned_batches) == 42
+    assert {batch["limits"].get("inference_requests") for batch in planned_batches} == {None, 1}
     document = json.loads((experiment / "manifest.json").read_text())
     document["contract"]["sha256"] = "0" * 64
     (experiment / "manifest.json").write_text(json.dumps(document))
-    assert (
-        main(
-            ["compare", str(experiment), "--contract", str(CONTRACT_PATH), "--output", str(output)]
-        )
-        == 1
-    )
+    assert main(command) == 1
     assert "does not match" in capsys.readouterr().err
+
+
+def test_a_manifest_with_nan_is_refused_not_crashed_on(tmp_path, capsys):
+    experiment = tmp_path / "experiment"
+    write_experiment(experiment, CONTRACT)
+    text = (experiment / "manifest.json").read_text()
+    assert '"workers": 4' in text
+    (experiment / "manifest.json").write_text(text.replace('"workers": 4', '"workers": NaN'))
+    assert main(["compare", str(experiment), "--contract", str(CONTRACT_PATH)]) == 1
+    assert "not canonical JSON" in capsys.readouterr().err
 
 
 def test_default_output_is_keyed_by_the_manifest_hash(tmp_path, monkeypatch):

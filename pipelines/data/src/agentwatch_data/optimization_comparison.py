@@ -7,13 +7,17 @@
 validates every batch record against the manifest and writes one deterministic comparison
 record per (condition, candidate) to .data/reports/optimization/<manifest hash>/comparison.json.
 
-A pair counts only when both of its scheduled batches have a valid, completed record with a
-measured batch time; every other pair is reported as unpaired with its reason, and every
-record, accepted or rejected, is listed. Effects are observed paired differences on the
-declared workload and hardware, with a seeded percentile bootstrap interval. They are not
-gate outcomes: opt-contract-v1's gates are applied by the hardware evaluation (O06), so
-`gates` is always `not_evaluated` here, and nothing in a record establishes a general causal
-improvement.
+A pair is compared only when both of its scheduled batches have a valid, completed record with
+a measured batch time; every other pair is reported as unpaired with its reason, and every
+record, accepted or rejected, is listed. Failures and timeouts are counted over every pair
+whose two records were accepted, so a candidate that aborts its batch is not hidden by
+leaving the comparison. Rejected, missing or unpaired evidence makes a comparison
+insufficient, as opt-contract-v1's no-action conditions require.
+
+Effects are observed paired differences on the declared workload and hardware, with a seeded
+percentile bootstrap interval. They are not gate outcomes: the hardware evaluation (O06)
+applies opt-contract-v1's gates, so `gates` is always `not_evaluated` here, and nothing in a
+record establishes a general causal improvement.
 """
 
 import argparse
@@ -22,15 +26,18 @@ import math
 import random
 import statistics
 import sys
-from collections.abc import Iterable
+from collections import Counter
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from agentwatch_data.files import json_text, write_atomic
 from agentwatch_data.optimization_batches import (
+    BatchReading,
     BatchRecord,
     BatchRejection,
     TaskResult,
+    batch_index,
     read_batches,
 )
 from agentwatch_data.optimization_manifest import (
@@ -53,7 +60,9 @@ MANIFEST_FILE = "manifest.json"
 REPORT_FILE = "comparison.json"
 DEFAULT_REPORTS = Path(".data/reports/optimization")
 INTERVAL_METHOD = "paired_bootstrap_percentile"
-FAILED_STATES = ("failed", "cancelled")
+# A task the candidate did not complete where the baseline completed it is a new failure:
+# failed, cancelled, or never started (for example in an aborted batch).
+UNCOMPLETED_STATES = ("failed", "cancelled", "not_started")
 P95 = 0.95
 GATES_NOT_EVALUATED = {
     "status": "not_evaluated",
@@ -67,13 +76,18 @@ GATES_NOT_EVALUATED = {
 @dataclass(frozen=True)
 class Pair:
     pair_id: str
-    baseline: BatchRecord | None
+    baseline: BatchRecord | None  # the accepted record, if any
     candidate: BatchRecord | None
     problem: str | None  # why the pair cannot be compared; None when it is complete
 
     @property
     def complete(self) -> bool:
         return self.problem is None
+
+    @property
+    def attempted(self) -> bool:
+        """Both batches have accepted records, completed or not: their task outcomes compare."""
+        return self.baseline is not None and self.candidate is not None
 
 
 def side_problem(
@@ -91,6 +105,15 @@ def side_problem(
     return None
 
 
+def rejected_slots(rejections: list[BatchRejection]) -> dict[int, str]:
+    rejected = {}
+    for rejection in rejections:
+        index = batch_index(rejection.file)
+        if index is not None:
+            rejected[index] = rejection.code
+    return rejected
+
+
 def build_pairs(
     slots: tuple[ScheduledBatch, ...],
     records: list[BatchRecord],
@@ -98,11 +121,7 @@ def build_pairs(
 ) -> dict[tuple[str, str], list[Pair]]:
     """Every scheduled pair by (condition, candidate), complete or with the reason it is not."""
     by_index = {record.slot.index: record for record in records}
-    rejected = {}
-    for rejection in rejections:
-        stem = rejection.file.removesuffix(".json")
-        if stem.isdigit():
-            rejected[int(stem)] = rejection.code
+    rejected = rejected_slots(rejections)
     sides: dict[str, dict[str, ScheduledBatch]] = {}
     for slot in slots:
         if slot.kind == PAIR:
@@ -148,18 +167,28 @@ def median_or_none(values: list[float]) -> float | None:
     return statistics.median(values) if values else None
 
 
-def bootstrap_median(
-    values: list[float], resamples: int, level: float, seed: int
+def median_time_reduction(pairs: list[tuple[float, float]]) -> float:
+    """The contract's improvement statistic: 1 - median(candidate) / median(baseline)."""
+    baseline = statistics.median(time for time, _ in pairs)
+    return 1 - statistics.median(time for _, time in pairs) / baseline
+
+
+def bootstrap(
+    values: list,
+    statistic: Callable[[list], float],
+    resamples: int,
+    level: float,
+    seed: int,
 ) -> tuple[float, float] | None:
-    """Percentile interval of the median, resampling pairs with a recorded seed."""
+    """Percentile interval of a statistic, resampling whole pairs with a recorded seed."""
     if len(values) < 2:
         return None
     generator = random.Random(seed)
-    medians = sorted(
-        statistics.median(generator.choices(values, k=len(values))) for _ in range(resamples)
+    estimates = sorted(
+        statistic(generator.choices(values, k=len(values))) for _ in range(resamples)
     )
     tail = (1 - level) / 2
-    return medians[math.floor(tail * resamples)], medians[math.ceil((1 - tail) * resamples) - 1]
+    return estimates[math.floor(tail * resamples)], estimates[math.ceil((1 - tail) * resamples) - 1]
 
 
 def coefficient_of_variation(values: list[float]) -> float | None:
@@ -176,8 +205,13 @@ def tasks_of(batches: Iterable[BatchRecord]) -> list[TaskResult]:
 
 
 def outcome_changes(pairs: list[Pair]) -> dict[str, int]:
-    """Failures, timeouts and acceptance failures the candidate added on the same tasks."""
+    """Failures, timeouts and acceptance failures the candidate added on the same tasks.
+
+    Counted over every attempted pair, including failed or aborted batches, so a candidate whose
+    batch broke down still shows the failures it caused.
+    """
     changes = {
+        "pairs_compared": len(pairs),
         "new_failures": 0,
         "new_timeouts": 0,
         "newly_failing_acceptance": 0,
@@ -187,7 +221,7 @@ def outcome_changes(pairs: list[Pair]) -> dict[str, int]:
         baseline = {task.task_id: task for task in pair.baseline.tasks}
         for task in pair.candidate.tasks:
             before = baseline[task.task_id]
-            if before.state == "completed" and task.state in FAILED_STATES:
+            if before.state == "completed" and task.state in UNCOMPLETED_STATES:
                 changes["new_failures"] += 1
             if task.state == "timed_out" and before.state != "timed_out":
                 changes["new_timeouts"] += 1
@@ -198,16 +232,39 @@ def outcome_changes(pairs: list[Pair]) -> dict[str, int]:
     return changes
 
 
+def attempts(batches: list[BatchRecord]) -> dict:
+    """Every accepted batch of one configuration, by status, and its tasks by state."""
+    return {
+        "batches_by_status": dict(sorted(Counter(batch.status for batch in batches).items())),
+        "tasks_by_state": dict(sorted(Counter(task.state for task in tasks_of(batches)).items())),
+    }
+
+
 def admission_total(batches: list[BatchRecord], field: str) -> int | None:
     """A sum over batches, or None when any batch could not observe it (never a partial sum)."""
     values = [getattr(batch, field) for batch in batches]
     return None if not values or None in values else sum(values)
 
 
-def side_summary(batches: list[BatchRecord]) -> dict:
+def admission_waits(tasks: list[TaskResult], manifest: Manifest) -> dict:
+    """Per control: observed waits, and how many exceeded the preregistered maximum wait."""
+    summary = {}
+    for control, (_, max_wait) in sorted(manifest.queue_bounds.items()):
+        waits = [task.admission_waits[control] for task in tasks]
+        observed = [wait for wait in waits if wait is not None]
+        summary[control] = {
+            "median_seconds": median_or_none(observed),
+            "max_seconds": max(observed) if observed else None,
+            "declared_max_wait_seconds": max_wait,
+            "over_declared_max_wait": sum(wait > max_wait for wait in observed),
+            "unobserved": len(waits) - len(observed),
+        }
+    return summary
+
+
+def side_summary(batches: list[BatchRecord], manifest: Manifest) -> dict:
     tasks = tasks_of(batches)
     warm = [task.latency_seconds for task in tasks if not task.cold and task.state == "completed"]
-    waits = [task.admission_wait_seconds for task in tasks]
     seconds = [batch.batch_seconds for batch in batches]
     completed = sum(task.state == "completed" for task in tasks)
     return {
@@ -220,10 +277,7 @@ def side_summary(batches: list[BatchRecord]) -> dict:
             [latency for latency in warm if latency is not None], P95
         ),
         "warm_tasks_without_latency": sum(latency is None for latency in warm),
-        "median_admission_wait_seconds": median_or_none(
-            [wait for wait in waits if wait is not None]
-        ),
-        "tasks_without_admission_wait": sum(wait is None for wait in waits),
+        "admission_waits": admission_waits(tasks, manifest),
         "starved_admissions": admission_total(batches, "starved_admissions"),
         "leaked_permits": admission_total(batches, "leaked_permits"),
         "policy_versions": sorted(
@@ -236,29 +290,33 @@ def effects(
     pairs: list[Pair], manifest: Manifest, contract: OptimizationContract
 ) -> tuple[dict, list[dict]]:
     """Observed paired effects over complete pairs, and one row per complete pair."""
+    times = [(pair.baseline.batch_seconds, pair.candidate.batch_seconds) for pair in pairs]
     rows = [
         {
             "pair_id": pair.pair_id,
             "baseline_batch_id": pair.baseline.batch_id,
             "candidate_batch_id": pair.candidate.batch_id,
-            "baseline_seconds": pair.baseline.batch_seconds,
-            "candidate_seconds": pair.candidate.batch_seconds,
-            # Relative reduction of batch completion time; positive means the candidate was faster.
-            "reduction": 1 - pair.candidate.batch_seconds / pair.baseline.batch_seconds,
+            "baseline_seconds": baseline,
+            "candidate_seconds": candidate,
+            # Positive means the candidate's batch finished sooner than its paired baseline.
+            "reduction": 1 - candidate / baseline,
         }
-        for pair in pairs
+        for pair, (baseline, candidate) in zip(pairs, times, strict=True)
     ]
-    baseline = side_summary([pair.baseline for pair in pairs])
-    candidate = side_summary([pair.candidate for pair in pairs])
-    reductions = [row["reduction"] for row in rows]
-    interval = bootstrap_median(
-        reductions, contract.bootstrap_resamples, contract.interval_level, manifest.seed
+    baseline = side_summary([pair.baseline for pair in pairs], manifest)
+    candidate = side_summary([pair.candidate for pair in pairs], manifest)
+    interval = bootstrap(
+        times,
+        median_time_reduction,
+        contract.bootstrap_resamples,
+        contract.interval_level,
+        manifest.seed,
     )
     summary = {
         "baseline": baseline,
         "candidate": candidate,
-        "median_reduction": median_or_none(reductions),
-        "reduction_interval": {
+        "median_batch_time_reduction": median_time_reduction(times),
+        "median_batch_time_reduction_interval": {
             "method": INTERVAL_METHOD,
             "level": contract.interval_level,
             "resamples": contract.bootstrap_resamples,
@@ -266,31 +324,41 @@ def effects(
             "low": None if interval is None else interval[0],
             "high": None if interval is None else interval[1],
         },
+        # A different statistic, reported beside the contract's: the typical pair's reduction.
+        "median_pair_reduction": statistics.median(row["reduction"] for row in rows),
         "throughput_ratio": ratio(
             candidate["throughput_tasks_per_second"], baseline["throughput_tasks_per_second"]
         ),
         "p95_warm_task_latency_ratio": ratio(
             candidate["p95_warm_task_latency_seconds"], baseline["p95_warm_task_latency_seconds"]
         ),
-        "baseline_batch_cv": coefficient_of_variation(
-            [pair.baseline.batch_seconds for pair in pairs]
-        ),
-        **outcome_changes(pairs),
+        # Variability of whole-batch times: a proxy, not the contract's root-step stability
+        # metric (max_baseline_root_step_cv), which needs per-task root step durations.
+        "baseline_batch_time_cv": coefficient_of_variation([time for time, _ in times]),
     }
     return summary, rows
 
 
-def sufficiency(pairs: list[Pair], manifest: Manifest, contract: OptimizationContract) -> list[str]:
-    """Why the complete pairs fall short of the contract's minimums; empty when they do not."""
-    reasons = []
-    if len(pairs) < contract.min_paired_batches:
+def sufficiency(
+    complete: list[Pair],
+    unpaired: int,
+    evidence_problems: list[str],
+    manifest: Manifest,
+    contract: OptimizationContract,
+) -> list[str]:
+    """Why this comparison cannot support a decision; empty only when nothing is wrong."""
+    reasons = list(evidence_problems)
+    if unpaired:
+        reasons.append(f"{unpaired} scheduled pairs are unpaired")
+    if len(complete) < contract.min_paired_batches:
         reasons.append(
-            f"{len(pairs)} complete pairs, fewer than the contract's {contract.min_paired_batches}"
+            f"{len(complete)} complete pairs, fewer than the contract's "
+            f"{contract.min_paired_batches}"
         )
     for side in (BASELINE, CANDIDATE):
         completed = sum(
             task.state == "completed"
-            for pair in pairs
+            for pair in complete
             for task in (pair.baseline if side == BASELINE else pair.candidate).tasks
         )
         if completed < contract.min_completed_tasks:
@@ -307,12 +375,15 @@ def comparison(
     condition: str,
     candidate: Policy,
     pairs: list[Pair],
+    evidence_problems: list[str],
     manifest: Manifest,
     contract: OptimizationContract,
 ) -> dict:
     complete = [pair for pair in pairs if pair.complete]
+    attempted = [pair for pair in pairs if pair.attempted]
+    unpaired = sorted((pair for pair in pairs if not pair.complete), key=lambda pair: pair.pair_id)
     observed, rows = effects(complete, manifest, contract) if complete else (None, [])
-    shortfalls = sufficiency(complete, manifest, contract)
+    shortfalls = sufficiency(complete, len(unpaired), evidence_problems, manifest, contract)
     return {
         "condition": condition,
         "candidate": candidate.name,
@@ -322,12 +393,13 @@ def comparison(
         "pairs": {
             "scheduled": len(pairs),
             "complete": len(complete),
-            "unpaired": [
-                {"pair_id": pair.pair_id, "reason": pair.problem}
-                for pair in sorted(pairs, key=lambda pair: pair.pair_id)
-                if not pair.complete
-            ],
+            "unpaired": [{"pair_id": pair.pair_id, "reason": pair.problem} for pair in unpaired],
         },
+        "attempts": {
+            BASELINE: attempts([pair.baseline for pair in pairs if pair.baseline]),
+            CANDIDATE: attempts([pair.candidate for pair in pairs if pair.candidate]),
+        },
+        "outcome_changes": outcome_changes(attempted),
         "per_pair": sorted(rows, key=lambda row: row["pair_id"]),
         "sufficient": not shortfalls,
         "insufficient_reasons": shortfalls,
@@ -353,6 +425,7 @@ def batch_entry(record: BatchRecord) -> dict:
         "reason": record.reason,
         "policy_version": record.policy_version,
         "injection_active": record.injection_active,
+        "injection_cleanup_confirmed": record.injection_cleanup_confirmed,
         "run_ids": sorted(task.run_id for task in record.tasks if task.run_id is not None),
     }
 
@@ -367,18 +440,30 @@ def rejection_entry(rejection: BatchRejection) -> dict:
     }
 
 
+def evidence_problems(reading: BatchReading, missing: list[int]) -> list[str]:
+    """Experiment-wide problems that keep the baseline for every comparison in it."""
+    problems = []
+    if reading.rejections:
+        codes = Counter(rejection.code for rejection in reading.rejections)
+        listed = ", ".join(f"{count} {code}" for code, count in sorted(codes.items()))
+        problems.append(f"the experiment has rejected batch records ({listed})")
+    if missing:
+        problems.append(f"{len(missing)} scheduled batches have no record")
+    return problems
+
+
 def compare(root: Path, contract: OptimizationContract) -> dict:
     """The comparison record of one experiment directory; deterministic for the same files."""
     root = root.resolve()
     manifest = read_manifest(root / MANIFEST_FILE, contract)
     slots = schedule(manifest)
-    records, rejections = read_batches(root, manifest, slots, contract)
-    pairs = build_pairs(slots, records, rejections)
-    recorded = {record.slot.index for record in records} | {
-        int(rejection.file.removesuffix(".json"))
-        for rejection in rejections
-        if rejection.file.removesuffix(".json").isdigit()
-    }
+    reading = read_batches(root, manifest, slots, contract)
+    pairs = build_pairs(slots, reading.records, reading.rejections)
+    recorded = {record.slot.index for record in reading.records} | set(
+        rejected_slots(reading.rejections)
+    )
+    missing = sorted(slot.index for slot in slots if slot.index not in recorded)
+    problems = evidence_problems(reading, missing)
     return {
         "method": COMPARISON_METHOD,
         "experiment_id": manifest.experiment_id,
@@ -392,11 +477,12 @@ def compare(root: Path, contract: OptimizationContract) -> dict:
         "seed": manifest.seed,
         "candidates_tried": len(manifest.candidates),
         "scheduled_batches": len(slots),
-        "missing_batches": sorted(slot.index for slot in slots if slot.index not in recorded),
-        "warmup_batches": sum(record.slot.kind == WARMUP for record in records),
+        "missing_batches": missing,
+        "hidden_files": reading.hidden_files,
+        "warmup_batches": sum(record.slot.kind == WARMUP for record in reading.records),
         "batches": sorted(
-            [batch_entry(record) for record in records]
-            + [rejection_entry(rejection) for rejection in rejections],
+            [batch_entry(record) for record in reading.records]
+            + [rejection_entry(rejection) for rejection in reading.rejections],
             key=lambda entry: entry["file"],
         ),
         "comparisons": [
@@ -404,6 +490,7 @@ def compare(root: Path, contract: OptimizationContract) -> dict:
                 condition.name,
                 candidate,
                 pairs[(condition.name, candidate.name)],
+                problems,
                 manifest,
                 contract,
             )

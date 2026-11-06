@@ -9,6 +9,7 @@ import copy
 import json
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agentwatch_data.optimization_manifest import (
@@ -41,6 +42,8 @@ MODEL = {"backend": "ollama", "name": "qwen3:1.7b", "digest": "8f68893c685c"}
 POWER = {"source": "ac", "profile": "balanced"}
 STATE = {"tests": "fixture-tests-r1", "retrieval": "docs-index-r1"}
 SECOND_NS = 1_000_000_000
+FIRST_BATCH_AT = datetime(2026, 11, 5, 15, 10, tzinfo=UTC)
+BATCH_SPACING = timedelta(seconds=20)  # every batch finishes before the next one starts
 
 # Baseline batches take 10 s; the candidate takes 8 s under contention and 10 s when clean.
 Timing = Callable[[ScheduledBatch, str], tuple[int, int] | None]
@@ -66,6 +69,7 @@ def manifest_document(contract: OptimizationContract, **changes) -> dict:
             "development_tasks": ["fix-median-odd-r1"],
             "arrivals": {
                 "method": "fixed_offsets_v1",
+                "tolerance_seconds": 0.25,
                 "offsets": [
                     {"task_id": TASKS[0][0], "offset_seconds": 0},
                     {"task_id": TASKS[1][0], "offset_seconds": 1.5},
@@ -109,6 +113,13 @@ def default_timing(slot: ScheduledBatch, task_id: str) -> tuple[int, int]:
     return submitted, finished
 
 
+SECOND = timedelta(seconds=1)
+
+
+def timestamp(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
+
+
 def batch_record(
     manifest: Manifest,
     slot: ScheduledBatch,
@@ -128,7 +139,10 @@ def batch_record(
                 "cold": False,
                 "submitted_tick_ns": None if ticks is None else ticks[0],
                 "finished_tick_ns": None if ticks is None else ticks[1],
-                "admission_wait_seconds": 0.0 if slot.configuration == CANDIDATE else None,
+                "admission_waits": {
+                    "inference_requests": 0.5 if slot.configuration == CANDIDATE else None,
+                    "test_jobs": None,
+                },
                 "evidence_dir": None,
             }
         )
@@ -145,8 +159,8 @@ def batch_record(
         "policy": {"sha256": policy.sha256, "limits": policy.limits, "version": None},
         "status": "completed",
         "reason": None,
-        "started_at": "2026-11-05T15:10:00Z",
-        "finished_at": "2026-11-05T15:10:10Z",
+        "started_at": timestamp(FIRST_BATCH_AT + slot.index * BATCH_SPACING),
+        "finished_at": timestamp(FIRST_BATCH_AT + slot.index * BATCH_SPACING + 10 * SECOND),
         "clock_id": f"agent-runner-batch-{slot.index}",
         "model": copy.deepcopy(MODEL),
         "hardware": copy.deepcopy(HARDWARE),
