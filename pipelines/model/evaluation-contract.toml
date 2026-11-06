@@ -4,9 +4,12 @@
 # Reports identify this file by SHA-256 of its parsed contents as canonical JSON, so line
 # endings and comments do not change the identifier.
 # eval-contract-v1 is kept unchanged in evaluation-contract-v1.toml, so splits and results made
-# under it still rebuild. v2 adopts docs/evaluation-contract-v2-proposal.md: labels-v2 is
-# evaluated (mixed stays a label value outside the four classes), split-v2 groups by
-# task_group with the frozen assignment file, and every threshold is unchanged.
+# under it still rebuild. v2 adopts items 1, 3 and 4 of docs/evaluation-contract-v2-proposal.md:
+# labels-v2 is evaluated (mixed stays a label value outside the four classes), split-v2 groups
+# by task_group with the frozen assignment file, and every threshold is unchanged. Item 2 (the
+# multi-resource metric and how a prediction on a mixed step is scored) is not encoded here; it
+# remains Rohit's M02 decision, and until then the rule baseline and training refuse splits
+# with mixed labels.
 version = "eval-contract-v2"
 # Accepted by Rohit (M02 owner), told to the owner directly on 2026-11-05; Rohit's approval of
 # the pull request that adds this file is the written confirmation. Values marked "proposed"
@@ -39,10 +42,11 @@ train_fraction = 0.70
 validation_fraction = 0.15
 test_fraction = 0.15
 # At least this many injection methods, from the injection_method lineage column, appear
-# only in the test split. Needs at least two injection methods; one exists today.
+# only in the test split. split-v2 holds out worker_queue_blocker through the assignment file.
 held_out_injection_methods = 1
-# Needs real task identity from step events; the current task_id is an interim
-# placeholder that can split one project across splits.
+# split-v2 groups by task_group, so every replay of a task stays in one split. Evaluating
+# unseen tasks still needs more than one task group per split (dataset v1 trains on one), and
+# the task_id of CPU and coding rows remains an interim placeholder.
 require_unseen_tasks = true
 # Mixed-contention cases must appear in the test split; training may also contain them.
 require_mixed_contention_in_test = true
