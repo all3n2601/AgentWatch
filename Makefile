@@ -48,7 +48,7 @@ AGENTWATCH_ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))
 DATA = uv run --project "$(AGENTWATCH_ROOT)" --package agentwatch-data python -m agentwatch_data
 DVC = uv run --project "$(AGENTWATCH_ROOT)/pipelines/versioning" --frozen dvc
 
-add-evidence: ## Validate recorded runs and copy them into the versioned evidence store (RUN=".data/coding-demo ...")
+add-evidence: ## Validate recorded run directories or replay experiment directories and copy them into the versioned evidence store (RUN=".data/coding-demo ...")
 	$(if $(RUN),,$(error Set RUN to one or more recorded run directories, for example RUN=.data/coding-demo))
 	$(DATA).evidence --store $(DATASET_EVIDENCE) $(RUN)
 
