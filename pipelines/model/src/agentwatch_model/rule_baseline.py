@@ -16,6 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from agentwatch_data.files import file_sha256, json_text, write_atomic
+from agentwatch_data.schema import MIXED
 from agentwatch_data.splits import SplitError, load_split
 
 from agentwatch_model.contract import DEFAULT_CONTRACT, ContractError, load_contract
@@ -23,9 +24,9 @@ from agentwatch_model.metrics import CLASSES, is_number
 from agentwatch_model.report import blocked_report, build_report, dataset_version
 from agentwatch_model.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 
-# pipelines/validation/schema/steps.pbtxt beside this package's source tree. This default holds
-# for the workspace (editable) install; the Makefile always passes the path explicitly.
-DEFAULT_SCHEMA = Path(__file__).resolve().parents[3] / "validation" / "schema" / "steps.pbtxt"
+# pipelines/validation/schema/steps-v1.3.pbtxt beside this package's source tree. This default
+# holds for the workspace (editable) install; the Makefile always passes the path explicitly.
+DEFAULT_SCHEMA = Path(__file__).resolve().parents[3] / "validation" / "schema" / "steps-v1.3.pbtxt"
 DEFAULT_OUTPUT = Path(".data/rule-baseline")
 REPORT = "report.json"
 PREDICTIONS = "predictions.jsonl"
@@ -62,6 +63,11 @@ def validate_rows(rows: list[dict], split: str) -> None:
         if key in seen:
             raise RowError(f"{split} has more than one row for run {key[0]} step {key[1]}")
         seen.add(key)
+        if row["label_resource"] == MIXED:
+            raise RowError(
+                f"{split} row {index} is labeled 'mixed', which has no scoring rule until M02 "
+                "defines one"
+            )
         if row["label_resource"] not in CLASSES:
             raise RowError(f"{split} row {index} has unknown label {row['label_resource']!r}")
         fraction = row["label_excess_fraction"]

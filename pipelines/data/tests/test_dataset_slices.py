@@ -6,9 +6,11 @@ import pytest
 from agentwatch_data.build import DATASET_FILE
 from agentwatch_data.slices import (
     ABSENT_FROM_SPLIT,
+    ATTRIBUTES,
     EXCLUDED,
     MISSING_READINGS_GAP,
     MITIGATIONS,
+    OPTIONAL_ATTRIBUTES,
     POSITIVE_RATE_GAP,
     SINGLE_CLASS,
     UNASSIGNED,
@@ -45,6 +47,8 @@ def step(index: int, kind: str, label: str, **overrides: object) -> dict[str, ob
         "telemetry_status": "present",
         "cpu_pressure_available": True,
         "cgroup_available": True,
+        "feature_version": None,
+        "replay_condition": None,
         "telemetry_coverage": 0.9,
         "cpu_pressure_max_avg10": 1.5,
         "cgroup_throttled_usec_delta": 0,
@@ -159,6 +163,101 @@ def test_rule_agreement_counts_rows_where_the_rule_matches_the_label():
     assert report["attributes"]["kind"]["slices"]["cpu"]["rule_agreement"] == 0.8
 
 
+def replay_step(index: int, label: str, **overrides: object) -> dict[str, object]:
+    """One synthetic agent-replay row (test fixture): no rule output, a replay condition."""
+    return step(
+        index,
+        "agent_replay",
+        label,
+        task_id="agent:task:1",
+        task_group="agent:group:1",
+        rule_prediction=None,
+        feature_version="step-features-v1",
+        replay_condition="mixed" if label == "mixed" else "cpu",
+        **overrides,
+    )
+
+
+def test_replay_rows_without_rule_output_do_not_count_as_disagreement():
+    rows = [step(index, "cpu", "none") for index in range(2)]
+    rows += [replay_step(index, "cpu_sandbox") for index in range(2)]
+    report = analyze(rows, RELEASE, None)
+    slices = report["attributes"]["kind"]["slices"]
+    assert slices["cpu"]["rule_agreement"] == 1.0
+    assert slices["cpu"]["rule_rows"] == 2
+    # Replay rows have no rule output: agreement is unknown, not zero, and not 100%.
+    assert slices["agent_replay"]["rule_agreement"] is None
+    assert slices["agent_replay"]["rule_rows"] == 0
+
+
+def test_rule_agreement_is_over_rows_with_a_rule_prediction_in_a_mixed_slice():
+    rows = [step(0, "cpu", "none"), step(1, "cpu", "none", rule_prediction="cpu_sandbox")]
+    rows += [replay_step(index, "cpu_sandbox") | {"kind": "cpu"} for index in range(2)]
+    cpu = analyze(rows, RELEASE, None)["attributes"]["kind"]["slices"]["cpu"]
+    assert (cpu["rows"], cpu["rule_rows"], cpu["rule_agreement"]) == (4, 2, 0.5)
+
+
+def test_replay_rows_are_sliced_by_feature_version_and_replay_condition():
+    rows = [step(index, "cpu", "none") for index in range(2)]
+    rows += [replay_step(index, "cpu_sandbox") for index in range(3)]
+    rows += [replay_step(index, "mixed") for index in range(4)]
+    attributes = analyze(rows, RELEASE, None)["attributes"]
+    assert {v: s["rows"] for v, s in attributes["replay_condition"]["slices"].items()} == {
+        UNRECORDED: 2,
+        "cpu": 3,
+        "mixed": 4,
+    }
+    assert {v: s["rows"] for v, s in attributes["feature_version"]["slices"].items()} == {
+        UNRECORDED: 2,
+        "step-features-v1": 7,
+    }
+    assert attributes["label_resource"]["slices"]["mixed"]["rows"] == 4
+
+
+def test_replay_condition_decides_the_label_so_its_gaps_are_not_flagged():
+    """Clean replays are all negatives by design; their gaps repeat the label's, not bias."""
+    rows = balanced()
+    rows += [
+        replay_step(index, "none") | {"replay_condition": "clean", "telemetry_coverage": None}
+        for index in range(40)
+    ]
+    rows += [replay_step(index, "cpu_sandbox") for index in range(40)]
+    report = analyze(rows, RELEASE, None)
+    assert report["attributes"]["replay_condition"]["slices"]["clean"]["labels"] == {"none": 40}
+    assert kinds(report, "replay_condition") == []
+    # The label itself still reports the missing-readings gap once.
+    assert MISSING_READINGS_GAP in [kind for kind, _ in kinds(report, "label_resource")]
+
+
+def test_a_split_v2_split_places_run_and_replay_rows_by_task_group(tmp_path):
+    rows = [row | {"task_group": row["kind"]} for row in balanced()]
+    rows += [replay_step(index, "cpu_sandbox") for index in range(10)]
+    release = write_release(tmp_path, rows)
+    document = {
+        "release": RELEASE,
+        "contract": {"group_key": "task_group"},
+        "split_method": "split-v2",
+        "groups": {"cpu": "train", "coding": "validation", "agent:group:1": "test"},
+        "excluded_runs": [],
+    }
+    split = tmp_path / "split.json"
+    split.write_text(json.dumps(document))
+    report = slice_release(release, split, tmp_path / "out").report
+    assert report["split_rows"] == {"test": 10, "train": 60, "validation": 60}
+    by_kind = report["attributes"]["kind"]["slices"]
+    assert by_kind["agent_replay"]["splits"]["test"] == 10
+    assert by_kind["cpu"]["splits"]["train"] == 60
+    assert by_kind["coding"]["splits"]["validation"] == 60
+    assert by_kind["agent_replay"]["rule_agreement"] is None
+
+
+def test_the_markdown_shows_unknown_rule_agreement_as_n_a_not_zero():
+    rows = [step(0, "cpu", "none"), replay_step(0, "cpu_sandbox")]
+    text = markdown(analyze(rows, RELEASE, None))
+    assert "| agent_replay | 1 | 50.0% | 100.0% | n/a |" in text
+    assert "| cpu | 1 | 50.0% | 0.0% | 100.0% |" in text
+
+
 def test_a_missing_readings_gap_is_flagged_and_missing_is_not_zero():
     rows = balanced()
     for row in rows:
@@ -235,7 +334,7 @@ def test_the_markdown_lists_flags_and_one_table_per_attribute():
     assert "Rows per split: test 60, train 60." in text
     assert "- **absent_from_split** — kind = coding: no rows in the train split." in text
     assert "| cpu | 60 | 50.0% | 50.0% | 100.0% |" in text
-    assert text.count("\n## ") == 1 + 10  # flags, then each attribute
+    assert text.count("\n## ") == 1 + len(ATTRIBUTES)  # flags, then each attribute
     assert "Train / test" in text
 
 
@@ -332,6 +431,51 @@ def test_a_split_grouped_by_an_unknown_key_is_refused(tmp_path):
     split = write_split(tmp_path, {CPU_TASK: "train"}, group_key="agent_model")
     with pytest.raises(SliceError, match="groups by 'agent_model'"):
         load_assignment(split, tmp_path / RELEASE)
+
+
+def v1_2_rows() -> list[dict[str, object]]:
+    """balanced() rows shaped like a steps-v1.2 release: without the steps-v1.3 columns."""
+    rows = [
+        {name: value for name, value in row.items() if name not in OPTIONAL_ATTRIBUTES}
+        for row in balanced()
+    ]
+    assert all(name not in row for row in rows for name in (*OPTIONAL_ATTRIBUTES, "task_group"))
+    return rows
+
+
+def test_a_v1_2_release_without_replay_columns_is_still_sliced(tmp_path):
+    release = write_release(tmp_path, v1_2_rows())
+    split = write_split(tmp_path, {CPU_TASK: "train", CODING_TASK: "test"})
+    report = slice_release(release, split, tmp_path / "out").report
+    assert list(report["attributes"]) == [
+        name for name in ATTRIBUTES if name not in OPTIONAL_ATTRIBUTES
+    ]
+    assert report["split_rows"] == {"train": 60, "test": 60}
+    text = (tmp_path / "out" / "slices.md").read_text()
+    assert text.count("\n## ") == 1 + len(report["attributes"])
+    assert "feature_version" not in text  # omitted, not filled with an unrecorded slice
+
+
+def test_a_release_before_task_group_still_slices_by_task_id(tmp_path):
+    release = write_release(tmp_path, v1_2_rows())  # no task_group column, as in steps-v1.2
+    split = write_split(tmp_path, {CPU_TASK: "train", CODING_TASK: "test"})
+    report = slice_release(release, split, tmp_path / "out").report
+    assert report["split_rows"] == {"train": 60, "test": 60}
+
+
+def test_a_split_grouped_by_task_group_slices_a_release_that_has_it(tmp_path):
+    rows = [row | {"task_group": row["kind"]} for row in balanced()]
+    release = write_release(tmp_path, rows)
+    split = write_split(tmp_path, {"cpu": "train", "coding": "test"}, group_key="task_group")
+    report = slice_release(release, split, tmp_path / "out").report
+    assert report["split_rows"] == {"train": 60, "test": 60}
+
+
+def test_a_split_grouped_by_a_column_the_release_lacks_is_refused(tmp_path):
+    release = write_release(tmp_path, balanced())
+    split = write_split(tmp_path, {"cpu": "train"}, group_key="task_group")
+    with pytest.raises(SliceError, match="groups by 'task_group', which .* lacks"):
+        slice_release(release, split, tmp_path / "out")
 
 
 def test_newest_split_picks_the_latest_split_file_of_the_release(tmp_path):

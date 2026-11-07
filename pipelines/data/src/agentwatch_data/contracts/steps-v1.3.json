@@ -1,6 +1,7 @@
 {
   "columns": [
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -10,6 +11,7 @@
       "role": "id"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -19,6 +21,7 @@
       "role": "id"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -28,9 +31,11 @@
       "role": "id"
     },
     {
+      "allow_empty": false,
       "allowed": [
         "cpu",
-        "coding"
+        "coding",
+        "agent_replay"
       ],
       "dtype": "string",
       "maximum": null,
@@ -40,6 +45,7 @@
       "role": "id"
     },
     {
+      "allow_empty": false,
       "allowed": [
         "measured",
         "simulated",
@@ -53,6 +59,7 @@
       "role": "id"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "timestamp[us, tz=UTC]",
       "maximum": null,
@@ -62,6 +69,7 @@
       "role": "id"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": null,
@@ -71,6 +79,7 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": null,
@@ -80,6 +89,7 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": null,
@@ -89,15 +99,17 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": null,
       "minimum": 0,
       "name": "cpu_seconds",
-      "nullable": false,
+      "nullable": true,
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": 1,
@@ -107,15 +119,17 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "int64",
       "maximum": null,
       "minimum": 1,
       "name": "workload_iterations",
-      "nullable": false,
+      "nullable": true,
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "int64",
       "maximum": null,
@@ -125,15 +139,17 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "int64",
       "maximum": null,
       "minimum": 1,
       "name": "worker_capacity",
-      "nullable": false,
+      "nullable": true,
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": 100,
@@ -143,6 +159,7 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "bool",
       "maximum": null,
@@ -152,6 +169,7 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "int64",
       "maximum": null,
@@ -161,6 +179,7 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "bool",
       "maximum": null,
@@ -170,6 +189,7 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "int64",
       "maximum": null,
@@ -179,6 +199,7 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": 1,
@@ -188,11 +209,13 @@
       "role": "feature"
     },
     {
+      "allow_empty": false,
       "allowed": [
         "none",
         "cpu_sandbox",
         "inference",
-        "retrieval"
+        "retrieval",
+        "mixed"
       ],
       "dtype": "string",
       "maximum": null,
@@ -202,6 +225,7 @@
       "role": "label"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": 1,
@@ -211,6 +235,7 @@
       "role": "label"
     },
     {
+      "allow_empty": false,
       "allowed": [
         "none",
         "cpu_sandbox",
@@ -221,19 +246,21 @@
       "maximum": null,
       "minimum": null,
       "name": "rule_prediction",
-      "nullable": false,
+      "nullable": true,
       "role": "rule"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
       "minimum": null,
       "name": "rule_version",
-      "nullable": false,
+      "nullable": true,
       "role": "rule"
     },
     {
+      "allow_empty": false,
       "allowed": [
         "baseline",
         "clean",
@@ -247,6 +274,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -256,6 +284,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -265,6 +294,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -274,6 +304,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "bool",
       "maximum": null,
@@ -283,6 +314,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -292,11 +324,13 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": [
         "present",
         "empty",
         "missing",
-        "no_overlap"
+        "no_overlap",
+        "unaligned"
       ],
       "dtype": "string",
       "maximum": null,
@@ -306,6 +340,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": null,
@@ -315,6 +350,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": null,
@@ -324,6 +360,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": null,
@@ -333,6 +370,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "float64",
       "maximum": null,
@@ -342,12 +380,17 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": [
         "baseline_reference",
         "clean_within_noise",
         "clean_exceeded_noise",
         "contention_exceeded_threshold",
-        "contention_below_threshold"
+        "contention_below_threshold",
+        "mixed_below_threshold",
+        "mixed_confirmed",
+        "mixed_partial",
+        "mixed_joint_only"
       ],
       "dtype": "string",
       "maximum": null,
@@ -357,6 +400,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -366,6 +410,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -375,6 +420,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -384,6 +430,7 @@
       "role": "lineage"
     },
     {
+      "allow_empty": false,
       "allowed": null,
       "dtype": "string",
       "maximum": null,
@@ -391,7 +438,130 @@
       "name": "source_sha256",
       "nullable": false,
       "role": "lineage"
+    },
+    {
+      "allow_empty": false,
+      "allowed": [
+        "steps-v1.2",
+        "step-features-v1"
+      ],
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "feature_version",
+      "nullable": false,
+      "role": "lineage"
+    },
+    {
+      "allow_empty": false,
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "task_group",
+      "nullable": false,
+      "role": "id"
+    },
+    {
+      "allow_empty": false,
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "experiment",
+      "nullable": true,
+      "role": "id"
+    },
+    {
+      "allow_empty": false,
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "plan_sha256",
+      "nullable": true,
+      "role": "id"
+    },
+    {
+      "allow_empty": false,
+      "allowed": null,
+      "dtype": "int64",
+      "maximum": null,
+      "minimum": 0,
+      "name": "replay_index",
+      "nullable": true,
+      "role": "id"
+    },
+    {
+      "allow_empty": false,
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "step_type",
+      "nullable": true,
+      "role": "id"
+    },
+    {
+      "allow_empty": false,
+      "allowed": [
+        "baseline",
+        "contended",
+        "clean_control"
+      ],
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "replay_role",
+      "nullable": true,
+      "role": "lineage"
+    },
+    {
+      "allow_empty": false,
+      "allowed": [
+        "clean",
+        "cpu",
+        "inference",
+        "retrieval",
+        "mixed"
+      ],
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "replay_condition",
+      "nullable": true,
+      "role": "lineage"
+    },
+    {
+      "allow_empty": true,
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "label_resources",
+      "nullable": false,
+      "role": "label"
+    },
+    {
+      "allow_empty": false,
+      "allowed": null,
+      "dtype": "bool",
+      "maximum": null,
+      "minimum": null,
+      "name": "control_exceeded_noise",
+      "nullable": true,
+      "role": "lineage"
+    },
+    {
+      "allow_empty": false,
+      "allowed": null,
+      "dtype": "string",
+      "maximum": null,
+      "minimum": null,
+      "name": "configuration_sha256",
+      "nullable": true,
+      "role": "lineage"
     }
   ],
-  "schema_version": "steps-v1.2"
+  "schema_version": "steps-v1.3"
 }

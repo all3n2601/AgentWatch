@@ -138,7 +138,8 @@ def check_values(release: str, table: pa.Table, contract: dict) -> None:
     """Refuse values the contract forbids but TFDV cannot see once the frame is prepared.
 
     pandas turns NaN into a missing value, so a malformed reading would pass as "not
-    measured"; and TFDV has no domain for "nonempty string".
+    measured"; and TFDV has no domain for "nonempty string". A column whose contract sets
+    allow_empty (absent before steps-v1.3) accepts exactly "", never whitespace.
     """
     for column in contract["columns"]:
         name, values = column["name"], table.column(column["name"])
@@ -146,6 +147,8 @@ def check_values(release: str, table: pa.Table, contract: dict) -> None:
             raise GateError(f"{release}: column {name} contains NaN")
         if column["dtype"] == "string":
             blank = pc.equal(pc.utf8_trim_whitespace(values), "")
+            if column.get("allow_empty", False):
+                blank = pc.and_(blank, pc.not_equal(values, ""))
             if pc.any(blank).as_py():
                 raise GateError(f"{release}: column {name} contains an empty string")
 

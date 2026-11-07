@@ -1,10 +1,10 @@
 """Frozen `split-v2` assignment and the independence checks that guard it.
 
-D02 provides these functions over labeled rows; D03 wires them into make_split and load_split
-once releases carry `task_group`. eval-contract-v1 names no `split-v2`, so `split-v1` is
-unchanged. The assignment file is split-assignment.toml: its declared test task groups and
-held-out injection methods go to test, and every other group keeps its `split-v1` hash
-position, so new tasks never move frozen ones.
+splits.make_split and splits.load_split partition with partition_v2 when the evaluation
+contract selects `split-v2` (eval-contract-v2); eval-contract-v1 names no method, so its
+`split-v1` splits are unchanged. The assignment file is split-assignment.toml: its declared
+test task groups and held-out injection methods go to test, and every other group keeps its
+`split-v1` hash position (split_positions), so new tasks never move frozen ones.
 
 Rows group by `task_group` (revisions of a task share it) or, for rows without one such as the
 CPU and coding release rows, by `task_id`.
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from agentwatch_data.extract import canonical_sha256
 from agentwatch_data.labels import NO_INJECTION
-from agentwatch_data.splits import SPLITS, assign
+from agentwatch_data.split_positions import SPLITS, assign
 
 ASSIGNMENT_KEYS = {"version", "held_out_injection_methods", "test_task_groups"}
 # This module implements split-v2; a later assignment needs its own code and test split.
@@ -104,8 +104,8 @@ def independence(members: dict[str, list[dict]]) -> dict:
     """Fail when a task group, run, or plan appears in more than one split.
 
     Inside partition_v2 the task_group check cannot fail: assign_groups maps each group to one
-    split. It protects only when D03 recomputes this check from a stored split. Sharing of
-    run_id and plan_sha256 are the live checks there.
+    split. It protects only when the check is recomputed from split members, as splits does
+    after excluding untested sources. Sharing of run_id and plan_sha256 are the live checks.
     """
     shared: dict[str, list[str]] = {}
     for key in INDEPENDENCE_KEYS:
@@ -165,7 +165,16 @@ def held_out_status(members: dict[str, list[dict]], assignment: Assignment) -> d
 
 
 def mixed_in_test(members: dict[str, list[dict]]) -> dict:
-    count = sum(row["condition"] == MIXED for row in members.get("test", []))
+    """Test rows recorded under the mixed injection condition, whatever their label.
+
+    Release rows keep the replay role in `condition` and the injected condition in
+    `replay_condition` (null on run rows); D02 label rows carry it in `condition`.
+    """
+
+    def condition(row: dict):
+        return row["replay_condition"] if "replay_condition" in row else row["condition"]
+
+    count = sum(condition(row) == MIXED for row in members.get("test", []))
     return {"status": "met" if count else "not_met", "rows": count}
 
 

@@ -141,6 +141,18 @@ def test_bad_rows_are_kept_as_a_failed_run_not_a_crash(tmp_path):
     assert logged.data.tags["status"] == "failed"
 
 
+def test_a_mixed_label_row_is_a_failed_run_naming_the_unscored_label(tmp_path):
+    mixed = dict(SPLITS) | {
+        "test": SPLITS["test"] + [featured_row("none", 0) | {"label_resource": "mixed"}]
+    }
+    output = tmp_path / "out"
+    outcome = run(
+        tmp_path / "split.json", output, loader=loader_for([], mixed), **tracking(tmp_path)
+    )
+    assert outcome.status == "failed"
+    assert "labeled 'mixed'" in read(output / "report.json")["reason"]
+
+
 def test_rows_from_mixed_dataset_versions_are_a_failed_run(tmp_path):
     other = featured_row("none", 0) | {"dataset_version": "steps-v1.3+other"}
     mixed = dict(SPLITS) | {"test": SPLITS["test"] + [other]}

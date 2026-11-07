@@ -12,10 +12,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from agentwatch_data.build import Source, build
-from agentwatch_data.evidence import add_run
+from agentwatch_data.evidence import add, add_run
 from agentwatch_data.extract import canonical_sha256
 from agentwatch_data.integrity import main, verify
+from agentwatch_data.schema import SCHEMA_VERSION
 from dataset_fixtures import make_result, write_run
+from replay_fixtures import write_experiment
 
 GOLDEN = next((Path(__file__).parent / "fixtures").iterdir())
 NOW = datetime(2026, 10, 18, tzinfo=UTC)
@@ -38,7 +40,7 @@ def problems(evidence, datasets, status=None):
 
 def write_split(datasets: Path, release: str, content: dict) -> Path:
     """A split file whose id hashes its content, as split-dataset writes it."""
-    document = {"release": release} | content
+    document = {"split_method": "split-v1", "release": release} | content
     split_id = f"split-v1+{canonical_sha256(document)[:12]}"
     path = datasets / "splits" / release / f"{split_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,13 +147,13 @@ def test_damaged_releases_and_reports_are_reported(stores):
     evidence, datasets, release = stores
     (release / "steps.parquet").write_bytes(b"tampered")
     (datasets / "stray.txt").write_text("")
-    (datasets / "steps-v1.2+aaaaaaaaaaaa").symlink_to(release, target_is_directory=True)
+    (datasets / f"{SCHEMA_VERSION}+aaaaaaaaaaaa").symlink_to(release, target_is_directory=True)
     (datasets / "builds" / "broken.json").write_text("{damaged")
     (datasets / "builds" / "notes.txt").write_text("{}")
     (datasets / "builds" / "listed.json").write_text(json.dumps({"release": ["x"]}))
     assert problems(evidence, datasets) == [
         f"datasets/{release.name}: Release {release.name} does not match its manifest; rebuild it",
-        "datasets/steps-v1.2+aaaaaaaaaaaa: unexpected entry",
+        f"datasets/{SCHEMA_VERSION}+aaaaaaaaaaaa: unexpected entry",
         "datasets/stray.txt: unexpected entry",
         "datasets/builds/broken.json: unreadable build report",
         "datasets/builds/listed.json: names release ['x'], which is missing",
@@ -170,12 +172,12 @@ def test_a_deleted_release_leaves_its_report_naming_it(stores):
 
 def test_a_renamed_release_is_reported_once(stores):
     evidence, datasets, release = stores
-    release.rename(datasets / "steps-v1.2+bbbbbbbbbbbb")
+    release.rename(datasets / f"{SCHEMA_VERSION}+bbbbbbbbbbbb")
     [report] = list((datasets / "builds").iterdir())
     assert problems(evidence, datasets) == [
         (
-            "datasets/steps-v1.2+bbbbbbbbbbbb: Release steps-v1.2+bbbbbbbbbbbb does not match "
-            "its manifest; rebuild it"
+            f"datasets/{SCHEMA_VERSION}+bbbbbbbbbbbb: Release {SCHEMA_VERSION}+bbbbbbbbbbbb does "
+            "not match its manifest; rebuild it"
         ),
         f"datasets/builds/{report.name}: names release {release.name!r}, which is missing",
     ]
@@ -197,6 +199,7 @@ def format_1(release: Path) -> Path:
         table.set_column(index, table.schema.field(index), versions), old / "steps.parquet"
     )
     del manifest["release_format"], manifest["schema_sha256"]
+    manifest.pop("missing_by_kind", None)
     manifest |= {"dataset_version": name, "parquet_sha256": sha256(old / "steps.parquet")}
     (old / "manifest.json").write_text(json.dumps(manifest))
     return old
@@ -269,10 +272,10 @@ def test_edited_evidence_no_longer_reproduces_its_release(stores):
 def test_damaged_gate_attempts_are_reported(stores):
     evidence, datasets, release = stores
     write_attempt(datasets, release.name, "a1", result="{damaged")
-    write_attempt(datasets, "steps-v1.2+cccccccccccc", "a1")
+    write_attempt(datasets, f"{SCHEMA_VERSION}+cccccccccccc", "a1")
     found = problems(evidence, datasets)
     assert found[0].startswith(f"datasets/validations/{release.name}: Quality-gate verdict of ")
-    assert found[1:] == ["datasets/validations/steps-v1.2+cccccccccccc: no such release"]
+    assert found[1:] == [f"datasets/validations/{SCHEMA_VERSION}+cccccccccccc: no such release"]
 
 
 def test_gate_attempts_must_hold_their_matching_statistics(stores):
@@ -314,14 +317,17 @@ def test_damaged_splits_are_reported(stores):
     content["groups"] = {"task": "train"}  # edited without a new id
     good.write_text(json.dumps(content))
     nan = datasets / "splits" / release.name / "split-v1+000000000000.json"
-    nan.write_text(f'{{"split_id": "{nan.stem}", "release": "{release.name}", "x": NaN}}')
-    write_split(datasets, "steps-v1.2+dddddddddddd", {"groups": {}})
+    nan.write_text(
+        f'{{"split_id": "{nan.stem}", "split_method": "split-v1", "release": "{release.name}", '
+        '"x": NaN}'
+    )
+    write_split(datasets, f"{SCHEMA_VERSION}+dddddddddddd", {"groups": {}})
     (datasets / "splits" / "loose.json").write_text("{}")
     assert problems(evidence, datasets) == [  # entries are checked in sorted order
         "datasets/splits/loose.json: no such release",
         f"datasets/splits/{release.name}: Split {nan.name} holds a non-finite number",
         f"datasets/splits/{release.name}: Split {good.name} does not match its content or location",
-        "datasets/splits/steps-v1.2+dddddddddddd: no such release",
+        f"datasets/splits/{SCHEMA_VERSION}+dddddddddddd: no such release",
     ]
 
 
@@ -363,7 +369,8 @@ def test_cli_exits_zero_with_a_summary(stores, capsys):
     evidence, datasets, _ = stores
     assert main(["--evidence", str(evidence), "--datasets", str(datasets)]) == 0
     assert capsys.readouterr().out == (
-        "verified: 1 runs, 1 releases (+0 superseded), 1 build reports, 0 gate attempts, "
+        "verified: 1 runs, 0 experiments, 1 releases (+0 superseded), 1 build reports, "
+        "0 gate attempts, "
         "0 splits; 1 releases rebuilt from evidence (0 hidden entries excluded)\n"
     )
 
@@ -445,7 +452,7 @@ def test_edited_rows_with_a_resigned_manifest_are_refused(stores):
     rewrite_column(release, "queue_seconds", lambda value: value + 1.0)
     resign(release)
     [problem] = problems(evidence, datasets)
-    assert problem.startswith(f"datasets/{release.name}: its content produces steps-v1.2+")
+    assert problem.startswith(f"datasets/{release.name}: its content produces {SCHEMA_VERSION}+")
     assert problem.endswith("not its name; it was changed after it was built")
 
 
@@ -508,7 +515,7 @@ def test_an_edited_contract_is_refused(stores):
     (release / "schema.json").write_text(json.dumps(contract))
     resign(release)
     assert problems(evidence, datasets) == [
-        f"datasets/{release.name}: schema.json is not the frozen steps-v1.2 column contract"
+        f"datasets/{release.name}: schema.json is not the frozen {SCHEMA_VERSION} column contract"
     ]
 
 
@@ -518,7 +525,7 @@ def test_a_reformatted_contract_is_refused_too(stores):
     contract = json.loads((release / "schema.json").read_text())
     (release / "schema.json").write_text(json.dumps(contract))
     resign(release)
-    assert "schema.json is not the frozen steps-v1.2" in problems(evidence, datasets)[0]
+    assert f"schema.json is not the frozen {SCHEMA_VERSION}" in problems(evidence, datasets)[0]
 
 
 def test_an_edited_superseded_release_is_refused(stores):
@@ -605,7 +612,7 @@ def consistent_release_from(rows: list[dict], datasets: Path, label_version: str
 
     labeled = [{k: v for k, v in row.items() if k != "dataset_version"} for row in rows]
     digest = rows_digest(labeled)
-    version = f"steps-v1.2+{release_digest(digest)[:12]}"
+    version = f"{SCHEMA_VERSION}+{release_digest(digest)[:12]}"
     final = [row | {"dataset_version": version} for row in labeled]
     write_release(datasets / version, final, version, digest, label_version)
     return datasets / version
@@ -659,7 +666,7 @@ def forge(datasets: Path, table: pa.Table, label_version: str) -> Path:
 
     rows = [{k: v for k, v in row.items() if k != "dataset_version"} for row in table.to_pylist()]
     digest = rows_digest(rows)
-    version = f"steps-v1.2+{release_digest(digest)[:12]}"
+    version = f"{SCHEMA_VERSION}+{release_digest(digest)[:12]}"
     release = datasets / version
     release.mkdir()
     index = table.column_names.index("dataset_version")
@@ -905,8 +912,9 @@ def test_releases_of_other_label_rules_must_already_be_versioned(stores, monkeyp
     monkeypatch.setattr(integrity, "load_config", lambda: retuned)
     [problem] = problems(evidence, datasets)
     assert problem.startswith(f"datasets/{release.name}: it was labeled under labels-v1.1+")
+    current = sorted([retuned.label_version, integrity.load_replay_config().label_version])
     assert problem.endswith(
-        f"but this pipeline labels under {retuned.label_version}, so it cannot be rebuilt "
+        f"but this pipeline labels under {' and '.join(current)}, so it cannot be rebuilt "
         f"from its evidence{retire_hint(release)}"
     )
     report = verify(evidence, datasets, unchanged(release))
@@ -919,7 +927,7 @@ def test_evidence_that_no_longer_builds_is_reported(stores, monkeypatch):
 
     evidence, datasets, release = stores
     rejection = Rejection("run x", "baseline missing")
-    monkeypatch.setattr(integrity, "derive_rows", lambda runs, rules: ([], {"label": [rejection]}))
+    monkeypatch.setattr(integrity, "derive_rows", lambda *_: ([], {"label": [rejection]}))
     assert problems(evidence, datasets) == [
         f"datasets/{release.name}: its evidence no longer builds (label: baseline missing)"
         + retire_hint(release)
@@ -1064,3 +1072,211 @@ def test_an_unreadable_dvc_status_file_is_refused(stores, tmp_path, capsys):
 def test_malformed_dvc_status_sections_are_ignored(stores, status):
     evidence, datasets, _ = stores
     assert problems(evidence, datasets, status) == []
+
+
+# steps-v1.3: replay experiment entries and releases labeled under two rules (D03). Every
+# experiment here is synthetic (replay_fixtures); the run is the golden recorded fixture.
+
+REPLAY_RUN = "00000000-0000-4000-8000-000000000001"  # replay 01 of every fixture experiment
+
+
+@pytest.fixture
+def replay_stores(tmp_path):
+    """The golden run and one live experiment stored, and a release built from them."""
+    evidence, datasets = tmp_path / "evidence", tmp_path / "datasets"
+    add(GOLDEN, evidence)
+    entry = evidence / add(write_experiment(tmp_path / "in", live=True), evidence).name
+    release = build([Source("local", str(evidence))], datasets, now=NOW).release
+    return evidence, datasets, release, entry
+
+
+def manifest_of(release: Path) -> dict:
+    return json.loads((release / "manifest.json").read_text())
+
+
+def test_v1_3_release_from_runs_and_experiments_verifies(replay_stores):
+    evidence, datasets, release, entry = replay_stores
+    run_rules, replay_rules = manifest_of(release)["label_version"].split(",")
+    assert run_rules.startswith("labels-v1.1+") and replay_rules.startswith("labels-v2+")
+    report = verify(evidence, datasets)
+    assert report.problems == []
+    assert (report.runs, report.experiment_entries, report.releases, report.rebuilt) == (1, 1, 1, 1)
+    assert report.experiments == {entry.name: entry}
+    assert REPLAY_RUN in report.replay_digests
+
+
+def test_edited_experiment_after_build_is_refused(replay_stores):
+    """One sample value changed: the journal is still valid, but no longer the evidence."""
+    evidence, datasets, release, entry = replay_stores
+    journal = entry / "replays" / "01" / "live-journal.jsonl"
+    lines = [json.loads(line) for line in journal.read_text().splitlines()]
+    sample = next(line for line in lines if line["payload"].get("record_type") == "resource_sample")
+    sample["payload"]["value"] = 10.5
+    journal.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(f"datasets/{release.name}: built from evidence that is not in")
+    assert REPLAY_RUN in problem
+
+
+def test_extra_file_in_experiment_entry_is_reported(replay_stores):
+    evidence, datasets, release, entry = replay_stores
+    (entry / "replays" / "01" / "vllm-metrics.txt").write_text("vllm:num_requests_running 1\n")
+    found = problems(evidence, datasets)
+    assert found[0] == (
+        f"evidence/{entry.name}: Stored evidence {entry.name} is unreadable: "
+        "ReplayEvidenceError: replays/01/vllm-metrics.txt is not an experiment evidence file"
+    )
+    # and so the release built from it can no longer be rebuilt from the store
+    assert found[1].startswith(f"datasets/{release.name}: built from evidence that is not in")
+    assert len(found) == 2
+
+
+def test_hidden_files_in_an_experiment_entry_are_skipped_and_counted(replay_stores):
+    """Finder or editor state inside a stored experiment is not evidence, as in run entries."""
+    evidence, datasets, _, entry = replay_stores
+    (entry / ".DS_Store").write_text("")
+    (entry / "replays" / "01" / ".DS_Store").write_text("")
+    (entry / "replays" / ".cache").mkdir()
+    (entry / "replays" / ".cache" / "notes.txt").write_text("not evidence")  # not descended
+    report = verify(evidence, datasets)
+    assert report.problems == []
+    assert (report.experiment_entries, report.rebuilt) == (1, 1)
+    assert report.hidden == 3
+
+
+def test_replay_entry_under_wrong_name_is_reported(replay_stores):
+    evidence, datasets, _, entry = replay_stores
+    renamed = entry.with_name("replay-fix-a-r1-20261105T000000Z-000000")
+    entry.rename(renamed)
+    found = problems(evidence, datasets)
+    assert found[0] == f"evidence/{renamed.name}: stored under the wrong name"
+
+
+def test_an_experiment_entry_that_is_not_a_directory_is_reported(replay_stores):
+    evidence, datasets, _, _ = replay_stores
+    (evidence / "replay-notes").write_text("")
+    assert problems(evidence, datasets)[0] == "evidence/replay-notes: not an experiment directory"
+
+
+def test_replay_run_ids_must_be_unique_across_experiments(replay_stores, tmp_path):
+    """The same replays stored under another entry (here: another start time) are refused."""
+    evidence, datasets, _, entry = replay_stores
+    again = write_experiment(tmp_path / "again", live=True, started_at="2026-11-06T00:00:00+00:00")
+    other = add(again, evidence).name
+    assert entry.name < other  # entries are checked in name order; the first one is kept
+    [problem] = problems(evidence, datasets)
+    assert problem.startswith(
+        f"evidence/{other}: replay run 00000000-0000-4000-8000-000000000000 is also {entry.name}"
+    )
+
+
+def test_a_replay_run_id_equal_to_a_stored_run_is_refused(replay_stores, tmp_path):
+    evidence, datasets, release, entry = replay_stores
+    result = make_result() | {"run_id": REPLAY_RUN}
+    write_run(tmp_path / "recorded" / "cpu-run", result)
+    add_run(tmp_path / "recorded" / "cpu-run", evidence)
+    found = problems(evidence, datasets)
+    assert found[0] == f"evidence/{entry.name}: replay run {REPLAY_RUN} is also cpu-{REPLAY_RUN}"
+    assert found[1].startswith(f"datasets/{release.name}: built from evidence that is not in")
+
+
+@pytest.mark.parametrize("field", ["missing", "missing_by_kind"])
+def test_a_v1_3_manifest_without_statistics_is_refused(replay_stores, field):
+    """Intermediate code built steps-v1.3 releases without statistics; they do not verify."""
+    evidence, datasets, release, _ = replay_stores
+    manifest = manifest_of(release)
+    del manifest[field]
+    (release / "manifest.json").write_text(json.dumps(manifest))
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: manifest fields [{field!r}] do not match its rows"
+    ]
+
+
+def test_the_manifest_must_name_every_label_version_sorted(replay_stores):
+    evidence, datasets, release, _ = replay_stores
+    run_rules, replay_rules = manifest_of(release)["label_version"].split(",")
+    resign(release, label_version=f"{replay_rules},{run_rules}")
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: manifest fields ['label_version'] do not match its rows"
+    ]
+    resign(release, label_version=run_rules)
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: rows do not all carry the manifest's label_version {run_rules!r}"
+    ]
+
+
+def test_replay_rows_of_other_replay_rules_must_already_be_versioned(replay_stores, monkeypatch):
+    import dataclasses
+
+    from agentwatch_data import integrity
+
+    evidence, datasets, release, _ = replay_stores
+    replay_rules = manifest_of(release)["label_version"].split(",")[1]
+    retuned = dataclasses.replace(integrity.load_replay_config(), version="labels-v9")
+    monkeypatch.setattr(integrity, "load_replay_config", lambda: retuned)
+    [problem] = problems(evidence, datasets)
+    assert problem == (
+        f"datasets/{release.name}: it was labeled under {replay_rules}, but this pipeline "
+        f"labels under {integrity.load_config().label_version} and {retuned.label_version}, "
+        f"so it cannot be rebuilt from its evidence{retire_hint(release)}"
+    )
+    report = verify(evidence, datasets, unchanged(release))
+    assert report.problems == [] and report.rebuilt == 0
+
+
+def test_rows_naming_an_experiment_that_is_not_stored_are_refused(replay_stores):
+    evidence, datasets, release, _ = replay_stores
+
+    def rename(rows):
+        for row in rows:
+            if row["experiment"] is not None:
+                row["experiment"] = "replay-elsewhere"
+        return rows
+
+    forged = edited_copy(release, datasets, rename)
+    assert problems(evidence, datasets) == [
+        (
+            f"datasets/{forged.name}: names experiments that are not in the evidence store "
+            "(['replay-elsewhere']), so it cannot be rebuilt"
+        )
+    ]
+
+
+def test_replay_stage_rejections_alone_do_not_refuse_a_rebuild(replay_stores, monkeypatch):
+    """A valid experiment rejects some steps by design; only the rows it builds must match."""
+    from agentwatch_data import integrity
+    from agentwatch_data.extract import Rejection
+
+    evidence, datasets, _, _ = replay_stores
+    derive = integrity.derive_rows
+
+    def with_replay_rejection(*args):
+        rows, rejections = derive(*args)
+        warmup = Rejection("experiment x replay 00", "warmup_replay: not labeled")
+        return rows, rejections | {"replay_label": [warmup]}
+
+    monkeypatch.setattr(integrity, "derive_rows", with_replay_rejection)
+    report = verify(evidence, datasets)
+    assert report.problems == [] and report.rebuilt == 1
+
+
+def test_format_2_releases_remain_verifiable(tmp_path, monkeypatch):
+    from agentwatch_data import build as builder
+
+    evidence = tmp_path / "evidence"
+    add_run(GOLDEN, evidence)
+    with monkeypatch.context() as patch:
+        patch.setattr(builder, "RELEASE_FORMAT", 2)
+        release = build([Source("local", str(evidence))], tmp_path / "datasets").release
+    assert "missing_by_kind" not in manifest_of(release)
+    assert problems(evidence, tmp_path / "datasets") == []
+
+
+def test_incorrect_per_kind_missingness_is_refused(replay_stores):
+    evidence, datasets, release, _ = replay_stores
+    manifest = manifest_of(release)
+    manifest["missing_by_kind"]["agent_replay"]["telemetry_sample_count"] = 1
+    (release / "manifest.json").write_text(json.dumps(manifest))
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: manifest fields ['missing_by_kind'] do not match its rows"
+    ]

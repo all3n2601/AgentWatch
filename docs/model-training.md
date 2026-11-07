@@ -2,7 +2,10 @@
 
 Status: `training-v1`, implemented and tested on synthetic rows; not yet trained on an evaluable
 release. The interim `steps-v1.2+5954f97ef8b2` split is blocked by the leakage check, so a run
-on it produces a blocked report and a blocked MLflow run, with no model.
+on it produces a blocked report and a blocked MLflow run, with no model. Dataset v1
+(`steps-v1.3+a1b96c4ff2c8`, split `split-v2+2efb6e737ba2`) passes the leakage check, but its
+rows include steps labeled `mixed`, which have no scoring rule until M02, so a run on it is a
+`failed` attempt with no model (see Running it).
 
 M03 trains two LightGBM candidates on CPU: a resource classifier and an excess-latency
 regressor. It scores them and [the rule baseline](rule-baseline.md) on identical rows against
@@ -34,6 +37,19 @@ reproducible on the same LightGBM version and platform; both versions are record
 ```sh
 make train-candidates SPLIT=data/datasets/splits/<release>/<split>.json
 ```
+
+The defaults are the current contract (`eval-contract-v2`) and frozen schema
+(`steps-v1.3.pbtxt`). To rerun on a `steps-v1.2` split, pass the files it was made with:
+`EVALUATION_CONTRACT=pipelines/model/evaluation-contract-v1.toml
+VALIDATION_SCHEMA=pipelines/validation/schema/steps.pbtxt`.
+
+**A split with `mixed` labels stops the attempt.** `mixed` is a `labels-v2` label value
+outside the four classes, and its scoring rule is Rohit's M02 decision (item 2 of
+[the v2 proposal](evaluation-contract-v2-proposal.md)). Until it is defined, a row labeled
+`mixed` is an unusable row: the attempt is recorded as `failed` (exit 1, tracked in MLflow) with
+the reason "`<split> row <n> is labeled 'mixed', which has no scoring rule until M02 defines
+one`", and no model is trained. Every split of dataset v1 holds `mixed` steps. Behavior on
+`steps-v1.2` splits is unchanged.
 
 LightGBM needs OpenMP: `libgomp` on Linux (present on CI runners) and `libomp` on macOS. Without
 it the command exits with code 2 and says so, and the LightGBM tests skip with that reason.

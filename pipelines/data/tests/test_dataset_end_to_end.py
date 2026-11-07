@@ -7,10 +7,13 @@ CPU pressure and cgroup readings are unavailable, as they are on every macOS hos
 from pathlib import Path
 
 import pytest
+from agentwatch_data.build import derive_rows
 from agentwatch_data.extract import extract_local
 from agentwatch_data.flatten import flatten_runs
 from agentwatch_data.labels import label_rows, load_config
+from agentwatch_data.replay_labels import load_replay_config
 from agentwatch_data.schema import COLUMNS, RELEASE_COLUMNS, SCHEMA_VERSION, validate_rows
+from replay_fixtures import write_experiment
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -68,3 +71,19 @@ def test_lineage_identifies_versions_and_evidence(rows):
 
 def test_rebuilding_from_the_same_evidence_is_identical(rows):
     assert build_rows() == rows
+
+
+def test_the_recorded_run_and_a_replay_experiment_derive_one_row_set(rows, tmp_path):
+    """The run rows are unchanged by a (synthetic) experiment beside them, and come first."""
+    experiment = write_experiment(tmp_path, live=True)
+    runs = extract_local(FIXTURES).runs
+    combined, rejections = derive_rows(runs, load_config(), [experiment], load_replay_config())
+    assert not any(rejections.values())
+    assert combined[: len(rows)] == rows
+    replay = combined[len(rows) :]
+    assert replay and {row["kind"] for row in replay} == {"agent_replay"}
+    validate_rows(combined)
+    assert {row["label_version"] for row in replay} == {load_replay_config().label_version}
+    assert {row["feature_version"] for row in rows}.isdisjoint(
+        {row["feature_version"] for row in replay}
+    )

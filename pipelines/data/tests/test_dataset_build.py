@@ -15,17 +15,28 @@ from agentwatch_data.build import (
     ARROW_SCHEMA,
     DATASET_FILE,
     MANIFEST_FILE,
+    MANIFEST_WITHOUT_STATISTICS,
     RELEASE_FORMAT,
     SCHEMA_FILE,
     BuildError,
+    Redactor,
     Source,
     build,
+    derive_rows,
+    experiment_directories,
     main,
     published_releases,
+    release_digest,
+    release_label_version,
+    release_manifest,
 )
+from agentwatch_data.evidence import add
+from agentwatch_data.labels import load_config
 from agentwatch_data.releases import main as releases_main
-from agentwatch_data.schema import SCHEMA_VERSION, contract
+from agentwatch_data.replay_labels import load_replay_config
+from agentwatch_data.schema import COLUMNS, SCHEMA_VERSION, contract
 from dataset_fixtures import make_result, write_run
+from replay_fixtures import write_experiment
 
 FIXTURES = Path(__file__).parent / "fixtures"
 NOW = datetime(2026, 10, 11, tzinfo=UTC)
@@ -704,3 +715,241 @@ def test_parquet_is_written_with_declared_options(evidence, tmp_path):
     metadata = pq.ParquetFile(release / DATASET_FILE).metadata
     assert metadata.row_group(0).column(0).compression == "SNAPPY"
     assert metadata.format_version == "2.6"
+
+
+# steps-v1.3: replay experiments beside runs, and manifest statistics (D03). Every experiment
+# here is synthetic (replay_fixtures); the run is the golden recorded fixture.
+
+GOLDEN_RUN = FIXTURES / "coding-macos-2026-10-05"
+REPLAY_KIND = "agent_replay"
+
+
+@pytest.fixture
+def store(tmp_path):
+    """An evidence store holding the golden run and one synthetic live replay experiment."""
+    directory = tmp_path / "store"
+    add(GOLDEN_RUN, directory)
+    add(write_experiment(tmp_path / "in", live=True), directory)
+    return directory
+
+
+def rows_of(release):
+    return pq.read_table(release / DATASET_FILE).to_pylist()
+
+
+def test_release_holds_run_rows_then_replay_rows(store, tmp_path):
+    result = build([Source("local", str(store))], tmp_path / "out")
+    rows = rows_of(result.release)
+    kinds = [r["kind"] for r in rows]
+    assert kinds.index(REPLAY_KIND) > max(i for i, k in enumerate(kinds) if k != REPLAY_KIND)
+    manifest = manifest_of(result.release)
+    assert manifest["label_version"].count(",") == 1
+    assert set(manifest["label_versions"]) == {r["label_version"] for r in rows}
+    assert manifest["missing"]["cpu_pressure_max_avg10"] == sum(
+        r["cpu_pressure_max_avg10"] is None for r in rows
+    )
+    report = report_of(result)
+    assert report["label_version"] == manifest["label_version"]
+    assert report["experiments"] == 1 and report["rejections"] == []
+
+
+def test_manifest_statistics_describe_every_row_kind(store, tmp_path):
+    release = build_from(store, tmp_path / "out")
+    rows, manifest = rows_of(release), manifest_of(release)
+    replay = [row for row in rows if row["kind"] == REPLAY_KIND]
+    assert manifest["kind"] == {"coding": 7, REPLAY_KIND: len(replay)}
+    assert manifest["feature_version"] == {
+        version: sum(row["feature_version"] == version for row in rows)
+        for version in {row["feature_version"] for row in rows}
+    }
+    assert sum(manifest["label_versions"].values()) == len(rows)
+    assert set(manifest["missing"]) == {column.name for column in COLUMNS}
+    assert manifest["missing"]["dataset_version"] == 0  # zeros are kept, not omitted
+    assert manifest["missing"]["experiment"] == 7  # run rows have no experiment
+    assert manifest["missing"]["rule_prediction"] == len(replay)
+
+
+def test_label_resources_are_counted_per_resource_with_empty_as_none(evidence, tmp_path):
+    release = build_from(evidence, tmp_path / "out")
+    rows = rows_of(release)
+    assert [row["label_resources"] for row in rows] == [""] * 6 + ["cpu_sandbox"]
+    rows[0] = rows[0] | {"label_resource": "mixed", "label_resources": "cpu_sandbox,inference"}
+    manifest = release_manifest(rows, release.name, "digest", "labels", "p", "s")
+    assert manifest["label_resources"] == {"cpu_sandbox": 2, "inference": 1, "none": 5}
+
+
+def test_rebuilding_into_empty_stores_reproduces_version_and_bytes(store, tmp_path):
+    first = build_from(store, tmp_path / "a")
+    second = build_from(store, tmp_path / "b")
+    assert first.name == second.name
+    for name in (DATASET_FILE, SCHEMA_FILE, MANIFEST_FILE):
+        assert (first / name).read_bytes() == (second / name).read_bytes()
+
+
+def test_failed_experiment_is_reported_not_dropped(evidence, tmp_path):
+    checks = {
+        "baseline_replays_complete": True,
+        "stable_baseline": False,
+        "same_steps_every_replay": True,
+        "injectors_cleaned_up": True,
+    }
+    write_experiment(evidence, name="failed-exp", live=True, checks=checks)
+    result = result_from(evidence, tmp_path / "out")
+    rejections = report_of(result)["rejections"]
+    assert [(r["stage"], r["origin"]) for r in rejections] == [
+        ("replay_label", "experiment failed-exp")
+    ]
+    assert rejections[0]["reason"].startswith("protocol_checks_failed")
+    assert {row["kind"] for row in rows_of(result.release)} == {"coding"}  # runs still build
+
+
+def test_unreadable_experiment_is_a_replay_label_rejection(evidence, tmp_path):
+    broken = write_experiment(evidence, name="broken-exp", live=True)
+    (broken / "experiment.json").write_text("{not json")
+    result = result_from(evidence, tmp_path / "out")
+    [rejection] = report_of(result)["rejections"]
+    assert rejection["stage"] == "replay_label"
+    assert rejection["origin"] == "<local:evidence>/broken-exp"
+    assert rejection["reason"]
+    assert str(tmp_path) not in result.report.read_text()
+
+
+def test_v1_2_manifest_shape_is_unchanged():
+    rows = [{column.name: None for column in COLUMNS} | {"run_id": "r", "task_id": "t"}]
+    manifest = release_manifest(rows, "v", "d", "l", "p", "s", schema_version="steps-v1.2")
+    assert "steps-v1.2" in MANIFEST_WITHOUT_STATISTICS
+    assert set(manifest) == {
+        "release_format",
+        "dataset_version",
+        "schema_version",
+        "label_version",
+        "builder_version",
+        "rows",
+        "runs",
+        "tasks",
+        "rows_sha256",
+        "parquet_sha256",
+        "schema_sha256",
+        "label_resource",
+        "label_basis",
+        "condition",
+        "telemetry_status",
+    }
+
+
+def test_release_label_version_joins_the_distinct_versions_sorted():
+    rows = [{"label_version": v} for v in ("labels-v2+b", "labels-v1.1+a", "labels-v2+b")]
+    assert release_label_version(rows) == "labels-v1.1+a,labels-v2+b"
+
+
+def test_replay_rows_follow_run_rows_ordered_by_experiment(tmp_path):
+    later = write_experiment(tmp_path, name="b-exp", live=True)
+    earlier = write_experiment(tmp_path, name="a-exp", live=True)
+    runs = extract.extract_local(FIXTURES).runs
+    rows, rejections = derive_rows(runs, load_config(), [later, earlier], load_replay_config())
+    assert set(rejections) == {
+        "flatten",
+        "label",
+        "schema",
+        "replay_label",
+        "replay_features",
+        "replay_schema",
+    }
+    assert not any(rejections.values())
+    replay = [row for row in rows if row["kind"] == REPLAY_KIND]
+    assert rows[: len(rows) - len(replay)] == [r for r in rows if r["kind"] != REPLAY_KIND]
+    keys = [(r["experiment"], r["replay_index"], r["step_id"]) for r in replay]
+    assert keys == sorted(keys) and keys[0][0] == "a-exp" and keys[-1][0] == "b-exp"
+
+
+def test_derive_rows_without_experiments_matches_runs_only(evidence):
+    runs = extract.extract_local(evidence).runs
+    rows, rejections = derive_rows(runs, load_config())
+    assert {row["kind"] for row in rows} == {"coding"}
+    assert not any(rejections.values())
+
+
+def test_experiment_directories_are_found_sorted_skipping_hidden_and_links(tmp_path):
+    source = tmp_path / "source"
+    write_experiment(source / "nested", name="b-exp")
+    write_experiment(source, name="a-exp")
+    write_experiment(source / ".staging", name="hidden-exp")
+    (source / "linked").symlink_to(write_experiment(tmp_path / "elsewhere", name="c-exp"))
+    sources = [Source("local", str(source))]
+    found, rejections, duplicates = experiment_directories(sources, Redactor(sources))
+    assert [path.name for path in found] == ["a-exp", "b-exp"]
+    assert (rejections, duplicates) == ([], 0)
+
+
+def test_identical_experiment_copies_in_two_sources_are_kept_once(tmp_path):
+    for parent in ("x", "y"):
+        write_experiment(tmp_path / parent, name="same-exp")
+    sources = [Source("local", str(tmp_path / "x")), Source("local", str(tmp_path / "y"))]
+    found, rejections, duplicates = experiment_directories(sources, Redactor(sources))
+    assert [path.name for path in found] == ["same-exp"]
+    assert (rejections, duplicates) == ([], 1)
+
+
+def test_conflicting_experiment_copies_are_all_rejected(tmp_path):
+    write_experiment(tmp_path / "x", name="same-exp")
+    write_experiment(tmp_path / "y", name="same-exp", task_id="fix-b-r1")
+    sources = [Source("local", str(tmp_path / "x")), Source("local", str(tmp_path / "y"))]
+    found, rejections, duplicates = experiment_directories(sources, Redactor(sources))
+    assert (found, duplicates) == ([], 0)
+    assert sorted(r["origin"] for r in rejections) == ["<local:x>/same-exp", "<local:y>/same-exp"]
+    assert all("conflicting" in r["reason"] for r in rejections)
+    assert str(tmp_path) not in json.dumps(rejections)
+
+
+def test_identical_experiments_from_two_sources_build_one_copy(store, tmp_path):
+    mirror = tmp_path / "mirror"
+    shutil.copytree(store, mirror)
+    sources = [Source("local", str(store)), Source("local", str(mirror))]
+    result = build(sources, tmp_path / "out", now=NOW)
+    single = build_from(store, tmp_path / "single")
+    assert result.release.name == single.name
+    report = report_of(result)
+    assert report["duplicate_copies"] == 2 and report["rejections"] == []  # one run, one replay
+
+
+def test_api_sources_have_no_experiments(tmp_path):
+    sources = [Source("api", "http://127.0.0.1:1")]
+    assert experiment_directories(sources, Redactor(sources)) == ([], [], 0)
+
+
+def test_invalid_replay_rules_fail_the_build(evidence, tmp_path):
+    rules = tmp_path / "bad.toml"
+    rules.write_text("not = [valid")
+    with pytest.raises(BuildError, match="Replay label rules"):
+        result_from(evidence, tmp_path / "out", replay_rules=rules)
+    assert not (tmp_path / "out").exists()
+
+
+def test_cli_accepts_replay_rules(evidence, tmp_path, capsys):
+    rules = tmp_path / "bad.toml"
+    rules.write_text("not = [valid")
+    args = ["--source", f"local:{evidence}", "--output", str(tmp_path / "out")]
+    assert main([*args, "--replay-rules", str(rules)]) == 1
+    assert "Replay label rules" in capsys.readouterr().err
+
+
+def test_missingness_by_kind_includes_all_columns_and_measured_zeros():
+    rows = [
+        {column.name: None for column in COLUMNS}
+        | {"kind": kind, "run_id": kind, "task_id": kind, "telemetry_sample_count": 0}
+        for kind in ("cpu", "coding", "agent_replay")
+    ]
+    manifest = release_manifest(rows, "v", "d", "l", "p", "s")
+    assert list(manifest["missing_by_kind"]) == ["agent_replay", "coding", "cpu"]
+    for counts in manifest["missing_by_kind"].values():
+        assert set(counts) == {column.name for column in COLUMNS}
+        assert counts["telemetry_sample_count"] == 0
+        assert counts["cpu_pressure_max_avg10"] == 1
+    for column in COLUMNS:
+        assert (
+            sum(counts[column.name] for counts in manifest["missing_by_kind"].values())
+            == manifest["missing"][column.name]
+        )
+    old = release_manifest(rows, "v", "d", "l", "p", "s", release_format=2)
+    assert "missing_by_kind" not in old
+    assert release_digest("d", release_format=2) != release_digest("d")
