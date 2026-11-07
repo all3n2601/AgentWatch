@@ -155,8 +155,37 @@ def edit_evidence(directory: Path, index: int, change) -> None:
         lambda evidence: evidence["configuration"].update(sampling_interval_seconds="0.25"),
         lambda evidence: evidence["configuration"].update(sampling_interval_seconds=True),
         lambda evidence: evidence.update(configuration=[0.25]),
+        *[
+            lambda evidence, value=value: evidence["configuration"].update(
+                sampling_interval_seconds=value
+            )
+            for value in (
+                0,
+                -0.25,
+                1e-10,
+                5e-324,
+                1e308,
+                10**400,
+                float("nan"),
+                float("inf"),
+                -float("inf"),
+            )
+        ],
     ],
-    ids=["string", "boolean", "not-an-object"],
+    ids=[
+        "string",
+        "boolean",
+        "not-an-object",
+        "zero",
+        "negative",
+        "sub-ns",
+        "tiny",
+        "overflow",
+        "huge-integer",
+        "nan",
+        "positive-infinity",
+        "negative-infinity",
+    ],
 )
 def test_invalid_declared_interval_rejects_the_whole_experiment(tmp_path, config, change):
     """A read defect in one replay rejects its experiment, not just that replay (D03 spec)."""
@@ -440,3 +469,15 @@ def test_main_prints_row_and_rejection_counts(tmp_path, capsys):
         "replay_features": {},
         "replay_schema": {},
     }
+
+
+def test_one_nanosecond_interval_is_valid(tmp_path, config):
+    directory = experiment(tmp_path)
+    edit_evidence(
+        directory,
+        CONTENDED,
+        lambda evidence: evidence["configuration"].update(sampling_interval_seconds=1e-9),
+    )
+    rows, rejections = experiment_rows(directory, config)
+    assert rows
+    assert not rejections["replay_features"]

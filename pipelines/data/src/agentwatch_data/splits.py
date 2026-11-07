@@ -256,7 +256,7 @@ def verify_release(path: Path) -> dict:
         raise SplitError(f"{path} is not a dataset release")
     manifest = read_object(path / MANIFEST_FILE, "Manifest")
     intact = (
-        manifest.get("release_format") == RELEASE_FORMAT
+        manifest.get("release_format") in (2, RELEASE_FORMAT)
         and manifest.get("dataset_version") == path.name
         and manifest.get("parquet_sha256") == file_sha256(path / DATASET_FILE)
         and (path / SCHEMA_FILE).is_file()

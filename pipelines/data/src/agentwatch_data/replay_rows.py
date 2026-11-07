@@ -139,10 +139,16 @@ def declared_interval_seconds(replay_dir: Path) -> float | None:
     value = configuration.get("sampling_interval_seconds")
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or value < 1e-9
+        or value > sys.float_info.max / 1e9
+        or not math.isfinite(value)
+    ):
         raise FeatureJoinError(
             DECLARED_INTERVAL_INVALID,
-            f"{EVIDENCE_FILE} configuration.sampling_interval_seconds must be a finite number, "
+            f"{EVIDENCE_FILE} configuration.sampling_interval_seconds must be finite and at least 1 ns, "
             f"got {value!r}",
         )
     return float(value)

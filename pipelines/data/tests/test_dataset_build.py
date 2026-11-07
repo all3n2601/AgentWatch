@@ -26,6 +26,7 @@ from agentwatch_data.build import (
     experiment_directories,
     main,
     published_releases,
+    release_digest,
     release_label_version,
     release_manifest,
 )
@@ -930,3 +931,25 @@ def test_cli_accepts_replay_rules(evidence, tmp_path, capsys):
     args = ["--source", f"local:{evidence}", "--output", str(tmp_path / "out")]
     assert main([*args, "--replay-rules", str(rules)]) == 1
     assert "Replay label rules" in capsys.readouterr().err
+
+
+def test_missingness_by_kind_includes_all_columns_and_measured_zeros():
+    rows = [
+        {column.name: None for column in COLUMNS}
+        | {"kind": kind, "run_id": kind, "task_id": kind, "telemetry_sample_count": 0}
+        for kind in ("cpu", "coding", "agent_replay")
+    ]
+    manifest = release_manifest(rows, "v", "d", "l", "p", "s")
+    assert list(manifest["missing_by_kind"]) == ["agent_replay", "coding", "cpu"]
+    for counts in manifest["missing_by_kind"].values():
+        assert set(counts) == {column.name for column in COLUMNS}
+        assert counts["telemetry_sample_count"] == 0
+        assert counts["cpu_pressure_max_avg10"] == 1
+    for column in COLUMNS:
+        assert (
+            sum(counts[column.name] for counts in manifest["missing_by_kind"].values())
+            == manifest["missing"][column.name]
+        )
+    old = release_manifest(rows, "v", "d", "l", "p", "s", release_format=2)
+    assert "missing_by_kind" not in old
+    assert release_digest("d", release_format=2) != release_digest("d")

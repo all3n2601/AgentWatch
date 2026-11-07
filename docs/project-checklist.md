@@ -637,9 +637,21 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   a checkout path without spaces; see the pipeline README for the space issue). Details in
   [the data card](data-card.md#dataset-v1-steps-v13a1b96c4ff2c8) and
   [ADR 0009](adr/0009-combined-dataset-release-and-split-v2.md). Open: review and merge,
-  `make push-dataset` (pending the owner's go-ahead after the final review, so the snapshot is
-  not in the bucket yet), a non-empty validation split, the `mixed` scoring rule (M02), drift
+  a non-empty validation split, the `mixed` scoring rule (M02), drift
   against a same-schema baseline, and the `steps-v1.3` slice report.
+  2026-11-07 review fixes: replay intervals below 1 ns (including zero/negative values) or
+  outside finite nanosecond range reject the entire experiment as `declared_interval_invalid`.
+  Format 3 release `steps-v1.3+aafae73eb211` adds per-kind/per-column `missing_by_kind`
+  counts including zeros, preserving global totals and older immutable releases. Rebuilt
+  5,953 rows / 411 rejections; gate `20261107T073356282259Z-101baa67` passed; split
+  `split-v2+febe942a2b59` passed leakage, class balance, and independence checks.
+  Tests: full PostgreSQL-17/Docker-backed suite 2,040 passed (no skips), final affected
+  data/model/contract suites 1,060 passed (including four later regression cases), Ruff passed;
+  validation 85, orchestration 95, versioning 9 passed. `make push-dataset` uploaded the reviewed
+  objects; a clone with an empty cache pulled through the public remote and reproduced the
+  Parquet, manifest, schema, split file and every split row hash byte for byte (commands and
+  full SHA-256 values in the data card's Review fixes section). Final CI and two fresh qualified
+  approvals remain outstanding; D03 stays open.
 - [ ] Choose whether the regression target is observed queue time or estimated excess latency.
 - [ ] Generate clean, isolated-contention, and mixed-contention replays over fixed tasks.
   2026-10-25 (A05): `make agent-experiment` writes clean, `cpu`, `inference`, `retrieval` and
@@ -659,8 +671,8 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   clone with no Google login pulled it (`make pull-dataset`, public HTTPS remote) and ran
   `make pipeline-run` successfully. The DAG pushes only when `AGENTWATCH_DVC_PUSH_REMOTE` is set.
   2026-11-06 (D03, not merged): `steps-v1.3+a1b96c4ff2c8` and the 54 replay experiments are
-  versioned locally (`data/*.dvc` in `583b52e`) but **not pushed**; `make push-dataset` waits for
-  the owner after the final review.
+  versioned locally (`data/*.dvc` in `583b52e`). 2026-11-07: both these objects and the format 3
+  successor were pushed; public fresh-clone pull/rebuild verified (see D03 above).
 - [x] Validate data with TFDV or an explicitly chosen equivalent (2026-10-12): `make
   validate-dataset` checks a release with TFDV 1.21 against the frozen schema in
   `pipelines/validation/schema/steps.pbtxt`; Parquet types that differ from the release's contract

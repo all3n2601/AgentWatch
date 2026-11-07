@@ -1,6 +1,6 @@
 # AgentWatch step dataset — data card
 
-Status: dataset v1, schema `steps-v1.3` (release `steps-v1.3+a1b96c4ff2c8`, 2026-11-06, D03),
+Status: dataset v1, schema `steps-v1.3` (release `steps-v1.3+aafae73eb211`, 2026-11-07, D03),
 with two label rule sets: `labels-v1.1` for CPU and coding run rows and `labels-v2` for agent
 replay rows. It is split with `split-v2` under the accepted `eval-contract-v2`. The earlier
 `steps-v1.2+5954f97ef8b2` release and its `split-v1` split are kept unchanged. Recorded runs and
@@ -39,10 +39,9 @@ Built 2026-11-06 by D03 with the code at `4d03190` and versioned with DVC in `58
 (`data/evidence.dvc`, `data/datasets.dvc`). The numbers below come from its manifest, build
 report `data/datasets/builds/20261106T063357064753Z-e8ff44a7.json`, quality-gate attempt
 `20261106T063456443931Z-e05881f1` and split file
-`data/datasets/splits/steps-v1.3+a1b96c4ff2c8/split-v2+2efb6e737ba2.json`. **The snapshot is not
-yet in the team bucket:** `make push-dataset` waits for the owner's go-ahead after the final
-review. Until then the bucket holds only the 50 runs and `steps-v1.2+5954f97ef8b2`, and
-`make pull-dataset` at a commit that versions dataset v1 cannot download its new files.
+`data/datasets/splits/steps-v1.3+a1b96c4ff2c8/split-v2+2efb6e737ba2.json`. The snapshot and its format 3 successor were uploaded on 2026-11-07. An independent clone
+with an empty DVC cache downloaded both stores through `make pull-dataset` (public HTTPS,
+2,012 files fetched) and reproduced the successor byte for byte; see Review fixes below.
 
 ### Replay evidence provenance
 
@@ -116,6 +115,55 @@ A05 attempt 1 ran against an older live API that refused some records (`rejected
 journals). Those records still feed the features, because the journal is the agent's own
 measurement and a delivery refusal is not a measurement defect; the experiment's failed
 `evidence_delivered` check stays in `failed_checks` on its 130 rows.
+
+### Review fixes (2026-11-07)
+
+The format 3 successor is `steps-v1.3+aafae73eb211`, split `split-v2+febe942a2b59`.
+It preserves all 5,953 rows and the 411 recorded rejections. The earlier format 2 release
+remains immutable and verifiable. Its successor adds deterministic `missing_by_kind` counts
+for every column of `agent_replay`, `coding`, and `cpu`, including zero null counts, and keeps
+`missing` as the global totals. The release format participates in the release hash, so adding
+these required statistics produces a new release instead of rewriting existing evidence.
+Invalid declared replay intervals (below 1 ns, negative, zero, non-finite, or overflowing when
+converted to nanoseconds) reject every labeled step of the experiment as
+`declared_interval_invalid`; absent intervals remain null.
+
+Publication and reproduction commands (2026-11-07):
+
+```sh
+make dataset
+make validate-dataset
+make split-dataset
+make version-dataset
+make push-dataset
+# In an independent clone, with an empty DVC cache:
+make pull-dataset
+make dataset DATASET_OUTPUT=reproduced
+make validate-dataset DATASET_OUTPUT=reproduced
+make split-dataset DATASET_OUTPUT=reproduced
+make version-dataset
+```
+
+In checkout paths containing spaces, supply `AGENTWATCH_ROOT="$PWD"` to the make targets
+(the existing root-path calculation otherwise loses path components). Versioning's nine tests
+passed in the independent clone's space-free path. The clone's rebuild produced identical
+`steps.parquet`, `manifest.json`, `schema.json`, and split JSON bytes. SHA-256 evidence:
+
+| Object | SHA-256 |
+|---|---|
+| Parquet | `4565e5e87033233401fd90ac976e533ab20637cedb2bc28646ac031dc86c988c` |
+| Manifest | `bd34ab8d770e8bc0f34a08a5ada52e146d888aa6db57c5994ff7baa18977cbf7` |
+| Schema | `6acfdedbac3822d32d9438a5ea2cf8e8a44afe67a021e0a0fbb546afa2560f8e` |
+| Split file | `f994e66576e59bab9b1b97e66e19e04f1e50da8cd82e0945be254f641d326abc` |
+| Train rows | `492835334241a14744f9bb5d3094435e337e36fc8f2c67151565615331e2ead4` |
+| Validation rows | `221679d559220e46c3e9dd92c4f38a6bd087703932d4054010632f194ff6de98` |
+| Test rows | `f4feaf4e791330cbe9cb51052892c4413b6085a8e004736729bf7365c1c82135` |
+
+Verification: Ruff passed; full PostgreSQL-17/Docker-backed suite 2,040 passed, no skips;
+final affected data/model/contract suites 1,060 passed; validation 85, orchestration 95,
+versioning 9 passed. Four additional regression cases added after the full-suite run are
+included in the final affected-suite result. GitHub CI and fresh qualified approvals remain
+required before merge.
 
 ### Missingness per feature version
 
@@ -327,7 +375,7 @@ under `data/datasets/builds/`:
 |---|---|
 | `<version>/steps.parquet` | Every row, every schema column, with Arrow types and nullability taken from `schema.py`; rows ordered by run, then condition, then baseline repeat |
 | `<version>/schema.json` | The column contract (names, types, roles, nullability, allowed values, bounds), for tools that cannot import `schema.py` |
-| `<version>/manifest.json` | Content only: release format (currently 2); dataset, schema, label, and builder versions; row, run, and task counts; label, basis, condition, and telemetry-status counts; from `steps-v1.3`, counts per `label_version` (`label_versions`), `feature_version`, `kind` and `label_resources` member, and the null count of every column (`missing`); SHA-256 of the canonical rows, the Parquet file, and `schema.json`. With the same code and locked dependencies, rebuilding the same evidence reproduces it byte for byte |
+| `<version>/manifest.json` | Content only: release format (currently 3); dataset, schema, label, and builder versions; row, run, and task counts; label, basis, condition, and telemetry-status counts; from `steps-v1.3`, counts per `label_version` (`label_versions`), `feature_version`, `kind` and `label_resources` member, and the null count of every column (`missing`), and in format 3, per-kind/per-column null counts (`missing_by_kind[kind][column]`, including zeros); SHA-256 of the canonical rows, the Parquet file, and `schema.json`. With the same code and locked dependencies, rebuilding the same evidence reproduces it byte for byte |
 | `builds/<build id>.json` | That build's events: build time, the release it created or reused (`reused_release`), per-source run and rejection counts, duplicate copies, the number of replay experiment directories read (`experiments`, including those that produced no rows), and every rejection with its stage and reason |
 
 The command prints the release and report paths. Because rejections live in each build's
@@ -366,7 +414,7 @@ successful build verifies and publishes.
   produces a new one.
 - Releases are never rewritten, so a release in an older format is never upgraded in place. A
   format 1 release (from before `schema.json` existed) stays as it was, and the next build
-  publishes a new format 2 release of the same rows beside it, which becomes the newest
+  publishes a new format 3 release of the same rows beside it, which becomes the newest
   published release. If the old release was never versioned and the current pipeline cannot
   rebuild it, `make retire-release` removes it before the store is versioned (see Versioning).
 - Building a version that already exists verifies its format and the hashes of its rows,

@@ -342,7 +342,7 @@ def identity_problem(path: Path, manifest: dict, current: bool, rows: list[dict]
     digest = rows_digest([{k: v for k, v in row.items() if k != "dataset_version"} for row in rows])
     if current:
         shipped = read_object(path / SCHEMA_FILE, "Column contract")
-        name = f"{manifest['schema_version']}+{release_digest(digest, shipped)[:12]}"
+        name = f"{manifest['schema_version']}+{release_digest(digest, shipped, manifest['release_format'])[:12]}"
     else:
         name = f"{manifest['schema_version']}+{digest[:12]}"
     if name != path.name:
@@ -355,6 +355,7 @@ def identity_problem(path: Path, manifest: dict, current: bool, rows: list[dict]
         manifest.get("parquet_sha256"),
         manifest.get("schema_sha256"),
         manifest["schema_version"],
+        release_format=manifest.get("release_format", 2),
     )
     if not current:
         del expected["release_format"], expected["schema_sha256"]

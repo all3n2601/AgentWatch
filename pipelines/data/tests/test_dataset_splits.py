@@ -871,12 +871,16 @@ def test_the_recorded_run_splits_honestly(tmp_path):
     assert split["held_out_injection_methods"]["status"] == "not_met"
 
 
-def test_the_recorded_run_keeps_its_split_v1_id(tmp_path):
+def test_the_recorded_run_keeps_its_split_v1_id(tmp_path, monkeypatch):
     """A literal guard: the id the recorded run split to before eval-contract-v2 existed.
 
     Every split-v1 field is hashed into the id, so any change to the split-v1 document, the
     hash assignment, or the leakage check under eval-contract-v1 changes this value.
     """
+    from agentwatch_data import build as builder
+
+    # Reproduce the original release format as well as the original evaluation contract.
+    monkeypatch.setattr(builder, "RELEASE_FORMAT", 2)
     release = build([Source("local", str(GOLDEN))], tmp_path / "datasets", now=NOW).release
     write_verdict(release)
     assert split_of(release, contract=V1, frozen=FROZEN).split["split_id"] == (

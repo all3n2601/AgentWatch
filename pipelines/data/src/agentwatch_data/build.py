@@ -82,7 +82,7 @@ DATASET_FILE, MANIFEST_FILE, BUILDS_DIR = "steps.parquet", "manifest.json", "bui
 SCHEMA_FILE = "schema.json"  # the column contract, for tools that cannot import this package
 # The files a release holds. Format 1 (before schema.json) had only the Parquet and manifest;
 # bump this whenever the set of files or the manifest's meaning changes.
-RELEASE_FORMAT = 2
+RELEASE_FORMAT = 3
 # Schema versions whose manifests predate content statistics. Their releases are checked
 # against the manifest they shipped, so it must stay recomputable in its original shape.
 MANIFEST_WITHOUT_STATISTICS = frozenset({"steps-v1", "steps-v1.1", "steps-v1.2"})
@@ -275,16 +275,19 @@ def rows_digest(rows: list[dict]) -> str:
     return canonical_sha256(serializable)
 
 
-def release_digest(rows_sha256: str, release_contract: dict | None = None) -> str:
+def release_digest(
+    rows_sha256: str, release_contract: dict | None = None, release_format: int | None = None
+) -> str:
     """Identify a whole release: its rows, the column contract it ships, and its format.
 
     Releases are never rewritten, so anything a release must contain is part of its identity;
     otherwise an older release with the same rows would be reused without it. A release
     checked later passes the contract it shipped, which may predate the current one.
     """
+    release_format = RELEASE_FORMAT if release_format is None else release_format
     shipped = contract() if release_contract is None else release_contract
     return canonical_sha256(
-        {"release_format": RELEASE_FORMAT, "contract": shipped, "rows_sha256": rows_sha256}
+        {"release_format": release_format, "contract": shipped, "rows_sha256": rows_sha256}
     )
 
 
@@ -296,10 +299,12 @@ def release_manifest(
     parquet_sha256: str,
     schema_sha256: str,
     schema_version: str = SCHEMA_VERSION,
+    release_format: int | None = None,
 ) -> dict:
     """A release's manifest: content-derived fields only, so its rows determine it."""
+    release_format = RELEASE_FORMAT if release_format is None else release_format
     manifest = {
-        "release_format": RELEASE_FORMAT,
+        "release_format": release_format,
         "dataset_version": version,
         "schema_version": schema_version,
         "label_version": label_version,
@@ -317,7 +322,7 @@ def release_manifest(
     }
     if schema_version in MANIFEST_WITHOUT_STATISTICS:
         return manifest
-    return manifest | {
+    manifest |= {
         "label_versions": counts(rows, "label_version"),
         "feature_version": counts(rows, "feature_version"),
         "kind": counts(rows, "kind"),
@@ -329,6 +334,18 @@ def release_manifest(
             column.name: sum(row.get(column.name) is None for row in rows) for column in COLUMNS
         },
     }
+
+    if release_format >= 3:
+        manifest["missing_by_kind"] = {
+            kind: {
+                column.name: sum(
+                    row.get(column.name) is None for row in rows if row["kind"] == kind
+                )
+                for column in COLUMNS
+            }
+            for kind in sorted({row["kind"] for row in rows})
+        }
+    return manifest
 
 
 def resource_counts(rows: list[dict]) -> dict:

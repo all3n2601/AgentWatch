@@ -199,6 +199,7 @@ def format_1(release: Path) -> Path:
         table.set_column(index, table.schema.field(index), versions), old / "steps.parquet"
     )
     del manifest["release_format"], manifest["schema_sha256"]
+    manifest.pop("missing_by_kind", None)
     manifest |= {"dataset_version": name, "parquet_sha256": sha256(old / "steps.parquet")}
     (old / "manifest.json").write_text(json.dumps(manifest))
     return old
@@ -1179,14 +1180,15 @@ def test_a_replay_run_id_equal_to_a_stored_run_is_refused(replay_stores, tmp_pat
     assert found[1].startswith(f"datasets/{release.name}: built from evidence that is not in")
 
 
-def test_a_v1_3_manifest_without_statistics_is_refused(replay_stores):
+@pytest.mark.parametrize("field", ["missing", "missing_by_kind"])
+def test_a_v1_3_manifest_without_statistics_is_refused(replay_stores, field):
     """Intermediate code built steps-v1.3 releases without statistics; they do not verify."""
     evidence, datasets, release, _ = replay_stores
     manifest = manifest_of(release)
-    del manifest["missing"]
+    del manifest[field]
     (release / "manifest.json").write_text(json.dumps(manifest))
     assert problems(evidence, datasets) == [
-        f"datasets/{release.name}: manifest fields ['missing'] do not match its rows"
+        f"datasets/{release.name}: manifest fields [{field!r}] do not match its rows"
     ]
 
 
@@ -1256,3 +1258,25 @@ def test_replay_stage_rejections_alone_do_not_refuse_a_rebuild(replay_stores, mo
     monkeypatch.setattr(integrity, "derive_rows", with_replay_rejection)
     report = verify(evidence, datasets)
     assert report.problems == [] and report.rebuilt == 1
+
+
+def test_format_2_releases_remain_verifiable(tmp_path, monkeypatch):
+    from agentwatch_data import build as builder
+
+    evidence = tmp_path / "evidence"
+    add_run(GOLDEN, evidence)
+    with monkeypatch.context() as patch:
+        patch.setattr(builder, "RELEASE_FORMAT", 2)
+        release = build([Source("local", str(evidence))], tmp_path / "datasets").release
+    assert "missing_by_kind" not in manifest_of(release)
+    assert problems(evidence, tmp_path / "datasets") == []
+
+
+def test_incorrect_per_kind_missingness_is_refused(replay_stores):
+    evidence, datasets, release, _ = replay_stores
+    manifest = manifest_of(release)
+    manifest["missing_by_kind"]["agent_replay"]["telemetry_sample_count"] = 1
+    (release / "manifest.json").write_text(json.dumps(manifest))
+    assert problems(evidence, datasets) == [
+        f"datasets/{release.name}: manifest fields ['missing_by_kind'] do not match its rows"
+    ]
