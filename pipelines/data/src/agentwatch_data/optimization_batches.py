@@ -6,12 +6,14 @@ hash, sit in its preregistered schedule slot, apply that slot's policy, and repo
 model, hardware, power and test/retrieval state the manifest froze. A record that does not is
 rejected with a code and kept in the report: nothing is dropped or repaired.
 
-Contended batches must show their injectors active and cleaned up, and clean batches must not
-show injection. Task submissions must follow the preregistered arrival offsets, and batches
+Contended batches must show their injectors active and cleaned up, and every completed batch
+records the injector set it applied, which must be the condition's preregistered set (none for
+a clean condition). Task submissions must follow the preregistered arrival offsets, and batches
 must run in schedule order without overlapping, so a pair's two batches ran back to back.
 
-Tasks may link their agent run evidence; when they do, the run ID, task content hash and
-configuration digest must match. Missing measurements stay null: an admission statistic the
+Every task that started links its agent run evidence, whose run ID, task content hash and
+configuration digest must match the manifest, and whose verification outcome must agree with
+the recorded acceptance: a task's identity is never taken from its ID alone. Missing measurements stay null: an admission statistic the
 runner could not observe is unavailable, not zero.
 """
 
@@ -44,6 +46,7 @@ from agentwatch_data.optimization_manifest import (
     policy_limits,
     policy_sha256,
     power_identity,
+    read_injectors,
     state_identity,
 )
 
@@ -58,6 +61,7 @@ BATCH_STATUSES = ("completed", "failed", "aborted", "not_started")
 TASK_STATES = ("completed", "failed", "timed_out", "cancelled", "not_started")
 TERMINAL_TASK_STATES = ("completed", "failed", "timed_out", "cancelled")
 ACCEPTANCE = ("passed", "failed")
+ACCEPTANCE_BY_TASK_PASSED = {True: "passed", False: "failed"}  # agent-evidence.json task_passed
 REJECTION_CODES = (
     "malformed",
     "manifest_mismatch",
@@ -69,6 +73,7 @@ REJECTION_CODES = (
     "state_mismatch",
     "task_mismatch",
     "task_identity_mismatch",
+    "provenance_missing",
     "inconsistent_status",
     "injection_mismatch",
     "arrival_mismatch",
@@ -323,6 +328,15 @@ def check_task_evidence(
             "task_identity_mismatch",
             f"{task.task_id}: linked evidence differs in {differing or ['run_id']}",
         )
+    # The runner's verification outcome is the quality result; the record must not restate it.
+    passed = evidence.get("task_passed")
+    expected = ACCEPTANCE_BY_TASK_PASSED.get(passed) if isinstance(passed, bool) else None
+    if task.acceptance != expected:
+        raise BatchRejected(
+            "task_identity_mismatch",
+            f"{task.task_id}: acceptance {task.acceptance!r} but the run's task_passed is "
+            f"{passed!r}",
+        )
 
 
 def read_tasks(
@@ -338,8 +352,15 @@ def read_tasks(
     if len(set(run_ids)) != len(run_ids):
         raise BatchRejected("duplicate_identity", "two tasks of the batch share a run_id")
     for task, evidence_dir in parsed:
-        if evidence_dir is not None:
-            check_task_evidence(root, evidence_dir, task, manifest)
+        if evidence_dir is None:
+            if task.state != "not_started":
+                raise BatchRejected(
+                    "provenance_missing",
+                    f"{task.task_id} ran but links no agent evidence to verify its task and "
+                    "configuration",
+                )
+            continue
+        check_task_evidence(root, evidence_dir, task, manifest)
     return tuple(sorted((task for task, _ in parsed), key=lambda task: task.task_id))
 
 
@@ -431,12 +452,41 @@ def check_arrivals(tasks: tuple[TaskResult, ...], manifest: Manifest) -> None:
             )
 
 
+def read_applied_injectors(value) -> tuple[dict, ...] | None:
+    if value is None:
+        return None
+    try:
+        return read_injectors(value, "injection.injectors")
+    except ManifestError as error:
+        raise BatchRejected("malformed", str(error)) from error
+
+
 def check_injection(
-    status: str, slot: ScheduledBatch, active, cleanup, contract: OptimizationContract
+    status: str,
+    slot: ScheduledBatch,
+    injection: tuple,
+    manifest: Manifest,
+    contract: OptimizationContract,
 ) -> None:
-    """A completed contended batch ran under active, cleaned-up injection; a clean one did not."""
+    """A completed batch applied exactly its condition's preregistered treatment.
+
+    A contended batch ran its preregistered injectors, at their preregistered intensity, active
+    and cleaned up; a clean batch ran none. A treatment that was not recorded cannot be shown
+    to be the preregistered one.
+    """
     if status != "completed":
         return
+    active, cleanup, applied = injection
+    planned = manifest.condition(slot.condition).injectors
+    if applied is None:
+        raise BatchRejected(
+            "injection_mismatch", f"a completed {slot.condition} batch records no injector set"
+        )
+    if applied != planned:
+        raise BatchRejected(
+            "injection_mismatch",
+            f"applied injectors {list(applied)} are not the preregistered {list(planned)}",
+        )
     if slot.condition in contract.contended_conditions:
         if active is not True or cleanup is not True:
             raise BatchRejected(
@@ -519,13 +569,16 @@ def parse_batch(
     )
     identity(power_identity, entry["power"], "power", manifest.power, "power_mismatch")
     identity(state_identity, entry["state"], "state", manifest.state, "state_mismatch")
-    injection = fields(entry["injection"], "injection", {"active", "cleanup_confirmed"})
+    injection = fields(
+        entry["injection"], "injection", {"active", "cleanup_confirmed", "injectors"}
+    )
     admission = fields(entry["admission"], "admission", {"starved_admissions", "leaked_permits"})
     active = optional_bool(injection["active"], "injection.active")
     cleanup = optional_bool(injection["cleanup_confirmed"], "injection.cleanup_confirmed")
     tasks = read_tasks(entry, root, manifest, contract.controls)
     check_status(entry, tasks, started, finished)
-    check_injection(entry["status"], slot, active, cleanup, contract)
+    applied = read_applied_injectors(injection["injectors"])
+    check_injection(entry["status"], slot, (active, cleanup, applied), manifest, contract)
     check_arrivals(tasks, manifest)
     return BatchRecord(
         file=file,

@@ -111,7 +111,7 @@ class Policy:
 @dataclass(frozen=True)
 class Condition:
     name: str
-    injectors: tuple[dict, ...]  # empty for an uncontended condition
+    injectors: tuple[dict, ...]  # ordered by kind; empty for an uncontended condition
 
 
 @dataclass(frozen=True)
@@ -133,6 +133,9 @@ class Manifest:
     pairs: int
     warmup_batches: int
     seed: int
+
+    def condition(self, name: str) -> Condition:
+        return next(condition for condition in self.conditions if condition.name == name)
 
     def policy(self, name: str | None) -> Policy:
         if name is None:
@@ -478,26 +481,35 @@ def read_workload(
     return tasks, read_arrivals(workload["arrivals"], tasks)
 
 
+def read_injectors(value, name: str) -> tuple[dict, ...]:
+    """An injector set: one {kind, method, intensity} per kind, ordered by kind.
+
+    Ordered so two records of the same treatment compare equal however they were listed.
+    """
+    injectors = require_list(value, name)
+    for position, injector in enumerate(injectors):
+        injector_name = f"{name}[{position}]"
+        injector = require_object(injector, injector_name, {"kind", "method", "intensity"})
+        require_choice(injector["kind"], f"{injector_name}.kind", INJECTOR_KINDS)
+        require_text(injector["method"], f"{injector_name}.method")
+        if not isinstance(injector["intensity"], dict) or not injector["intensity"]:
+            raise ManifestError(f"{injector_name}.intensity must be a non-empty object")
+    require_unique([injector["kind"] for injector in injectors], f"{name} kinds")
+    return tuple(sorted(injectors, key=lambda injector: injector["kind"]))
+
+
 def read_conditions(value, contract: OptimizationContract) -> tuple[Condition, ...]:
     conditions = []
     for index, entry in enumerate(require_list(value, "conditions", 1)):
         name = f"conditions[{index}]"
         entry = require_object(entry, name, {"name", "injectors"})
         condition = require_choice(entry["name"], f"{name}.name", contract.conditions)
-        injectors = require_list(entry["injectors"], f"{name}.injectors")
+        injectors = read_injectors(entry["injectors"], f"{name}.injectors")
         if condition in contract.contended_conditions and not injectors:
             raise ManifestError(f"{name} must preregister its injector set and intensity")
         if condition not in contract.contended_conditions and injectors:
             raise ManifestError(f"{name} is uncontended and must not declare injectors")
-        for position, injector in enumerate(injectors):
-            injector_name = f"{name}.injectors[{position}]"
-            injector = require_object(injector, injector_name, {"kind", "method", "intensity"})
-            require_choice(injector["kind"], f"{injector_name}.kind", INJECTOR_KINDS)
-            require_text(injector["method"], f"{injector_name}.method")
-            if not isinstance(injector["intensity"], dict) or not injector["intensity"]:
-                raise ManifestError(f"{injector_name}.intensity must be a non-empty object")
-        require_unique([injector["kind"] for injector in injectors], f"{name}.injectors kinds")
-        conditions.append(Condition(condition, tuple(injectors)))
+        conditions.append(Condition(condition, injectors))
     require_unique([condition.name for condition in conditions], "conditions names")
     if {condition.name for condition in conditions} != set(contract.conditions):
         raise ManifestError(f"conditions must cover exactly {list(contract.conditions)}")

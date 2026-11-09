@@ -765,7 +765,10 @@ from M3 through M6 and do not renumber the implementation milestones above.
   preregistered arrivals (within a declared tolerance) and the schedule order, and admission waits
   are judged against the declared queue bounds. Failures in failed or aborted batches still count,
   and any rejected, missing or unpaired evidence makes a comparison insufficient. Gates stay
-  `not_evaluated` (O06). Verified on synthetic experiments only: 118 cases in
+  `not_evaluated` (O06). Each completed batch must also record the injector set it applied,
+  equal to the preregistered one, and every started task must link agent evidence proving its
+  task content, configuration and acceptance (review on PR #58). Verified on synthetic
+  experiments only: 135 cases in
   `pipelines/data/tests/test_optimization_{manifest,batches,comparison}.py`. Open until O06
   records a real experiment in this format.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.

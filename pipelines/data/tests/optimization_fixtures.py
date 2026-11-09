@@ -143,7 +143,7 @@ def batch_record(
                     "inference_requests": 0.5 if slot.configuration == CANDIDATE else None,
                     "test_jobs": None,
                 },
-                "evidence_dir": None,
+                "evidence_dir": f"runs/{slot.index:03d}/{task.task_id}",
             }
         )
     return {
@@ -169,6 +169,7 @@ def batch_record(
         "injection": {
             "active": True if slot.condition == "contended" else None,
             "cleanup_confirmed": True if slot.condition == "contended" else None,
+            "injectors": copy.deepcopy(list(manifest.condition(slot.condition).injectors)),
         },
         "admission": {"starved_admissions": 0, "leaked_permits": 0}
         if slot.configuration == CANDIDATE
@@ -180,6 +181,29 @@ def batch_record(
 def write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2))
+
+
+def write_agent_evidence(root: Path, manifest: Manifest, record: dict) -> None:
+    """Agent run evidence agreeing with each linked task, unless a test already wrote its own.
+
+    Only the keys the batch reader verifies, in the shape `services/agent` writes them.
+    """
+    hashes = {task.task_id: task for task in manifest.tasks}
+    for task in record["tasks"]:
+        if not isinstance(task, dict) or not isinstance(task.get("evidence_dir"), str):
+            continue
+        path = root / task["evidence_dir"] / "agent-evidence.json"
+        if path.exists() or path.is_symlink() or task.get("task_id") not in hashes:
+            continue
+        frozen = hashes[task["task_id"]]
+        evidence = {
+            "run_id": task.get("run_id"),
+            "task": {"task_id": frozen.task_id, "content_sha256": frozen.content_sha256},
+            "configuration_digest": frozen.configuration_digest,
+        }
+        if task.get("acceptance") in ("passed", "failed"):
+            evidence["task_passed"] = task["acceptance"] == "passed"
+        write_json(path, evidence)
 
 
 def write_experiment(
@@ -199,6 +223,7 @@ def write_experiment(
             record = change(slot, record)
         if record is not None:
             write_json(root / "batches" / f"{slot.index:03d}.json", record)
+            write_agent_evidence(root, manifest, record)
     return manifest
 
 

@@ -122,11 +122,12 @@ def test_every_frozen_task_runs_exactly_once_per_batch(tmp_path):
     assert rejected_codes(rejections) == {"002.json": "task_mismatch"}
 
 
-def agent_evidence(run_id, task_id, content, digest) -> dict:
+def agent_evidence(run_id, task_id, content, digest, task_passed=True) -> dict:
     return {
         "run_id": run_id,
         "task": {"task_id": task_id, "content_sha256": content},
         "configuration_digest": digest,
+        "task_passed": task_passed,
     }
 
 
@@ -321,7 +322,7 @@ def test_injection_must_match_the_condition(tmp_path, condition, injection):
     manifest = write_experiment(
         tmp_path,
         CONTRACT,
-        change=only_changing(slot.index, lambda record: record.update(injection=injection)),
+        change=only_changing(slot.index, lambda record: record["injection"].update(injection)),
     )
     _, rejections = read(tmp_path, manifest)
     assert rejected_codes(rejections) == {f"{slot.index:03d}.json": "injection_mismatch"}
@@ -435,3 +436,147 @@ def test_the_record_hash_is_of_the_bytes_that_were_parsed(tmp_path):
     first = next(record for record in records if record.slot.index == 0)
     raw = (tmp_path / "batches" / "000.json").read_bytes()
     assert first.file_sha256 == hashlib.sha256(raw).hexdigest()
+
+
+# --- The applied treatment must be the preregistered one ---------------------------------------
+
+
+def contended_slot():
+    return first_slot(parse_manifest(manifest_document(CONTRACT), CONTRACT), "contended")
+
+
+@pytest.mark.parametrize(
+    "applied",
+    [
+        [{"kind": "cpu", "method": "other-cpu-burner-v1", "intensity": {"workers": 4}}],
+        [{"kind": "cpu", "method": "cpu-spin-processes-v1", "intensity": {"workers": 8}}],
+        [],
+        None,
+    ],
+)
+def test_a_contended_batch_must_apply_the_preregistered_injectors(tmp_path, applied):
+    slot = contended_slot()
+
+    def edit(record):
+        record["injection"]["injectors"] = applied
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(slot.index, edit))
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {f"{slot.index:03d}.json": "injection_mismatch"}
+
+
+def test_a_clean_batch_applies_no_injectors(tmp_path):
+    slot = first_slot(parse_manifest(manifest_document(CONTRACT), CONTRACT), "clean")
+    cpu = {"kind": "cpu", "method": "cpu-spin-processes-v1", "intensity": {"workers": 4}}
+
+    def edit(record):
+        record["injection"]["injectors"] = [cpu]
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(slot.index, edit))
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {f"{slot.index:03d}.json": "injection_mismatch"}
+
+
+def test_the_injector_set_matches_whatever_order_it_is_listed_in(tmp_path):
+    cpu = {"kind": "cpu", "method": "cpu-spin-processes-v1", "intensity": {"workers": 4}}
+    retrieval = {
+        "kind": "retrieval",
+        "method": "in-process-index-query-flood-v1",
+        "intensity": {"threads": 2},
+    }
+    document = manifest_document(CONTRACT)
+    document["conditions"][1]["injectors"] = [retrieval, cpu]
+    slot = first_slot(parse_manifest(document, CONTRACT), "contended")
+
+    def edit(scheduled, record):
+        if scheduled.index == slot.index:
+            record["injection"]["injectors"] = [cpu, retrieval]
+        return record
+
+    manifest = write_experiment(tmp_path, CONTRACT, document=document, change=edit)
+    assert read(tmp_path, manifest)[1] == []
+
+
+def test_a_batch_that_did_not_complete_need_not_record_its_injectors(tmp_path):
+    slot = contended_slot()
+
+    def edit(record):
+        record.update(status="failed", reason="Injector failed to start")
+        record["injection"].update(active=False, injectors=None)
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(slot.index, edit))
+    records, rejections = read(tmp_path, manifest)
+    assert rejections == []
+    assert next(record for record in records if record.slot.index == slot.index).status == "failed"
+
+
+def test_malformed_applied_injectors_are_rejected(tmp_path):
+    slot = contended_slot()
+
+    def edit(record):
+        record["injection"]["injectors"] = [{"kind": "gpu", "method": "x", "intensity": {"a": 1}}]
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(slot.index, edit))
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {f"{slot.index:03d}.json": "malformed"}
+
+
+# --- Every started task proves which task and configuration ran --------------------------------
+
+
+def test_a_started_task_without_linked_evidence_is_rejected(tmp_path):
+    def edit(record):
+        record["tasks"][1]["evidence_dir"] = None
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(3, edit))
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {"003.json": "provenance_missing"}
+
+
+def test_a_task_that_never_started_needs_no_evidence(tmp_path):
+    def edit(record):
+        record.update(status="aborted", reason="Runner stopped before the second task")
+        record["tasks"][1].update(
+            state="not_started",
+            acceptance=None,
+            run_id=None,
+            submitted_tick_ns=None,
+            finished_tick_ns=None,
+            evidence_dir=None,
+        )
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(3, edit))
+    assert read(tmp_path, manifest)[1] == []
+
+
+@pytest.mark.parametrize(
+    ("evidence", "detail"),
+    [
+        ({"configuration_digest": "5" * 64}, "configuration_digest"),
+        ({"task": {"task_id": TASKS[0][0], "content_sha256": "6" * 64}}, "content_sha256"),
+        ({"task_passed": False}, "task_passed is False"),
+        ({"task_passed": None}, "task_passed is None"),
+    ],
+)
+def test_linked_evidence_must_agree_with_the_record(tmp_path, evidence, detail):
+    task_id, content, digest = TASKS[0]
+
+    def link(record):
+        task = record["tasks"][0]
+        write_json(
+            tmp_path / task["evidence_dir"] / "agent-evidence.json",
+            agent_evidence(task["run_id"], task_id, content, digest) | evidence,
+        )
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(5, link))
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {"005.json": "task_identity_mismatch"}
+    assert detail in rejections[0].detail
+
+
+def test_unknown_acceptance_must_match_a_run_that_recorded_no_outcome(tmp_path):
+    def edit(record):
+        record["tasks"][0]["acceptance"] = None  # the fixture's evidence then omits task_passed
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(5, edit))
+    assert read(tmp_path, manifest)[1] == []

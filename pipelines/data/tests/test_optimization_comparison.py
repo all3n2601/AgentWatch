@@ -353,3 +353,31 @@ def test_policy_and_injection_metadata_are_never_attribution_features():
     }
     assert DESIGN_FIELDS.isdisjoint(features)
     assert DESIGN_FIELDS.isdisjoint(FEATURE_NAMES)
+
+
+def test_batches_without_provenance_never_make_a_comparison_sufficient(tmp_path):
+    # The owner's reproduction: every evidence link left null, task IDs only.
+    def unlink(scheduled, record):
+        for task in record["tasks"]:
+            task["evidence_dir"] = None
+        return record
+
+    write_experiment(tmp_path, CONTRACT, change=unlink)
+    report = compare(tmp_path, CONTRACT)
+    assert {batch["code"] for batch in report["batches"]} == {"provenance_missing"}
+    for item in report["comparisons"]:
+        assert not item["sufficient"] and item["effects"] is None
+
+
+def test_another_contention_treatment_never_makes_a_comparison_sufficient(tmp_path):
+    # The owner's reproduction: the manifest's injector unchanged, another treatment applied.
+    def other_treatment(scheduled, record):
+        if scheduled.condition == "contended":
+            record["injection"]["injectors"][0]["intensity"] = {"workers": 1}
+        return record
+
+    write_experiment(tmp_path, CONTRACT, change=other_treatment)
+    contended = entry(compare(tmp_path, CONTRACT), "contended")
+    assert not contended["sufficient"]
+    assert contended["pairs"]["complete"] == 0
+    assert any("injection_mismatch" in reason for reason in contended["insufficient_reasons"])

@@ -86,23 +86,27 @@ coin decides which runs first.
 | `started_at`, `finished_at` | RFC 3339 times, required for a started batch, absent for one that never started |
 | `clock_id` | The monotonic clock every task tick in the batch comes from |
 | `model`, `hardware`, `power`, `state` | Observed identity, in the manifest's shapes; must equal the manifest |
-| `injection` | `{active, cleanup_confirmed}`, each `true`, `false` or `null` |
+| `injection` | `{active, cleanup_confirmed, injectors}`: `active` and `cleanup_confirmed` are `true`, `false` or `null`; `injectors` is the applied set in the manifest's `[{kind, method, intensity}]` shape (`[]` for none), or `null` only for a batch that did not complete |
 | `admission` | `{starved_admissions, leaked_permits}`, `null` until the runner can observe them (O03) |
-| `tasks` | One entry per frozen task: `task_id`, `run_id`, `state` (`completed`, `failed`, `timed_out`, `cancelled`, `not_started`), `acceptance` (`passed`, `failed`, or `null` when unknown), `cold`, `submitted_tick_ns`, `finished_tick_ns`, `admission_waits` (`{<control>: seconds or null}`), and optionally `evidence_dir` |
+| `tasks` | One entry per frozen task: `task_id`, `run_id`, `state` (`completed`, `failed`, `timed_out`, `cancelled`, `not_started`), `acceptance` (`passed`, `failed`, or `null` when unknown), `cold`, `submitted_tick_ns`, `finished_tick_ns`, `admission_waits` (`{<control>: seconds or null}`), and `evidence_dir`, which is required for every task that started |
 
 Checks beyond the shapes:
 
 - **Order.** Batches run one at a time in schedule order. A batch that starts before the
   previously scheduled batch finished is rejected, so a pair's batches did not overlap or run
   in reverse.
-- **Injection.** A completed contended batch must show injection active with cleanup confirmed.
-  A completed clean batch must not show injection.
+- **Treatment.** A completed batch must record the injector set it applied, and it must equal
+  the manifest's set for its condition (same kinds, methods and intensities, in any order;
+  none for a clean condition). A completed contended batch must also show injection active
+  with cleanup confirmed, and a completed clean batch must not show injection.
 - **Arrivals.** Each task's submission, measured from the batch's first submission, must be
   within `tolerance_seconds` of its preregistered offset.
-- **Run identity.** No two tasks, in one batch or across batches, share a `run_id`. When a task
-  links `evidence_dir`, its `agent-evidence.json` must show the same `run_id`, task ID, task
-  content hash and configuration digest as the manifest. The link must stay inside the
-  experiment directory, with no symlinks.
+- **Run identity and provenance.** No two tasks, in one batch or across batches, share a
+  `run_id`. Every task that started links `evidence_dir`. A task is never identified by its ID
+  alone: its `agent-evidence.json` must show the same `run_id`, task ID, task content hash and
+  configuration digest as the manifest. Its `task_passed` must also agree with the recorded
+  `acceptance` (`true` is `passed`, `false` is `failed`, absent is `null`). The link must stay
+  inside the experiment directory, with no symlinks.
 
 **Rejections.** A record that cannot be used is kept in the report, with the SHA-256 of the
 bytes that were parsed and one code. The codes:
@@ -110,7 +114,8 @@ bytes that were parsed and one code. The codes:
 - `manifest_mismatch`, `schedule_mismatch`, `policy_mismatch`;
 - `model_mismatch`, `hardware_mismatch`, `power_mismatch`, `state_mismatch`;
 - `injection_mismatch`, `arrival_mismatch`, `order_mismatch`;
-- `task_mismatch` (not every frozen task exactly once), `task_identity_mismatch`;
+- `task_mismatch` (not every frozen task exactly once), `task_identity_mismatch`,
+  `provenance_missing` (a started task links no agent evidence);
 - `duplicate_identity`: a shared batch ID or run ID; neither copy can be trusted, so all are rejected.
 
 ## Comparison record (`opt-comparison-v1`)
@@ -162,8 +167,9 @@ the step dataset, the replay labels or `step-features-v1`.
   share no name with its development tasks, so a valid evaluation needs more tasks first.
 - "Frozen evaluation tasks are used once" is not enforced across experiments: no registry of
   used evaluation tasks exists yet.
-- Hardware, model and power identity are declared by the producer. O04 compares them but cannot
-  measure them.
+- Hardware, model and power identity, and the applied injector set, are declared by the
+  producer. O04 compares them with the manifest but cannot measure them. Task content and
+  configuration are verified against each run's agent evidence.
 - The order check uses each batch's recorded wall-clock start and finish. It does not bound the
   gap between a pair's two batches.
 - Batch time includes cold requests. Cold tasks are excluded only from warm tail latency, and
