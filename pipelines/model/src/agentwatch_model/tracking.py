@@ -48,6 +48,7 @@ def run_params(report: dict) -> dict[str, str]:
         "class_order": text(model.get("class_order")),
         "classes_absent_from_train": text(model.get("classes_absent_from_train")),
         "validation_rows_dropped": text(model.get("validation_rows_dropped")),
+        "train_rows_not_classified": text(model.get("train_rows_not_classified")),
         "early_stopping": text(model.get("early_stopping")),
         "lightgbm_version": text(model.get("lightgbm_version")),
         "numpy_version": text(model.get("numpy_version")),

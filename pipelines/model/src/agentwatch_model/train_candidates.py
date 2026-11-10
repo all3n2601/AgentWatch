@@ -131,6 +131,8 @@ def prediction_records(
             "dataset_version": row["dataset_version"],
             "label_version": row["label_version"],
             "label_resource": row["label_resource"],
+            "label_resources": row.get("label_resources"),
+            "label_basis": row.get("label_basis"),
             "label_excess_fraction": row["label_excess_fraction"],
             "prediction": prediction.label,
             "probabilities": prediction.probabilities,
@@ -180,6 +182,7 @@ def model_identity(config: TrainingConfig, candidate: Candidate, labels: str | N
         "class_order": list(candidate.class_order),
         "classes_absent_from_train": list(candidate.classes_absent_from_train),
         "validation_rows_dropped": candidate.validation_rows_dropped,
+        "train_rows_not_classified": candidate.train_rows_not_classified,
         "best_iterations": candidate.best_iterations,
         "early_stopping": candidate.early_stopping,
         "settings": {

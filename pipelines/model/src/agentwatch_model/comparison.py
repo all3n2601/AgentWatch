@@ -1,8 +1,9 @@
 """The candidate report: model and rules scored on identical rows against the contract.
 
 The model and rules-v1 predictions cover the same scored rows, so every comparison is like for
-like. Gates are pass, fail, inconclusive or not_evaluated; calibration and abstention are left
-to M04 rather than read from raw LightGBM scores.
+like, and both are scored on mixed steps by mixed-scoring-v1. Gates are pass, fail,
+inconclusive or not_evaluated; calibration and abstention are left to M04 rather than read from
+raw LightGBM scores.
 """
 
 from collections.abc import Sequence
@@ -14,20 +15,26 @@ from agentwatch_model.metrics import (
     constant_reference_mae,
     mean,
 )
+from agentwatch_model.mixed import (
+    is_joint_only,
+    is_mixed,
+    mixed_macro_f1,
+    scored_rows,
+    single_class,
+)
 from agentwatch_model.report import (
-    MIXED_CONTENTION_REASON,
     NOT_EVALUATED_FOR_RULES,
     clean_gates,
     dataset_version,
     identity,
     macro_f1_block,
+    multi_resource,
     slices,
     summary,
 )
 from agentwatch_model.rules import Rules
 
 MODEL_NOT_EVALUATED = {
-    "mixed_contention_gain": MIXED_CONTENTION_REASON,
     "calibration": (
         "M04 calibrates confidence on the validation split; raw LightGBM scores are not "
         "calibrated confidence."
@@ -103,14 +110,61 @@ def classification(
     resamples: int,
     seed: int,
 ) -> dict:
-    matrix = confusion_matrix([row["label_resource"] for row in rows], predictions)
+    """Four-class metrics on single-class steps, per-resource scores and slices."""
+    kept, kept_predictions = scored_rows(rows, predictions)
+    view, view_predictions = single_class(kept, kept_predictions)
+    matrix = confusion_matrix([row["label_resource"] for row in view], view_predictions)
     scores = class_scores(matrix)
     return {
         "confusion_matrix": matrix,
         "class_scores": scores,
-        "macro_f1": macro_f1_block(contract, scores, rows, predictions, resamples, seed),
+        "macro_f1": macro_f1_block(contract, scores, view, view_predictions, resamples, seed),
+        "multi_resource": multi_resource(contract, kept, kept_predictions),
         "slices": slices(contract, rows, predictions),
     }
+
+
+def mixed_gain_gate(
+    contract: Contract,
+    rows: list[dict],
+    model_labels: list[str],
+    rule_labels: list[str],
+    absent: tuple[str, ...] = (),
+) -> dict:
+    """The contract's mixed-contention gain: model over rules on the same scored mixed steps,
+    each scored against the recorded label_resources."""
+    triples = [
+        (row, model_label, rule_label)
+        for row, model_label, rule_label in zip(rows, model_labels, rule_labels, strict=True)
+        if is_mixed(row) and not is_joint_only(row)
+    ]
+    subset = [row for row, _, _ in triples]
+    model, resources = mixed_macro_f1(subset, [m for _, m, _ in triples], contract.classes)
+    rules, _ = mixed_macro_f1(subset, [r for _, _, r in triples], contract.classes)
+    gate = {
+        "model": model,
+        "rules": rules,
+        "min_gain": contract.min_gain_over_rules_mixed,
+        "steps": len(subset),
+        "min_steps": contract.min_mixed_steps,
+        "resources": list(resources),
+    }
+    if len(subset) < contract.min_mixed_steps:
+        reason = (
+            f"{len(subset)} scored mixed steps; the contract needs at least "
+            f"{contract.min_mixed_steps}"
+        )
+        return gate | {"outcome": "inconclusive", "reason": reason}
+    unseen = [name for name in resources if name in absent]
+    if unseen:
+        # A resource the classifier never saw scores zero: a coverage gap, not a model result.
+        reason = f"Mixed-step resources absent from the training split: {', '.join(unseen)}"
+        return gate | {"outcome": "inconclusive", "reason": reason}
+    if model is None or rules is None:
+        reason = "Mixed-step macro F1 is undefined for the model or the rules."
+        return gate | {"outcome": "inconclusive", "reason": reason}
+    passed = model - rules >= contract.min_gain_over_rules_mixed
+    return gate | {"outcome": "pass" if passed else "fail"}
 
 
 def build_model_report(
@@ -130,20 +184,27 @@ def build_model_report(
     """Metrics for the model and the rules on the same rows, and each contract gate."""
     model_metrics = classification(contract, scored, model_labels, resamples, seed)
     rules_metrics = classification(contract, scored, rule_labels, resamples, seed)
-    references = constant_reference_mae(train, scored)
-    truth = [row["label_excess_fraction"] for row in scored]
-    mae = mean([abs(f - y) for f, y in zip(fractions, truth, strict=True)])
+    # Joint-only mixed steps are never scored, for classification or regression.
+    kept, kept_labels = scored_rows(scored, model_labels)
+    kept_fractions = [f for r, f in zip(scored, fractions, strict=True) if not is_joint_only(r)]
+    references = constant_reference_mae(train, kept)
+    truth = [row["label_excess_fraction"] for row in kept]
+    mae = mean([abs(f - y) for f, y in zip(kept_fractions, truth, strict=True)])
     model_macro, rules_macro = model_metrics["macro_f1"], rules_metrics["macro_f1"]
-    gates = clean_gates(contract, scored, model_labels) | {
+    absent = tuple(model.get("classes_absent_from_train", ()))
+    gates = clean_gates(contract, kept, kept_labels) | {
         "gain_over_rules": gain_gate(
             model_macro["all_classes"],
             rules_macro["all_classes"],
             model_macro["classes_below_minimum"],
             contract,
-            tuple(model.get("classes_absent_from_train", ())),
+            absent,
         ),
         "regression_error": regression_gate(
             mae, references, contract, model_macro["classes_below_minimum"]
+        ),
+        "mixed_contention_gain": mixed_gain_gate(
+            contract, scored, model_labels, rule_labels, absent
         ),
     }
     gates |= {
@@ -166,7 +227,7 @@ def build_model_report(
             },
         },
         "comparison": {
-            "rows": len(scored),
+            "rows": len(kept),
             "macro_f1_all_classes": {
                 "model": model_macro["all_classes"],
                 "rules": rules_macro["all_classes"],
