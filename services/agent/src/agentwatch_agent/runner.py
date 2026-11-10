@@ -11,15 +11,24 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import Callable
-from contextlib import ExitStack, closing
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from agentwatch_sdk.live import ResourceRegistration, RunCreate
+from agentwatch_sdk.policy import RUNNER_SERVICE_ID
 from agentwatch_worker.nvml import NvmlDevice
 
+from agentwatch_agent.admission import (
+    ADMITTED_TOOLS,
+    AdmissionRefused,
+    Control,
+    Permit,
+    PolicyWatcher,
+    RunnerAdmission,
+)
 from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.config import (
     CONTRACT_VERSION,
@@ -130,6 +139,18 @@ LIMITATIONS = (
         "server's queue, prefill and the local network, and is not a server-measured phase"
     ),
 )
+ADMISSION_LIMITATION = (
+    "Admission limits count this runner process's model requests and test jobs only; other "
+    "runner processes are not counted, so a limit is not global. A run's queue delay includes "
+    "its admission wait, which local evidence records separately"
+)
+NO_ADMISSION = {
+    "status": "not_configured",
+    "reason": "This run consulted no concurrency policy; no admission limits were applied",
+}
+# One wording for a policy that became unusable mid-run: reasons feed dataset labels, and this
+# is neither a runner bug nor a task failure. The error itself goes into failure_detail.
+POLICY_FAILED = "Concurrency policy became unusable during the run; admission stopped"
 VERIFICATION_FAILED = "Agent finished, but the runner's verification tests did not pass"
 # Raised by urllib/json/Ollama helpers for a failed or unusable model request.
 MODEL_REQUEST_ERRORS = (OSError, http.client.HTTPException, RuntimeError, ValueError)
@@ -208,6 +229,7 @@ class AgentRunner:
         gpm_file: Path | None = None,
         vllm_traces_file: Path | None = None,
         trace_wait_seconds: float = DEFAULT_TRACE_WAIT_SECONDS,
+        admission: RunnerAdmission | None = None,
     ):
         # Without open_gpu no GPU resource is registered or sampled; without a DCGM exporter
         # URL, no DCGM resource. A vLLM model server is always sampled through its /metrics.
@@ -216,6 +238,16 @@ class AgentRunner:
         # The Windows-side GPM exporter's file (ADR 0008); no GPM resource without it.
         self.gpm_file = gpm_file
         self.model = model
+        if (
+            admission is not None
+            and admission.controller.governed_services["inference_requests"] != model.service_id
+        ):
+            raise ValueError(
+                "The admission controller governs a different inference service than this "
+                f"runner's model ({model.service_id!r})"
+            )
+        # Shared by every run of this process; None runs without admission limits.
+        self.admission = admission
         # Validated before anything is created, so invalid settings leave nothing behind.
         validate_sample_budget(
             (limits or RunLimits()).run_timeout_seconds,
@@ -240,6 +272,9 @@ class AgentRunner:
         self.evidence: dict = {}
         self._tools: tuple[dict, ...] = ()
         self._background: tuple = ()
+        # This run's permits by their index in evidence["admissions"], refreshed at closure:
+        # an abandoned request may return its permit after its step ended.
+        self._permits: list[tuple[int, Permit]] = []
 
     def request_cancel(self, source: str, reason: str) -> None:
         """Thread-safe: stop at the next checkpoint and clean up."""
@@ -255,6 +290,7 @@ class AgentRunner:
         """Register, execute and close one live run; evidence is written on every path."""
         evidence_path = self.output_dir / EVIDENCE_FILE
         journal_path = self.output_dir / JOURNAL_FILE
+        self._permits = []
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             journal = Journal(journal_path)
@@ -277,11 +313,19 @@ class AgentRunner:
             "model_backend": self.model.backend,
             "model_calls": [],
             "tool_calls": [],
-            "limitations": [MODEL_QUEUE_LIMITATIONS[self.model.backend], *LIMITATIONS],
+            # Every admission decision of this run's steps, keyed by step and span ID.
+            "admissions": [],
+            "limitations": [
+                MODEL_QUEUE_LIMITATIONS[self.model.backend],
+                *LIMITATIONS,
+                *([ADMISSION_LIMITATION] if self.admission is not None else []),
+            ],
         }
         with closing(journal):
             workspace: Workspace | None = None
-            stage = "setup"  # becomes "registration" once the live API is contacted
+            # "policy" while the concurrency policy is read, then "registration" once the live
+            # API is asked to open the run.
+            stage = "setup"
             try:
                 workspace = Workspace.create(self.task)
                 build_started = time.monotonic_ns()
@@ -310,6 +354,11 @@ class AgentRunner:
                     clock_ids=[self.clock.clock_id],
                     resources=list(resources.values()),
                 )
+                if self.admission is not None:
+                    # After local setup, so a local failure is never reported as the policy's;
+                    # before registration, so no run is opened that could not be admitted.
+                    stage = "policy"
+                    self.admission.ensure_policy()
                 stage = "registration"
                 session = RunSession.open(self.transport, registration, journal, self.retry)
             # Nothing ran: keep the attempt's evidence, leave no workspace, and re-raise.
@@ -389,9 +438,12 @@ class AgentRunner:
                 if service_probes
                 else None
             )
+            # The policy watcher is owned by whoever created it (it may serve several runs),
+            # but a failure in it must still fail this run.
+            policy_watcher = self.admission.watcher if self.admission is not None else None
             self._background = tuple(
                 component
-                for component in (flusher, sampler, service_sampler, watcher)
+                for component in (flusher, sampler, service_sampler, watcher, policy_watcher)
                 if component is not None
             )
             deadline = time.monotonic() + self.limits.run_timeout_seconds
@@ -474,6 +526,13 @@ class AgentRunner:
             described = f"{type(component).__name__}: {type(error).__name__}: {error}"[:500]
             if described not in recorded:
                 recorded.append(described)
+            if isinstance(component, PolicyWatcher):
+                # A policy failure fails the run with its own reason; it is not a runner bug
+                # to re-raise, and the watcher's one error object is shared by every run.
+                if state == "completed":
+                    state, reason = "failed", POLICY_FAILED
+                    self.evidence["failure_detail"] = described
+                continue
             if error not in errors:
                 errors.append(error)
                 new.append(error)
@@ -505,6 +564,9 @@ class AgentRunner:
             limits=self.limits,
             sampling_interval_seconds=self.sampling_interval_seconds,
             cancel_poll_seconds=self.cancel_poll_seconds,
+            admission=(
+                self.admission.controller.configuration() if self.admission is not None else None
+            ),
         )
 
     def _attempt[Result](
@@ -534,11 +596,21 @@ class AgentRunner:
         errors: list[BaseException],
     ) -> tuple[str, str | None]:
         """Remove the workspace, deliver what is queued, and close (or defer) the run."""
+        for index, permit in self._permits:
+            # Each permit's state when the run closes, including releases after its step ended.
+            self.evidence["admissions"][index] = permit.snapshot()
         self.evidence["cleanup"] = {
             "workspace_removed": self._attempt(errors, workspace.remove, False),
             "test_process_groups": "killed by run_project_tests on every exit path",
             "abandoned_model_request": any(
                 call.get("abandoned_request") for call in self.evidence["model_calls"]
+            ),
+            # Permits still held by work this run abandoned (a model request finishing in the
+            # background); they are returned when that work ends, never handed out twice.
+            "admission_permits_held": sum(
+                1
+                for admission in self.evidence["admissions"]
+                if admission.get("held_by_unfinished_work")
             ),
         }
         delivered = self._attempt(errors, delivery.flush, False)
@@ -566,6 +638,7 @@ class AgentRunner:
             "reason": redact_reason(reason) if reason else None,
             "task_passed": task_passed,
             "cancellation": self._cancellation_evidence(watcher),
+            "admission": self._admission_evidence(),
             # None when the run failed before sampling started, distinct from zero samples.
             "resource_sampling": sampler.summary() if sampler is not None else None,
             "delivery": {
@@ -603,7 +676,7 @@ class AgentRunner:
             {
                 "tool_host": ResourceRegistration(
                     resource_id=f"tool-host-{suffix}",
-                    service_id="agentwatch-agent-runner",
+                    service_id=RUNNER_SERVICE_ID,
                     resource_class="cpu_sandbox",
                 ),
                 "inference": ResourceRegistration(
@@ -746,6 +819,39 @@ class AgentRunner:
             self.evidence["run_state_error"] = f"{type(error).__name__}: {error}"[:500]
             return f"{state}_locally_undelivered", reason
 
+    def _admission_evidence(self) -> dict:
+        """This run's admission counts, from its own records, apart from the process's state."""
+        if self.admission is None:
+            return dict(NO_ADMISSION)
+        watcher = self.admission.watcher
+        controls: dict[str, dict] = {}
+        for control in ("inference_requests", "test_jobs"):
+            records = [r for r in self.evidence["admissions"] if r.get("control") == control]
+            refused: dict[str, int] = {}
+            for record in records:
+                if record.get("outcome") != "admitted":
+                    refused[record["outcome"]] = refused.get(record["outcome"], 0) + 1
+            waits = [
+                r["admission_wait_seconds"]
+                for r in records
+                if isinstance(r.get("admission_wait_seconds"), (int, float))
+            ]
+            controls[control] = {
+                "admitted": sum(1 for r in records if r.get("outcome") == "admitted"),
+                "refused": refused,
+                # None when this run made no request of this kind, distinct from a zero wait.
+                "longest_wait_seconds": max(waits) if waits else None,
+                "held_at_closure": sum(1 for r in records if r.get("held_by_unfinished_work")),
+            }
+        return {
+            "status": "configured",
+            "scope": "run",
+            "controls": controls,
+            # The shared controller's state: every run of this process, so not this run's.
+            "process": self.admission.controller.summary(),
+            "policy_watcher": watcher.summary() if watcher is not None else None,
+        }
+
     def _cancellation_evidence(self, watcher: CancellationWatcher | None) -> dict:
         request = self.cancellation.request
         return {
@@ -762,8 +868,13 @@ class AgentRunner:
 
     def _raise_background_errors(self) -> None:
         for component in self._background:
-            if component.error is not None:
-                raise component.error
+            error = component.error
+            if error is None:
+                continue
+            if isinstance(component, PolicyWatcher):
+                # A fresh failure per run: the watcher's error object is shared across runs.
+                raise RunFailure(POLICY_FAILED, f"{type(error).__name__}: {error}"[:500])
+            raise error
 
     def _checkpoint(self, deadline: float) -> None:
         self._raise_background_errors()
@@ -776,6 +887,60 @@ class AgentRunner:
     def _run_limit_reason(self) -> str:
         # One wording wherever the deadline is hit: reasons feed dataset labels and slices.
         return f"Run exceeded its {self.limits.run_timeout_seconds:g} s time limit"
+
+    def _admit(self, control: Control, context: _RunContext, step: Step) -> Permit | None:
+        """Wait for this step's permit between its submission and its start.
+
+        The wait is part of the step's queue delay. A refusal ends the run: a full queue or an
+        exceeded wait fails the step and the run; cancellation leaves the step queued, to be
+        cancelled with the run.
+        """
+        if self.admission is None:
+            return None
+        try:
+            return self.admission.controller.acquire(
+                control,
+                step_id=step.step_id,
+                span_id=step.span_id,
+                resource_id=step.resource_id,
+                service_id=step.service_id,
+                clock=self.clock,
+                cancel=self.cancellation.event,
+                deadline_monotonic=context.deadline_monotonic,
+            )
+        except AdmissionRefused as refused:
+            self.evidence["admissions"].append(refused.record)
+            if refused.outcome == "cancelled":
+                request = self.cancellation.request
+                raise RunCancelled(request.reason if request else refused.reason) from refused
+            reason = {
+                "run_deadline": self._run_limit_reason(),
+                "policy_unavailable": POLICY_FAILED,
+            }.get(refused.outcome, refused.reason)
+            context.steps.fail(step, reason)
+            raise RunFailure(reason, refused.reason) from refused
+
+    @contextmanager
+    def _admission(
+        self, control: Control | None, context: _RunContext, step: Step
+    ) -> Iterator[Permit | None]:
+        """Hold this step's permit (None without admission or a control) for the block.
+
+        On exit the permit is returned unless the work claimed it, and its record is kept.
+        """
+        permit = self._admit(control, context, step) if control is not None else None
+        try:
+            yield permit
+        finally:
+            self._settle_admission(permit)
+
+    def _settle_admission(self, permit: Permit | None) -> None:
+        """Return a permit no work claimed, then record the admission's evidence."""
+        if permit is None:
+            return
+        permit.release_unless_claimed()
+        self._permits.append((len(self.evidence["admissions"]), permit))
+        self.evidence["admissions"].append(permit.snapshot())
 
     def _execute(self, context: _RunContext) -> bool:
         self._converse(context)
@@ -843,36 +1008,48 @@ class AgentRunner:
             if time.monotonic() >= context.deadline_monotonic:
                 raise RunFailure("Run time limit reached while waiting for a model response")
 
-        def request() -> dict:
-            timer("request")
-            return self.model.chat(payload, trace_context=trace_context, on_event=observe)
+        with self._admission("inference_requests", context, step) as permit:
 
-        steps.start(step)
-        started = time.monotonic()
-        failure: RunFailure | None = None
-        try:
-            response = wait_interruptibly(
-                request,
-                cancel=self.cancellation.event,
-                deadline_monotonic=context.deadline_monotonic,
-            )
-            reply = parse_reply(response)
-        except RunCancelled as cancelled:
-            record["abandoned_request"] = cancelled.request_started
-            raise
-        except RunFailure as interrupted:
-            # Only the run deadline interrupts the wait with a RunFailure.
-            record["abandoned_request"] = interrupted.request_started
-            failure = RunFailure(self._run_limit_reason(), interrupted.reason)
-        except ModelResponseError as error:
-            failure = RunFailure("Model server returned a malformed chat response", str(error))
-        except MODEL_REQUEST_ERRORS as error:
-            record["error"] = f"{type(error).__name__}: {error}"[:MAX_EVIDENCE_TEXT]
-            failure = RunFailure(f"Model request failed ({type(error).__name__})", record["error"])
-        finally:
-            # Measured before any placement read, so it covers only the model request.
-            record["request_wall_seconds"] = time.monotonic() - started
-            record["stream_timing"] = timer.summary()
+            def request() -> dict:
+                # The request thread holds the permit until the request really ends, even when
+                # the run stopped waiting for it; a wait that already gave up returned it.
+                if permit is not None and not permit.claim():
+                    raise RunCancelled("The admission permit was returned before the request began")
+                try:
+                    timer("request")
+                    return self.model.chat(payload, trace_context=trace_context, on_event=observe)
+                finally:
+                    if permit is not None:
+                        permit.release()
+
+            steps.start(step)
+            started = time.monotonic()
+            failure: RunFailure | None = None
+            try:
+                response = wait_interruptibly(
+                    request,
+                    cancel=self.cancellation.event,
+                    deadline_monotonic=context.deadline_monotonic,
+                )
+                reply = parse_reply(response)
+            except RunCancelled as cancelled:
+                record["abandoned_request"] = cancelled.request_started
+                raise
+            except RunFailure as interrupted:
+                # Only the run deadline interrupts the wait with a RunFailure.
+                record["abandoned_request"] = interrupted.request_started
+                failure = RunFailure(self._run_limit_reason(), interrupted.reason)
+            except ModelResponseError as error:
+                failure = RunFailure("Model server returned a malformed chat response", str(error))
+            except MODEL_REQUEST_ERRORS as error:
+                record["error"] = f"{type(error).__name__}: {error}"[:MAX_EVIDENCE_TEXT]
+                failure = RunFailure(
+                    f"Model request failed ({type(error).__name__})", record["error"]
+                )
+            finally:
+                # Measured before any placement read, so it covers only the model request.
+                record["request_wall_seconds"] = time.monotonic() - started
+                record["stream_timing"] = timer.summary()
         if failure is not None:
             steps.fail(step, failure.reason)
             if failure.reason != self._run_limit_reason():
@@ -932,22 +1109,24 @@ class AgentRunner:
             resource=context.resources[prepared.resource],
         )
         record |= {"step_id": step.step_id, "span_id": step.span_id, "name": prepared.name}
-        steps.start(step)
-        try:
-            outcome = dispatcher.execute(
-                prepared,
-                cancel=self.cancellation.event,
-                deadline_monotonic=context.deadline_monotonic,
-            )
-        except ToolFailed as failed:
-            if time.monotonic() >= context.deadline_monotonic:
-                # The tool was cut short by the run limit, not by its own failure.
-                steps.fail(step, self._run_limit_reason())
-                record |= {"status": "failed", "reason": self._run_limit_reason()}
-                raise RunFailure(self._run_limit_reason(), str(failed)) from failed
-            steps.fail(step, f"{prepared.name} failed: {failed}")
-            record |= {"status": "failed", "reason": str(failed), "evidence": failed.evidence}
-            return tool_message(prepared.name, {"error": str(failed)})
+        with self._admission(ADMITTED_TOOLS.get(prepared.name), context, step):
+            steps.start(step)
+            try:
+                outcome = dispatcher.execute(
+                    prepared,
+                    cancel=self.cancellation.event,
+                    deadline_monotonic=context.deadline_monotonic,
+                )
+            except ToolFailed as failed:
+                if time.monotonic() >= context.deadline_monotonic:
+                    # The tool was cut short by the run limit, not by its own failure.
+                    steps.fail(step, self._run_limit_reason())
+                    record |= {"status": "failed", "reason": self._run_limit_reason()}
+                    raise RunFailure(self._run_limit_reason(), str(failed)) from failed
+                steps.fail(step, f"{prepared.name} failed: {failed}")
+                record |= {"status": "failed", "reason": str(failed), "evidence": failed.evidence}
+                return tool_message(prepared.name, {"error": str(failed)})
+        # The test subprocess ended (or was killed) inside the block, so its permit is free.
         steps.complete(step, cpu_seconds=outcome.cpu_seconds, cpu_scope=outcome.cpu_scope)
         record |= {"status": "completed", "evidence": outcome.evidence}
         return tool_message(prepared.name, outcome.content)
@@ -959,24 +1138,25 @@ class AgentRunner:
         step = steps.submit(
             "verify-tests", "tool", parent=context.root, resource=context.resources["tool_host"]
         )
-        steps.start(step)
-        try:
-            outcome = context.dispatcher.run_tests(
-                cancel=self.cancellation.event, deadline_monotonic=context.deadline_monotonic
-            )
-        except ToolFailed as failed:
-            # The tests did not finish (timeout or no run time left): that is not a test
-            # failure, so the run fails for the actual reason instead of VERIFICATION_FAILED.
-            if time.monotonic() >= context.deadline_monotonic:
-                reason = self._run_limit_reason()
-            else:
-                reason = f"Runner verification could not complete: {failed}"
-            steps.fail(step, reason)
-            self.evidence["verification"] = {
-                "step_id": step.step_id,
-                "error": str(failed),
-            } | failed.evidence
-            raise RunFailure(reason, str(failed)) from failed
+        with self._admission("test_jobs", context, step):
+            steps.start(step)
+            try:
+                outcome = context.dispatcher.run_tests(
+                    cancel=self.cancellation.event, deadline_monotonic=context.deadline_monotonic
+                )
+            except ToolFailed as failed:
+                # The tests did not finish (timeout or no run time left): that is not a test
+                # failure, so the run fails for the actual reason instead of VERIFICATION_FAILED.
+                if time.monotonic() >= context.deadline_monotonic:
+                    reason = self._run_limit_reason()
+                else:
+                    reason = f"Runner verification could not complete: {failed}"
+                steps.fail(step, reason)
+                self.evidence["verification"] = {
+                    "step_id": step.step_id,
+                    "error": str(failed),
+                } | failed.evidence
+                raise RunFailure(reason, str(failed)) from failed
         steps.complete(step, cpu_seconds=outcome.cpu_seconds, cpu_scope=outcome.cpu_scope)
         self.evidence["verification"] = {"step_id": step.step_id} | outcome.evidence
         return outcome.evidence["outcome"] == "passed"

@@ -5,6 +5,7 @@ PostgreSQL schema that is dropped afterwards. The model is a scripted test doubl
 runs verify instrumentation and lifecycle plumbing, not model behaviour.
 """
 
+import json
 import os
 import socket
 import threading
@@ -15,9 +16,11 @@ import psycopg
 import pytest
 import uvicorn
 from agent_test_doubles import SOLVE_MEAN, ScriptedModel
+from agentwatch_agent.admission import AdmissionController, PolicyWatcher, RunnerAdmission
 from agentwatch_agent.delivery import RetryPolicy, replay_journal
 from agentwatch_agent.runner import AgentRunner
 from agentwatch_sdk import LiveClient, RunChange
+from agentwatch_sdk.policy import PolicyChange, PolicyLimits
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
@@ -56,7 +59,7 @@ def live_api(monkeypatch):
             conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
 
 
-def runner(task, client, model, tmp_path):
+def runner(task, client, model, tmp_path, **overrides):
     return AgentRunner(
         task=task,
         model=model,
@@ -66,7 +69,20 @@ def runner(task, client, model, tmp_path):
         cancel_poll_seconds=0.05,
         flush_interval_seconds=0.05,
         retry=NO_SLEEP,
+        **overrides,
     )
+
+
+def change_policy(client, expected_version, action, **limits):
+    change = PolicyChange(
+        request_id=uuid4(),
+        expected_version=expected_version,
+        action=action,
+        limits=PolicyLimits(**limits) if limits else None,
+        operator="o03-integration-test",
+        reason="Synthetic policy for an integration test",
+    )
+    return client.change_policy(change).policy
 
 
 def all_records(client, run_id: UUID) -> list:
@@ -157,3 +173,64 @@ def test_replaying_a_delivered_journal_adds_nothing(mean_task, live_api, tmp_pat
     assert report.complete and report.final_state == "completed"
     assert len(all_records(live_api, outcome.run_id)) == before
     assert live_api.get_run(outcome.run_id).state == "completed"
+
+
+def test_the_runner_enforces_the_policy_the_live_api_serves(mean_task, live_api, tmp_path):
+    active = change_policy(live_api, 0, "set", inference_requests=1, test_jobs=1)
+    admission = RunnerAdmission(
+        AdmissionController(inference_service_id="ollama"), live_api, retry=NO_SLEEP
+    )
+    outcome = runner(
+        mean_task, live_api, ScriptedModel(SOLVE_MEAN), tmp_path, admission=admission
+    ).run()
+    assert outcome.state == "completed"
+    saved = json.loads(outcome.evidence_path.read_text())
+    assert len(saved["admissions"]) == 7
+    for record in saved["admissions"]:
+        assert (record["outcome"], record["released"]) == ("admitted", True)
+        assert (record["policy_version"], record["limit"], record["enforced"]) == (
+            active.version,
+            1,
+            True,
+        )
+    # The service links the version that was active while the run was open.
+    linked = live_api.get_run_policy(outcome.run_id)
+    assert linked.applicable and [v.version for v in linked.versions] == [active.version]
+
+
+def test_a_policy_change_during_a_run_applies_to_later_admissions(mean_task, live_api, tmp_path):
+    first = change_policy(live_api, 0, "set", inference_requests=1, test_jobs=1)
+    controller = AdmissionController(inference_service_id="ollama")
+    watcher = PolicyWatcher(live_api, controller, poll_seconds=0.05)
+    admission = RunnerAdmission(controller, live_api, watcher, retry=NO_SLEEP)
+    model = ScriptedModel(SOLVE_MEAN, block=threading.Event(), block_on=2)
+    run = runner(mean_task, live_api, model, tmp_path, admission=admission)
+    result = {}
+    with watcher:
+        thread = threading.Thread(target=lambda: result.update(outcome=run.run()))
+        thread.start()
+        assert model.blocked.wait(10)
+        disabled = change_policy(live_api, first.version, "disable")
+        deadline = time.monotonic() + 10
+        while controller.policy_version != disabled.version:
+            assert time.monotonic() < deadline, "the watcher did not apply the new version"
+            time.sleep(0.02)
+        model.block.set()
+        thread.join(30)
+    assert result["outcome"].state == "completed"
+    records = {
+        record["step_id"]: record
+        for record in json.loads(result["outcome"].evidence_path.read_text())["admissions"]
+    }
+    # Admitted before the change: the old limit; after it: the baseline, never retroactively.
+    assert (records["model-call-1"]["policy_version"], records["model-call-1"]["limit"]) == (
+        first.version,
+        1,
+    )
+    assert (records["verify-tests"]["policy_version"], records["verify-tests"]["limit"]) == (
+        disabled.version,
+        None,
+    )
+    linked = live_api.get_run_policy(result["outcome"].run_id)
+    assert [v.version for v in linked.versions] == [first.version, disabled.version]
+    assert watcher.summary()["stopped_by_error"] is None

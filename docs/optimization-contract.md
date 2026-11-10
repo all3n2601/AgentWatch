@@ -2,8 +2,9 @@
 
 Status: proposed `opt-contract-v1`, pending acceptance by all three teams. Thresholds live in
 `pipelines/model/optimization-contract.toml`. O02 stores and serves versioned manual policy
-([concurrency policy](concurrency-policy.md)); nothing enforces it until O03, and no optimization
-has been evaluated; O06 runs the evaluation.
+([concurrency policy](concurrency-policy.md)), and agent runner processes enforce it for their own
+work ([ADR 0010](adr/0010-runner-process-admission-limits.md), O03). No optimization has been
+evaluated; O06 runs the evaluation.
 
 This contract fixes the policy semantics, preregistration and numerical gates for manual
 concurrency limits before any evaluation, so no gate is tuned to results. It turns the

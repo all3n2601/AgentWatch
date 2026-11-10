@@ -8,9 +8,11 @@ in `agentwatch_sdk` (`policy.py`, `LiveClient.get_policy`, `list_policy_versions
 [optimization contract](optimization-contract.md), which is still *proposed* (`opt-contract-v1`);
 O02 implements its policy rules without claiming acceptance.
 
-**O02 stores and serves policy. Nothing enforces it.** Runner admission and cleanup are O03
-(Akshayaa). A stored limit, and a link between a run and a version, are not evidence that any
-request or test job was limited.
+**O02 stores and serves policy; the service enforces nothing.** Agent runner processes enforce it
+for their own work (O03, [ADR 0010](adr/0010-runner-process-admission-limits.md)): `run` and
+`batch` read the active version and admit model requests and test jobs under its limits, per
+process. A stored limit, and a link between a run and a version, are still not evidence that any
+request or test job was limited; each run's admission records are.
 
 ## Model
 
@@ -87,12 +89,13 @@ the runner applied it. Per-step application is O03's evidence.
 
 The Controls page (`apps/web/components/concurrency-controls.tsx`) is a deliberately plain
 working screen: active limits, a form (two optional limits, operator, reason), disable,
-restore-per-row, history, and conflict/validation errors as text. It states that policy is
-recorded only and not enforced until O03. Empty limits read "No limits"; only version 0 adds
-"(baseline)", so a `disable` version is not mislabelled. Server-side proxy routes under
-`apps/web/app/api/policies/concurrency` and `apps/web/app/api/live/runs/[runId]/policy` validate
-with zod; the live run view shows the selected run's policy history for its UUID. The finished
-controls UI and comparisons are O05 (Meghana).
+restore-per-row, history, and conflict/validation errors as text. It states that each agent
+runner process enforces the policy for its own work, not globally. Empty limits read "No
+limits"; only version 0 adds "(baseline)", so a `disable` version is not mislabelled.
+Server-side proxy routes under `apps/web/app/api/policies/concurrency` and
+`apps/web/app/api/live/runs/[runId]/policy` validate with zod; the live run view shows the
+selected run's policy history for its UUID. The finished controls UI and comparisons are O05
+(Meghana).
 
 ## Migration, recovery and verification
 
@@ -117,10 +120,12 @@ upgrade, rollback) and `apps/web/tests/policy-api.test.ts`. Regenerate contracts
 
 ## Handoff
 
-- **Akshayaa (O03):** consume the active policy (`GET .../{target}` or `LiveClient.get_policy`)
-  for runner-process admission limits; record the applied version and per-process resource IDs on
-  your own step evidence. Lowering a limit affects future admissions only.
+- **Akshayaa (O03), done in ADR 0010:** the runner reads the active policy with
+  `LiveClient.get_policy`, admits per runner process, and records the applied version, limit and
+  the step's resource and service IDs on every admission in its own evidence. Lowering a limit
+  affects future admissions only.
 - **Meghana (O05):** restyle the Controls screen and build comparisons on `PolicyVersion` /
-  `RunPolicy`; keep the "active while open, not enforced" wording and the unknown-history state.
+  `RunPolicy`; keep the "active while open" link wording (a link is not enforcement evidence),
+  the per-process enforcement scope and the unknown-history state.
 - **Akshay (O04):** versions are immutable, carry `request_id`, `created_at` and
   `controlled_services`, and link to runs by UUID; use them for manifest policy lineage.
