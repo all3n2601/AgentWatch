@@ -135,6 +135,26 @@ def test_too_few_validation_steps_leave_the_model_uncalibrated(tmp_path, per_cla
         # No calibrated confidence exists, so the field is null rather than the raw score.
         assert line["confidence"] is None and line["probabilities"] is None
         assert line["raw_confidence"] is not None
+    # The report agrees with the predictions: calibrated metrics are unavailable, raw ones kept.
+    metrics = report["metrics"]["calibration"]
+    assert metrics["ece_calibrated"] is None and metrics["mean_confidence_calibrated"] is None
+    assert metrics["ece_uncalibrated"] == pytest.approx(0.27)
+    assert metrics["mean_confidence_uncalibrated"] == pytest.approx(0.97)
+    for group in report["metrics"]["slices"]["by_condition"].values():
+        assert group["ece_calibrated"] is None and group["ece_uncalibrated"] is not None
+    missing = report["metrics"]["slices"]["missing_features"]
+    assert missing["missing_any"]["ece_calibrated"] is None
+
+
+def zero_scores(row: dict, index: int) -> dict[str, float]:
+    return dict.fromkeys(COLUMNS, 0.0)
+
+
+def test_malformed_validation_scores_are_refused_even_below_the_fit_minimum(tmp_path):
+    validation = steps(1, "valid")
+    split, candidates = prepare(tmp_path, validation=validation, validation_scorer=zero_scores)
+    with pytest.raises(CalibrationError, match="not a distribution"):
+        calibrate(tmp_path, split, candidates, {"validation": validation, "test": TEST})
 
 
 def test_low_confidence_steps_abstain_and_count_as_misses_on_clean_steps(tmp_path):

@@ -62,6 +62,9 @@ class Scored:
     confidences: list[float]
     abstained: list[bool]
     probabilities: list[dict[str, float]]
+    # False when no calibration was fitted: confidences are then raw scores, and every
+    # calibrated metric is reported as unavailable rather than computed from them.
+    calibrated: bool
 
     def correct(self) -> list[bool]:
         return [
@@ -79,14 +82,15 @@ def share(count: int, steps: int) -> float | None:
 
 
 def group_summary(scored: Scored, indices: list[int], bins: int) -> dict:
-    correct = scored.correct()
+    correct = [scored.correct()[i] for i in indices]
+    raw = top_label_ece([scored.raw_confidences[i] for i in indices], correct, bins)
+    calibrated = top_label_ece([scored.confidences[i] for i in indices], correct, bins)
     return {
         "steps": len(indices),
-        "accuracy_before_abstention": share(sum(correct[i] for i in indices), len(indices)),
+        "accuracy_before_abstention": share(sum(correct), len(indices)),
         "abstention_rate": share(sum(scored.abstained[i] for i in indices), len(indices)),
-        "ece_calibrated": top_label_ece(
-            [scored.confidences[i] for i in indices], [correct[i] for i in indices], bins
-        ),
+        "ece_uncalibrated": raw,
+        "ece_calibrated": calibrated if scored.calibrated else None,
     }
 
 
@@ -216,12 +220,16 @@ def calibration_summary(fit: Fit, config: CalibrationConfig) -> dict:
 
 def calibration_metrics(contract: Contract, scored: Scored) -> dict:
     correct, steps = scored.correct(), len(scored.rows)
+    calibrated = scored.calibrated and steps > 0
     return {
         "bins": contract.ece_bins,
         "ece_uncalibrated": top_label_ece(scored.raw_confidences, correct, contract.ece_bins),
-        "ece_calibrated": top_label_ece(scored.confidences, correct, contract.ece_bins),
+        "ece_calibrated": (
+            top_label_ece(scored.confidences, correct, contract.ece_bins) if calibrated else None
+        ),
         "accuracy_before_abstention": share(sum(correct), steps),
-        "mean_confidence_calibrated": sum(scored.confidences) / steps if steps else None,
+        "mean_confidence_uncalibrated": sum(scored.raw_confidences) / steps if steps else None,
+        "mean_confidence_calibrated": sum(scored.confidences) / steps if calibrated else None,
     }
 
 

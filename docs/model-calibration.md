@@ -43,7 +43,7 @@ make calibrate SPLIT=data/datasets/splits/<release>/<split>.json
   differ from the report's, or the report is not an evaluation of the test split;
 - prediction records do not cover exactly the split's rows, repeat a step, record a different
   label than the split, or hold probabilities that are not a distribution over the
-  `preprocessing.json` columns;
+  `preprocessing.json` columns (validation records are checked even when too few to fit);
 - a split row fails the rule-baseline row checks (missing field, unknown label, mixed release).
 
 Candidates that were not `evaluated`, or a split `load_split` refuses, give a `blocked` report
@@ -79,7 +79,9 @@ the model's best guess for inspection only.
   candidates report with their reasons.
 - Slices: by experiment condition, and steps with any missing feature against complete steps,
   with a per-feature count of missing readings (accuracy, abstention rate and calibrated ECE).
-- Calibration and abstention are inconclusive while the calibration is unfitted. A measured
+- While the calibration is unfitted, every calibrated metric (ECE, mean confidence, slice ECE)
+  is null and the raw-score values are reported under `_uncalibrated` names; calibration and
+  abstention are inconclusive. A measured
   failure (ECE over the limit, or abstention over the limit overall or for a class with at
   least the contract's minimum test steps) fails the gate; otherwise a class below that
   minimum leaves it inconclusive. Any gate other than pass blocks promotion.

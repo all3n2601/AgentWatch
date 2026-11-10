@@ -234,13 +234,15 @@ def fit_on_validation(
         "usable_steps": len(usable),
         "early_stopping_on_fit_split": early_stopping == "validation",
     }
+    # Validated before the size check, so malformed records are refused even when too few
+    # steps remain to fit on.
+    matrix = probability_matrix(records, columns, "validation")
     if len(usable) < config.min_validation_steps:
         reason = (
             f"{len(usable)} usable validation steps; {config.version} needs at least "
             f"{config.min_validation_steps} to fit calibration"
         )
         return Fit(False, None, None, reason, temperature_at_bound=False, selection=None, **common)
-    matrix = probability_matrix(records, columns, "validation")
     targets = np.array([columns.index(labels[index]) for index in usable])
     temperature = fit_temperature(matrix[usable], targets, config)
     confidences = scale(matrix, temperature).max(axis=1).tolist()
@@ -274,6 +276,7 @@ def score_test(rows: list[dict], records: list[dict], columns: tuple[str, ...], 
         confidences=confidences,
         abstained=[threshold is not None and c < threshold for c in confidences],
         probabilities=[dict(zip(columns, map(float, row), strict=True)) for row in calibrated],
+        calibrated=fit.fitted,
     )
 
 
