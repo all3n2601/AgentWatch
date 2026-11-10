@@ -1162,7 +1162,12 @@ def test_replay_run_ids_must_be_unique_across_experiments(replay_stores, tmp_pat
     """The same replays stored under another entry (here: another start time) are refused."""
     evidence, datasets, _, entry = replay_stores
     again = write_experiment(tmp_path / "again", live=True, started_at="2026-11-06T00:00:00+00:00")
-    other = add(again, evidence).name
+    # Simulate pre-existing corruption: the curation API now refuses this duplicate.
+    from agentwatch_data.evidence import experiment_entry_name
+    from agentwatch_data.replay_evidence import read_experiment
+
+    other = experiment_entry_name((again / "experiment.json").read_bytes(), read_experiment(again))
+    shutil.copytree(again, evidence / other)
     assert entry.name < other  # entries are checked in name order; the first one is kept
     [problem] = problems(evidence, datasets)
     assert problem.startswith(

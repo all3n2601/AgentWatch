@@ -481,3 +481,29 @@ def test_one_nanosecond_interval_is_valid(tmp_path, config):
     rows, rejections = experiment_rows(directory, config)
     assert rows
     assert not rejections["replay_features"]
+
+
+def test_renamed_replay_copy_cannot_duplicate_release_rows(tmp_path):
+    import shutil
+
+    from agentwatch_data.build import derive_replay_rows
+
+    original = experiment(tmp_path / "first")
+    copied = shutil.copytree(original, tmp_path / "renamed")
+    rows, rejections = derive_replay_rows([original, copied], None)
+    assert rows == []
+    assert any("run identity" in r.reason for items in rejections.values() for r in items)
+
+
+def test_duplicate_replay_rejection_keeps_independent_experiments(tmp_path):
+    import shutil
+
+    from agentwatch_data.build import derive_replay_rows
+
+    original = experiment(tmp_path / "first")
+    copied = shutil.copytree(original, tmp_path / "renamed")
+    independent = experiment(tmp_path / "independent", name="independent", run_namespace=1)
+    rows, rejections = derive_replay_rows([original, copied, independent], None)
+    assert len(rows) == 10
+    assert {r["experiment"] for r in rows} == {"independent"}
+    assert sum(len(items) for items in rejections.values()) == 2

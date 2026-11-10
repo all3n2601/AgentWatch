@@ -190,6 +190,8 @@ def load_contract(path: Path) -> Contract:
     ):
         raise SplitError(f"Contract split fractions must be in (0, 1) and sum to 1: {fractions}")
     method, assignment = split_method(splits, path)
+    if method == "split-v2" and group_key != "task_group":
+        raise SplitError("split-v2 requires group_key = task_group")
     held_out = require(splits, "held_out_injection_methods", int, "splits")
     bound = require(leakage, "max_single_feature_auc", float, "leakage")
     if held_out < 0 or not 0.5 <= bound <= 1:

@@ -843,7 +843,7 @@ def test_release_label_version_joins_the_distinct_versions_sorted():
 
 
 def test_replay_rows_follow_run_rows_ordered_by_experiment(tmp_path):
-    later = write_experiment(tmp_path, name="b-exp", live=True)
+    later = write_experiment(tmp_path, name="b-exp", live=True, run_namespace=1)
     earlier = write_experiment(tmp_path, name="a-exp", live=True)
     runs = extract.extract_local(FIXTURES).runs
     rows, rejections = derive_rows(runs, load_config(), [later, earlier], load_replay_config())

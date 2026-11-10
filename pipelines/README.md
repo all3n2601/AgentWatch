@@ -139,11 +139,11 @@ bucket `agentwatch-dvc`. It needs no Google account or login:
 make pull-dataset          # about 5 s: 50 runs in data/evidence/, release steps-v1.2+5954f97ef8b2 in data/datasets/
 ```
 
-**Dataset v1 is not in the bucket yet.** The D03 commit that versions `steps-v1.3+a1b96c4ff2c8`
-(54 replay experiments added to the evidence store) updates `data/*.dvc`, but `make
-push-dataset` waits for the owner's go-ahead after the final review. Until it runs, pulling at
-that commit cannot download the new files; the bucket still serves the 50 runs and
-`steps-v1.2+5954f97ef8b2`.
+**Dataset v1 is publicly available.** `make pull-dataset` downloads the 50 recorded runs,
+54 replay experiments and current format 3 release `steps-v1.3+aafae73eb211` with split
+`split-v2+febe942a2b59`. The immutable format 2 predecessor
+`steps-v1.3+a1b96c4ff2c8` remains available. An empty-cache independent clone fetched
+2,012 objects and reproduced the current release and split byte for byte.
 
 Pulls go through the bucket's public HTTPS address (the `public` remote in `.dvc/config`).
 Plain `dvc pull` uses the default `gs://` remote instead, which works without a login but
@@ -220,9 +220,9 @@ is reported as a finding. With a webhook set, the summary arrives in Slack. The 
 v1 files (below).
 
 **Dataset v1 (`steps-v1.3`).** With the replay evidence in the store, `make dataset` builds
-`steps-v1.3+a1b96c4ff2c8` (5,953 rows: 5,603 replay, 175 CPU, 175 coding; 411 recorded
+`steps-v1.3+aafae73eb211` (5,953 rows: 5,603 replay, 175 CPU, 175 coding; 411 recorded
 rejections), the gate passes with drift not compared, and `make split-dataset` writes
-`split-v2+2efb6e737ba2` (train 2,028, validation 0, test 3,925; class balance met; leakage
+`split-v2+febe942a2b59` (train 2,028, validation 0, test 3,925; class balance met; leakage
 passed at 0.974242 against the 0.98 bound). `make rule-baseline` and `make train-candidates` on
 that split stop because `mixed` has no scoring rule until M02. To rerun the `steps-v1.2` work,
 pass the v1 contract and schema. The split targets always take the newest release, so split
@@ -239,7 +239,7 @@ make rule-baseline SPLIT=data/datasets/splits/steps-v1.2+5954f97ef8b2/split-v1+5
 ```
 
 `make train-candidates` takes the same two variables. Details are in the data card's
-[Dataset v1](../docs/data-card.md#dataset-v1-steps-v13a1b96c4ff2c8) section.
+[Dataset v1](../docs/data-card.md#dataset-v1-steps-v13aafae73eb211) section.
 
 ## Pipeline components
 

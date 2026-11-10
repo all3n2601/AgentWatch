@@ -57,8 +57,8 @@ four-class prediction is scored on a `mixed` step) is Rohit's M02 decision and i
 Until then the rule baseline and training refuse a split holding `mixed` labels with a reason
 naming it, instead of scoring them under an invented rule.
 
-Consequences: release `steps-v1.3+a1b96c4ff2c8` (5,953 rows: 5,603 replay, 350 CPU and coding)
-passed the gate and split `split-v2+2efb6e737ba2` met class balance and passed leakage, at an
+Consequences: release `steps-v1.3+aafae73eb211` (5,953 rows: 5,603 replay, 350 CPU and coding)
+passed the gate and split `split-v2+febe942a2b59` met class balance and passed leakage, at an
 observed maximum AUC of 0.974242 against the 0.98 bound, so timing features nearly separate some
 classes. The frozen assignment leaves validation empty and training one task group, so
 calibration and validation-dependent gates are inconclusive, and no rule or model result exists
@@ -69,3 +69,19 @@ byte-identical frozen-schema bytes, so drift against `steps-v1.2` is unavailable
 the design proposed it; cross-schema drift is follow-up work. The label fingerprints moved
 (`labels-v1.1+2c495a72`, `labels-v2+d803a9c6`) because hashed source changed, while the rule
 versions stayed because no produced label or eligibility changed.
+
+### D03 acceptance and evaluation merge conditions (2026-11-10)
+
+PR #59 must not merge until Rohit (M02/promotion-check owner) supplies written
+confirmation of `eval-contract-v2` and the final revision has the required two
+non-author approvals. The owner's report of verbal acceptance is not that record.
+The frozen contract's `status = "accepted"` and hash `9b55506c` are preserved to
+avoid silently changing published split identities; this metadata does not prove
+that the written merge condition has been satisfied. That condition remains open.
+
+The test split crosses feature definitions: 350 CPU/coding rows use `steps-v1.2`,
+while replay rows use `step-features-v1`. Model and rule evaluation now refuse a
+combined population with differing feature versions (including present versus
+missing identity), even after M02 defines mixed-label scoring. A future versioned
+split/report design must evaluate compatible populations separately. Model and
+serving metadata retain the full label-version set beside the legacy singular field.

@@ -3,7 +3,7 @@
 Status: `training-v1`, implemented and tested on synthetic rows; not yet trained on an evaluable
 release. The interim `steps-v1.2+5954f97ef8b2` split is blocked by the leakage check, so a run
 on it produces a blocked report and a blocked MLflow run, with no model. Dataset v1
-(`steps-v1.3+a1b96c4ff2c8`, split `split-v2+2efb6e737ba2`) passes the leakage check, but its
+(`steps-v1.3+aafae73eb211`, split `split-v2+febe942a2b59`) passes the leakage check, but its
 rows include steps labeled `mixed`, which have no scoring rule until M02, so a run on it is a
 `failed` attempt with no model (see Running it).
 

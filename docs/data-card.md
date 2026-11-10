@@ -33,7 +33,14 @@ step, and experiment-derived labels naming the resource that caused excess waiti
 | Split | `split-v2`: the frozen assignment file, grouped by `task_group` so replays of a task never cross splits (`steps-v1.2` keeps `split-v1`, 70/15/15 grouped by `task_id`) |
 | Current coverage | All four classes and `mixed` from agent replays of two tasks; `none` and `cpu_sandbox` from the CPU and coding experiments |
 
-## Dataset v1 (`steps-v1.3+a1b96c4ff2c8`)
+## Dataset v1 (`steps-v1.3+aafae73eb211`)
+
+Current format 3 release: `steps-v1.3+aafae73eb211`, split
+`split-v2+febe942a2b59`. Both are publicly downloadable and independently reproduced
+byte for byte on 2026-11-07 (see Review fixes below).
+
+The immutable format 2 predecessor is `steps-v1.3+a1b96c4ff2c8`, with split
+`split-v2+2efb6e737ba2`. Historical build provenance follows:
 
 Built 2026-11-06 by D03 with the code at `4d03190` and versioned with DVC in `583b52e`
 (`data/evidence.dvc`, `data/datasets.dvc`). The numbers below come from its manifest, build
@@ -211,7 +218,7 @@ not "no drift". The design promised drift against the v1.2 release; it is unavai
 
 ### Split, class balance and leakage
 
-`split-v2+2efb6e737ba2`, under `eval-contract-v2` (identifier `9b55506c`) and the `split-v2`
+`split-v2+febe942a2b59`, under `eval-contract-v2` (identifier `9b55506c`) and the `split-v2`
 assignment (identifier `6c009002`: test task group `fix-window-count`, held-out method
 `worker_queue_blocker`). `fix-mean-empty` goes to train; `fix-window-count` and both CPU and
 coding task groups go to test.
@@ -482,7 +489,7 @@ fails, so Airflow and scripts can stop on it.
   against the **same frozen schema**, using the exact statistics of that passing attempt
   (checked against its recorded hash). A release whose verdict is unknown is never a baseline.
   A release with no such baseline records `baseline_release: null` and an empty drift list,
-  which means drift was not compared. This is the case for `steps-v1.3+a1b96c4ff2c8`: the only
+  which means drift was not compared. This is the case for `steps-v1.3+aafae73eb211`: the only
   earlier release passed against `steps.pbtxt`, so drift against `steps-v1.2` is unavailable.
 - Main-suite tests fail if the frozen schema's columns or the gate's test fixture drift from
   this contract.
@@ -707,7 +714,7 @@ Checks, delivered as functions over labeled rows (recorded in the split file as
 
 The `split-v1` gates also apply to `split-v2`: quality-gate recheck, reconstruct-and-compare on
 read, measured-only test sources, the training leakage check, and the contract's count
-minimums (`class_balance`). With two agent tasks, validation is empty; `split-v2+2efb6e737ba2`
+minimums (`class_balance`). With two agent tasks, validation is empty; `split-v2+febe942a2b59`
 records 0 validation rows.
 
 ## Versioning
@@ -1032,7 +1039,7 @@ release, so it lives outside the versioned stores.
 
 ### Findings on `steps-v1.2+5954f97ef8b2`
 
-The slice report for `steps-v1.3+a1b96c4ff2c8` has not been generated and reviewed yet; the
+The slice report for `steps-v1.3+aafae73eb211` has not been generated and reviewed yet; the
 findings below are for the earlier release.
 
 The shared release (350 rows, 50 runs) raises 17 flags. To reproduce, unzip
@@ -1078,7 +1085,7 @@ The main ones:
   retrieval and mixed contention. The split stage runs a leakage check before any evaluation.
 - **Clean controls sometimes exceed the noise threshold** (`clean_exceeded_noise`): 2 of 7 real
   runs recorded on 2026-10-08 (+0.047 s and +0.035 s against thresholds near 0.02 s) and 0 of 7
-  recorded on 2026-10-09. In `steps-v1.3+a1b96c4ff2c8`, 82 of 1,724 replay clean-control steps
+  recorded on 2026-10-09. In `steps-v1.3+aafae73eb211`, 82 of 1,724 replay clean-control steps
   and 7 of the 50 CPU and coding clean steps are `clean_exceeded_noise`. The rate varies between collections, so it is reported per release
   and never tuned away.
 - **Telemetry is sparse for short steps.** The worker samples every 250 ms while many steps last
@@ -1114,3 +1121,22 @@ The main ones:
 - **Some evidence produces no rows.** 8 `fix-window-count` experiments failed `stable_baseline`
   and the step `tool-2-rejected` never has two usable baselines, so it is never labeled (see
   [Rows](#rows)).
+
+
+### Replay identity checks (2026-11-10)
+
+Builds reject all experiments sharing a replay run UUID, including renamed copies
+and manifests from partial and final snapshots. Curation refuses a new entry if any
+of its replay run UUIDs already belongs to a stored experiment. Existing evidence
+and published releases are never rewritten. Publication uses the store's hidden
+`.replay-publication-lock` directory; a concurrent writer fails with a retry message.
+After an interrupted writer, verify that no curation process is active before removing
+that empty lock directory and retrying. Hidden staging directories are not evidence.
+The current evidence filename contract supports replay indices 00–99; larger
+experiments are refused rather than partially stored.
+
+Non-blocking follow-ups from the D03 review remain: the row source fingerprint does
+not include injection logs; replay journal registration payloads need stricter plan
+identity checks; and the v1.2 frozen-schema quality-gate fixture should be restored.
+These require separate regression work and, where row derivation changes, a new
+immutable release. They do not change the frozen release described above.

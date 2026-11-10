@@ -63,7 +63,7 @@ from agentwatch_data.files import file_sha256, fsync_directory, fsync_file, json
 from agentwatch_data.flatten import flatten_runs
 from agentwatch_data.labels import LabelConfig, LabelingError, label_rows, load_config
 from agentwatch_data.replay_evidence import MANIFEST_FILE as EXPERIMENT_MANIFEST
-from agentwatch_data.replay_evidence import ReplayEvidenceError
+from agentwatch_data.replay_evidence import ReplayEvidenceError, read_experiment
 from agentwatch_data.replay_labels import ReplayLabelConfig, load_replay_config
 from agentwatch_data.replay_rows import LABEL_STAGE as REPLAY_LABEL_STAGE
 from agentwatch_data.replay_rows import REPLAY_STAGES, experiment_rows
@@ -529,8 +529,26 @@ def derive_replay_rows(
     if not experiments:
         return [], rejections
     rules = config if config is not None else load_replay_config()
+    experiments = sorted(set(experiments))
+    # Run UUIDs identify replay evidence independently of delivery folder names. Reject
+    # every owner of a collision; choosing a copy could hide a changed manifest or plan.
+    owners: dict[str, set[Path]] = {}
+    for directory in experiments:
+        try:
+            experiment = read_experiment(directory)
+        except (ReplayEvidenceError, OSError):
+            continue  # the derivation below records the original read failure
+        for replay in experiment.replays:
+            if replay.run_id is not None:
+                owners.setdefault(replay.run_id, set()).add(directory)
+    conflicting = {path for paths in owners.values() if len(paths) > 1 for path in paths}
     rows = []
     for directory in experiments:
+        if directory in conflicting:
+            rejections[REPLAY_LABEL_STAGE].append(
+                Rejection(str(directory), "Replay run identity occurs in multiple experiments")
+            )
+            continue
         try:
             found, stages = experiment_rows(directory, rules)
         except (ReplayEvidenceError, OSError) as error:

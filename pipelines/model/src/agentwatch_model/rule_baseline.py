@@ -76,6 +76,12 @@ def validate_rows(rows: list[dict], split: str) -> None:
 
 
 def validate_dataset_version(rows: list[dict]) -> None:
+    versions = {row.get("feature_version") for row in rows}
+    if len(versions) > 1:
+        raise RowError(
+            "Incompatible feature definitions across splits; evaluate each feature_version "
+            "separately: " + repr(sorted(str(version) for version in versions))
+        )
     # report.dataset_version holds the one implementation of this check; here its failure
     # becomes a row error, so every caller refuses mixed releases the same way.
     try:

@@ -2,8 +2,8 @@
 
 Status: `rules-v1`, implemented and tested; not yet evaluated on a dataset that can be evaluated.
 On the interim `steps-v1.2+5954f97ef8b2` split (2026-10-26) the report is **blocked** by the
-leakage check, with no metrics. On dataset v1 (`steps-v1.3+a1b96c4ff2c8`, split
-`split-v2+2efb6e737ba2`) it stops before scoring, because that split holds steps labeled
+leakage check, with no metrics. On dataset v1 (`steps-v1.3+aafae73eb211`, split
+`split-v2+febe942a2b59`) it stops before scoring, because that split holds steps labeled
 `mixed` and no scoring rule for them exists until M02 (see below).
 
 The rule baseline is the transparent reference a learned model must beat. It names the resource

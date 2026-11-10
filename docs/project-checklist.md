@@ -610,20 +610,20 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   split-v2 reproduction (build twice, identical split id and `rows_sha256`), possible only after
   D03 wires `make_split`.
   2026-11-05 to 2026-11-06 (D03, branch `feature/d03-dataset-v1`, not merged): `labels-v2`
-  labels 5,603 real replay rows in `steps-v1.3+a1b96c4ff2c8`, Rohit accepted `eval-contract-v2`
+  labels 5,603 real replay rows in `steps-v1.3+aafae73eb211`, Rohit accepted `eval-contract-v2`
   on 2026-11-05 (told to the owner directly; his PR approval is the written confirmation), and
-  `split-v2+2efb6e737ba2` reproduced byte for byte from a copy of the evidence. Still open: the
+  `split-v2+febe942a2b59` reproduced byte for byte from a copy of the evidence. Still open: the
   `mixed` scoring rule (proposal item 2, M02) and the merge of D02/D03.
 - [ ] D03 — Allen: validated, versioned dataset v1 (`steps-v1.3`) for M02. 2026-11-05 to
   2026-11-06, branch `feature/d03-dataset-v1` (not merged): 54 replay
   experiments from Benoy's two deliveries (`d03-2026-11-04.zip` `5ee876a3…b5e0`,
   `d03-2026-11-05.zip` `9e82c41b…94b5`) curated into `data/evidence/`; release
-  `steps-v1.3+a1b96c4ff2c8` (5,953 rows: 5,603 agent replay with `labels-v2+d803a9c6`, 175 CPU
+  `steps-v1.3+aafae73eb211` (5,953 rows: 5,603 agent replay with `labels-v2+d803a9c6`, 175 CPU
   and 175 coding with `labels-v1.1+2c495a72`; 411 rejections recorded in build report
   `20261106T063357064753Z-e8ff44a7`); TFDV gate passed against the re-frozen
   `pipelines/validation/schema/steps-v1.3.pbtxt` (attempt `20261106T063456443931Z-e05881f1`,
   drift not compared because no release passed against the same schema); split
-  `split-v2+2efb6e737ba2` under `eval-contract-v2` (`9b55506c`): train 2,028 / validation 0 /
+  `split-v2+febe942a2b59` under `eval-contract-v2` (`9b55506c`): train 2,028 / validation 0 /
   test 3,925, class balance met, leakage passed (observed maximum AUC 0.974242 against the 0.98
   bound), independence passed, held-out method and mixed in test met. A rebuild and resplit into
   empty stores reproduced the release name, Parquet bytes, split id and per-split `rows_sha256`;
@@ -635,7 +635,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   `uv run --project pipelines/orchestration pytest pipelines/orchestration` (95 passed),
   `uv run --project pipelines/versioning --frozen pytest pipelines/versioning/tests` (9 passed in
   a checkout path without spaces; see the pipeline README for the space issue). Details in
-  [the data card](data-card.md#dataset-v1-steps-v13a1b96c4ff2c8) and
+  [the data card](data-card.md#dataset-v1-steps-v13aafae73eb211) and
   [ADR 0009](adr/0009-combined-dataset-release-and-split-v2.md). Open: review and merge,
   a non-empty validation split, the `mixed` scoring rule (M02), drift
   against a same-schema baseline, and the `steps-v1.3` slice report.
@@ -670,7 +670,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   shared release `steps-v1.2+5954f97ef8b2` (2026-10-27), with `data/*.dvc` committed; a fresh
   clone with no Google login pulled it (`make pull-dataset`, public HTTPS remote) and ran
   `make pipeline-run` successfully. The DAG pushes only when `AGENTWATCH_DVC_PUSH_REMOTE` is set.
-  2026-11-06 (D03, not merged): `steps-v1.3+a1b96c4ff2c8` and the 54 replay experiments are
+  2026-11-06 (D03, not merged): `steps-v1.3+aafae73eb211` and the 54 replay experiments are
   versioned locally (`data/*.dvc` in `583b52e`). 2026-11-07: both these objects and the format 3
   successor were pushed; public fresh-clone pull/rebuild verified (see D03 above).
 - [x] Validate data with TFDV or an explicitly chosen equivalent (2026-10-12): `make
@@ -714,7 +714,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   weights (`pipelines/data/tests/test_dataset_slices.py`). Run on `steps-v1.2+5954f97ef8b2`: 17
   flags, summarized in the data card's "Slices and bias". Model-level slicing is open.
 - [ ] Hold out unseen tasks and at least one injection method.
-  2026-11-06 (D03, not merged): `split-v2+2efb6e737ba2` holds out injection method
+  2026-11-06 (D03, not merged): `split-v2+febe942a2b59` holds out injection method
   `worker_queue_blocker` and task group `fix-window-count` (held-out check met, independence
   passed). Open: training has one task group and validation is empty, so unseen-task results
   rest on one task.
@@ -725,7 +725,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   ([rule baseline](rule-baseline.md), `pipelines/model/tests`). On the interim
   `steps-v1.2+5954f97ef8b2` split it reports blocked by the leakage check, with no metrics.
   Open until a release covering all four classes and mixed contention passes that check.
-  2026-11-06 (D03, not merged): `steps-v1.3+a1b96c4ff2c8` covers all four classes and `mixed`,
+  2026-11-06 (D03, not merged): `steps-v1.3+aafae73eb211` covers all four classes and `mixed`,
   and its split passes the leakage check, but `make rule-baseline` refuses it because `mixed`
   has no scoring rule until M02 (`pipelines/model/tests/test_rule_baseline.py`).
 
@@ -921,3 +921,38 @@ Mark implementation complete when its behavior exists and its stated exit test h
 Keep remaining testing items open until they have been exercised. Record dates and artifact/test
 references for new verification; distinguish manual checks from automation. Update this snapshot
 when milestones change rather than converting all items into one overall progress percentage.
+
+### D03 acceptance and evaluation merge conditions (2026-11-10)
+
+PR #59 must not merge until Rohit (M02/promotion-check owner) supplies written
+confirmation of `eval-contract-v2` and the final revision has the required two
+non-author approvals. The owner's report of verbal acceptance is not that record.
+The frozen contract's `status = "accepted"` and hash `9b55506c` are preserved to
+avoid silently changing published split identities; this metadata does not prove
+that the written merge condition has been satisfied. That condition remains open.
+
+The test split crosses feature definitions: 350 CPU/coding rows use `steps-v1.2`,
+while replay rows use `step-features-v1`. Model and rule evaluation now refuse a
+combined population with differing feature versions (including present versus
+missing identity), even after M02 defines mixed-label scoring. A future versioned
+split/report design must evaluate compatible populations separately. Model and
+serving metadata retain the full label-version set beside the legacy singular field.
+
+### D03 review fixes — 2026-11-10
+
+- [x] Reject all replay experiments sharing run UUIDs across source folders; curation
+  rejects overlapping stored replay UUIDs before publishing, with serialized publication.
+  Regression evidence: renamed copies, edited manifests, independent surviving experiments,
+  and concurrent-publication refusal in `test_replay_rows.py` / `test_replay_store.py`.
+- [x] Refuse combined model/rule evaluation across feature definitions; retain every
+  label and feature version in model, serving and tracking metadata. Regression evidence:
+  `test_rule_baseline.py` and `test_train_candidates.py`.
+- [x] Current release references identify `steps-v1.3+aafae73eb211` and
+  `split-v2+febe942a2b59`; format 2 predecessor history remains immutable.
+- [x] Ruff and diff checks passed. Full Python suite with dedicated PostgreSQL and
+  Docker enabled: 2,205 passed, no skips. Final affected data/model/contract suite:
+  1,225 passed. DVC-aware integrity: 50 runs, 54 experiments, three releases,
+  three build reports, three gate attempts and three splits verified.
+- [ ] Fresh PR CI and two non-author approvals, including Rohit's written contract
+  confirmation, remain required before merge. Non-blocking fingerprint/journal/legacy
+  gate-fixture follow-ups are recorded in the data card, not marked implemented.

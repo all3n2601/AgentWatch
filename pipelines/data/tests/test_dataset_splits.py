@@ -754,6 +754,7 @@ def test_split_v1_contract_with_an_assignment_is_refused(tmp_path):
         ('label_rules = ["labels-v1.1", "labels-v2"]', "label_rules = []", "label_rules"),
         ('label_rules = ["labels-v1.1", "labels-v2"]', "label_rules = [1]", "label_rules"),
         ('group_key = "task_group"', 'group_key = "run_id"', "is not one of"),
+        ('group_key = "task_group"', 'group_key = "task_id"', "requires group_key"),
         ("min_clean_test_steps = 100", "min_clean_test_steps = -1", "min_clean_test_steps"),
         ("min_test_steps_per_class = 30", "min_test_steps_per_class = 3.0", "must be int"),
         ("min_mixed_contention_test_steps = 30", "", "min_mixed_contention_test_steps"),

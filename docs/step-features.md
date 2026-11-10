@@ -26,7 +26,7 @@ zero). Each replay row is computed with `compute_feature_rows` from that replay'
 `live-journal.jsonl` and the declared interval in its `agent-evidence.json`, and its timings must
 equal the `experiment.json` timings its label used within 1e-6 s. Consumers that mix the two
 versions must read `feature_version`; the values are not interchangeable. In release
-`steps-v1.3+a1b96c4ff2c8` the 5,603 replay rows have telemetry `present` 427, `empty` 3,445 and
+`steps-v1.3+aafae73eb211` the 5,603 replay rows have telemetry `present` 427, `empty` 3,445 and
 `no_overlap` 1,731: model calls and retrievals have no v1-metric samples on their target, and
 millisecond tool steps fall between 0.25 s samples (see the
 [data card](data-card.md#missingness-per-feature-version)).
@@ -113,5 +113,5 @@ present telemetry, or a non-`missing` status for a step that never started.
 - No HTTP endpoint serves feature rows yet; B03 decides how rows are served and stored.
 - Coverage needs the producer's declared sampling interval, which live runs do not record.
 - Real agent runs have been joined offline from recorded journals (D03, 2026-11-06: 5,603 rows
-  from 598 replays in `steps-v1.3+a1b96c4ff2c8`, `pipelines/data/tests/test_replay_rows.py` for
+  from 598 replays in `steps-v1.3+aafae73eb211`, `pipelines/data/tests/test_replay_rows.py` for
   the join). Sampling overhead and achieved intervals are not measured by these changes.

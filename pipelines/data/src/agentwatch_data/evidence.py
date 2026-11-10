@@ -195,13 +195,36 @@ def add_experiment(directory: Path, store: Path) -> Stored:
         target = store / name
         if target.exists():
             return existing_experiment(target, hashes)
+        # Serialize the identity check and publication, including differently named
+        # manifests. Refuse a concurrent writer rather than waiting without a bound.
+        lock = store / ".replay-publication-lock"
         try:
-            os.replace(staging, target)
-        except OSError:
-            if not target.exists():
-                raise
-            return existing_experiment(target, hashes)  # a concurrent add stored it first
-        fsync_directory(store)
+            lock.mkdir()
+        except FileExistsError as error:
+            raise EvidenceError("Another replay publication is in progress; retry later") from error
+        try:
+            if target.exists():
+                return existing_experiment(target, hashes)
+            incoming = {r.run_id for r in experiment.replays if r.run_id is not None}
+            for entry in sorted(store.iterdir()):
+                if entry.name.startswith(".") or not entry.is_dir():
+                    continue
+                if (entry / MANIFEST_FILE).exists():
+                    stored, _ = read_stored_experiment(entry)
+                    identities = {r.run_id for r in stored.replays if r.run_id is not None}
+                    if incoming & identities:
+                        raise EvidenceError(
+                            f"Replay run identity is already stored as {entry.name}"
+                        )
+            try:
+                os.replace(staging, target)
+            except OSError:
+                if not target.exists():
+                    raise
+                return existing_experiment(target, hashes)
+            fsync_directory(store)
+        finally:
+            lock.rmdir()
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return Stored(name, added=True)

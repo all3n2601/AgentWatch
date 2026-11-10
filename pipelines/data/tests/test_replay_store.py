@@ -465,3 +465,25 @@ def test_malformed_delivery_outcome_lines_are_refused(tmp_path, line, message):
     edit_lines(path, lambda lines: lines.insert(-1, line))
     with pytest.raises(ReplayEvidenceError, match=rf"line \d+: {line['kind']} .*{message}"):
         read_journal(path)
+
+
+def test_edited_manifest_cannot_store_the_same_replay_runs_twice(tmp_path):
+    exp = experiment(tmp_path)
+    store = tmp_path / "store"
+    first = add(exp, store)
+    manifest = exp / "experiment.json"
+    manifest.write_text(manifest.read_text() + "\n")
+    with pytest.raises(EvidenceError, match="already stored"):
+        add(exp, store)
+    assert [p.name for p in store.iterdir()] == [first.name]
+
+
+def test_concurrent_publication_fails_without_leaving_staged_evidence(tmp_path):
+    exp = experiment(tmp_path)
+    store = tmp_path / "store"
+    store.mkdir()
+    lock = store / ".replay-publication-lock"
+    lock.mkdir()
+    with pytest.raises(EvidenceError, match="retry later"):
+        add(exp, store)
+    assert list(store.iterdir()) == [lock]

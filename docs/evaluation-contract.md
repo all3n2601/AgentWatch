@@ -1,8 +1,8 @@
 # AgentWatch evaluation contract
 
-Status: `eval-contract-v2`, accepted (identifier `9b55506c`). Rohit, the M02 owner, accepted it
-and told the owner directly on 2026-11-05; his approval of the D03 pull request is the written
-confirmation. It adopts items 1, 3 and 4 of [the v2 proposal](evaluation-contract-v2-proposal.md);
+Status: `eval-contract-v2` (frozen identifier `9b55506c`) records accepted metadata,
+based on reported verbal acceptance on 2026-11-05. Rohit's written confirmation is still
+required before PR #59 may merge; it is not yet an acceptance record. It adopts items 1, 3 and 4 of [the v2 proposal](evaluation-contract-v2-proposal.md);
 item 2, the multi-resource metric and the rule for scoring a `mixed` step, is not encoded and
 remains Rohit's M02 decision. Thresholds live in `pipelines/model/evaluation-contract.toml`.
 `eval-contract-v1` (identifier `3022770b`) is kept unchanged as
@@ -41,7 +41,7 @@ Tuning, calibration, and the abstention threshold use the validation split only.
 
 The leakage check exists because on the CPU and coding data `label_resource` equals
 `rule_prediction` on every row and `queue_fraction` nearly separates the classes. On the first
-`split-v2` split (`split-v2+2efb6e737ba2`, dataset v1) the check passed, with an observed
+`split-v2` split (`split-v2+febe942a2b59`, dataset v1) the check passed, with an observed
 maximum of 0.974242 (`queue_seconds`, `retrieval`) against the 0.98 bound.
 
 ## Gates
@@ -99,3 +99,19 @@ Change thresholds only before an evaluation uses them, and bump `version` with e
 Moving `status` to `accepted` requires review by the dataset owner and the promotion-check owner.
 Keep the previous contract file when a new version changes how splits are made, so earlier
 splits and results still rebuild (`evaluation-contract-v1.toml`).
+
+### D03 acceptance and evaluation merge conditions (2026-11-10)
+
+PR #59 must not merge until Rohit (M02/promotion-check owner) supplies written
+confirmation of `eval-contract-v2` and the final revision has the required two
+non-author approvals. The owner's report of verbal acceptance is not that record.
+The frozen contract's `status = "accepted"` and hash `9b55506c` are preserved to
+avoid silently changing published split identities; this metadata does not prove
+that the written merge condition has been satisfied. That condition remains open.
+
+The test split crosses feature definitions: 350 CPU/coding rows use `steps-v1.2`,
+while replay rows use `step-features-v1`. Model and rule evaluation now refuse a
+combined population with differing feature versions (including present versus
+missing identity), even after M02 defines mixed-label scoring. A future versioned
+split/report design must evaluate compatible populations separately. Model and
+serving metadata retain the full label-version set beside the legacy singular field.

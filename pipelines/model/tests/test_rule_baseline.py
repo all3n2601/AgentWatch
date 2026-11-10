@@ -173,3 +173,14 @@ def test_the_default_frozen_schema_is_the_steps_v1_3_schema():
     from agentwatch_model.rule_baseline import DEFAULT_SCHEMA
 
     assert DEFAULT_SCHEMA.name == "steps-v1.3.pbtxt" and DEFAULT_SCHEMA.is_file()
+
+
+@pytest.mark.parametrize("scored_version", ["steps-v1.2", None])
+def test_evaluation_refuses_incompatible_feature_definitions(tmp_path, scored_version):
+    splits = {
+        "train": [r | {"feature_version": "step-features-v1"} for r in TRAIN],
+        "test": [r | {"feature_version": scored_version} for r in TEST],
+    }
+    with pytest.raises(RowError, match="Incompatible feature definitions"):
+        run(tmp_path / "split.json", tmp_path / "out", loader=fake_loader([], splits))
+    assert not (tmp_path / "out" / "predictions.jsonl").exists()
