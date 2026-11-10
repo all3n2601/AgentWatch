@@ -11,16 +11,24 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import Callable
-from contextlib import ExitStack, closing
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from agentwatch_sdk.live import ResourceRegistration, RunCreate
+from agentwatch_sdk.policy import RUNNER_SERVICE_ID
 from agentwatch_worker.nvml import NvmlDevice
 
-from agentwatch_agent.admission import AdmissionRefused, Control, Permit, RunnerAdmission
+from agentwatch_agent.admission import (
+    ADMITTED_TOOLS,
+    AdmissionRefused,
+    Control,
+    Permit,
+    PolicyWatcher,
+    RunnerAdmission,
+)
 from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.config import (
     CONTRACT_VERSION,
@@ -140,8 +148,9 @@ NO_ADMISSION = {
     "status": "not_configured",
     "reason": "This run consulted no concurrency policy; no admission limits were applied",
 }
-# Tools whose execution needs an admission permit, and the control it counts against.
-ADMITTED_TOOLS: dict[str, Control] = {"run_tests": "test_jobs"}
+# One wording for a policy that became unusable mid-run: reasons feed dataset labels, and this
+# is neither a runner bug nor a task failure. The error itself goes into failure_detail.
+POLICY_FAILED = "Concurrency policy became unusable during the run; admission stopped"
 VERIFICATION_FAILED = "Agent finished, but the runner's verification tests did not pass"
 # Raised by urllib/json/Ollama helpers for a failed or unusable model request.
 MODEL_REQUEST_ERRORS = (OSError, http.client.HTTPException, RuntimeError, ValueError)
@@ -517,6 +526,13 @@ class AgentRunner:
             described = f"{type(component).__name__}: {type(error).__name__}: {error}"[:500]
             if described not in recorded:
                 recorded.append(described)
+            if isinstance(component, PolicyWatcher):
+                # A policy failure fails the run with its own reason; it is not a runner bug
+                # to re-raise, and the watcher's one error object is shared by every run.
+                if state == "completed":
+                    state, reason = "failed", POLICY_FAILED
+                    self.evidence["failure_detail"] = described
+                continue
             if error not in errors:
                 errors.append(error)
                 new.append(error)
@@ -660,7 +676,7 @@ class AgentRunner:
             {
                 "tool_host": ResourceRegistration(
                     resource_id=f"tool-host-{suffix}",
-                    service_id="agentwatch-agent-runner",
+                    service_id=RUNNER_SERVICE_ID,
                     resource_class="cpu_sandbox",
                 ),
                 "inference": ResourceRegistration(
@@ -804,14 +820,37 @@ class AgentRunner:
             return f"{state}_locally_undelivered", reason
 
     def _admission_evidence(self) -> dict:
+        """This run's admission counts, from its own records, apart from the process's state."""
         if self.admission is None:
             return dict(NO_ADMISSION)
         watcher = self.admission.watcher
-        return (
-            {"status": "configured"}
-            | self.admission.controller.summary()
-            | {"policy_watcher": watcher.summary() if watcher is not None else None}
-        )
+        controls: dict[str, dict] = {}
+        for control in ("inference_requests", "test_jobs"):
+            records = [r for r in self.evidence["admissions"] if r.get("control") == control]
+            refused: dict[str, int] = {}
+            for record in records:
+                if record.get("outcome") != "admitted":
+                    refused[record["outcome"]] = refused.get(record["outcome"], 0) + 1
+            waits = [
+                r["admission_wait_seconds"]
+                for r in records
+                if isinstance(r.get("admission_wait_seconds"), (int, float))
+            ]
+            controls[control] = {
+                "admitted": sum(1 for r in records if r.get("outcome") == "admitted"),
+                "refused": refused,
+                # None when this run made no request of this kind, distinct from a zero wait.
+                "longest_wait_seconds": max(waits) if waits else None,
+                "held_at_closure": sum(1 for r in records if r.get("held_by_unfinished_work")),
+            }
+        return {
+            "status": "configured",
+            "scope": "run",
+            "controls": controls,
+            # The shared controller's state: every run of this process, so not this run's.
+            "process": self.admission.controller.summary(),
+            "policy_watcher": watcher.summary() if watcher is not None else None,
+        }
 
     def _cancellation_evidence(self, watcher: CancellationWatcher | None) -> dict:
         request = self.cancellation.request
@@ -829,8 +868,13 @@ class AgentRunner:
 
     def _raise_background_errors(self) -> None:
         for component in self._background:
-            if component.error is not None:
-                raise component.error
+            error = component.error
+            if error is None:
+                continue
+            if isinstance(component, PolicyWatcher):
+                # A fresh failure per run: the watcher's error object is shared across runs.
+                raise RunFailure(POLICY_FAILED, f"{type(error).__name__}: {error}"[:500])
+            raise error
 
     def _checkpoint(self, deadline: float) -> None:
         self._raise_background_errors()
@@ -869,14 +913,29 @@ class AgentRunner:
             if refused.outcome == "cancelled":
                 request = self.cancellation.request
                 raise RunCancelled(request.reason if request else refused.reason) from refused
-            reason = (
-                self._run_limit_reason() if refused.outcome == "run_deadline" else refused.reason
-            )
+            reason = {
+                "run_deadline": self._run_limit_reason(),
+                "policy_unavailable": POLICY_FAILED,
+            }.get(refused.outcome, refused.reason)
             context.steps.fail(step, reason)
             raise RunFailure(reason, refused.reason) from refused
 
+    @contextmanager
+    def _admission(
+        self, control: Control | None, context: _RunContext, step: Step
+    ) -> Iterator[Permit | None]:
+        """Hold this step's permit (None without admission or a control) for the block.
+
+        On exit the permit is returned unless the work claimed it, and its record is kept.
+        """
+        permit = self._admit(control, context, step) if control is not None else None
+        try:
+            yield permit
+        finally:
+            self._settle_admission(permit)
+
     def _settle_admission(self, permit: Permit | None) -> None:
-        """Return a permit whose work never started, then record the admission's evidence."""
+        """Return a permit no work claimed, then record the admission's evidence."""
         if permit is None:
             return
         permit.release_unless_claimed()
@@ -949,21 +1008,20 @@ class AgentRunner:
             if time.monotonic() >= context.deadline_monotonic:
                 raise RunFailure("Run time limit reached while waiting for a model response")
 
-        permit = self._admit("inference_requests", context, step)
+        with self._admission("inference_requests", context, step) as permit:
 
-        def request() -> dict:
-            # The request thread holds the permit until the request really ends, even when
-            # the run stopped waiting for it; a wait that already gave up returned it.
-            if permit is not None and not permit.claim():
-                raise RunCancelled("The admission permit was returned before the request began")
-            try:
-                timer("request")
-                return self.model.chat(payload, trace_context=trace_context, on_event=observe)
-            finally:
-                if permit is not None:
-                    permit.release()
+            def request() -> dict:
+                # The request thread holds the permit until the request really ends, even when
+                # the run stopped waiting for it; a wait that already gave up returned it.
+                if permit is not None and not permit.claim():
+                    raise RunCancelled("The admission permit was returned before the request began")
+                try:
+                    timer("request")
+                    return self.model.chat(payload, trace_context=trace_context, on_event=observe)
+                finally:
+                    if permit is not None:
+                        permit.release()
 
-        try:
             steps.start(step)
             started = time.monotonic()
             failure: RunFailure | None = None
@@ -992,8 +1050,6 @@ class AgentRunner:
                 # Measured before any placement read, so it covers only the model request.
                 record["request_wall_seconds"] = time.monotonic() - started
                 record["stream_timing"] = timer.summary()
-        finally:
-            self._settle_admission(permit)
         if failure is not None:
             steps.fail(step, failure.reason)
             if failure.reason != self._run_limit_reason():
@@ -1053,9 +1109,7 @@ class AgentRunner:
             resource=context.resources[prepared.resource],
         )
         record |= {"step_id": step.step_id, "span_id": step.span_id, "name": prepared.name}
-        control = ADMITTED_TOOLS.get(prepared.name)
-        permit = self._admit(control, context, step) if control is not None else None
-        try:
+        with self._admission(ADMITTED_TOOLS.get(prepared.name), context, step):
             steps.start(step)
             try:
                 outcome = dispatcher.execute(
@@ -1072,11 +1126,7 @@ class AgentRunner:
                 steps.fail(step, f"{prepared.name} failed: {failed}")
                 record |= {"status": "failed", "reason": str(failed), "evidence": failed.evidence}
                 return tool_message(prepared.name, {"error": str(failed)})
-        finally:
-            # The test subprocess has ended (or been killed) by now: its permit is free.
-            if permit is not None:
-                permit.release()
-            self._settle_admission(permit)
+        # The test subprocess ended (or was killed) inside the block, so its permit is free.
         steps.complete(step, cpu_seconds=outcome.cpu_seconds, cpu_scope=outcome.cpu_scope)
         record |= {"status": "completed", "evidence": outcome.evidence}
         return tool_message(prepared.name, outcome.content)
@@ -1088,8 +1138,7 @@ class AgentRunner:
         step = steps.submit(
             "verify-tests", "tool", parent=context.root, resource=context.resources["tool_host"]
         )
-        permit = self._admit("test_jobs", context, step)
-        try:
+        with self._admission("test_jobs", context, step):
             steps.start(step)
             try:
                 outcome = context.dispatcher.run_tests(
@@ -1108,10 +1157,6 @@ class AgentRunner:
                     "error": str(failed),
                 } | failed.evidence
                 raise RunFailure(reason, str(failed)) from failed
-        finally:
-            if permit is not None:
-                permit.release()
-            self._settle_admission(permit)
         steps.complete(step, cpu_seconds=outcome.cpu_seconds, cpu_scope=outcome.cpu_scope)
         self.evidence["verification"] = {"step_id": step.step_id} | outcome.evidence
         return outcome.evidence["outcome"] == "passed"

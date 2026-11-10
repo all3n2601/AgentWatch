@@ -17,9 +17,12 @@ enforces them inside one runner process: every model request and test job asks t
 - **Changes:** a new policy version changes future admissions only. Lowering a limit never
   stops admitted work; new admissions wait until enough permits are returned. Disable or
   restore to the baseline removes the limit, and waiters are admitted in order.
+- **Policy failure:** once the policy becomes unusable (`AdmissionController.fail`), waiters
+  and new arrivals are refused instead of being admitted under limits no longer trusted.
 
-Admission wait is recorded on the runner's clock, separately from the step's remaining
-dispatch, the model server's own queue and execution time.
+Admission wait is the difference of two ticks on the runner's clock (arrival and decision),
+the same ticks coverage uses, kept apart from the step's remaining dispatch, the model
+server's own queue and execution time.
 """
 
 import math
@@ -42,7 +45,12 @@ POLICY_TARGET = "coding-agent"
 ENFORCEMENT_SCOPE = "runner_process"
 Control = Literal["inference_requests", "test_jobs"]
 CONTROLS: tuple[Control, ...] = ("inference_requests", "test_jobs")
-RefusalOutcome = Literal["queue_full", "wait_exceeded", "cancelled", "run_deadline"]
+RefusalOutcome = Literal[
+    "queue_full", "wait_exceeded", "cancelled", "run_deadline", "policy_unavailable"
+]
+# Tools whose execution needs an admission permit, and the control it counts against. Kept
+# here so evidence readers (coverage) need not import the runner's execution stack.
+ADMITTED_TOOLS: dict[str, Control] = {"run_tests": "test_jobs"}
 DEFAULT_MAX_QUEUE_LENGTH = 64
 MAX_QUEUE_LENGTH = 1024
 # Waits longer than any model request's socket timeout (300 s) plus a test job, so a queue of
@@ -121,8 +129,9 @@ def _utc_now() -> str:
 
 @dataclass
 class _ControlState:
-    # None is no limit: the policy omits this control, or it does not apply to this runner.
+    # None is no limit: the policy sets none for this control, or it names another service.
     limit: int | None = None
+    # True only while a limit is applied; a matching service with no limit is not enforcement.
     enforced: bool = False
     not_enforced_reason: str | None = "No policy applied yet"
     active: int = 0
@@ -147,7 +156,6 @@ class Permit:
         self._controller = controller
         self._record = record
         self._clock = clock
-        self._admitted_ns = time.monotonic_ns()
         self._state: Literal["held", "claimed", "released"] = "held"
 
     @property
@@ -167,8 +175,9 @@ class Permit:
             if self._state == "released":
                 return
             self._state = "released"
-            self._record["released_tick_ns"] = self._clock.tick()
-            self._record["hold_seconds"] = (time.monotonic_ns() - self._admitted_ns) / 1e9
+            released = self._clock.tick()
+            self._record["released_tick_ns"] = released
+            self._record["hold_seconds"] = (released - self._record["admitted_tick_ns"]) / 1e9
             self._controller._return(self)
 
     def release_unless_claimed(self) -> None:
@@ -218,6 +227,8 @@ class AdmissionController:
         self._policy: PolicyVersion | None = None
         self._history: list[dict] = []
         self._open: set[Permit] = set()
+        # Set once the policy can no longer be trusted; admission stays refused from then on.
+        self._failure: str | None = None
 
     # Policy ------------------------------------------------------------------------------
 
@@ -225,6 +236,22 @@ class AdmissionController:
     def policy_version(self) -> int | None:
         with self._condition:
             return self._policy.version if self._policy is not None else None
+
+    @property
+    def policy_failure(self) -> str | None:
+        with self._condition:
+            return self._failure
+
+    def fail(self, reason: str) -> None:
+        """Stop admitting: waiters and new arrivals are refused with `policy_unavailable`.
+
+        Permits already held stay valid until returned; lowering trust, like lowering a limit,
+        stops nothing that is running.
+        """
+        with self._condition:
+            if self._failure is None:
+                self._failure = reason[:500]
+            self._condition.notify_all()
 
     def apply(self, policy: PolicyVersion) -> bool:
         """Apply the active policy version; True if it changed the version in force."""
@@ -236,6 +263,8 @@ class AdmissionController:
         if missing:
             raise PolicyError(f"Policy names no controlled service for {', '.join(missing)}")
         with self._condition:
+            if self._failure is not None:
+                raise PolicyError(f"Admission stopped after a policy failure: {self._failure}")
             current = self._policy
             if current is not None:
                 if policy.version == current.version:
@@ -254,14 +283,19 @@ class AdmissionController:
                 named = policy.controlled_services[control].service_id
                 governed = self.governed_services[control]
                 configured = getattr(policy.limits, control)
-                if named == governed:
-                    state.limit, state.enforced, state.not_enforced_reason = configured, True, None
-                else:
+                if named != governed:
                     state.limit, state.enforced = None, False
                     state.not_enforced_reason = (
                         f"Policy controls service {named!r}; this runner sends this work to "
                         f"{governed!r}"
                     )
+                elif configured is None:
+                    state.limit, state.enforced = None, False
+                    state.not_enforced_reason = (
+                        f"Policy version {policy.version} ({policy.action}) sets no {control} limit"
+                    )
+                else:
+                    state.limit, state.enforced, state.not_enforced_reason = configured, True, None
                 applied[control] = {
                     "configured_limit": configured,
                     "enforced": state.enforced,
@@ -291,6 +325,9 @@ class AdmissionController:
     def ensure_policy(self, source: PolicySource, retry: RetryPolicy) -> None:
         """Apply the active policy unless one already is, before a run admits anything."""
         with self._refresh_lock:
+            failure = self.policy_failure
+            if failure is not None:
+                raise PolicyError(f"Admission stopped after a policy failure: {failure}")
             if self.policy_version is None:
                 self.apply(load_policy(source, retry))
 
@@ -310,8 +347,10 @@ class AdmissionController:
     ) -> Permit:
         """Wait in order for a permit, or raise AdmissionRefused with the admission's record.
 
-        Cancellation and the run deadline end the wait as well as the control's queue bounds.
-        A refused or abandoned wait leaves the queue, so it never blocks the requests behind it.
+        Cancellation, the run deadline and a policy failure end the wait as well as the
+        control's queue bounds. A refused or abandoned wait leaves the queue, so it never blocks
+        the requests behind it. Arrival is ticked before taking the lock, so time spent waiting
+        for it is admission wait, and every wait is measured between ticks of `clock`.
         """
         if control not in CONTROLS:
             raise ValueError(f"Unknown admission control {control!r}")
@@ -321,8 +360,8 @@ class AdmissionController:
                 f"not {service_id!r}"
             )
         bounds = self.settings.bounds(control)
-        arrived_ns = time.monotonic_ns()
         wait_deadline = time.monotonic() + bounds.max_wait_seconds
+        arrived_tick_ns = clock.tick()
         with self._condition:
             if self._policy is None:
                 raise RuntimeError("No policy has been applied to this admission controller")
@@ -338,7 +377,7 @@ class AdmissionController:
                 "resource_id": resource_id,
                 "service_id": service_id,
                 "clock_id": clock.clock_id,
-                "arrived_tick_ns": clock.tick(),
+                "arrived_tick_ns": arrived_tick_ns,
                 "policy_version_at_arrival": self._policy.version,
                 "limit_at_arrival": state.limit,
                 "active_at_arrival": state.active,
@@ -347,27 +386,31 @@ class AdmissionController:
                 "max_wait_seconds": bounds.max_wait_seconds,
             }
             if cancel.is_set():
-                self._refuse(state, record, arrived_ns, clock, "cancelled")
+                self._refuse(state, record, clock, "cancelled")
             if time.monotonic() >= deadline_monotonic:
-                self._refuse(state, record, arrived_ns, clock, "run_deadline")
+                self._refuse(state, record, clock, "run_deadline")
+            if self._failure is not None:
+                self._refuse(state, record, clock, "policy_unavailable")
             if not state.queue and state.has_capacity():
-                return self._admit(state, record, arrived_ns, clock)
+                return self._admit(state, record, clock)
             if len(state.queue) >= bounds.max_queue_length:
-                self._refuse(state, record, arrived_ns, clock, "queue_full")
+                self._refuse(state, record, clock, "queue_full")
             waiter = object()
             state.queue.append(waiter)
             try:
                 while True:
                     if cancel.is_set():
-                        self._refuse(state, record, arrived_ns, clock, "cancelled")
+                        self._refuse(state, record, clock, "cancelled")
                     now = time.monotonic()
                     if now >= deadline_monotonic:
-                        self._refuse(state, record, arrived_ns, clock, "run_deadline")
+                        self._refuse(state, record, clock, "run_deadline")
+                    if self._failure is not None:
+                        self._refuse(state, record, clock, "policy_unavailable")
                     if state.queue[0] is waiter and state.has_capacity():
                         state.queue.popleft()
-                        return self._admit(state, record, arrived_ns, clock)
+                        return self._admit(state, record, clock)
                     if now >= wait_deadline:
-                        self._refuse(state, record, arrived_ns, clock, "wait_exceeded")
+                        self._refuse(state, record, clock, "wait_exceeded")
                     remaining = min(deadline_monotonic, wait_deadline) - now
                     self._condition.wait(min(self.wait_poll_seconds, remaining))
             finally:
@@ -377,17 +420,16 @@ class AdmissionController:
                     state.queue.remove(waiter)
                 self._condition.notify_all()
 
-    def _admit(
-        self, state: _ControlState, record: dict, arrived_ns: int, clock: MonotonicClock
-    ) -> Permit:
-        wait_seconds = (time.monotonic_ns() - arrived_ns) / 1e9
+    def _admit(self, state: _ControlState, record: dict, clock: MonotonicClock) -> Permit:
+        admitted_tick_ns = clock.tick()
+        wait_seconds = (admitted_tick_ns - record["arrived_tick_ns"]) / 1e9
         state.active += 1
         state.admitted += 1
         if state.longest_wait_seconds is None or wait_seconds > state.longest_wait_seconds:
             state.longest_wait_seconds = wait_seconds
         record |= {
             "outcome": "admitted",
-            "admitted_tick_ns": clock.tick(),
+            "admitted_tick_ns": admitted_tick_ns,
             "admission_wait_seconds": wait_seconds,
             "policy_version": self._policy.version,
             "limit": state.limit,
@@ -406,7 +448,6 @@ class AdmissionController:
         self,
         state: _ControlState,
         record: dict,
-        arrived_ns: int,
         clock: MonotonicClock,
         outcome: RefusalOutcome,
     ) -> None:
@@ -423,11 +464,15 @@ class AdmissionController:
             ),
             "cancelled": f"Cancelled while waiting for a {control} permit",
             "run_deadline": f"Run time limit reached while waiting for a {control} permit",
+            "policy_unavailable": (
+                f"Admission refused: the concurrency policy became unusable ({self._failure})"
+            ),
         }
+        refused_tick_ns = clock.tick()
         refused = record | {
             "outcome": outcome,
-            "refused_tick_ns": clock.tick(),
-            "admission_wait_seconds": (time.monotonic_ns() - arrived_ns) / 1e9,
+            "refused_tick_ns": refused_tick_ns,
+            "admission_wait_seconds": (refused_tick_ns - record["arrived_tick_ns"]) / 1e9,
             "policy_version": self._policy.version,
             "limit": state.limit,
             "enforced": state.enforced,
@@ -484,6 +529,7 @@ class AdmissionController:
                 ),
                 "governed_services": dict(self.governed_services),
                 "policy_version": self._policy.version if self._policy is not None else None,
+                "policy_failure": self._failure,
                 "policy_history": [dict(entry) for entry in self._history],
                 "controls": {
                     control: {
@@ -543,6 +589,8 @@ class PolicyWatcher:
             except Exception as error:  # noqa: BLE001
                 if isinstance(error, PolicyError) or not is_retryable(error):
                     self.error = error
+                    # Refuse queued and future admissions now, not at the runs' next checkpoint.
+                    self.controller.fail(f"{type(error).__name__}: {error}")
                     return
                 # The version in force stays; the failure is counted and reported.
                 self.poll_failures += 1

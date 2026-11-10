@@ -842,8 +842,16 @@ from M3 through M6 and do not renumber the implementation milestones above.
   requests and 4 test jobs were admitted, no inference permits overlapped, none was refused or
   held at closure, and 775 policy polls had no failures. Model calls took 16-279 s this time;
   CPU inference speed on this Mac varies several-fold between runs. Evidence is local to the
-  Mac, not committed. Open: PR review and CI, Benoy's GPU validation, and O02's formal
-  acceptance.
+  Mac, not committed. Review fixes 2026-11-10 (PR #60, Benoy and Allen): a policy failure
+  during a run now refuses queued and new admissions at once and fails each run with its own
+  reason (exit 1) instead of a runner error; a run's evidence counts its own admissions, with
+  the process's state under `admission.process`; waits are tick differences from one arrival
+  instant; a version without a limit records `enforced: false`; coverage joins admission
+  records by step and span and treats duplicates as inconsistent; a batch run without an
+  outcome records `task_passed: null`. Covered by new tests in `test_admission.py`,
+  `test_runner_admission.py` and `test_coverage.py`, and each of the 13 fixes was removed once
+  to confirm a test fails. The CPU batch above predates these fixes and was not rerun. Open:
+  PR review and CI, Benoy's GPU validation, and O02's formal acceptance.
 - [ ] O04 — Akshay: paired-run manifests and comparison validation after O01/D02.
   Implemented 2026-11-05 on branch `feature/optimization-evidence`:
   [optimization experiment evidence](optimization-evidence.md), preregistration manifests checked

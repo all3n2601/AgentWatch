@@ -251,6 +251,9 @@ def test_removing_a_limit_admits_waiters_in_order_and_restores_the_baseline():
         record = waiter.permit.snapshot()
         assert (record["policy_version_at_arrival"], record["policy_version"]) == (1, 2)
         assert (record["limit_at_arrival"], record["limit"]) == (1, None)
+        # No limit was applied at the decision, so none is reported as enforced.
+        assert record["enforced"] is False
+        assert "sets no test_jobs limit" in record["not_enforced_reason"]
     assert active(made) == 4  # the baseline has no limit
     for permit in [holder, *(waiter.permit for waiter in waiters)]:
         permit.release()
@@ -326,10 +329,79 @@ def test_an_admission_record_correlates_policy_step_resource_and_clock():
     assert (record["controller_id"], record["clock_id"]) == (made.controller_id, CLOCK.clock_id)
     assert record["policy_version"] == record["policy_version_at_arrival"] == 4
     assert record["arrived_tick_ns"] <= record["admitted_tick_ns"] <= record["released_tick_ns"]
+    # Waits and holds are differences of the recorded ticks, the ones coverage subtracts.
+    assert record["admission_wait_seconds"] == (
+        (record["admitted_tick_ns"] - record["arrived_tick_ns"]) / 1e9
+    )
+    assert record["hold_seconds"] == (record["released_tick_ns"] - record["admitted_tick_ns"]) / 1e9
     assert (record["max_queue_length"], record["released"]) == (3, True)
     summary = made.summary()
     assert (summary["enforcement_scope"], summary["pid"]) == ("runner_process", made.pid)
     assert "not global" in summary["scope_note"]
+
+
+@pytest.mark.parametrize(
+    ("policy", "action"),
+    [
+        (policy_version(0), "baseline"),
+        (policy_version(3), "disable"),
+        (policy_version(4, action="restore", restored_from=0), "restore"),
+    ],
+)
+def test_a_policy_without_a_limit_is_never_reported_as_enforced(policy, action):
+    made = controller(policy)
+    for control in ("inference_requests", "test_jobs"):
+        permit = acquire(made, control, f"step-{control}")
+        record = permit.snapshot()
+        permit.release()
+        assert (record["limit"], record["enforced"]) == (None, False)
+        assert record["not_enforced_reason"] == (
+            f"Policy version {policy.version} ({action}) sets no {control} limit"
+        )
+        state = made.summary()["controls"][control]
+        assert (state["enforced"], state["limit"]) == (False, None)
+    applied = made.summary()["policy_history"][-1]["controls"]["test_jobs"]
+    assert (applied["configured_limit"], applied["enforced"]) == (None, False)
+
+
+def test_a_refusal_measures_its_wait_between_its_own_ticks():
+    made = controller(policy_version(1, tests=1), max_queue_length=0)
+    holder = acquire(made, step="holder")
+    with pytest.raises(AdmissionRefused) as refused:
+        acquire(made, step="refused")
+    record = refused.value.record
+    assert record["admission_wait_seconds"] == (
+        (record["refused_tick_ns"] - record["arrived_tick_ns"]) / 1e9
+    )
+    holder.release()
+
+
+def test_a_policy_failure_refuses_waiters_and_new_arrivals_but_keeps_held_permits():
+    made = controller(policy_version(1, tests=1))
+    holder = acquire(made, step="holder")
+    waiter = Waiter(made, "waiter")
+    waiter.start()
+    wait_for(lambda: queued(made) == 1)
+    made.fail("PolicyError: Active policy went from version 3 back to 1")
+    # Refused at once, long before its 600 s wait bound, and never admitted.
+    assert waiter.done.wait(5) and waiter.permit is None
+    assert waiter.refused.outcome == "policy_unavailable"
+    assert "went from version 3 back to 1" in waiter.refused.reason
+    with pytest.raises(AdmissionRefused) as late:
+        acquire(made, step="late")
+    assert late.value.outcome == "policy_unavailable"
+    # Work already admitted keeps its permit until it ends, like lowering a limit.
+    assert active(made) == 1
+    holder.release()
+    assert made.open_permits() == 0 and queued(made) == 0
+    summary = made.summary()
+    assert "back to 1" in summary["policy_failure"]
+    assert summary["controls"]["test_jobs"]["refused"] == {"policy_unavailable": 2}
+    # The controller stays stopped: no later read or version brings admission back.
+    with pytest.raises(PolicyError, match="policy failure"):
+        made.ensure_policy(FakePolicySource(policy_version(2, tests=1)), NO_SLEEP)
+    with pytest.raises(PolicyError, match="policy failure"):
+        made.apply(policy_version(2, tests=1))
 
 
 def test_a_policy_that_cannot_be_enforced_faithfully_is_refused():
@@ -457,6 +529,11 @@ def test_the_watcher_stops_on_an_error_it_cannot_retry_and_keeps_it(failure):
     assert watcher.summary()["stopped_by_error"]
     if failure == "backwards":
         assert isinstance(watcher.error, PolicyError)
+    # The watcher's failure stops admission at once, not at the runs' next checkpoint.
+    assert made.policy_failure is not None
+    with pytest.raises(AdmissionRefused) as refused:
+        acquire(made, step="after-failure")
+    assert refused.value.outcome == "policy_unavailable"
 
 
 def test_the_watcher_rejects_a_poll_interval_that_is_not_positive():

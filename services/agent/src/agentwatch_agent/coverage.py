@@ -43,8 +43,8 @@ from pathlib import Path
 from agentwatch_sdk.live import ResourceSample, StepEvent
 from pydantic import ValidationError
 
+from agentwatch_agent.admission import ADMITTED_TOOLS
 from agentwatch_agent.resources import COUNTER_METRICS, interval_summary
-from agentwatch_agent.runner import ADMITTED_TOOLS
 from agentwatch_agent.service_probes import SERVICE_COUNTER_METRICS
 
 # v4 splits each step's queue into admission wait and dispatch (O03); v3 lists `sampling` and
@@ -179,11 +179,16 @@ def _difference(total: float | None, part: float | None) -> float | None:
 
 
 class Admissions:
-    """A run's admission evidence: whether admission was configured, and its records by step."""
+    """A run's admission evidence: whether admission was configured, and its records by step.
+
+    A record joins a step only when both its step and span IDs match. A step with more than one
+    record has conflicting evidence and is reported as inconsistent, never last-write-wins.
+    """
 
     def __init__(self, evidence: dict):
         configured = evidence.get("admission")
         self.records: dict[str, dict] = {}
+        self.conflicting: set[str] = set()
         self.required: set[str] = set()
         if not isinstance(configured, dict):
             # Runners before agent-runner-v4 had no admission: nothing waited for a permit.
@@ -195,7 +200,10 @@ class Admissions:
         self.status = "configured"
         for record in evidence.get("admissions") or []:
             if isinstance(record, dict) and isinstance(record.get("step_id"), str):
-                self.records[record["step_id"]] = record
+                step_id = record["step_id"]
+                if step_id in self.records:
+                    self.conflicting.add(step_id)
+                self.records[step_id] = record
         # The steps the runner admits: every model call, the tools it admits, verification.
         for call in evidence.get("model_calls") or []:
             if isinstance(call, dict) and isinstance(call.get("step_id"), str):
@@ -223,6 +231,14 @@ class Admissions:
                 "admission_wait_seconds": None,
                 "dispatch_queue_seconds": queue,
             }
+        unknown = {
+            "queue_seconds": queue,
+            "admission": "inconsistent",
+            "admission_wait_seconds": None,
+            "dispatch_queue_seconds": None,
+        }
+        if event["step_id"] in self.conflicting:
+            return unknown
         record = self.records.get(event["step_id"])
         if record is None:
             required = event["step_id"] in self.required
@@ -235,18 +251,14 @@ class Admissions:
         arrived, admitted = record.get("arrived_tick_ns"), record.get("admitted_tick_ns")
         consistent = (
             record.get("outcome") == "admitted"
+            and record.get("span_id") == event["span_id"]
             and record.get("clock_id") == event["clock_id"]
             and all(type(tick) is int for tick in (arrived, admitted))
             and submitted <= arrived <= admitted <= started
         )
         if not consistent:
-            # Never subtract ticks of another clock or an impossible order: report unknown.
-            return {
-                "queue_seconds": queue,
-                "admission": "inconsistent",
-                "admission_wait_seconds": None,
-                "dispatch_queue_seconds": None,
-            }
+            # Another span's record, another clock's ticks or an impossible order: unknown.
+            return unknown
         wait = (admitted - arrived) / 1e9
         return {
             "queue_seconds": queue,

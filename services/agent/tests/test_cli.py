@@ -1,4 +1,8 @@
 import json
+import os
+import signal
+import threading
+import time
 from urllib.error import URLError
 
 import pytest
@@ -329,6 +333,38 @@ def test_no_policy_runs_without_reading_the_policy(tmp_path, monkeypatch):
     assert server.policy_source.reads == 0
     (evidence_path,) = tmp_path.glob("*/agent-evidence.json")
     assert json.loads(evidence_path.read_text())["admission"]["status"] == "not_configured"
+
+
+def test_a_signal_cancels_a_running_batch_while_the_main_thread_waits(
+    tmp_path, capsys, monkeypatch
+):
+    """A real SIGINT reaches the batch's handler during its join, so Ctrl-C is prompt."""
+    release = threading.Event()
+    blocking = [ScriptedModel(SOLVE_MEAN, block=release, block_on=1) for _ in range(2)]
+    server = PolicyLiveServer(policy_version(1, inference=2, tests=1))
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args, **_kwargs: server)
+    models = iter(blocking)
+    monkeypatch.setattr(cli, "build_model", lambda _args: next(models))
+
+    def interrupt():
+        assert all(model.blocked.wait(10) for model in blocking)
+        os.kill(os.getpid(), signal.SIGINT)
+        # The abandoned requests end afterwards, so their permits come back before the drain.
+        threading.Timer(0.2, release.set).start()
+
+    threading.Thread(target=interrupt, daemon=True).start()
+    started = time.monotonic()
+    code = cli.main(
+        ["batch", "--task", "fix-mean-empty", "--repeat", "2", "--output-dir", str(tmp_path)]
+    )
+    assert time.monotonic() - started < 20
+    assert code == cli.EXIT_FAILED
+    (batch_file,) = tmp_path.glob("batch-*/batch.json")
+    saved = json.loads(batch_file.read_text())
+    assert [run["state"] for run in saved["runs"]] == ["cancelled"] * 2
+    assert {run["reason"] for run in saved["runs"]} == {"Cancelled by operator signal SIGINT"}
+    assert saved["permits_returned"] is True
+    capsys.readouterr()
 
 
 @pytest.mark.parametrize(

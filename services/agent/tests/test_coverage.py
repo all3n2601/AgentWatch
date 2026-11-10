@@ -370,10 +370,13 @@ def test_queue_is_kept_apart_from_service_time(tmp_path):
     assert model["outside_service_seconds"] == pytest.approx(0.01)
 
 
-def admission_record(step_id, arrived, admitted, *, clock_id=CLOCK, outcome="admitted"):
+def admission_record(
+    step_id, arrived, admitted, *, clock_id=CLOCK, outcome="admitted", span_id="b" * 16
+):
     return {
         "method": "runner-admission-v1",
         "step_id": step_id,
+        "span_id": span_id,
         "clock_id": clock_id,
         "outcome": outcome,
         "arrived_tick_ns": arrived,
@@ -421,6 +424,13 @@ def test_the_queue_splits_into_admission_wait_and_dispatch(tmp_path):
             None,
         ),
         (admission_record("model-call-1", 30 * MS, 50 * MS), True, "inconsistent", None),
+        # The step ID matches but the record belongs to another span: never joined.
+        (
+            admission_record("model-call-1", 1 * MS, 31 * MS, span_id="c" * 16),
+            True,
+            "inconsistent",
+            None,
+        ),
         (
             admission_record("model-call-1", 1 * MS, 2 * MS, outcome="cancelled"),
             True,
@@ -437,6 +447,17 @@ def test_admission_evidence_that_cannot_split_the_queue_says_why(
     assert timing["dispatch_queue_seconds"] == (
         pytest.approx(dispatch) if dispatch is not None else None
     )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_conflicting_admission_records_for_one_step_are_unusable_in_either_order(tmp_path, reverse):
+    records = [
+        admission_record("model-call-1", 1 * MS, 31 * MS),
+        admission_record("model-call-1", 2 * MS, 10 * MS),
+    ]
+    timing = admission_timing(tmp_path, records[::-1] if reverse else records)
+    assert (timing["admission"], timing["admission_wait_seconds"]) == ("inconsistent", None)
+    assert timing["dispatch_queue_seconds"] is None
 
 
 def test_a_step_that_needs_no_permit_keeps_its_whole_queue_as_dispatch(tmp_path):

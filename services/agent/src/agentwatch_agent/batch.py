@@ -53,7 +53,8 @@ class BatchRun:
             "run_id": str(outcome.run_id) if outcome else self.runner.evidence.get("run_id"),
             "state": self.state(),
             "reason": outcome.reason if outcome else None,
-            "task_passed": outcome.task_passed if outcome else False,
+            # None, not False, without an outcome: no verification ran, so no task result exists.
+            "task_passed": outcome.task_passed if outcome else None,
             "delivery_complete": outcome.delivery_complete if outcome else None,
             "resend_needed": outcome.resend_needed if outcome else None,
             "records_refused": outcome.records_refused if outcome else None,

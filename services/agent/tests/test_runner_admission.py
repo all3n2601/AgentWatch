@@ -31,7 +31,7 @@ from agentwatch_agent.config import RUNNER_VERSION, RunLimits
 from agentwatch_agent.coverage import coverage_report
 from agentwatch_agent.delivery import RetryPolicy
 from agentwatch_agent.errors import RunNotStarted
-from agentwatch_agent.runner import ADMISSION_LIMITATION, NO_ADMISSION, AgentRunner
+from agentwatch_agent.runner import ADMISSION_LIMITATION, NO_ADMISSION, POLICY_FAILED, AgentRunner
 
 NO_SLEEP = RetryPolicy(attempts=2, initial_backoff_seconds=0, max_backoff_seconds=0)
 ADMITTED_STEPS = {
@@ -45,6 +45,12 @@ def make_admission(policy, *, inference_service="ollama", watcher=None, **bounds
     settings = AdmissionSettings(QueueBounds(**bounds), QueueBounds(**bounds))
     controller = AdmissionController(settings, inference_service_id=inference_service)
     return RunnerAdmission(controller, FakePolicySource(policy), watcher, retry=NO_SLEEP)
+
+
+def short_wait_controller():
+    """Bounded waits, so a regression that stops refusing fails the test instead of hanging."""
+    bounds = QueueBounds(max_wait_seconds=5)
+    return AdmissionController(AdmissionSettings(bounds, bounds), inference_service_id="ollama")
 
 
 def make_runner(task, server, model, output_dir, **overrides):
@@ -113,8 +119,21 @@ def test_every_model_request_and_test_job_is_admitted_under_the_policy(mean_task
             <= event.started_tick_ns
         )
     assert saved["admission"]["status"] == "configured"
-    assert saved["admission"]["open_permits"] == 0
-    assert [entry["version"] for entry in saved["admission"]["policy_history"]] == [2]
+    # This run's own counts, from its own records.
+    model_calls = len(saved["model_calls"])
+    assert saved["admission"]["scope"] == "run"
+    assert saved["admission"]["controls"]["inference_requests"]["admitted"] == model_calls
+    assert saved["admission"]["controls"]["test_jobs"] == {
+        "admitted": 2,
+        "refused": {},
+        "longest_wait_seconds": max(
+            r["admission_wait_seconds"] for r in saved["admissions"] if r["control"] == "test_jobs"
+        ),
+        "held_at_closure": 0,
+    }
+    process = saved["admission"]["process"]
+    assert process["open_permits"] == 0 and "not global" in process["scope_note"]
+    assert [entry["version"] for entry in process["policy_history"]] == [2]
     assert saved["cleanup"]["admission_permits_held"] == 0
     assert ADMISSION_LIMITATION in saved["limitations"]
     configuration = saved["configuration"]
@@ -267,7 +286,7 @@ def test_an_unreadable_policy_means_nothing_runs(mean_task, server, tmp_path):
     assert saved["cleanup"]["workspace_removed"] is True
 
 
-def test_a_policy_watcher_failure_fails_the_run(mean_task, server, tmp_path):
+def test_a_policy_watcher_failure_fails_the_run_with_its_own_reason(mean_task, server, tmp_path):
     source = FakePolicySource(policy_version(1))
     admission = make_admission(policy_version(1))
     watcher = PolicyWatcher(source, admission.controller, poll_seconds=60)
@@ -276,11 +295,48 @@ def test_a_policy_watcher_failure_fails_the_run(mean_task, server, tmp_path):
     runner = make_runner(
         mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path / "run", admission=admission
     )
-    with pytest.raises(PolicyError):
-        runner.run()
+    # A policy failure is not a runner bug: the run closes as failed and nothing is raised.
+    outcome = runner.run()
+    assert (outcome.state, outcome.reason, outcome.task_passed) == ("failed", POLICY_FAILED, False)
     assert server.only_run().state == "failed"
-    saved = evidence(runner.output_dir / "agent-evidence.json")
+    saved = evidence(outcome.evidence_path)
+    assert "back to 1" in saved["failure_detail"]
     assert any("PolicyWatcher" in error for error in saved["background_errors"])
+
+
+def test_a_policy_failure_mid_run_refuses_a_queued_request_and_fails_the_run(
+    mean_task, server, tmp_path
+):
+    source = FakePolicySource(policy_version(3, inference=1, tests=1))
+    controller = short_wait_controller()
+    with PolicyWatcher(source, controller, poll_seconds=0.01) as watcher:
+        admission = RunnerAdmission(controller, source, watcher, NO_SLEEP)
+        other = held_permit(admission, "inference_requests")
+        runner = make_runner(
+            mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path / "run", admission=admission
+        )
+        result = {}
+        thread = threading.Thread(target=lambda: result.update(outcome=runner.run()))
+        thread.start()
+        wait_for(lambda: controller.summary()["controls"]["inference_requests"]["queued"] == 1)
+        source.policy = policy_version(2, inference=4)  # the service went backwards
+        thread.join(10)
+        assert not thread.is_alive()
+    outcome = result["outcome"]
+    assert (outcome.state, outcome.reason) == ("failed", POLICY_FAILED)
+    saved = evidence(outcome.evidence_path)
+    (record,) = saved["admissions"]
+    assert (record["step_id"], record["outcome"]) == ("model-call-1", "policy_unavailable")
+    # Refused, never admitted under the version the runner no longer trusts.
+    assert saved["model_calls"][0].get("request_wall_seconds") is None
+    assert server.only_run().steps["model-call-1"].state == "failed"
+    assert saved["admission"]["controls"]["inference_requests"]["refused"] == {
+        "policy_unavailable": 1
+    }
+    # Work admitted before the failure keeps its permit until it ends.
+    assert controller.open_permits() == 1
+    other.release()
+    assert controller.open_permits() == 0
 
 
 def test_a_runner_refuses_a_controller_for_another_inference_service(mean_task, server, tmp_path):
@@ -376,6 +432,12 @@ def test_a_batch_shares_one_limit_across_its_runs(mean_task, tmp_path):
     )
     assert {run["state"] for run in saved["runs"]} == {"completed"}
     assert len({run["run_id"] for run in saved["runs"]}) == 3
+    # Each run's evidence counts its own admissions, not the whole batch's.
+    for runner in runners:
+        own = evidence(runner.output_dir / "agent-evidence.json")["admission"]
+        assert own["controls"]["inference_requests"]["admitted"] == 5
+        assert own["controls"]["test_jobs"]["admitted"] == 2
+        assert own["process"]["controls"]["inference_requests"]["admitted"] == 15
     # The two queued requests each waited at least as long as the permit was held.
     waits = sorted(
         record["admission_wait_seconds"]
@@ -409,7 +471,56 @@ def test_a_batch_whose_policy_is_unreadable_starts_nothing(mean_task, tmp_path):
     saved = evidence(batch.path)
     assert [run["state"] for run in saved["runs"]] == ["not_started"] * 2
     assert saved["runs"][0]["not_started"]["stage"] == "policy"
+    # No verification ran, so there is no task result: unknown, never a failed task.
+    assert [run["task_passed"] for run in saved["runs"]] == [None, None]
     assert admission.source.reads == 2  # read once for the batch, with its retry
+
+
+def test_a_batch_records_a_runner_error_without_inventing_a_task_result(
+    mean_task, tmp_path, monkeypatch
+):
+    server = FakeLiveServer()
+    admission = make_admission(policy_version(0))
+    runners, _ = batch_runners(mean_task, server, tmp_path, admission, 2)
+
+    def broken():
+        raise RuntimeError("runner bug")
+
+    monkeypatch.setattr(runners[1], "run", broken)
+    runs = AgentBatch(runners, admission.controller, tmp_path / "batch").run()
+    assert runs[0].outcome.state == "completed" and isinstance(runs[1].error, RuntimeError)
+    saved = evidence(tmp_path / "batch" / BATCH_FILE)
+    assert [run["task_passed"] for run in saved["runs"]] == [True, None]
+    assert saved["runs"][1]["error"] == "RuntimeError: runner bug"
+
+
+def test_a_policy_failure_fails_every_run_of_a_batch_without_a_runner_error(mean_task, tmp_path):
+    server = FakeLiveServer()
+    source = FakePolicySource(policy_version(3, inference=1, tests=1))
+    controller = short_wait_controller()
+    with PolicyWatcher(source, controller, poll_seconds=0.01) as watcher:
+        admission = RunnerAdmission(controller, source, watcher, NO_SLEEP)
+        other = held_permit(admission, "inference_requests")
+        runners, _ = batch_runners(mean_task, server, tmp_path, admission, 3)
+        batch = AgentBatch(runners, controller, tmp_path / "batch", watcher=watcher)
+        result = {}
+        thread = threading.Thread(target=lambda: result.update(runs=batch.run()))
+        thread.start()
+        wait_for(lambda: controller.summary()["controls"]["inference_requests"]["queued"] == 3)
+        source.policy = policy_version(3, inference=9)  # same version, different content
+        wait_for(lambda: controller.summary()["controls"]["inference_requests"]["queued"] == 0)
+        other.release()
+        thread.join(30)
+        assert not thread.is_alive()
+    runs = result["runs"]
+    assert [(run.outcome.state, run.outcome.reason) for run in runs] == [
+        ("failed", POLICY_FAILED)
+    ] * 3
+    assert all(run.error is None for run in runs)
+    saved = evidence(batch.path)
+    assert saved["permits_returned"] is True
+    assert "changed content" in saved["admission"]["policy_failure"]
+    assert "changed content" in saved["policy_watcher"]["stopped_by_error"]
 
 
 def test_a_batch_requires_one_clock_one_controller_and_a_bounded_size(mean_task, tmp_path):

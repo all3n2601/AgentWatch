@@ -227,7 +227,8 @@ keyed by `step_id` and `span_id`.
   then runs even if an earlier one fails: failures are listed in `cleanup_errors`, and a
   background thread (flusher, sampler or watcher) that fails is listed in
   `background_errors` and fails the run. The first error is re-raised after the evidence is
-  written.
+  written, except a policy watcher's: that is a policy failure, not a runner bug, and fails
+  the run with its own reason (Concurrency limits, below).
 - A run failed (rather than cancelled) by another actor ends its open steps as `failed` too.
 - Ctrl-C and SIGTERM are handled without printing or blocking, for `run` and `overhead`: a
   repeated signal is ignored rather than waiting on a lock the first one holds. `overhead`
@@ -246,29 +247,38 @@ its permit until the request really ends.
 
 - **Scope:** one process. Several runner processes each enforce the limit separately, so
   together they can exceed it. The inference limit applies only to the service the policy
-  names (Ollama); with vLLM it is recorded as not enforced.
+  names (Ollama); with vLLM it is recorded as not enforced. A version that sets no limit for a
+  control (the baseline, disable, or a restore to the baseline) is recorded as not enforced
+  too, with that reason.
 - **Queues:** first in, first out, bounded per control by `--inference-max-queue` /
   `--test-max-queue` (default 64; 0 refuses instead of queueing) and `--inference-max-wait` /
   `--test-max-wait` (default 600 s). A full queue or an exceeded wait fails the step and the
   run with that reason; cancellation and the run deadline end a wait.
 - **Changes:** the active version is read before the run is registered and then every
   `--policy-poll` seconds (1 s). A new version applies to new admissions only; lowering a
-  limit stops nothing that is running. A transient poll failure keeps the version in force; a
+  limit stops nothing that is running. A transient poll failure keeps the version in force. A
   response the runner cannot use (an older or changed version, a non-retryable HTTP status, or
-  one that fails validation) stops polling and fails the runs. If the policy cannot be read at
-  the start, nothing runs (exit 4); `--no-policy` runs without limits and records
-  `admission.status: not_configured`.
+  one that fails validation) stops polling and admission at once: queued and new requests are
+  refused (`policy_unavailable`), work already admitted finishes, and each run fails with the
+  reason `Concurrency policy became unusable during the run; admission stopped` (exit 1, the
+  error in `failure_detail`). If the policy cannot be read at the start, nothing runs (exit 4);
+  `--no-policy` runs without limits and records `admission.status: not_configured`.
 - **Batches:** `batch --task NAME [--task NAME ...] --repeat N` runs up to 32 tasks at once in
   this process, sharing one clock domain and one controller. It writes
   `.data/agent-batches/batch-<UTC time>-<id>/batch.json` (each run's outcome, the controller's
-  state, and whether every permit came back) and each run's directory under `runs/`.
+  state, and whether every permit came back) and each run's directory under `runs/`. A run
+  with no outcome (not started, or a runner error) records `task_passed: null`, not `false`.
 - **Evidence:** `admissions` in `agent-evidence.json` holds one record per admitted or refused
   step: control, outcome, policy version and limit at arrival and at the decision, whether the
   limit was enforced, queue and active counts at arrival, queue bounds, the controller, process
   ID and scope, and arrival, admission and release ticks on the run's clock, as they stand when
-  the run closes. `admission` summarises the process's controller, its
-  policy history and the poller; `cleanup.admission_permits_held` counts permits still held by
-  abandoned requests when the run closed.
+  the run closes. Waits and holds are differences of those ticks, the same ones coverage
+  uses. `admission.controls` counts this run's own admissions, refusals, longest wait and
+  permits held at closure; `admission.process` is the shared controller's state (every run of
+  the process, with its policy history), and `admission.policy_watcher` the poller.
+  `cleanup.admission_permits_held` counts permits still held by abandoned requests when the
+  run closed. Coverage joins a record to a step only when both step and span IDs match; a step
+  with more than one record is reported as `inconsistent`.
 
 `experiment`, `overhead` and `sampling-overhead` read no policy and admit without limits.
 
