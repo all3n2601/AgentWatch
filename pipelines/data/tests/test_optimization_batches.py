@@ -555,7 +555,6 @@ def test_a_task_that_never_started_needs_no_evidence(tmp_path):
         ({"configuration_digest": "5" * 64}, "configuration_digest"),
         ({"task": {"task_id": TASKS[0][0], "content_sha256": "6" * 64}}, "content_sha256"),
         ({"task_passed": False}, "task_passed is False"),
-        ({"task_passed": None}, "task_passed is None"),
     ],
 )
 def test_linked_evidence_must_agree_with_the_record(tmp_path, evidence, detail):
@@ -580,3 +579,23 @@ def test_unknown_acceptance_must_match_a_run_that_recorded_no_outcome(tmp_path):
 
     manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(5, edit))
     assert read(tmp_path, manifest)[1] == []
+
+
+@pytest.mark.parametrize("acceptance", [None, "passed", "failed"])
+@pytest.mark.parametrize("task_passed", ["false", "true", None, 0, 1, [], {}])
+def test_malformed_task_passed_rejects_the_batch(tmp_path, acceptance, task_passed):
+    # Only an absent task_passed means the outcome is unknown; a present value must be a boolean.
+    task_id, content, digest = TASKS[0]
+
+    def link(record):
+        task = record["tasks"][0]
+        task["acceptance"] = acceptance
+        write_json(
+            tmp_path / task["evidence_dir"] / "agent-evidence.json",
+            agent_evidence(task["run_id"], task_id, content, digest) | {"task_passed": task_passed},
+        )
+
+    manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(5, link))
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {"005.json": "malformed"}
+    assert "task_passed must be true or false when present" in rejections[0].detail

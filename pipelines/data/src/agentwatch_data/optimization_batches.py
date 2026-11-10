@@ -329,8 +329,17 @@ def check_task_evidence(
             f"{task.task_id}: linked evidence differs in {differing or ['run_id']}",
         )
     # The runner's verification outcome is the quality result; the record must not restate it.
+    # The runner writes task_passed as a boolean whenever it recorded an outcome, and omits the
+    # key for a run that never started, so only absence means unknown. A present null, string
+    # or number is malformed evidence, never an unknown outcome.
     passed = evidence.get("task_passed")
-    expected = ACCEPTANCE_BY_TASK_PASSED.get(passed) if isinstance(passed, bool) else None
+    if "task_passed" in evidence and not isinstance(passed, bool):
+        raise BatchRejected(
+            "malformed",
+            f"{task.task_id}: linked evidence task_passed must be true or false when present, "
+            f"got {passed!r}",
+        )
+    expected = ACCEPTANCE_BY_TASK_PASSED.get(passed) if "task_passed" in evidence else None
     if task.acceptance != expected:
         raise BatchRejected(
             "task_identity_mismatch",

@@ -381,3 +381,35 @@ def test_another_contention_treatment_never_makes_a_comparison_sufficient(tmp_pa
     assert not contended["sufficient"]
     assert contended["pairs"]["complete"] == 0
     assert any("injection_mismatch" in reason for reason in contended["insufficient_reasons"])
+
+
+def test_malformed_verification_evidence_never_makes_a_comparison_sufficient(tmp_path):
+    # The owner's reproduction: acceptance null, and linked evidence with "task_passed": "false".
+    slot = first_slot(planned(), "contended", CANDIDATE)
+    task_id, content, digest = TASKS[0]
+
+    def malformed(record):
+        task = record["tasks"][0]
+        task["acceptance"] = None
+        path = tmp_path / task["evidence_dir"] / "agent-evidence.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        evidence = {
+            "run_id": task["run_id"],
+            "task": {"task_id": task_id, "content_sha256": content},
+            "configuration_digest": digest,
+            "task_passed": "false",
+        }
+        path.write_text(json.dumps(evidence))
+
+    write_experiment(tmp_path, CONTRACT, change=editing(slot.index, malformed))
+    report = compare(tmp_path, CONTRACT)
+    rejected = next(
+        batch for batch in report["batches"] if batch["file"] == f"{slot.index:03d}.json"
+    )
+    assert (rejected["accepted"], rejected["code"]) == (False, "malformed")
+    contended = entry(report, "contended")
+    assert not contended["sufficient"]
+    assert (
+        "the experiment has rejected batch records (1 malformed)"
+        in contended["insufficient_reasons"]
+    )

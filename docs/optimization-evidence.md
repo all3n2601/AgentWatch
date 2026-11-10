@@ -105,8 +105,10 @@ Checks beyond the shapes:
   `run_id`. Every task that started links `evidence_dir`. A task is never identified by its ID
   alone: its `agent-evidence.json` must show the same `run_id`, task ID, task content hash and
   configuration digest as the manifest. Its `task_passed` must also agree with the recorded
-  `acceptance` (`true` is `passed`, `false` is `failed`, absent is `null`). The link must stay
-  inside the experiment directory, with no symlinks.
+  `acceptance` (`true` is `passed`, `false` is `failed`, absent is `null`). The runner writes
+  `task_passed` as a boolean whenever it recorded an outcome and omits it for a run that never
+  started, so a present `null`, string or number is malformed evidence and rejects the batch.
+  The link must stay inside the experiment directory, with no symlinks.
 
 **Rejections.** A record that cannot be used is kept in the report, with the SHA-256 of the
 bytes that were parsed and one code. The codes:
