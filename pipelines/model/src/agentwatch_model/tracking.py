@@ -41,6 +41,8 @@ def run_params(report: dict) -> dict[str, str]:
         "contract_hash": report["contract"]["hash"],
         "dataset_version": text(report.get("dataset_version")),
         "label_version": text(model.get("label_version")),
+        "label_versions": text(model.get("label_versions")),
+        "feature_versions": text(model.get("feature_versions")),
         "scored_split": text(report.get("scored_split")),
         "split_sha256": text((report.get("split") or {}).get("sha256")),
         "class_order": text(model.get("class_order")),

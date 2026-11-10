@@ -1,9 +1,12 @@
 # AgentWatch step dataset — data card
 
-Status: draft schema `steps-v1.2`, labels `labels-v1.1`. Recorded runs are curated into a
-versioned evidence store (`make add-evidence`); releases are built from it (`make dataset`),
-gated (`make validate-dataset`), split (`make split-dataset`), and versioned with DVC
-(`make version-dataset`). Column
+Status: dataset v1, schema `steps-v1.3` (release `steps-v1.3+aafae73eb211`, 2026-11-07, D03),
+with two label rule sets: `labels-v1.1` for CPU and coding run rows and `labels-v2` for agent
+replay rows. It is split with `split-v2` under the accepted `eval-contract-v2`. The earlier
+`steps-v1.2+5954f97ef8b2` release and its `split-v1` split are kept unchanged. Recorded runs and
+replay experiments are curated into a versioned evidence store (`make add-evidence`); releases
+are built from it (`make dataset`), gated (`make validate-dataset`), split
+(`make split-dataset`), and versioned with DVC (`make version-dataset`). Column
 definitions live in `pipelines/data/src/agentwatch_data/schema.py`; a test fails if this card
 misses a column. `validate_rows()` enforces every column's type, nullability, allowed values,
 and bounds, and a golden test runs a real recorded run through every stage against it.
@@ -12,6 +15,8 @@ and bounds, and a golden test runs a real recorded run through every stage again
 `agent_model`, `run_passed`, `failed_checks`, and `schema_version` to `steps-v1`; `steps-v1.2`
 adds `sampling_interval_seconds` and `measured_sampling_interval_seconds` and judges
 `telemetry_coverage` against the declared interval. No existing column changed meaning or type.
+`steps-v1.3` keeps every `steps-v1.2` column and adds agent replay rows (`kind = agent_replay`)
+and their columns; see [Column roles](#column-roles).
 
 ## Summary
 
@@ -24,9 +29,249 @@ step, and experiment-derived labels naming the resource that caused excess waiti
 | Unit | One agent step |
 | Format | Parquet, with a `manifest.json` per release |
 | Targets | `label_resource` (classification), `label_excess_fraction` (regression) |
-| Classes | `none`, `cpu_sandbox`, `inference`, `retrieval` |
-| Split | 70/15/15, grouped by `task_id` so replays of a task never cross splits |
-| Current coverage | `none` and `cpu_sandbox` from the CPU and coding experiments only |
+| Classes | `none`, `cpu_sandbox`, `inference`, `retrieval`; `mixed` is a `labels-v2` label value outside the four prediction classes |
+| Split | `split-v2`: the frozen assignment file, grouped by `task_group` so replays of a task never cross splits (`steps-v1.2` keeps `split-v1`, 70/15/15 grouped by `task_id`) |
+| Current coverage | All four classes and `mixed` from agent replays of two tasks; `none` and `cpu_sandbox` from the CPU and coding experiments |
+
+## Dataset v1 (`steps-v1.3+aafae73eb211`)
+
+Current format 3 release: `steps-v1.3+aafae73eb211`, split
+`split-v2+febe942a2b59`. Both are publicly downloadable and independently reproduced
+byte for byte on 2026-11-07 (see Review fixes below).
+
+The immutable format 2 predecessor is `steps-v1.3+a1b96c4ff2c8`, with split
+`split-v2+2efb6e737ba2`. Historical build provenance follows:
+
+Built 2026-11-06 by D03 with the code at `4d03190` and versioned with DVC in `583b52e`
+(`data/evidence.dvc`, `data/datasets.dvc`). The numbers below come from its manifest, build
+report `data/datasets/builds/20261106T063357064753Z-e8ff44a7.json`, quality-gate attempt
+`20261106T063456443931Z-e05881f1` and split file
+`data/datasets/splits/steps-v1.3+a1b96c4ff2c8/split-v2+2efb6e737ba2.json`. The snapshot and its format 3 successor were uploaded on 2026-11-07. An independent clone
+with an empty DVC cache downloaded both stores through `make pull-dataset` (public HTTPS,
+2,012 files fetched) and reproduced the successor byte for byte; see Review fixes below.
+
+### Replay evidence provenance
+
+Benoy recorded the replay experiments on the GPU laptop (Ollama `qwen3:1.7b` on the GPU, the
+A05 default protocol) and delivered them as two zips, each with `SHA256SUMS` files. All
+checksums verified, and `labels-v2` reproduced the per-experiment label counts in his
+`labels-summary.txt` exactly.
+
+| Delivery | SHA-256 | Experiments |
+|---|---|---|
+| `d03-2026-11-04.zip` | `5ee876a3…b5e0` | 3 `fix-window-count`, 2 `fix-mean-empty`, plus his four A05 attempts on `fix-mean-empty` from 2026-10-25 (including the failed attempt 1) |
+| `d03-2026-11-05.zip` | `9e82c41b…94b5` | 45: 30 `fix-window-count`, 15 `fix-mean-empty` |
+
+The 45-experiment batch was declared before recording: its count, an interleaved order
+(`fix-window-count, fix-window-count, fix-mean-empty`, 15 times) and a stop rule based on the
+count, never on results (no early stop, no additions, no reruns). It ran in one pass at commit
+`c6b4333` on 2026-11-05. Every experiment holds 14 replays: replay `00` is the warm-up,
+discarded by the protocol and never labeled, then 5 baselines and `cpu`, `inference`,
+`retrieval` and `mixed` contention, each followed by a clean control. Rows therefore come from
+replays 1–13.
+
+The console logs, `batch-index.csv`, `labels-summary.txt` and the batch script are delivery
+records, not evidence; they are cited here and not copied into the repository. The owner
+approved publishing the replay evidence unredacted (2026-11-05): it holds full model
+conversations for the two synthetic tasks, injection logs and the laptop's resource
+identifiers, and no credentials or user paths.
+
+### Rows
+
+The release has 5,953 rows from 648 runs and 4 tasks. The build read 54 experiment directories
+(the build report's `experiments` field counts directories found, not experiments that produced
+rows). 46 experiments contribute rows: 25 `fix-window-count` and 21 `fix-mean-empty`.
+
+| Kind | `feature_version` | `label_version` | Rows |
+|---|---|---|---|
+| `agent_replay` | `step-features-v1` | `labels-v2+d803a9c6` | 5,603 (3,575 `fix-window-count-r1`, 2,028 `fix-mean-empty-r1`) |
+| `cpu` | `steps-v1.2` | `labels-v1.1+2c495a72` | 175 |
+| `coding` | `steps-v1.2` | `labels-v1.1+2c495a72` | 175 |
+
+| `label_resource` | Replay rows | CPU and coding rows | Total |
+|---|---|---|---|
+| `none` | 4,604 | 300 | 4,904 |
+| `cpu_sandbox` | 205 | 50 | 255 |
+| `inference` | 326 | 0 | 326 |
+| `retrieval` | 322 | 0 | 322 |
+| `mixed` | 146 | 0 | 146 |
+
+`label_resources` membership: `cpu_sandbox` 401, `inference` 472, `retrieval` 322 (a `mixed`
+step counts for each confirmed resource). Bases over all rows: `baseline_reference` 2,405,
+`clean_within_noise` 1,685, `clean_exceeded_noise` 89, `contention_exceeded_threshold` 776,
+`contention_below_threshold` 567, `mixed_below_threshold` 158, `mixed_confirmed` 127,
+`mixed_partial` 127, `mixed_joint_only` 19.
+
+Three of the four A05 attempts (1, 3 and 4) ran a longer `fix-mean-empty` plan: 12 leaf steps,
+of which 10 are labeled (130 rows each), against 7 (91 rows) for attempt 2 and every November
+`fix-mean-empty` experiment. Every `fix-mean-empty` experiment sits in train, so the training
+split mixes two plan shapes. `plan_sha256` differs for every experiment, so it does not identify
+the shape; the set of `step_id` values in an experiment does.
+
+**Rejected evidence (411, all at stage `replay_label`, listed in the build report).** Nothing
+is dropped silently, and no experiment is removed from the store:
+
+- 8 `fix-window-count` experiments failed the blocking `stable_baseline` check
+  (`protocol_checks_failed`, 2 from the first delivery and 6 from the batch). They stay in the
+  evidence store and contribute 0 rows.
+- 403 step-replays are `baseline_reference_missing` (fewer than two usable baseline copies of
+  the step): step `tool-2-rejected` in each of the 25 labelable `fix-window-count` experiments
+  (13 replays each), and steps `model-call-1` and `tool-2-rejected` in A05 attempts 1, 3 and 4.
+
+A05 attempt 1 ran against an older live API that refused some records (`rejected` lines in its
+journals). Those records still feed the features, because the journal is the agent's own
+measurement and a delivery refusal is not a measurement defect; the experiment's failed
+`evidence_delivered` check stays in `failed_checks` on its 130 rows.
+
+### Review fixes (2026-11-07)
+
+The format 3 successor is `steps-v1.3+aafae73eb211`, split `split-v2+febe942a2b59`.
+It preserves all 5,953 rows and the 411 recorded rejections. The earlier format 2 release
+remains immutable and verifiable. Its successor adds deterministic `missing_by_kind` counts
+for every column of `agent_replay`, `coding`, and `cpu`, including zero null counts, and keeps
+`missing` as the global totals. The release format participates in the release hash, so adding
+these required statistics produces a new release instead of rewriting existing evidence.
+Invalid declared replay intervals (below 1 ns, negative, zero, non-finite, or overflowing when
+converted to nanoseconds) reject every labeled step of the experiment as
+`declared_interval_invalid`; absent intervals remain null.
+
+Publication and reproduction commands (2026-11-07):
+
+```sh
+make dataset
+make validate-dataset
+make split-dataset
+make version-dataset
+make push-dataset
+# In an independent clone, with an empty DVC cache:
+make pull-dataset
+make dataset DATASET_OUTPUT=reproduced
+make validate-dataset DATASET_OUTPUT=reproduced
+make split-dataset DATASET_OUTPUT=reproduced
+make version-dataset
+```
+
+In checkout paths containing spaces, supply `AGENTWATCH_ROOT="$PWD"` to the make targets
+(the existing root-path calculation otherwise loses path components). Versioning's nine tests
+passed in the independent clone's space-free path. The clone's rebuild produced identical
+`steps.parquet`, `manifest.json`, `schema.json`, and split JSON bytes. SHA-256 evidence:
+
+| Object | SHA-256 |
+|---|---|
+| Parquet | `4565e5e87033233401fd90ac976e533ab20637cedb2bc28646ac031dc86c988c` |
+| Manifest | `bd34ab8d770e8bc0f34a08a5ada52e146d888aa6db57c5994ff7baa18977cbf7` |
+| Schema | `6acfdedbac3822d32d9438a5ea2cf8e8a44afe67a021e0a0fbb546afa2560f8e` |
+| Split file | `f994e66576e59bab9b1b97e66e19e04f1e50da8cd82e0945be254f641d326abc` |
+| Train rows | `492835334241a14744f9bb5d3094435e337e36fc8f2c67151565615331e2ead4` |
+| Validation rows | `221679d559220e46c3e9dd92c4f38a6bd087703932d4054010632f194ff6de98` |
+| Test rows | `f4feaf4e791330cbe9cb51052892c4413b6085a8e004736729bf7365c1c82135` |
+
+Verification: Ruff passed; full PostgreSQL-17/Docker-backed suite 2,040 passed, no skips;
+final affected data/model/contract suites 1,060 passed; validation 85, orchestration 95,
+versioning 9 passed. Four additional regression cases added after the full-suite run are
+included in the final affected-suite result. GitHub CI and fresh qualified approvals remain
+required before merge.
+
+### Missingness per feature version
+
+Nulls are never zero. Counts of null values per `feature_version`, read from the release's rows
+(the manifest's `missing` holds the totals over all rows, and the split file holds the counts per
+split and `feature_version`):
+
+| Feature | Replay rows (`step-features-v1`, 5,603) | Run rows (`steps-v1.2`, 350) |
+|---|---|---|
+| `queue_seconds`, `execution_seconds`, `duration_seconds`, `queue_fraction`, `telemetry_sample_count`, `cpu_pressure_available`, `cgroup_available` | 0 | 0 |
+| `cpu_seconds` | 4,966 | 0 |
+| `workload_iterations`, `worker_capacity` | 5,603 | 0 |
+| `tests_per_step` | 5,603 | 175 |
+| `cpu_pressure_max_avg10` | 5,176 | 32 |
+| `cgroup_throttled_usec_delta` | 5,564 | 186 |
+| `telemetry_coverage` | 5,509 | 143 |
+
+Replay `telemetry_status`: `present` 427, `empty` 3,445, `no_overlap` 1,731 (of 5,603; all 350
+run rows are `present`). The causes match the design's expectation:
+
+- `step-features-v1` reads only the CPU PSI and cgroup throttling metrics, and only samples on
+  the step's own resource. Model calls (2,847 rows) and retrievals (598) have no such samples,
+  so they are `empty`.
+- Tool steps last milliseconds, so 1,731 of the 2,158 tool rows fall between samples at the
+  0.25 s interval (`no_overlap`); the other 427 are the only replay rows with a PSI reading,
+  and 39 of them have a cgroup delta (two or more readable counter samples are needed).
+- The agent records no process CPU time for model calls and retrievals; `cpu_seconds` is
+  present on 637 tool rows only.
+- Live registrations record no workload size, worker capacity or test count.
+
+Replay rows therefore carry mostly timing features. Their values follow `step-features-v1`
+(window `[started, finished)`, live StepEvents and ResourceSamples), not the `steps-v1.2`
+definitions of the run rows; `feature_version` labels each row (see
+[the step features](step-features.md)).
+
+### Quality gate result
+
+Passed: attempt `20261106T063456443931Z-e05881f1`, against the frozen
+`pipelines/validation/schema/steps-v1.3.pbtxt` (SHA-256 `c291ce98…8f97`), 5,953 examples, no
+anomalies. **Drift was not compared.** The gate only uses as a baseline a release that passed
+against byte-identical frozen-schema bytes, and `steps-v1.2+5954f97ef8b2` was validated with
+`steps.pbtxt`, so `baseline_release` is null and the empty drift list means "not compared",
+not "no drift". The design promised drift against the v1.2 release; it is unavailable in v1
+(decided during D03), and comparing across frozen schemas is follow-up work.
+
+### Split, class balance and leakage
+
+`split-v2+febe942a2b59`, under `eval-contract-v2` (identifier `9b55506c`) and the `split-v2`
+assignment (identifier `6c009002`: test task group `fix-window-count`, held-out method
+`worker_queue_blocker`). `fix-mean-empty` goes to train; `fix-window-count` and both CPU and
+coding task groups go to test.
+
+| Split | Rows | Runs | Task groups | `none` | `cpu_sandbox` | `inference` | `retrieval` | `mixed` |
+|---|---|---|---|---|---|---|---|---|
+| train | 2,028 | 273 | 1 | 1,681 | 78 | 100 | 116 | 53 |
+| validation | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| test | 3,925 | 375 | 3 | 3,223 | 177 | 226 | 206 | 93 |
+
+- **Class balance (test, against the contract minimums): met.** Per class `none` 3,223,
+  `cpu_sandbox` 177, `inference` 226, `retrieval` 206 (minimum 30 each); `clean` steps 1,150
+  (minimum 100); steps labeled `mixed` 93 (minimum 30). Rows under the `mixed` condition: 275.
+- **Leakage: passed, but close to the bound.** Observed maximum single-feature training AUC
+  0.974242 (`queue_seconds`, `retrieval`) against the contract bound 0.98. Next:
+  `duration_seconds` 0.951247 and `execution_seconds` 0.949710 for `inference`,
+  `queue_fraction` 0.907298 for `inference`. Timing features alone nearly separate these
+  classes in training.
+- **`split-v2` checks:** independence passed (no shared `task_group`, `run_id` or
+  `plan_sha256`), held-out method met (`worker_queue_blocker` only in test), mixed in test met.
+- **Design encoding (report only, 901 training replay rows labeled `none` from contended or
+  clean-control replays):** highest AUC for separating contended from clean replays is
+  `queue_fraction` 0.685579, then `execution_seconds` 0.636542 and `queue_seconds` 0.631671.
+  Live telemetry legitimately sees injected load on steps that were not slowed, so this is not a
+  gate.
+
+### Reproduction
+
+Copying the evidence store and building, validating and splitting again into an empty store
+reproduced the same release name, Parquet SHA-256
+(`64ad6cad194892ef014cc3047b8fcd40ffb6b31e8c56e6de1741a157bc0f6ebc`), `rows_sha256`, gate
+statistics hash, split id and per-split `rows_sha256`; the two split files are byte-identical.
+Integrity (`python -m agentwatch_data.integrity`) rebuilt the new release from the stored
+evidence with 0 problems before `dvc add`. The `steps-v1.2` split `split-v1+58e921fa846a`
+still loads (train 175, validation 0, test 175) with the v1 contract file and `steps.pbtxt`.
+
+### What v1 cannot support
+
+- **No validation split and one training task.** The frozen assignment leaves `validation`
+  empty and puts one task group (`fix-mean-empty`, 2,028 rows) in train. Calibration,
+  abstention tuning, early stopping and every validation-dependent gate are `inconclusive`,
+  and train holds no CPU or coding rows.
+- **`mixed` is unscored until M02.** `make rule-baseline` and `make train-candidates` on this
+  split stop with the reason "labeled 'mixed', which has no scoring rule until M02 defines one"
+  (the rule baseline exits 2 with no report; training records a `failed` attempt and exits 1,
+  with no model). Item 2 of the `eval-contract-v2` proposal (the multi-resource metric and the
+  `mixed` scoring rule) is Rohit's M02 decision and is not encoded in the contract.
+- **No GPU, inference-server or retrieval readings.** `step-features-v1` reads CPU PSI and
+  cgroup metrics only; inference and retrieval contention is visible only through timings.
+  Reading other metrics is a new feature version.
+- **Drift against v1.2 is unavailable** (see Quality gate).
+- **Two agent tasks on one host.** All replays come from one GPU laptop and one model; the test
+  task differs from the training task, so held-out results will have wide uncertainty.
 
 ## Sources
 
@@ -108,6 +353,18 @@ kind, is refused. A missing samples file and an empty one are different evidence
 demo, which overwrites its output directory, therefore cannot change versioned evidence. Copies
 are staged under a hidden `.adding-*` name and renamed into place.
 
+`make add-evidence` also accepts agent replay experiment directories (a directory holding an
+`experiment.json`). Before copying, the experiment is read with `replay_evidence.read_experiment`
+and every journal line is read strictly; an unreadable experiment is refused with its reason. A
+readable experiment that failed its protocol checks **is** added, because labeling rejects it
+with a recorded reason and the failure is evidence. Its entry is named from its own content,
+not its delivery folder: `replay-<task_id>-<started_at as %Y%m%dT%H%M%SZ>-<first 6 hex of the
+SHA-256 of experiment.json>`, so the same experiment delivered under two folder names is one
+entry. The entry holds exactly `experiment.json`, `source/` and `replays/<NN>/` (each
+`agent-evidence.json` and `live-journal.jsonl`) and `injections/<NN>.json`, byte for byte; any
+other file is refused and hidden files are never copied. The same immutability rules as run
+entries apply.
+
 ## Releases
 
 Build a release with `make dataset`, which reads the evidence store; set `DATASET_SOURCES` to
@@ -125,11 +382,26 @@ under `data/datasets/builds/`:
 |---|---|
 | `<version>/steps.parquet` | Every row, every schema column, with Arrow types and nullability taken from `schema.py`; rows ordered by run, then condition, then baseline repeat |
 | `<version>/schema.json` | The column contract (names, types, roles, nullability, allowed values, bounds), for tools that cannot import `schema.py` |
-| `<version>/manifest.json` | Content only: release format (currently 2); dataset, schema, label, and builder versions; row, run, and task counts; label, basis, condition, and telemetry-status counts; SHA-256 of the canonical rows, the Parquet file, and `schema.json`. With the same code and locked dependencies, rebuilding the same evidence reproduces it byte for byte |
-| `builds/<build id>.json` | That build's events: build time, the release it created or reused (`reused_release`), per-source run and rejection counts, duplicate copies, and every rejection with its stage and reason |
+| `<version>/manifest.json` | Content only: release format (currently 3); dataset, schema, label, and builder versions; row, run, and task counts; label, basis, condition, and telemetry-status counts; from `steps-v1.3`, counts per `label_version` (`label_versions`), `feature_version`, `kind` and `label_resources` member, and the null count of every column (`missing`), and in format 3, per-kind/per-column null counts (`missing_by_kind[kind][column]`, including zeros); SHA-256 of the canonical rows, the Parquet file, and `schema.json`. With the same code and locked dependencies, rebuilding the same evidence reproduces it byte for byte |
+| `builds/<build id>.json` | That build's events: build time, the release it created or reused (`reused_release`), per-source run and rejection counts, duplicate copies, the number of replay experiment directories read (`experiments`, including those that produced no rows), and every rejection with its stage and reason |
 
 The command prints the release and report paths. Because rejections live in each build's
 report, a rebuild whose accepted rows are unchanged still records evidence rejected that time.
+
+**Replay rows** (`pipelines/data/src/agentwatch_data/replay_rows.py`). For each stored
+experiment the build labels it with `labels-v2` (see [Replay labels](#replay-labels-labels-v2)),
+then joins every labeled step, on `(run_id, step_id)`, to the `step-features-v1` row computed
+from that replay's own `live-journal.jsonl`, with the declared sampling interval from the same
+replay's `agent-evidence.json` (coverage stays null when it is missing). The join rejects a step
+with no terminal feature row (`feature_row_missing`) and a step whose feature timings differ
+from the `experiment.json` timings the label used by more than 1e-6 s
+(`feature_timing_mismatch`): the label and the features would describe different windows. An
+unreadable journal or evidence file (`feature_evidence_unreadable`) or an invalid declared
+interval (`declared_interval_invalid`) in any labeled replay rejects every labeled step of the
+experiment, naming the replay. Journal lines that record delivery outcomes (`rejected`,
+`remote_closure`) are validated but add no records; records the live API refused still feed
+the features, since the journal is the agent's measurement. Replay rows are `measured`, and a
+reading the journal lacks stays null; the CPU/coding feature window is never reused for them.
 
 A release is **published** only when a committed build report names it, and consumers should
 select releases with `published_releases()` in `build.py`. They are ordered by their latest
@@ -149,7 +421,7 @@ successful build verifies and publishes.
   produces a new one.
 - Releases are never rewritten, so a release in an older format is never upgraded in place. A
   format 1 release (from before `schema.json` existed) stays as it was, and the next build
-  publishes a new format 2 release of the same rows beside it, which becomes the newest
+  publishes a new format 3 release of the same rows beside it, which becomes the newest
   published release. If the old release was never versioned and the current pipeline cannot
   rebuild it, `make retire-release` removes it before the store is versioned (see Versioning).
 - Building a version that already exists verifies its format and the hashes of its rows,
@@ -182,13 +454,17 @@ fails, so Airflow and scripts can stop on it.
   (pandas would turn it into a missing value), an empty or whitespace-only string, and a
   release with no rows (TFDV checks nothing on zero examples).
 - TFDV statistics are compared with a **frozen schema**,
-  `pipelines/validation/schema/steps.pbtxt`. It is generated by `make freeze-dataset-schema`
-  and changed only in a reviewed PR. Its domains come from the contract, not from the values
-  seen so far: all four resource classes are allowed even though only two occur today, and
+  `pipelines/validation/schema/steps-v1.3.pbtxt` (the default `VALIDATION_SCHEMA`; it was
+  re-frozen from the first real `steps-v1.3` release, which added `value_count { min: 1 max: 1 }`
+  to the 21 columns with nulls: exactly one value in each row where the column is present). `pipelines/validation/schema/steps.pbtxt` stays for `steps-v1.2`
+  releases. A frozen schema is generated by `make freeze-dataset-schema` and changed only in a
+  reviewed PR. Its domains come from the contract, not from the values
+  seen so far: all four resource classes and `mixed` are allowed whether or not a release holds them, and
   free-text columns such as `workload` and `task_id` have no domain, so new tasks are not
   anomalies. Float columns disallow ±inf. Required columns have a fixed shape (one value in
-  every row); nullable columns have none, so a column that is null in only some rows, such as
-  `tests_per_step` when coding and CPU runs are mixed, passes.
+  every row). Nullable columns have no shape and no presence requirement, so a column that is
+  null in only some rows, such as `tests_per_step` when coding and CPU runs are mixed, passes;
+  `steps-v1.3.pbtxt` only requires one value per row where they are present.
 - **Schema anomalies fail the gate:** a missing or unexpected column, a type change, a value
   outside its range, an unknown category, a missing required value, or a violated dataset
   constraint.
@@ -212,6 +488,9 @@ fails, so Airflow and scripts can stop on it.
 - The drift baseline is the most recently validated other release whose verdict is a pass
   against the **same frozen schema**, using the exact statistics of that passing attempt
   (checked against its recorded hash). A release whose verdict is unknown is never a baseline.
+  A release with no such baseline records `baseline_release: null` and an empty drift list,
+  which means drift was not compared. This is the case for `steps-v1.3+aafae73eb211`: the only
+  earlier release passed against `steps.pbtxt`, so drift against `steps-v1.2` is unavailable.
 - Main-suite tests fail if the frozen schema's columns or the gate's test fixture drift from
   this contract.
 
@@ -225,11 +504,17 @@ release (`pipelines/data/src/agentwatch_data/splits.py`).
   hashes and for the reviewed frozen schema. Otherwise nothing is written and the command says
   to run `make validate-dataset`.
 - **Settings come from the evaluation contract** (`pipelines/model/evaluation-contract.toml`):
-  the 70/15/15 fractions, the `task_id` group key, the sources allowed in the test split, and
-  the leakage bound. The group key must be `task_id` and the test sources must be known
-  sources. The release's schema and label versions must be ones the contract evaluates. The
-  split records the contract version and its 8-digit hash.
-- **Grouped and stable.** Each task is assigned by hashing `split-v1:<task_id>`, so all of a
+  the split method, the 70/15/15 fractions, the group key, the sources allowed in the test
+  split, the class minimums, and the leakage bound. `split-v1` groups by `task_id`; `split-v2`
+  groups by `task_group` and reads the frozen assignment file the contract names. The test
+  sources must be known sources. The release's schema version and every label version it holds
+  must be ones the contract evaluates. The split records the contract version and its 8-digit
+  hash, and the split id is prefixed with the method. The current contract is
+  `eval-contract-v2` (`9b55506c`, `split-v2`); `eval-contract-v1` (`3022770b`, `split-v1`) is
+  kept as `pipelines/model/evaluation-contract-v1.toml`, so `steps-v1.2` splits still rebuild
+  when that file and `pipelines/validation/schema/steps.pbtxt` are passed:
+  `uv run --package agentwatch-data python -m agentwatch_data.splits --release data/datasets/steps-v1.2+5954f97ef8b2 --contract pipelines/model/evaluation-contract-v1.toml --frozen-schema pipelines/validation/schema/steps.pbtxt`.
+- **Grouped and stable.** Under `split-v1` each task is assigned by hashing `split-v1:<task_id>`, so all of a
   task's runs, baselines, and replays share one split. While the contract's fractions are
   unchanged, a task keeps its split in every later release: new tasks never move old ones, and a
   task once tested is never trained on. Changing the fractions moves tasks near the boundaries,
@@ -244,9 +529,25 @@ release (`pipelines/data/src/agentwatch_data/splits.py`).
   it `inconclusive`. The split is still written, as evidence, and the command warns that
   evaluation must not use it.
 - **Held-out injection methods** are reported: a method counts as held out only if it appears
-  in test and not in training or validation while training has another method. The split stage
-  reports this requirement but does not force it; assignment by method lands with the second
-  injection method.
+  in test and not in training or validation while training has another method. `split-v1`
+  reports this requirement but does not force it; `split-v2` forces it through the assignment
+  file (see [Frozen split assignment](#frozen-split-assignment-split-v2)).
+- **`split-v2` statistics.** A `split-v2` file also records the assignment's version and
+  8-digit hash; the D02 checks (`split_v2_checks`: independence, held-out method, mixed in
+  test); the test split's `class_balance` against the contract minimums (30 per class, 100
+  `clean` steps, 30 steps labeled `mixed`), where `clean` means condition `clean` (baselines are
+  the label reference and do not count) and `mixed` means steps labeled `mixed`, with the count of
+  rows under the `mixed` condition beside it; missing feature readings per split and
+  `feature_version`; and a report-only `design_encoding` check: among training replay rows
+  labeled `none`, each feature's AUC for separating contended from clean-control replays. It is
+  not a gate, because live telemetry legitimately sees injected load on steps that were not
+  slowed.
+- **Leakage counts membership.** The one-vs-rest leakage AUC treats a step as positive for
+  every class in its `label_resources`, so a `cpu_sandbox,inference` step is positive for both,
+  and `none` means an empty `label_resources`. Counting a mixed step as a negative for its own
+  resources would add label noise and lower the AUCs, hiding a leak. For rows without
+  `label_resources` (before `steps-v1.3`) and for CPU and coding rows, membership equals
+  `label_resource`, so `split-v1` results are unchanged.
 - The split is written to `data/datasets/splits/<release>/<split id>.json`. Its content is
   deterministic and the split id is a hash of it, so rerunning reuses the file and a changed
   file is refused. It records each task's split, per-split counts (rows, runs, tasks, labels,
@@ -272,14 +573,16 @@ release (`pipelines/data/src/agentwatch_data/splits.py`).
 
 ## Replay labels (`labels-v2`)
 
-Status: tested library code, not yet used by any release. `make dataset` and every build still
-use `labels-v1.1` and `split-v1`. `labels-v2` and `split-v2` become part of releases when D03
-wires them in, after Rohit accepts `eval-contract-v2` (see
-[the proposal](evaluation-contract-v2-proposal.md)). Rules are in
+Status: used by `steps-v1.3` releases since D03 (2026-11-06) for every agent replay row; CPU
+and coding rows keep `labels-v1.1`. Rohit accepted `eval-contract-v2`, which evaluates both rule
+sets (see [the proposal](evaluation-contract-v2-proposal.md)). Rules are in
 `pipelines/data/src/agentwatch_data/labels-v2.toml`; the label version is `labels-v2` plus an
 8-hex fingerprint of the rule values and the labeling code, pinned in
 `pipelines/data/tests/test_replay_labels.py` (`PINNED_REPLAY_LABEL_VERSION`, currently
-`labels-v2+8c1a0a1c`). `labels.toml` and `labels-v1.1` are untouched.
+`labels-v2+d803a9c6`). `labels.toml` and the `labels-v1.1` rule values are untouched; its pin
+in `test_dataset_labels.py` is now `labels-v1.1+2c495a72`. Both fingerprints moved during D03
+because hashed source changed (`labels.py`, and for `labels-v2` also `replay_evidence.py`); the rule versions did not,
+because no label value or eligibility changed for any manifest the agent produces.
 
 Usage: `python -m agentwatch_data.replay_labels <experiment directory>`. It labels one
 `agent-replay-experiment-v1` directory (`experiment.json`, `injections/`, per-replay
@@ -308,8 +611,8 @@ Two kinds of problem differ:
   nothing is labeled and the CLI exits 1: duplicate or negative replay indexes, bad or
   out-of-experiment paths, oversize files, invalid JSON, non-finite or negative durations, a
   missing replay record, or an invalid journal line in any replay. A read defect in one replay
-  currently aborts the whole experiment (fail closed, intended for D02); per-replay tolerance is
-  a D03 follow-up.
+  aborts the whole experiment (fail closed). D03 kept this deliberately: per-replay tolerance is
+  a non-goal of dataset v1.
 - **Rejections.** The codes below are rule-level outcomes recorded beside the labeled rows.
 
 Rejections use one of `experiment_not_completed`, `protocol_checks_failed`,
@@ -342,8 +645,8 @@ must also have exceeded noise.
 | `mixed` | exceeded; no member's solo step exceeded | all members | `mixed` | `mixed_joint_only` |
 
 - `label_resources` is a sorted, comma-separated list of classes and is the multi-resource
-  target. It uses the empty string `""` for none. D03 must allow the empty string when merging
-  the column into `steps-v1.3`, because the release value check rejects empty strings.
+  target. It uses the empty string `""` for none; in `steps-v1.3` it is the only release column
+  where the value check and the quality gate accept an empty string.
 - `label_resource` is the single class when one resource is listed, `mixed` when two or more,
   and `none` when empty. `mixed` is a label value only; it is not added to `RESOURCE_CLASSES`.
 - No resource is ranked above another, so there are no ties to break. `mixed_joint_only` steps
@@ -365,25 +668,27 @@ per-step baseline. For a mixed step it is the whole step's excess and is never s
 resource, because the evidence has one total duration per step.
 
 **Identity and non-features.** Each row carries the real `task_id` and `task_group`, the task
-name without its `-r<revision>` suffix. The replay label columns are declared in
-`REPLAY_LABEL_COLUMNS` in `schema.py`, outside `COLUMNS`, so the release schema and frozen TFDV
-schema are unchanged. `label_resources`, `label_basis`, `control_exceeded_noise`,
+name without its `-r<revision>` suffix. The labeler's output columns are declared in
+`REPLAY_LABEL_COLUMNS` in `schema.py`; `steps-v1.3` carries them in the release under the names
+in [Column roles](#column-roles) (`role` and `condition` become `replay_role` and
+`replay_condition`). `label_resources`, `label_basis`, `control_exceeded_noise`,
 `injection_method`, `role`, `condition`, `task_group` and the injection-log fields are `LABEL`,
 `LINEAGE` or `ID` columns and never features; tests assert none is in `feature_columns()` and
 that replay step IDs and evidence directory names carry no condition. The replay timings
 recorded under contention (`duration_seconds`, `queue_seconds`, `execution_seconds`) stay
-features, so D03 must check they do not encode the condition another way.
+features; every `split-v2` file checks whether they encode the condition another way (the
+leakage check and the design-encoding report, see [Splits](#splits)).
 
 ## Frozen split assignment (`split-v2`)
 
-**Effect on existing CPU and coding runs.** `worker_queue_blocker` is the `injection_method` of every current `labels-v1.1` CPU and coding row. Once a release carries both row kinds (D03), `split-v2` sends every CPU and coding task group to test, and training contains only the non-held-out replay task rows (today `fix-mean-empty`). This changes the rows #45 and #46 train on today, so `split-v1` stays in force until Rohit accepts `eval-contract-v2`.
+**Effect on existing CPU and coding runs.** `worker_queue_blocker` is the `injection_method` of every current `labels-v1.1` CPU and coding row. Now that `steps-v1.3` carries both row kinds, `split-v2` sends every CPU and coding task group to test, and training contains only the non-held-out replay task rows (today `fix-mean-empty`). This changes the rows #45 and #46 trained on; their `split-v1` results still rebuild with `evaluation-contract-v1.toml` and `steps.pbtxt` (see [Splits](#splits)).
 
-`split-v2` is meant to be used only when the evaluation contract selects it; `eval-contract-v1`
-does not, and `splits.py` does not implement `split-v2` yet, so `split-v1` runs exactly as
-described under [Splits](#splits). The assignment is
+`split-v2` is used when the evaluation contract selects it: `eval-contract-v2` does (accepted
+2026-11-05), `eval-contract-v1` does not. `make_split` and `load_split` call
+`split_assignment.partition_v2` for it (D03). The assignment is
 `pipelines/data/src/agentwatch_data/split_assignment.py` plus the data-owned file
-`split-assignment.toml`, versioned and hashed (`Assignment.sha256`) so D03 can record it in each
-split:
+`split-assignment.toml`, versioned and hashed (`Assignment.sha256`, recorded in each split as
+the assignment identifier, `6c009002` today):
 
 - `held_out_injection_methods = ["worker_queue_blocker"]`. Every task group with a row using a
   held-out method goes entirely to test. Training learns `cpu_sandbox` from
@@ -397,8 +702,8 @@ split:
 - Other groups use the `split-v1` hash and the contract's fractions, so new tasks never move
   frozen ones. Changing the file requires `split-v3` and a new test split.
 
-Checks, delivered as functions over labeled rows (D03 records them in the split file and has
-`make_split` and `load_split` recompute them):
+Checks, delivered as functions over labeled rows (recorded in the split file as
+`split_v2_checks`, and recomputed by `make_split` and `load_split`):
 
 - **Independence (raises `AssignmentError` in `partition_v2`):** no `task_group`, `run_id` or `plan_sha256` appears in more
   than one split.
@@ -407,9 +712,10 @@ Checks, delivered as functions over labeled rows (D03 records them in the split 
   `label_resource` of the held-out rows, excluding `none` and `mixed`.
 - **Mixed in test:** the test split has mixed-condition rows. Otherwise `not_met`.
 
-The existing `split-v1` gates stay as they are today and D03 applies them to `split-v2`: quality-gate recheck, reconstruct-and-compare on read, measured-only
-test sources, the training leakage check, and the contract's count minimums. With two tasks,
-validation would be empty, and D03 records that.
+The `split-v1` gates also apply to `split-v2`: quality-gate recheck, reconstruct-and-compare on
+read, measured-only test sources, the training leakage check, and the contract's count
+minimums (`class_balance`). With two agent tasks, validation is empty; `split-v2+febe942a2b59`
+records 0 validation rows.
 
 ## Versioning
 
@@ -438,6 +744,9 @@ make retire-release RELEASE=<release>  # remove a never-versioned release the pi
   unless:
   - every evidence entry is a valid run under its own `<kind>-<run_id>` name, holding only
     `results.json` and `samples.jsonl`, and no run ID appears twice;
+  - every replay experiment entry (`replay-...`) holds only its experiment evidence files, can
+    be read (every journal strictly), is stored under the name its own `experiment.json` gives
+    it, and names no replay run ID that another run or experiment entry already has;
   - every release is exactly what its content produces: it holds only the files its format
     declares (`steps.parquet`, `schema.json`, `manifest.json`; format 1 had no `schema.json`),
     its files match the manifest's hashes, and the row digest, the content-addressed name
@@ -456,7 +765,8 @@ make retire-release RELEASE=<release>  # remove a never-versioned release the pi
   - every row of a release names exactly the evidence stored for its run (run ID and
     raw-evidence hash, checked row by row, so one run's rows cannot name different evidence),
     so it can be rebuilt from versioned evidence;
-  - every release not yet versioned **is** what its stored evidence builds: its runs are
+  - every release not yet versioned **is** what its stored evidence builds: its runs, and the
+    replay experiments its rows name, are
     rebuilt from the evidence store under the current label rules, through the same code the
     build uses, and must reproduce its rows exactly (and, for the current format, its Parquet
     bytes). Agreeing hashes alone only prove a release names its evidence; this refuses an
@@ -484,7 +794,9 @@ make retire-release RELEASE=<release>  # remove a never-versioned release the pi
 - **Nothing half-written or hidden is versioned.** `.dvcignore` excludes the hidden staging
   names every command writes before renaming its output into place (`.building-*`,
   `.adding-*`, `.attempt-*`, `.*.tmp`) and every other hidden entry inside the stores, such as
-  macOS `.DS_Store` files; the dataset build skips hidden directories too.
+  macOS `.DS_Store` files; the dataset build skips hidden directories too. Integrity skips and
+  counts hidden entries inside run and replay experiment entries alike, and adding an
+  experiment never copies its hidden files into the store.
 - **Snapshots are incremental and history stays retrievable.** Every store file is
   immutable and new releases add new directories, so a new version uploads only new files, and
   checking out an older commit and pulling restores the stores exactly as they were then.
@@ -535,6 +847,17 @@ content-addressed layout, so files are found through the pointers rather than by
 Only **feature** columns may be model inputs. Labels, rule output, and lineage columns are kept
 for training targets, baseline comparison, and traceability.
 
+`steps-v1.3` keeps every `steps-v1.2` column name, type and role, and appends the agent replay
+columns (`feature_version` through `configuration_sha256`). CPU/coding run rows set
+`feature_version = steps-v1.2`, `task_group = task_id` and `label_resources`, and leave the
+other replay columns null. Agent replay rows (`kind = agent_replay`) set
+`feature_version = step-features-v1`, `task_group` to the task name without its `-r<revision>`
+suffix, the replay columns from their labels, `source = measured`, `workload = agent replay
+<task_id>`, `run_passed` from the experiment, and `workload_iterations`, `worker_capacity`,
+`tests_per_step`, `rule_prediction` and `rule_version` null (the evidence records none of
+them). The same 14 feature column names carry both feature versions; `feature_version` says
+which definition each row follows.
+
 ### Identity
 
 | Column | Type | Description |
@@ -545,6 +868,11 @@ for training targets, baseline comparison, and traceability.
 | `kind` | string | Experiment kind recorded by the ingestion API |
 | `source` | string | Data origin, see above |
 | `recorded_at` | timestamp (UTC), nullable | When the run was saved |
+| `task_group` | string | Task family that splits keep together; equals `task_id` on run rows |
+| `experiment` | string, nullable | Replay experiment name; null on run rows |
+| `plan_sha256` | string, nullable | SHA-256 of the experiment plan the replay ran; null on run rows |
+| `replay_index` | int, nullable | Position of the replay in its experiment (at least 0); null on run rows |
+| `step_type` | string, nullable | Kind of step recorded by the agent run; null on run rows |
 
 ### Features
 
@@ -553,11 +881,11 @@ for training targets, baseline comparison, and traceability.
 | `queue_seconds` | float | Measured wait before a worker started |
 | `execution_seconds` | float | Worker start to finish wall time; includes scheduling delays, so it is not pure work |
 | `duration_seconds` | float | Submission to finish wall time |
-| `cpu_seconds` | float | Process and child CPU time |
+| `cpu_seconds` | float, nullable | Process and child CPU time; null when the step recorded none |
 | `queue_fraction` | float | `queue_seconds / duration_seconds` |
-| `workload_iterations` | int | Fixed work size of the step |
+| `workload_iterations` | int, nullable | Fixed work size of the step; null where none is recorded |
 | `tests_per_step` | int, nullable | Tests executed by the tool step |
-| `worker_capacity` | int | Sandbox workers available |
+| `worker_capacity` | int, nullable | Sandbox workers available; null where none is recorded |
 | `cpu_pressure_max_avg10` | float, nullable | Maximum host CPU PSI `some avg10` (%) over the samples inside the step; null unless every one of them carried PSI |
 | `cpu_pressure_available` | bool | Whether every sample inside the step carried a PSI reading (and there was at least one) |
 | `cgroup_throttled_usec_delta` | int, nullable | cgroup v2 throttled time gained between the first and last samples inside the step, a lower bound for the whole step; `telemetry_coverage` shows how much of the step the samples span |
@@ -573,7 +901,8 @@ cgroup v2 readings are always unavailable.
 
 | Column | Type | Description |
 |---|---|---|
-| `label_resource` | string | Resource that caused excess waiting, or `none` |
+| `label_resource` | string | Resource that caused excess waiting, or `none`; `mixed` is a `labels-v2` value only |
+| `label_resources` | string | Sorted, comma-separated confirmed contended resources; the empty string (never null) means none. On run rows it is `label_resource`, or empty for `none`. The only column where an empty string is valid |
 | `label_excess_fraction` | float | `max(0, min(1, (T − B) / T))`, where T is the step duration and B the clean baseline mean |
 
 Labels come from the experiment design and a frozen noise threshold: a step is labeled with a
@@ -608,8 +937,8 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
   baseline steps, other than exactly one clean and one contended step, or any duration that
   is not a finite positive number (NaN, infinity, zero, booleans, or non-numeric) fail
   labeling instead of being guessed. Mixed contention is not defined in `labels-v1.1`; it is
-  defined in `labels-v2` (see [Replay labels](#replay-labels-labels-v2)), which no release uses
-  yet.
+  defined in `labels-v2` (see [Replay labels](#replay-labels-labels-v2)), which labels the
+  agent replay rows of `steps-v1.3`.
   Flattening always yields exactly one clean and one contended row per run, because the
   ingestion contract has one of each, so that check only guards direct callers of
   `label_rows` and changes no label the pipeline produces.
@@ -634,8 +963,8 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 
 | Column | Type | Description |
 |---|---|---|
-| `rule_prediction` | string | Resource named by the threshold rule (the `resource` field in run results) |
-| `rule_version` | string | Version of the rule that produced it |
+| `rule_prediction` | string, nullable | Resource named by the threshold rule (the `resource` field in run results); null where the evidence has no rule output |
+| `rule_version` | string, nullable | Version of the rule that produced it |
 
 ### Lineage
 
@@ -647,21 +976,27 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 | `agent_model` | string, nullable | Model that invoked the tool in LLM runs, such as `qwen3:1.7b`; null otherwise. Distinguishes LLM-driven coding runs, which share `kind` with direct coding runs |
 | `run_passed` | bool | Whether every experiment check passed |
 | `failed_checks` | string, nullable | Comma-separated names of failed experiment checks, in alphabetical order |
-| `telemetry_status` | string | Run telemetry: `present`, `empty`, `missing` (no samples file), or `no_overlap` (samples exist but none fall inside any step) |
+| `telemetry_status` | string | Run telemetry: `present`, `empty`, `missing` (no samples file), `no_overlap` (samples exist but none fall inside any step), or `unaligned` (a `step-features-v1` status: samples with no clock mapping to the steps) |
 | `sampling_interval_seconds` | float, nullable | Interval the run's sampler declared in its step telemetry (0.25 s for the current worker); null when not recorded. A declared value that is not a finite positive number, or clean and contended values that disagree, rejects the run |
 | `measured_sampling_interval_seconds` | float, nullable | Median gap between the run's samples. Compare with the declared interval to spot sampler drift or bursts; never used for coverage |
 | `baseline_mean_seconds` | float | Clean baseline mean duration B used for the regression label |
 | `noise_threshold_seconds` | float | Run-specific slowdown threshold derived from the frozen rules |
-| `label_basis` | string | Why the step received its label; see the table above |
+| `label_basis` | string | Why the step received its label; see the table above and the `labels-v2` bases |
 | `label_version` | string | Labeling rules version plus fingerprint, for example `labels-v1.1+1a2b3c4d` |
-| `schema_version` | string | Dataset schema version the row was built with (`steps-v1.2`) |
+| `schema_version` | string | Dataset schema version the row was built with (`steps-v1.3`) |
 | `dataset_version` | string | Dataset release this row belongs to |
 | `source_sha256` | string | SHA-256 of the run's results and its samples as received, before contract normalization, serialized as canonical JSON (sorted keys, samples ordered by timestamp, then by content). Any change to a value produces a new hash; key order, sample order, and whitespace do not |
+| `feature_version` | string | Feature definition the row's feature values follow: `steps-v1.2` for run rows, `step-features-v1` for replay rows. The two use different windows and inputs |
+| `replay_role` | string, nullable | Replay role: `baseline`, `contended`, or `clean_control`; null on run rows |
+| `replay_condition` | string, nullable | Injected replay condition: `clean`, `cpu`, `inference`, `retrieval`, or `mixed`; null on run rows |
+| `control_exceeded_noise` | bool, nullable | Whether the clean control exceeded noise on this step; null on run rows and when no usable control exists |
+| `configuration_sha256` | string, nullable | Digest of the replay's registered configuration; null on run rows |
 
 ## Leakage rules
 
 - `step_id`, `condition`, `rule_prediction`, `baseline_mean_seconds`, `label_basis`,
-  `injection_method`, `run_passed`, and `failed_checks` are never features.
+  `injection_method`, `run_passed`, `failed_checks`, `replay_role`, `replay_condition`,
+  `replay_index`, `control_exceeded_noise`, and `experiment` are never features.
 - Injector configuration and logs are used for labeling only.
 - All clean and contended replays of a task stay in the same split.
 - Preprocessing is fitted on the training split only.
@@ -671,15 +1006,18 @@ The rules live in `pipelines/data/src/agentwatch_data/labels.toml` (`labels-v1.1
 ## Slices and bias
 
 `make slice-dataset` slices the newest release, with its newest split when one exists
-(`pipelines/data/src/agentwatch_data/slices.py`, method `slices-v1`), and writes
+(`pipelines/data/src/agentwatch_data/slices.py`, method `slices-v2`), and writes
 `.data/reports/<release>/slices.json` and a readable `slices.md`. The report is derived from the
 release, so it lives outside the versioned stores.
 
 - **Slices.** The dataset has no demographic attributes. It is sliced by the attributes along
   which the data or a model could be skewed: `task_id`, `kind`, `label_resource`, `condition`,
   `injection_method`, `agent_model`, `source`, `telemetry_status`, and the availability of PSI
-  (`cpu_pressure_available`) and cgroup readings (`cgroup_available`). Availability is not the
-  host platform: Linux hosts can lack cgroup readings too.
+  (`cpu_pressure_available`) and cgroup readings (`cgroup_available`), plus `feature_version`
+  and `replay_condition` when the release has them: 12 attributes for a `steps-v1.3` release,
+  10 for a `steps-v1.2` release, whose missing columns are omitted rather than filled in.
+  Availability is not the host platform: Linux hosts can lack cgroup readings too. A split is
+  read by its own group key (`task_id` or `task_group`).
 - **Per slice:** rows, runs, share of the release, label balance, positive (non-`none`) rate,
   how often each nullable reading is missing (missing is never counted as zero), rows per split
   (train, validation, test, excluded, unassigned), and agreement with the rule baseline. Rule
@@ -691,15 +1029,18 @@ release, so it lives outside the versioned stores.
   - missing-readings gap above 20 points between values of one attribute, per reading;
   - absent from the train or test split while that split has rows.
 
-  `condition` and `injection_method` decide the label by design, so they are not checked for
-  single-class slices or label-rate gaps. They also split the rows as the label does, so their
-  missing-readings gaps are reported once, under `label_resource`. An availability flag is not
-  compared with its own reading.
+  `condition`, `injection_method` and `replay_condition` decide the label by design, so they
+  are not checked for single-class slices or label-rate gaps. They also split the rows as the
+  label does, so their missing-readings gaps are reported once, under `label_resource`. An
+  availability flag is not compared with its own reading.
 - **Mitigation.** Each flag carries its mitigation, and each attribute carries balancing
   weights (`total / (values × slice rows)`) that give every value the same total weight for
   re-weighted training.
 
 ### Findings on `steps-v1.2+5954f97ef8b2`
+
+The slice report for `steps-v1.3+aafae73eb211` has not been generated and reviewed yet; the
+findings below are for the earlier release.
 
 The shared release (350 rows, 50 runs) raises 17 flags. To reproduce, unzip
 `data/shared/agentwatch-dataset-steps-v1.2-5954f97ef8b2.zip` and run
@@ -734,40 +1075,68 @@ The main ones:
 
 ## Known limitations
 
-- Current measured data covers one fixed task and two classes.
-- **Labels are trivially predictable on current data.** With only the CPU queue experiment, the
+- CPU and coding data covers one fixed task per kind and two classes; agent replays cover two
+  tasks (`fix-mean-empty`, `fix-window-count`) recorded on one host with one model.
+- **Labels were trivially predictable on the CPU and coding data.** With only the CPU queue experiment, the
   contention directly creates queue waiting: on 7 real runs (49 rows), `label_resource` equals
   `rule_prediction` on every row, and `queue_fraction` alone separates the classes (lowest
-  positive 0.847, highest negative 0.003). Any model will look near-perfect and model-versus-rule
-  comparisons carry no information until inference, retrieval, and mixed contention exist. The
-  split stage must run a leakage check before any evaluation.
+  positive 0.847, highest negative 0.003). On those rows any model looks near-perfect and
+  model-versus-rule comparisons carry no information; the agent replays add inference,
+  retrieval and mixed contention. The split stage runs a leakage check before any evaluation.
 - **Clean controls sometimes exceed the noise threshold** (`clean_exceeded_noise`): 2 of 7 real
   runs recorded on 2026-10-08 (+0.047 s and +0.035 s against thresholds near 0.02 s) and 0 of 7
-  recorded on 2026-10-09. The rate varies between collections, so it is reported per release
+  recorded on 2026-10-09. In `steps-v1.3+aafae73eb211`, 82 of 1,724 replay clean-control steps
+  and 7 of the 50 CPU and coding clean steps are `clean_exceeded_noise`. The rate varies between collections, so it is reported per release
   and never tuned away.
 - **Telemetry is sparse for short steps.** The worker samples every 250 ms while many steps last
   0.2–0.5 s, so 20 of 42 rows in six real runs had 0–1 samples. `telemetry_coverage` exposes
   this; faster sampling belongs to the worker.
 - `task_id` is an interim placeholder (`kind:workload:iterations`): one project at different
-  work sizes becomes several tasks, so a grouped split cannot yet guarantee unseen tasks. The
-  recorded coding run is one task, so its whole release lands in the test split, the training
-  split is empty, and the leakage check is `inconclusive`.
+  work sizes becomes several tasks, so a grouped split cannot yet guarantee unseen tasks from
+  it. Agent replays carry their real task name and `task_group`.
 - Hardware telemetry is unavailable on macOS hosts.
 - Experiment labels are operational proxies and still need natural-overload validation.
 - **Step-type spillover.** `labels-v2` names the contention that was applied, not the step's
   type. The CPU injector also slows model calls (CPU load slows the model server), and the
   retrieval flood slows every runner thread, so a step of another type can carry the label.
   `step_type` stays on each row so evaluation can report each class by step type.
-- **Only two agent tasks exist** (`fix-mean-empty-r1`, `fix-window-count-r1`), so a `split-v2`
-  validation split is empty. "The test split is one task" holds only for a replay-only
-  release; once CPU and coding rows are in the release, `split-v2` sends all of them to test
-  (see [Frozen split assignment](#frozen-split-assignment-split-v2)).
-- **No recorded replay experiment is in the evidence store.** `labels-v2` and `split-v2` are
-  verified on synthetic fixtures in tests only; acceptance on real replays is open.
-- **Synthetic fixture step names differ from the producer's.** The test fixture uses step IDs
-  and types such as `tool-call-1` and `model_call`/`tool_call`, while the producer writes
-  `tool-{n}-{name}` and `other`. Labels are unaffected, but D03 should remember that real tool
-  names may contain words like `retrieval`, and that `step_id` stays a non-feature
-  (`LEAKY_COLUMNS`).
-- **Replay timings under contention are features.** D03 must check that they do not encode the
-  injected condition another way.
+- **Only two agent tasks exist** (`fix-mean-empty-r1`, `fix-window-count-r1`), so the
+  `split-v2` validation split is empty and training is one task group. `split-v2` sends every
+  CPU and coding row to test with `fix-window-count` (see
+  [Frozen split assignment](#frozen-split-assignment-split-v2)).
+- **Replay telemetry is mostly null.** Only 427 of 5,603 replay rows have telemetry `present`
+  (all tool steps); model calls and retrievals are `empty` and most tool steps `no_overlap`
+  (see [Missingness per feature version](#missingness-per-feature-version)). Replay rows carry
+  mostly timing features, and `step-features-v1` has no GPU, inference-server or retrieval
+  reading.
+- **Replay timings under contention are features, and they nearly separate the classes.** The
+  `steps-v1.3` split's leakage check passed with a maximum training AUC of 0.974242
+  (`queue_seconds`, `retrieval`) against the 0.98 bound, and the design-encoding report shows
+  timings partly encode contended versus clean replays (highest AUC 0.685579). Both are
+  recorded in every `split-v2` file.
+- **Real step names and types.** Real replays use step IDs such as `model-call-2`,
+  `tool-1-search_docs` and `verify-tests`, and step types `model_call`, `tool` and `retrieval`;
+  the synthetic test fixture uses `tool-call-1` and `model_call`/`tool_call`. Tool names can
+  contain words like `search`, so `step_id` stays a non-feature (`LEAKY_COLUMNS`).
+- **Some evidence produces no rows.** 8 `fix-window-count` experiments failed `stable_baseline`
+  and the step `tool-2-rejected` never has two usable baselines, so it is never labeled (see
+  [Rows](#rows)).
+
+
+### Replay identity checks (2026-11-10)
+
+Builds reject all experiments sharing a replay run UUID, including renamed copies
+and manifests from partial and final snapshots. Curation refuses a new entry if any
+of its replay run UUIDs already belongs to a stored experiment. Existing evidence
+and published releases are never rewritten. Publication uses the store's hidden
+`.replay-publication-lock` directory; a concurrent writer fails with a retry message.
+After an interrupted writer, verify that no curation process is active before removing
+that empty lock directory and retrying. Hidden staging directories are not evidence.
+The current evidence filename contract supports replay indices 00–99; larger
+experiments are refused rather than partially stored.
+
+Non-blocking follow-ups from the D03 review remain: the row source fingerprint does
+not include injection logs; replay journal registration payloads need stricter plan
+identity checks; and the v1.2 frozen-schema quality-gate fixture should be restored.
+These require separate regression work and, where row derivation changes, a new
+immutable release. They do not change the frozen release described above.

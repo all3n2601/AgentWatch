@@ -197,6 +197,8 @@ def serving_contract(candidate: Candidate, model: dict, report: dict, hashes: di
     lineage = {
         "dataset_version": report["dataset_version"],
         "label_version": model["label_version"],
+        "label_versions": model["label_versions"],
+        "feature_versions": model["feature_versions"],
         "status": report["status"],
         "evaluation": report["evaluation"],
         "model_files": {key: {"file": MODEL_FILES[key], "sha256": h} for key, h in hashes.items()},
@@ -227,7 +229,12 @@ def attempt(
         validate_rows(rows, name)
     validate_dataset_version(train + validation + scored)
     candidate = fit_candidate(train, validation, config)
-    model = model_identity(config, candidate, label_version(train + validation + scored))
+    all_rows = train + validation + scored
+    model = model_identity(config, candidate, label_version(all_rows))
+    model["label_versions"] = sorted({row["label_version"] for row in all_rows})
+    model["feature_versions"] = sorted(
+        {row["feature_version"] for row in all_rows if row.get("feature_version") is not None}
+    )
     predictions = predict(candidate, scored)
     rule_labels = [rules.predict(row) for row in scored]
     report = build_model_report(

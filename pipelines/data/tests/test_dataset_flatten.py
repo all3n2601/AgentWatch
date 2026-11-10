@@ -12,7 +12,8 @@ from agentwatch_data.flatten import (
     sampling_interval_seconds,
     window_readings,
 )
-from agentwatch_data.schema import COLUMNS
+from agentwatch_data.schema import COLUMNS, SCHEMA_VERSION
+from agentwatch_features import LEGACY_FEATURE_VERSION
 from dataset_fixtures import BASE_NS, SAMPLE, make_result
 
 
@@ -59,6 +60,27 @@ def test_shared_run_fields(rows):
         10,
         1,
     )
+
+
+def test_run_rows_carry_legacy_feature_version_and_task_group(rows):
+    for row in rows:
+        assert row["feature_version"] == LEGACY_FEATURE_VERSION == "steps-v1.2"
+        assert row["task_group"] == row["task_id"] == "cpu:fixed SHA-256 CPU task:10"
+
+
+def test_run_rows_leave_replay_columns_null(rows):
+    replay_only = (
+        "experiment",
+        "plan_sha256",
+        "replay_index",
+        "step_type",
+        "replay_role",
+        "replay_condition",
+        "control_exceeded_noise",
+        "configuration_sha256",
+    )
+    for row in rows:
+        assert {name: row[name] for name in replay_only} == dict.fromkeys(replay_only)
 
 
 def test_unavailable_readings_stay_null_not_zero(rows):
@@ -214,7 +236,7 @@ def test_missing_samples_file_is_reported_as_missing():
 def test_passing_run_lineage(rows):
     row = rows[0]
     assert (row["run_passed"], row["failed_checks"], row["agent_model"]) == (True, None, None)
-    assert row["schema_version"] == "steps-v1.2"
+    assert row["schema_version"] == SCHEMA_VERSION
     assert row["sampling_interval_seconds"] == 0.25  # declared, even without overlapping samples
     assert row["measured_sampling_interval_seconds"] is None
 
