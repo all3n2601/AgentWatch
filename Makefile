@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset rule-baseline train-candidates freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset optimization-schedule compare-optimization rule-baseline train-candidates freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -48,14 +48,14 @@ AGENTWATCH_ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))
 DATA = uv run --project "$(AGENTWATCH_ROOT)" --package agentwatch-data python -m agentwatch_data
 DVC = uv run --project "$(AGENTWATCH_ROOT)/pipelines/versioning" --frozen dvc
 
-add-evidence: ## Validate recorded runs and copy them into the versioned evidence store (RUN=".data/coding-demo ...")
-	$(if $(RUN),,$(error Set RUN to one or more recorded run directories, for example RUN=.data/coding-demo))
+add-evidence: ## Validate recorded run directories or replay experiment directories and copy them into the versioned evidence store (RUN=".data/coding-demo ...")
+	$(if $(RUN),,$(error Set RUN to one or more recorded run directories or replay experiment directories, for example RUN=.data/coding-demo))
 	$(DATA).evidence --store $(DATASET_EVIDENCE) $(RUN)
 
 dataset: ## Build a versioned step dataset release from the evidence store (DATASET_SOURCES="local:data/evidence api:http://127.0.0.1:8090")
 	$(DATA).build $(foreach source,$(DATASET_SOURCES),--source $(source)) --output $(DATASET_OUTPUT)
 
-VALIDATION_SCHEMA ?= pipelines/validation/schema/steps.pbtxt
+VALIDATION_SCHEMA ?= pipelines/validation/schema/steps-v1.3.pbtxt
 LATEST_RELEASE = $(DATA).releases --output $(DATASET_OUTPUT)
 
 validate-dataset: ## Check the newest published release with the TFDV quality gate (Python 3.13; exits 1 on anomalies)
@@ -68,6 +68,16 @@ split-dataset: ## Freeze train/validation/test splits of the newest release (ref
 
 slice-dataset: ## Slice the newest release for bias (with its newest split, if any): flags, mitigations, and balancing weights under .data/reports/<release>
 	release=$$($(LATEST_RELEASE)) && $(DATA).slices --release "$$release" --newest-split
+
+OPTIMIZATION_CONTRACT ?= pipelines/model/optimization-contract.toml
+
+optimization-schedule: ## Print the seeded batch order an optimization experiment's manifest preregisters (MANIFEST=<experiment>/manifest.json)
+	$(if $(MANIFEST),,$(error Set MANIFEST to an optimization experiment's manifest.json))
+	$(DATA).optimization_comparison schedule --manifest "$(MANIFEST)" --contract $(OPTIMIZATION_CONTRACT)
+
+compare-optimization: ## Validate an optimization experiment's batches and write its paired comparison record (EXPERIMENT=dir; an invalid manifest exits 1)
+	$(if $(EXPERIMENT),,$(error Set EXPERIMENT to an optimization experiment directory))
+	$(DATA).optimization_comparison compare "$(EXPERIMENT)" --contract $(OPTIMIZATION_CONTRACT)
 
 RULE_BASELINE_OUTPUT ?= .data/rule-baseline
 

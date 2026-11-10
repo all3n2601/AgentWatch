@@ -1,12 +1,18 @@
 # AgentWatch evaluation contract v2 proposal
 
-Status: proposed, not accepted. Owner: Rohit, who accepts, changes or rejects it.
+Status: verbal acceptance reported on 2026-11-05; written confirmation pending.
+Owner: Rohit (M02). His approval confirming the contract is an explicit merge condition
+for PR #59. D03 encoded items 1, 3 and 4 as `eval-contract-v2` in
+`pipelines/model/evaluation-contract.toml` (identifier `9b55506c`; see
+[the evaluation contract](evaluation-contract.md) and
+[ADR 0009](adr/0009-combined-dataset-release-and-split-v2.md)). **Item 2 is not encoded**: the
+multi-resource metric and the `mixed` scoring rule remain Rohit's M02 decision, and until then
+the rule baseline and training refuse splits with `mixed` labels. `eval-contract-v1` is kept
+unchanged as `pipelines/model/evaluation-contract-v1.toml`.
 
 This proposal comes from D02 ([data card](data-card.md),
-[ADR 0007](adr/0007-multi-resource-labels-and-frozen-hold-out.md)). Nothing in
-`eval-contract-v1` ([evaluation contract](evaluation-contract.md)) changes until it is
-accepted. `pipelines/model/evaluation-contract.toml` is not edited by D02, `make dataset`
-keeps building `labels-v1.1` releases with `split-v1`, and every threshold is unchanged.
+[ADR 0007](adr/0007-multi-resource-labels-and-frozen-hold-out.md)). The text below is the
+proposal as reviewed; the notes after it record what D03 did.
 
 ## Proposed changes
 
@@ -32,9 +38,28 @@ keeps building `labels-v1.1` releases with `split-v1`, and every threshold is un
 
 ## Dependencies and open items
 
-- D03 ingests replay experiments into releases (`steps-v1.3`) with these labels and wires
-  `split-v2`; it follows acceptance.
-- No recorded replay experiment is in the evidence store, so none of this is verified on real
-  replays. Benoy records at least one per task, per the A05 board notes.
-- With two agent tasks, validation is empty and tuning data is unavailable; the contract's
-  count minimums make the dependent gates `inconclusive` rather than passed.
+- Done in D03 (2026-11-06): replay experiments are in the evidence store and in release
+  `steps-v1.3+aafae73eb211` with these labels, and `split-v2` is wired into `make_split` and
+  `load_split` (split `split-v2+febe942a2b59`). The assignment path is written relative to the
+  contract file (`../data/src/agentwatch_data/split-assignment.toml`), which resolves to the
+  file named in item 3.
+- Open, M02 (Rohit): item 2, the multi-resource metric and the `mixed` scoring rule.
+- With two agent tasks, validation is empty and tuning data is unavailable; calibration and
+  every validation-dependent gate are `inconclusive` rather than passed. The test split meets
+  the count minimums (data card, Dataset v1).
+
+### D03 acceptance and evaluation merge conditions (2026-11-10)
+
+PR #59 must not merge until Rohit (M02/promotion-check owner) supplies written
+confirmation of `eval-contract-v2` and the final revision has the required two
+non-author approvals. The owner's report of verbal acceptance is not that record.
+The frozen contract's `status = "accepted"` and hash `9b55506c` are preserved to
+avoid silently changing published split identities; this metadata does not prove
+that the written merge condition has been satisfied. That condition remains open.
+
+The test split crosses feature definitions: 350 CPU/coding rows use `steps-v1.2`,
+while replay rows use `step-features-v1`. Model and rule evaluation now refuse a
+combined population with differing feature versions (including present versus
+missing identity), even after M02 defines mixed-label scoring. A future versioned
+split/report design must evaluate compatible populations separately. Model and
+serving metadata retain the full label-version set beside the legacy singular field.

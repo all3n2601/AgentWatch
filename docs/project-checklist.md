@@ -609,12 +609,59 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   [`eval-contract-v2`](evaluation-contract-v2-proposal.md), D03 wiring into releases, and
   split-v2 reproduction (build twice, identical split id and `rows_sha256`), possible only after
   D03 wires `make_split`.
+  2026-11-05 to 2026-11-06 (D03, branch `feature/d03-dataset-v1`, not merged): `labels-v2`
+  labels 5,603 real replay rows in `steps-v1.3+aafae73eb211`, Rohit accepted `eval-contract-v2`
+  on 2026-11-05 (told to the owner directly; his PR approval is the written confirmation), and
+  `split-v2+febe942a2b59` reproduced byte for byte from a copy of the evidence. Still open: the
+  `mixed` scoring rule (proposal item 2, M02) and the merge of D02/D03.
+- [ ] D03 — Allen: validated, versioned dataset v1 (`steps-v1.3`) for M02. 2026-11-05 to
+  2026-11-06, branch `feature/d03-dataset-v1` (not merged): 54 replay
+  experiments from Benoy's two deliveries (`d03-2026-11-04.zip` `5ee876a3…b5e0`,
+  `d03-2026-11-05.zip` `9e82c41b…94b5`) curated into `data/evidence/`; release
+  `steps-v1.3+aafae73eb211` (5,953 rows: 5,603 agent replay with `labels-v2+d803a9c6`, 175 CPU
+  and 175 coding with `labels-v1.1+2c495a72`; 411 rejections recorded in build report
+  `20261106T063357064753Z-e8ff44a7`); TFDV gate passed against the re-frozen
+  `pipelines/validation/schema/steps-v1.3.pbtxt` (attempt `20261106T063456443931Z-e05881f1`,
+  drift not compared because no release passed against the same schema); split
+  `split-v2+febe942a2b59` under `eval-contract-v2` (`9b55506c`): train 2,028 / validation 0 /
+  test 3,925, class balance met, leakage passed (observed maximum AUC 0.974242 against the 0.98
+  bound), independence passed, held-out method and mixed in test met. A rebuild and resplit into
+  empty stores reproduced the release name, Parquet bytes, split id and per-split `rows_sha256`;
+  integrity rebuilt the release with 0 problems; `data/*.dvc` committed in `583b52e`.
+  `split-v1+58e921fa846a` on `steps-v1.2` still loads with `evaluation-contract-v1.toml` and
+  `steps.pbtxt`. Tests: `uv run pytest` with `AGENTWATCH_TEST_DATABASE_URL` on a throwaway PostgreSQL 17 (2,030
+  passed, 0 skipped),
+  `uv run --project pipelines/validation pytest pipelines/validation` (85 passed),
+  `uv run --project pipelines/orchestration pytest pipelines/orchestration` (95 passed),
+  `uv run --project pipelines/versioning --frozen pytest pipelines/versioning/tests` (9 passed in
+  a checkout path without spaces; see the pipeline README for the space issue). Details in
+  [the data card](data-card.md#dataset-v1-steps-v13aafae73eb211) and
+  [ADR 0009](adr/0009-combined-dataset-release-and-split-v2.md). Open: review and merge,
+  a non-empty validation split, the `mixed` scoring rule (M02), drift
+  against a same-schema baseline, and the `steps-v1.3` slice report.
+  2026-11-07 review fixes: replay intervals below 1 ns (including zero/negative values) or
+  outside finite nanosecond range reject the entire experiment as `declared_interval_invalid`.
+  Format 3 release `steps-v1.3+aafae73eb211` adds per-kind/per-column `missing_by_kind`
+  counts including zeros, preserving global totals and older immutable releases. Rebuilt
+  5,953 rows / 411 rejections; gate `20261107T073356282259Z-101baa67` passed; split
+  `split-v2+febe942a2b59` passed leakage, class balance, and independence checks.
+  Tests: full PostgreSQL-17/Docker-backed suite 2,040 passed (no skips), final affected
+  data/model/contract suites 1,060 passed (including four later regression cases), Ruff passed;
+  validation 85, orchestration 95, versioning 9 passed. `make push-dataset` uploaded the reviewed
+  objects; a clone with an empty cache pulled through the public remote and reproduced the
+  Parquet, manifest, schema, split file and every split row hash byte for byte (commands and
+  full SHA-256 values in the data card's Review fixes section). Final CI and two fresh qualified
+  approvals remain outstanding; D03 stays open.
 - [ ] Choose whether the regression target is observed queue time or estimated excess latency.
 - [ ] Generate clean, isolated-contention, and mixed-contention replays over fixed tasks.
   2026-10-25 (A05): `make agent-experiment` writes clean, `cpu`, `inference`, `retrieval` and
   `mixed` replays, plus an `experiment.json` manifest and `injections/` logs that keep the
   conditions out of replay evidence. Four real runs of the protocol on one task are recorded; the second task,
   repeats and labels for these replays (D02) are open.
+  2026-11-05 (D03 evidence): Benoy recorded 50 more experiments at `c6b4333` on both tasks,
+  including a 45-experiment batch declared before recording (count, interleaved order, stop
+  rule); 46 of the 54 experiments are labelable and 8 failed `stable_baseline` and are kept as
+  evidence. Open until D03 is merged.
 - [x] Store versioned Parquet datasets with GCS/DVC or an explicitly chosen equivalent.
   DVC versioning is in place (2026-10-18): `make add-evidence` curates runs into an immutable
   evidence store, `make version-dataset` verifies and snapshots the evidence and dataset stores,
@@ -623,18 +670,26 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   shared release `steps-v1.2+5954f97ef8b2` (2026-10-27), with `data/*.dvc` committed; a fresh
   clone with no Google login pulled it (`make pull-dataset`, public HTTPS remote) and ran
   `make pipeline-run` successfully. The DAG pushes only when `AGENTWATCH_DVC_PUSH_REMOTE` is set.
+  2026-11-06 (D03, not merged): `steps-v1.3+aafae73eb211` and the 54 replay experiments are
+  versioned locally (`data/*.dvc` in `583b52e`). 2026-11-07: both these objects and the format 3
+  successor were pushed; public fresh-clone pull/rebuild verified (see D03 above).
 - [x] Validate data with TFDV or an explicitly chosen equivalent (2026-10-12): `make
   validate-dataset` checks a release with TFDV 1.21 against the frozen schema in
   `pipelines/validation/schema/steps.pbtxt`; Parquet types that differ from the release's contract
   are refused, schema anomalies fail the gate, and drift against the previous passing release is
   reported. Each attempt commits its result and statistics as one directory (2026-10-13). Gate
-  tests at 100% line and branch coverage.
+  tests at 100% line and branch coverage. 2026-11-06 (D03, not merged): `steps-v1.3` releases are
+  gated against `pipelines/validation/schema/steps-v1.3.pbtxt`; `steps.pbtxt` stays for
+  `steps-v1.2`. Drift is compared only against a release that passed against the same frozen
+  schema, so drift against `steps-v1.2` is not available for dataset v1.
 - [x] Freeze splits grouped by task and related replay to prevent leakage (2026-10-13): `make
   split-dataset` splits only releases with a passing quality-gate verdict, 70/15/15 by hashed
   `task_id` from the evaluation contract, keeps non-measured runs out of test, records per-split
   row hashes, and runs the contract's single-feature AUC leakage check on the training split
   (`test_dataset_splits.py`, 100% line and branch coverage). Unseen tasks still depend on a real
-  `task_id`.
+  `task_id`. 2026-11-06 (D03, not merged): `split-v2` (frozen assignment, grouped by
+  `task_group`) is wired into `make_split` and `load_split` with class balance, membership-based
+  leakage, the D02 checks and a report-only design-encoding check (`test_dataset_splits.py`).
 - [x] Orchestrate the dataset stages with Airflow (2026-10-24): the `agentwatch_dataset` DAG in
   `pipelines/orchestration` runs acquire → build → validate → split → version → push →
   summarize, each in its stage's own environment, with only the DVC push retried
@@ -659,6 +714,10 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   weights (`pipelines/data/tests/test_dataset_slices.py`). Run on `steps-v1.2+5954f97ef8b2`: 17
   flags, summarized in the data card's "Slices and bias". Model-level slicing is open.
 - [ ] Hold out unseen tasks and at least one injection method.
+  2026-11-06 (D03, not merged): `split-v2+febe942a2b59` holds out injection method
+  `worker_queue_blocker` and task group `fix-window-count` (held-out check met, independence
+  passed). Open: training has one task group and validation is empty, so unseen-task results
+  rest on one task.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
 - [ ] Evaluate the expanded rule baseline before training the learned model.
@@ -666,6 +725,9 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   ([rule baseline](rule-baseline.md), `pipelines/model/tests`). On the interim
   `steps-v1.2+5954f97ef8b2` split it reports blocked by the leakage check, with no metrics.
   Open until a release covering all four classes and mixed contention passes that check.
+  2026-11-06 (D03, not merged): `steps-v1.3+aafae73eb211` covers all four classes and `mixed`,
+  and its split passes the leakage check, but `make rule-baseline` refuses it because `mixed`
+  has no scoring rule until M02 (`pipelines/model/tests/test_rule_baseline.py`).
 
 **Exit test:** Rebuild labels and features from recorded evidence. Validate schema, missingness,
 class balance, baseline noise, split independence, and feature leakage. Report rule metrics on the
@@ -783,6 +845,22 @@ from M3 through M6 and do not renumber the implementation milestones above.
   Mac, not committed. Open: PR review and CI, Benoy's GPU validation, and O02's formal
   acceptance.
 - [ ] O04 — Akshay: paired-run manifests and comparison validation after O01/D02.
+  Implemented 2026-11-05 on branch `feature/optimization-evidence`:
+  [optimization experiment evidence](optimization-evidence.md), preregistration manifests checked
+  against `opt-contract-v1` (contract hash, frozen tasks, model/hardware/power/state identity,
+  arrivals, one-control candidates, queue bounds, repetitions), policy hashes, a seeded paired
+  schedule, batch records rejected with a code on any identity, schedule, policy or task mismatch,
+  and deterministic paired comparison records that keep failed, rejected and unpaired attempts and
+  leave unobserved values null. Batches must also match the condition's injection state, the
+  preregistered arrivals (within a declared tolerance) and the schedule order, and admission waits
+  are judged against the declared queue bounds. Failures in failed or aborted batches still count,
+  and any rejected, missing or unpaired evidence makes a comparison insufficient. Gates stay
+  `not_evaluated` (O06). Each completed batch must also record the injector set it applied,
+  equal to the preregistered one, and every started task must link agent evidence proving its
+  task content, configuration and acceptance, with a present non-boolean `task_passed` rejected
+  as malformed (reviews on PR #58). Verified on synthetic experiments only: 156 cases in
+  `pipelines/data/tests/test_optimization_{manifest,batches,comparison}.py`. Open until O06
+  records a real experiment in this format.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
 - [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
@@ -828,7 +906,9 @@ verification remain open; no milestone or verification checkbox is completed by 
 - [ ] Set the primary evaluation metric, overhead budget, abstention criteria, and promotion gates.
   Proposed in `eval-contract-v1` (2026-10-09): [the evaluation contract](evaluation-contract.md)
   and `pipelines/model/evaluation-contract.toml`. Open until reviewed by the dataset and
-  promotion-check owners.
+  promotion-check owners. 2026-11-05: `eval-contract-v2` (`9b55506c`) accepted by Rohit, told to
+  the owner directly; his approval of the D03 PR is the written confirmation. Its thresholds are
+  unchanged and still marked proposed, and the `mixed` scoring rule is not encoded (M02).
 - [ ] Confirm cloud budget and hardware access before adding deployment obligations.
 
 ## Commands and supporting evidence
@@ -869,3 +949,38 @@ Mark implementation complete when its behavior exists and its stated exit test h
 Keep remaining testing items open until they have been exercised. Record dates and artifact/test
 references for new verification; distinguish manual checks from automation. Update this snapshot
 when milestones change rather than converting all items into one overall progress percentage.
+
+### D03 acceptance and evaluation merge conditions (2026-11-10)
+
+PR #59 must not merge until Rohit (M02/promotion-check owner) supplies written
+confirmation of `eval-contract-v2` and the final revision has the required two
+non-author approvals. The owner's report of verbal acceptance is not that record.
+The frozen contract's `status = "accepted"` and hash `9b55506c` are preserved to
+avoid silently changing published split identities; this metadata does not prove
+that the written merge condition has been satisfied. That condition remains open.
+
+The test split crosses feature definitions: 350 CPU/coding rows use `steps-v1.2`,
+while replay rows use `step-features-v1`. Model and rule evaluation now refuse a
+combined population with differing feature versions (including present versus
+missing identity), even after M02 defines mixed-label scoring. A future versioned
+split/report design must evaluate compatible populations separately. Model and
+serving metadata retain the full label-version set beside the legacy singular field.
+
+### D03 review fixes — 2026-11-10
+
+- [x] Reject all replay experiments sharing run UUIDs across source folders; curation
+  rejects overlapping stored replay UUIDs before publishing, with serialized publication.
+  Regression evidence: renamed copies, edited manifests, independent surviving experiments,
+  and concurrent-publication refusal in `test_replay_rows.py` / `test_replay_store.py`.
+- [x] Refuse combined model/rule evaluation across feature definitions; retain every
+  label and feature version in model, serving and tracking metadata. Regression evidence:
+  `test_rule_baseline.py` and `test_train_candidates.py`.
+- [x] Current release references identify `steps-v1.3+aafae73eb211` and
+  `split-v2+febe942a2b59`; format 2 predecessor history remains immutable.
+- [x] Ruff and diff checks passed. Full Python suite with dedicated PostgreSQL and
+  Docker enabled: 2,205 passed, no skips. Final affected data/model/contract suite:
+  1,225 passed. DVC-aware integrity: 50 runs, 54 experiments, three releases,
+  three build reports, three gate attempts and three splits verified.
+- [ ] Fresh PR CI and two non-author approvals, including Rohit's written contract
+  confirmation, remain required before merge. Non-blocking fingerprint/journal/legacy
+  gate-fixture follow-ups are recorded in the data card, not marked implemented.

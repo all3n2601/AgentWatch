@@ -8,14 +8,28 @@ model results is B03.
 
 | Version | Module | Input | Window | Consumers |
 | --- | --- | --- | --- | --- |
-| `steps-v1.2` | `agentwatch_features.legacy` | Completed-run sampler rows | Submission to finish, both inclusive | `pipelines/data` flattening; released datasets |
-| `step-features-v1` | `agentwatch_features.live` | Applied live StepEvents and ResourceSamples | `[started_tick_ns, finished_tick_ns)` in the step's clock domain | Worker join (`agentwatch_worker.live_features`); B03 serving; D03 dataset v1 |
+| `steps-v1.2` | `agentwatch_features.legacy` | Completed-run sampler rows | Submission to finish, both inclusive | `pipelines/data` flattening; CPU and coding rows of released datasets |
+| `step-features-v1` | `agentwatch_features.live` | Applied live StepEvents and ResourceSamples | `[started_tick_ns, finished_tick_ns)` in the step's clock domain | Worker join (`agentwatch_worker.live_features`); B03 serving; agent replay rows of `steps-v1.3` (D03 dataset v1) |
 
 `steps-v1.2` definitions are unchanged; see the [data card](data-card.md). The two versions use
 different windows and inputs, so their values are not interchangeable. `step-features-v1` has
 no workload-size or worker-capacity features: live registrations do not record them. A model
 trained on `steps-v1.2` columns cannot consume `step-features-v1` rows without a new, explicitly
 versioned mapping.
+
+**Dataset v1 mapping (`steps-v1.3`, D03).** The `steps-v1.3` release carries both versions in the
+same 14 feature columns and labels every row with its `feature_version` column: CPU and coding
+run rows are `steps-v1.2`, agent replay rows are `step-features-v1`. For replay rows the
+`step-features-v1` values are copied into the columns of the same name; `workload_iterations`,
+`worker_capacity` and `tests_per_step`, which `step-features-v1` does not define, are null (never
+zero). Each replay row is computed with `compute_feature_rows` from that replay's own
+`live-journal.jsonl` and the declared interval in its `agent-evidence.json`, and its timings must
+equal the `experiment.json` timings its label used within 1e-6 s. Consumers that mix the two
+versions must read `feature_version`; the values are not interchangeable. In release
+`steps-v1.3+aafae73eb211` the 5,603 replay rows have telemetry `present` 427, `empty` 3,445 and
+`no_overlap` 1,731: model calls and retrievals have no v1-metric samples on their target, and
+millisecond tool steps fall between 0.25 s samples (see the
+[data card](data-card.md#missingness-per-feature-version)).
 
 ## Using it
 
@@ -98,5 +112,6 @@ present telemetry, or a non-`missing` status for a step that never started.
   found by binary search.
 - No HTTP endpoint serves feature rows yet; B03 decides how rows are served and stored.
 - Coverage needs the producer's declared sampling interval, which live runs do not record.
-- No real agent run has been joined: evidence so far is synthetic fixtures only. Sampling
-  overhead and achieved intervals are not measured by this change.
+- Real agent runs have been joined offline from recorded journals (D03, 2026-11-06: 5,603 rows
+  from 598 replays in `steps-v1.3+aafae73eb211`, `pipelines/data/tests/test_replay_rows.py` for
+  the join). Sampling overhead and achieved intervals are not measured by these changes.

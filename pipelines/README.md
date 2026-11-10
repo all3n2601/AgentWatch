@@ -6,13 +6,13 @@ naming the resource that slowed it down (or `none`). Airflow orchestrates it, TF
 DVC versions it, and Slack receives its alerts.
 
 ```text
-recorded runs (results.json + samples.jsonl)
-  acquire   copy validated runs into the immutable evidence store        data/evidence/
-  build     extract → flatten → label → schema check → Parquet release   data/datasets/<release>/
-  validate  TFDV statistics against a frozen schema; anomalies fail      data/datasets/validations/
-  split     70/15/15 grouped by task, leakage check                      data/datasets/splits/
-  slices    bias report per slice (runs beside version)                  .data/reports/<release>/
-  version   integrity check, then a DVC snapshot of both stores          data/evidence.dvc, data/datasets.dvc
+recorded runs (results.json + samples.jsonl) and replay experiments (experiment.json + replays/)
+  acquire   copy validated runs and replay experiments into the evidence store   data/evidence/
+  build     extract → flatten or join features → label → schema check → Parquet  data/datasets/<release>/
+  validate  TFDV statistics against a frozen schema; anomalies fail              data/datasets/validations/
+  split     split-v2 by task group; class balance and leakage checks             data/datasets/splits/
+  slices    bias report per slice (runs beside version)                          .data/reports/<release>/
+  version   integrity check, then a DVC snapshot of both stores                  data/evidence.dvc, data/datasets.dvc
   push      upload to the team bucket (only when AGENTWATCH_DVC_PUSH_REMOTE is set)
   summarize run summary
   alert     run summary and findings to Slack, with the slice report's flag count
@@ -59,15 +59,17 @@ pipelines/
 │   │   ├── extract.py     strict reading of results.json and samples.jsonl, deduplication
 │   │   ├── flatten.py     one row per step; readings inside each step's time window
 │   │   ├── labels.py      experiment-derived labels from a frozen rule file (labels.toml)
-│   │   ├── schema.py      column contract (contracts/steps-v1.2.json), row validation
+│   │   ├── replay_labels.py  labels-v2 for agent replay experiments (labels-v2.toml)
+│   │   ├── replay_rows.py replay release rows: labels joined to step-features-v1
+│   │   ├── schema.py      column contract (contracts/steps-v1.3.json), row validation
 │   │   ├── build.py       content-addressed Parquet release, manifest, build report
-│   │   ├── splits.py      grouped splits and the leakage check
+│   │   ├── splits.py      grouped splits (split-v1, split-v2), class balance and leakage checks
 │   │   ├── slices.py      bias slicing, flags, mitigations, balancing weights
 │   │   ├── integrity.py   store verification before DVC versions anything
 │   │   └── retire.py      remove a release that was never versioned
 │   └── tests/
 ├── validation/            TFDV quality gate (own environment, Python 3.13)
-│   ├── schema/steps.pbtxt the frozen, reviewed schema
+│   ├── schema/            the frozen, reviewed schemas: steps-v1.3.pbtxt (default), steps.pbtxt (steps-v1.2)
 │   ├── src/agentwatch_validation/
 │   └── tests/
 ├── versioning/            DVC 3.67.1 with GCS support (own environment)
@@ -78,7 +80,9 @@ pipelines/
 │   │   ├── stages.py      runs each stage's command in its environment, with timeouts
 │   │   └── alerts.py      Slack alerts
 │   └── tests/
-└── model/evaluation-contract.toml   split fractions, group key, leakage bound
+└── model/
+    ├── evaluation-contract.toml      eval-contract-v2: split method, group key, minimums, leakage bound
+    └── evaluation-contract-v1.toml   eval-contract-v1, kept so steps-v1.2 splits still rebuild
 ```
 
 ## Set up the environment
@@ -135,6 +139,12 @@ bucket `agentwatch-dvc`. It needs no Google account or login:
 make pull-dataset          # about 5 s: 50 runs in data/evidence/, release steps-v1.2+5954f97ef8b2 in data/datasets/
 ```
 
+**Dataset v1 is publicly available.** `make pull-dataset` downloads the 50 recorded runs,
+54 replay experiments and current format 3 release `steps-v1.3+aafae73eb211` with split
+`split-v2+febe942a2b59`. The immutable format 2 predecessor
+`steps-v1.3+a1b96c4ff2c8` remains available. An empty-cache independent clone fetched
+2,012 objects and reproduced the current release and split byte for byte.
+
 Pulls go through the bucket's public HTTPS address (the `public` remote in `.dvc/config`).
 Plain `dvc pull` uses the default `gs://` remote instead, which works without a login but
 spends a long time probing for Google credentials first; use `make pull-dataset` or
@@ -182,7 +192,7 @@ Each stage also has its own `make` target, which runs the newest release:
 
 | Target | Stage |
 |---|---|
-| `make add-evidence RUN=".data/coding-demo"` | acquire |
+| `make add-evidence RUN=".data/coding-demo"` | acquire (recorded run directories or replay experiment directories) |
 | `make dataset` | build |
 | `make validate-dataset` | TFDV gate (exits 1 on anomalies) |
 | `make split-dataset` | splits and leakage check |
@@ -191,22 +201,56 @@ Each stage also has its own `make` target, which runs the newest release:
 | `make push-dataset` / `make pull-dataset` | DVC remote |
 | `make dataset-status` | what is not versioned or uploaded yet |
 
-**Expected result on the shared archive.** The run succeeds in about 6 s once warm (10 s on the
-first run after `make pipeline-setup`). It reuses release `steps-v1.2+5954f97ef8b2`, the gate
-passes, the leakage check is `blocked` (expected for this data; see the data card), the slice
-report raises 17 flags, `push` is skipped because pushing is off (see
-[Data versioning with DVC](#data-versioning-with-dvc)), and the summary lists both findings. With a webhook set, the same summary arrives in Slack.
+**Expected result on the shared archive.** The archive holds the 50 CPU and coding runs and the
+`steps-v1.2+5954f97ef8b2` release built from them. The current code builds `steps-v1.3`
+releases and splits under `eval-contract-v2`, so the stages do not reuse that release.
+Reproduced with the underlying stage commands on 2026-11-06 (not with `make pipeline-run`, so
+the version, push and summary stages were not run): the build creates `steps-v1.3+cad82758d117`
+(350 rows, 0 rejections); the gate passes against `steps-v1.3.pbtxt` with drift not compared
+(no earlier release passed against that schema); the split `split-v2+9d83685148b1` sends both
+CPU and coding task groups to test, because their method `worker_queue_blocker` is held out, so
+train and validation are empty, the leakage check is `inconclusive` (the training split is
+empty), class balance is `not_met` (no `inference`, `retrieval` or `mixed` steps, 50 `clean`),
+the held-out check is `not_met` and mixed in test is `not_met`; the slice report (`slices-v2`)
+raises 12 flags. The split is kept as evidence and must not be used for evaluation. In a full
+run, `push` is skipped because pushing is off (see
+[Data versioning with DVC](#data-versioning-with-dvc)), and the leakage check that did not pass
+is reported as a finding. With a webhook set, the summary arrives in Slack. The archive's own
+`steps-v1.2` split (leakage `blocked`) is still in its datasets store and still loads with the
+v1 files (below).
+
+**Dataset v1 (`steps-v1.3`).** With the replay evidence in the store, `make dataset` builds
+`steps-v1.3+aafae73eb211` (5,953 rows: 5,603 replay, 175 CPU, 175 coding; 411 recorded
+rejections), the gate passes with drift not compared, and `make split-dataset` writes
+`split-v2+febe942a2b59` (train 2,028, validation 0, test 3,925; class balance met; leakage
+passed at 0.974242 against the 0.98 bound). `make rule-baseline` and `make train-candidates` on
+that split stop because `mixed` has no scoring rule until M02. To rerun the `steps-v1.2` work,
+pass the v1 contract and schema. The split targets always take the newest release, so split
+`steps-v1.2` directly:
+
+```bash
+uv run --package agentwatch-data python -m agentwatch_data.splits \
+  --release data/datasets/steps-v1.2+5954f97ef8b2 \
+  --contract pipelines/model/evaluation-contract-v1.toml \
+  --frozen-schema pipelines/validation/schema/steps.pbtxt
+make rule-baseline SPLIT=data/datasets/splits/steps-v1.2+5954f97ef8b2/split-v1+58e921fa846a.json \
+  EVALUATION_CONTRACT=pipelines/model/evaluation-contract-v1.toml \
+  VALIDATION_SCHEMA=pipelines/validation/schema/steps.pbtxt
+```
+
+`make train-candidates` takes the same two variables. Details are in the data card's
+[Dataset v1](../docs/data-card.md#dataset-v1-steps-v13aafae73eb211) section.
 
 ## Pipeline components
 
 | Course requirement | Where | Details |
 |---|---|---|
-| Data acquisition | `evidence.py`, `extract.py` | Recorded runs (local directories or the ingestion API) are validated strictly and copied into an immutable evidence store. Each untrustworthy run is rejected with a reason; duplicates are detected across sources. |
+| Data acquisition | `evidence.py`, `extract.py` | Recorded runs (local directories or the ingestion API) and agent replay experiment directories are validated strictly and copied into an immutable evidence store. Each untrustworthy run is rejected with a reason; duplicates are detected across sources. |
 | Preprocessing and feature engineering | `flatten.py`, `labels.py`, `schema.py`, `build.py` | One row per step; telemetry readings joined to each step's time window, with coverage; queue fraction and other features; labels from a frozen, fingerprinted rule file; every row validated against the column contract. Missing readings stay `null`, never zero. |
-| Schema and statistics | `pipelines/validation` | TFDV statistics for every release, checked against the reviewed schema in `schema/steps.pbtxt`. Each attempt's statistics are kept; drift is measured against the previous passing release. |
+| Schema and statistics | `pipelines/validation`, manifest, split file | TFDV statistics for every release, checked against the reviewed schema in `schema/steps-v1.3.pbtxt` (`schema/steps.pbtxt` for `steps-v1.2`). Each attempt's statistics are kept; drift is measured against the previous release that passed against the same frozen schema. The manifest records null counts per column, and the split file missingness per feature version, class balance and leakage. |
 | Anomaly detection | TFDV gate, per-run rejections | Missing values, out-of-range values, unknown categories and type changes fail the gate and stop the run. Drift is reported without failing. |
 | Alerts | `alerts.py`, the DAG | Slack message for every task's final failure (error tail and log link) and every run's summary, with findings: drift, rejected-run share over the declared 10%, leakage check not passed, version not pushed. |
-| Bias detection and mitigation | `slices.py`, data card "Slices and bias" | Slices by task, kind, label, condition, injection method, model, source, telemetry status and PSI/cgroup availability; flags against thresholds declared before evaluation; a mitigation per flag; balancing weights. |
+| Bias detection and mitigation | `slices.py`, data card "Slices and bias" | Slices by task, kind, label, condition, injection method, model, source, telemetry status and PSI/cgroup availability, plus feature version and replay condition on `steps-v1.3`; flags against thresholds declared before evaluation; a mitigation per flag; balancing weights. |
 | Orchestration | `orchestration/dags/agentwatch_dataset.py` | Each task runs one stage in its own environment and passes its release to the next. Only network steps retry (DVC push, Slack); deterministic stages fail fast. One run at a time. |
 | Flow optimization | data pipeline plan, "Pipeline flow optimization" | Gantt-chart timings before and after: prepared environments (first run 35.1 s → 10.5 s) and the slice report beside versioning. |
 | Tracking and logging | Airflow task logs, build reports, gate results, run summary | Every stage logs its command and output; failures carry the exit code and the end of stderr; the last task records a run summary. |
@@ -287,15 +331,36 @@ directories, so none touches your data or Airflow home. CI runs all of these on 
 
 ## Reproducibility notes and troubleshooting
 
-- **A checkout path with spaces** breaks the `make` data targets, which derive
-  `AGENTWATCH_ROOT` from the Makefile's location. Clone into a path without spaces, or run
-  them with `AGENTWATCH_ROOT=.`, for example `make slice-dataset AGENTWATCH_ROOT=.`.
+- **A checkout path with spaces** breaks the `make` data targets (`add-evidence`, `dataset`,
+  `validate-dataset`, `split-dataset`, `slice-dataset`, `freeze-dataset-schema`,
+  `version-dataset` and the DVC targets), which derive `AGENTWATCH_ROOT` from the Makefile's
+  location with `$(dir ...)`, and that splits the path at the space (uv then reports
+  `error: Project directory ... does not exist` for a fragment of the path). This predates D03;
+  the failing commands write nothing, and the Makefile-driven tests in `pipelines/versioning`
+  fail the same way from such a checkout.
+  Clone into a path without spaces, or run them with `AGENTWATCH_ROOT=.` from the repository
+  root, for example `make slice-dataset AGENTWATCH_ROOT=.`; `make -n <target> AGENTWATCH_ROOT=.`
+  prints the commands. The underlying commands, run from the repository root:
+
+  ```bash
+  uv run --package agentwatch-data python -m agentwatch_data.evidence --store data/evidence <dirs>   # add-evidence
+  uv run --package agentwatch-data python -m agentwatch_data.build --source local:data/evidence --output data/datasets   # dataset
+  release=$(uv run --package agentwatch-data python -m agentwatch_data.releases --output data/datasets)   # newest release
+  uv run --project pipelines/validation python -m agentwatch_validation validate --release "$release" --schema pipelines/validation/schema/steps-v1.3.pbtxt   # validate-dataset
+  uv run --package agentwatch-data python -m agentwatch_data.splits --release "$release" --contract pipelines/model/evaluation-contract.toml --frozen-schema pipelines/validation/schema/steps-v1.3.pbtxt   # split-dataset
+  mkdir -p .dvc/tmp && uv run --project pipelines/versioning --frozen dvc data status --granular --unchanged --json > .dvc/tmp/version-dataset-status.json   # version-dataset, step 1
+  uv run --package agentwatch-data python -m agentwatch_data.integrity --evidence data/evidence --datasets data/datasets --dvc-status .dvc/tmp/version-dataset-status.json   # step 2; stop unless it exits 0
+  uv run --project pipelines/versioning --frozen dvc add data/evidence data/datasets   # step 3
+  ```
 - **Port 8080 already in use** (by Docker, for example): start the UI on another port, and
   point tasks at it too:
   `AIRFLOW__API__PORT=8095 AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://localhost:8095/execution/ make pipeline-ui`.
 - **The first run is slow** without `make pipeline-setup`: TensorFlow's first import in a new
   environment takes 18–25 s on macOS.
-- **The leakage check is `blocked`** on the shared archive. This is expected: two tasks and two
-  classes separate perfectly. The split is kept as evidence and refused for evaluation.
+- **The leakage check is `inconclusive`** on the shared archive alone. This is expected:
+  `split-v2` holds out `worker_queue_blocker`, the method of every CPU and coding run, so the
+  training split is empty. The split is kept as evidence and refused for evaluation. (Its
+  `steps-v1.2` split under `eval-contract-v1` is `blocked`: two tasks and two classes separate
+  perfectly.)
 - **No Slack message**: check `.env` for `AGENTWATCH_ALERT_SLACK_WEBHOOK_URL`. Without it, the
   `alert` task is marked skipped and lists its findings in its log.

@@ -13,6 +13,7 @@ the replay evidence says nothing about has `matches_source = None`.
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePath
 
 from agentwatch_data.extract import parse_json, parse_jsonl
@@ -69,6 +70,8 @@ class Experiment:
     plan_sha256: str
     model: str
     replays: tuple[Replay, ...]
+    started_at: datetime | None = None  # None when the manifest did not record it
+    passed: bool | None = None  # the experiment's own verdict; None when not recorded
 
 
 def read_experiment(directory: Path) -> Experiment:
@@ -110,6 +113,8 @@ def read_experiment(directory: Path) -> Experiment:
         plan_sha256=plan_sha256,
         model=_text(plan, "model"),
         replays=tuple(replays),
+        started_at=_optional_timestamp(manifest, "started_at"),
+        passed=_optional_bool(manifest, "passed"),
     )
 
 
@@ -188,7 +193,7 @@ def _matches_source(replay: dict) -> dict[str, bool]:
 
 def _parent_step_ids(journal: Path) -> set[str]:
     try:
-        rows = parse_jsonl(_read_text(journal), journal.name)
+        rows = parse_jsonl(read_evidence_text(journal), journal.name)
     except ValueError as error:
         raise ReplayEvidenceError(f"{journal.name}: {error}") from error
     parents = set()
@@ -232,7 +237,7 @@ def _confined(root: Path, relative: str) -> Path:
     return resolved
 
 
-def _read_text(path: Path) -> str:
+def read_evidence_text(path: Path) -> str:
     if path.is_symlink() or not path.is_file():
         raise ReplayEvidenceError(f"{path.name} must be a regular file without symlinks")
     try:
@@ -250,7 +255,7 @@ def _read_text(path: Path) -> str:
 
 
 def _read_json(path: Path):
-    text = _read_text(path)
+    text = read_evidence_text(path)
     try:
         return parse_json(text)
     except ValueError as error:
@@ -279,6 +284,22 @@ def _optional_bool(container: dict, key: str) -> bool | None:
     if value is not None and not isinstance(value, bool):
         raise ReplayEvidenceError(f"{key} must be true, false or null")
     return value
+
+
+def _optional_timestamp(container: dict, key: str) -> datetime | None:
+    """A timezone-aware ISO 8601 timestamp, or None when the evidence did not record one."""
+    value = container.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ReplayEvidenceError(f"{key} must be an ISO 8601 timestamp or null")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ReplayEvidenceError(f"{key} is not an ISO 8601 timestamp: {value!r}") from error
+    if parsed.utcoffset() is None:
+        raise ReplayEvidenceError(f"{key} must include a timezone offset, got {value!r}")
+    return parsed
 
 
 def _duration(container: dict, key: str) -> float | None:

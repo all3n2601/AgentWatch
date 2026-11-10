@@ -1,26 +1,40 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from agentwatch_data.extract import TELEMETRY_EMPTY, TELEMETRY_MISSING, TELEMETRY_PRESENT
+from agentwatch_data.files import json_text
 from agentwatch_data.flatten import NO_OVERLAP
 from agentwatch_data.schema import (
     COLUMNS,
+    COLUMNS_BY_NAME,
+    KINDS,
+    LABEL_BASES,
+    LABEL_RESOURCE_VALUES,
     LEAKY_COLUMNS,
     RELEASE_COLUMNS,
+    REPLAY_CONDITIONS,
+    REPLAY_LABEL_BASES,
+    REPLAY_ROLES,
     SCHEMA_VERSION,
     TELEMETRY_STATUSES,
     Column,
     Role,
     SchemaError,
+    check_value,
+    columns_from,
     contract,
     feature_columns,
     finite_number,
     validate_rows,
 )
+from agentwatch_features.live import TelemetryStatus
 from test_dataset_end_to_end import build_rows
 
 DATA_CARD = Path(__file__).resolve().parents[3] / "docs" / "data-card.md"
+CONTRACTS_DIR = Path(__file__).resolve().parents[1] / "src" / "agentwatch_data" / "contracts"
 
 
 def test_column_names_are_unique():
@@ -63,7 +77,8 @@ def valid_row():
 
 def test_stage_status_values_match_the_schema():
     produced = {TELEMETRY_PRESENT, TELEMETRY_EMPTY, TELEMETRY_MISSING, NO_OVERLAP}
-    assert produced == set(TELEMETRY_STATUSES)
+    # Replay rows carry the step-features-v1 status, which adds unaligned.
+    assert produced | set(get_args(TelemetryStatus)) == set(TELEMETRY_STATUSES)
 
 
 def test_release_columns_are_required_when_requested(valid_row):
@@ -148,17 +163,16 @@ VALIDATION = Path(__file__).resolve().parents[2] / "validation"
 def test_frozen_tfdv_schema_lists_exactly_the_contract_columns():
     import re
 
-    frozen = (VALIDATION / "schema" / "steps.pbtxt").read_text(encoding="utf-8")
+    frozen = (VALIDATION / "schema" / f"{SCHEMA_VERSION}.pbtxt").read_text(encoding="utf-8")
     assert frozen.startswith(f"# Frozen TFDV schema for {SCHEMA_VERSION}.")
     names = re.findall(r'^feature \{\n  name: "([^"]+)"', frozen, flags=re.MULTILINE)
     assert sorted(names) == sorted(column.name for column in COLUMNS), (
-        "Refresh pipelines/validation/schema/steps.pbtxt with freeze-schema after a schema change"
+        f"Refresh pipelines/validation/schema/{SCHEMA_VERSION}.pbtxt with freeze-schema after a "
+        "schema change"
     )
 
 
 def test_validation_fixture_carries_the_current_contract():
-    import json
-
     [fixture] = sorted((VALIDATION / "tests" / "fixtures").iterdir())
     shipped = json.loads((fixture / "schema.json").read_text(encoding="utf-8"))
     assert shipped == contract(), (
@@ -179,6 +193,138 @@ def test_the_current_contract_is_frozen_for_integrity_checks():
         "the old ones; changing a column without a new schema version is not allowed"
     )
     assert columns_from(contract()) == tuple(
-        Column(c.name, c.dtype, c.role, "", c.nullable, c.allowed, c.minimum, c.maximum)
+        Column(
+            c.name, c.dtype, c.role, "", c.nullable, c.allowed, c.minimum, c.maximum, c.allow_empty
+        )
         for c in COLUMNS
     )
+
+
+# steps-v1.3: CPU/coding rows and agent replay rows in one release
+
+V1_2_FEATURES = [
+    "queue_seconds",
+    "execution_seconds",
+    "duration_seconds",
+    "cpu_seconds",
+    "queue_fraction",
+    "workload_iterations",
+    "tests_per_step",
+    "worker_capacity",
+    "cpu_pressure_max_avg10",
+    "cpu_pressure_available",
+    "cgroup_throttled_usec_delta",
+    "cgroup_available",
+    "telemetry_sample_count",
+    "telemetry_coverage",
+]
+NEW_IN_V1_3 = [
+    "feature_version",
+    "task_group",
+    "experiment",
+    "plan_sha256",
+    "replay_index",
+    "step_type",
+    "replay_role",
+    "replay_condition",
+    "label_resources",
+    "control_exceeded_noise",
+    "configuration_sha256",
+]
+
+
+def v1_2_columns() -> tuple[Column, ...]:
+    return columns_from(json.loads((CONTRACTS_DIR / "steps-v1.2.json").read_text("utf-8")))
+
+
+def test_schema_version_is_v1_3():
+    assert SCHEMA_VERSION == "steps-v1.3"
+    assert contract()["schema_version"] == "steps-v1.3"
+
+
+def test_empty_string_is_allowed_only_where_declared():
+    assert check_value(COLUMNS_BY_NAME["label_resources"], "") is None
+    assert check_value(COLUMNS_BY_NAME["label_resources"], "cpu_sandbox,inference") is None
+    assert check_value(COLUMNS_BY_NAME["label_resources"], None) is not None  # empty is not null
+    assert check_value(COLUMNS_BY_NAME["workload"], "") is not None
+    assert [column.name for column in COLUMNS if column.allow_empty] == ["label_resources"]
+
+
+def test_v1_3_keeps_every_v1_2_column_name_type_and_role():
+    old = {column.name: column for column in v1_2_columns()}
+    for name, column in old.items():
+        new = COLUMNS_BY_NAME[name]
+        assert (new.dtype, new.role) == (column.dtype, column.role), name
+
+
+def test_frozen_v1_2_contract_still_parses_without_allow_empty():
+    assert not any(column.allow_empty for column in v1_2_columns())
+    assert len(v1_2_columns()) == 40
+
+
+def test_v1_3_appends_the_new_columns_after_the_v1_2_ones():
+    names = [column.name for column in COLUMNS]
+    assert names == [column.name for column in v1_2_columns()] + NEW_IN_V1_3
+
+
+def test_v1_3_column_changes():
+    by_name = COLUMNS_BY_NAME
+    for name in ("cpu_seconds", "workload_iterations", "worker_capacity"):
+        assert by_name[name].nullable, name
+    for name in ("rule_prediction", "rule_version"):
+        assert by_name[name].nullable, name
+    assert KINDS == ("cpu", "coding", "agent_replay")
+    assert by_name["kind"].allowed == KINDS
+    assert by_name["condition"].allowed == ("baseline", "clean", "contended")
+    assert "unaligned" in by_name["telemetry_status"].allowed
+    assert by_name["label_resource"].allowed == LABEL_RESOURCE_VALUES
+    assert by_name["label_basis"].allowed == tuple(dict.fromkeys(LABEL_BASES + REPLAY_LABEL_BASES))
+    # Rule output stays limited to resource classes; mixed is a label value only.
+    assert "mixed" not in by_name["rule_prediction"].allowed
+
+
+@pytest.mark.parametrize(
+    ("name", "dtype", "role", "nullable", "allowed"),
+    [
+        ("feature_version", "string", Role.LINEAGE, False, ("steps-v1.2", "step-features-v1")),
+        ("task_group", "string", Role.ID, False, None),
+        ("experiment", "string", Role.ID, True, None),
+        ("plan_sha256", "string", Role.ID, True, None),
+        ("replay_index", "int64", Role.ID, True, None),
+        ("step_type", "string", Role.ID, True, None),
+        ("replay_role", "string", Role.LINEAGE, True, REPLAY_ROLES),
+        ("replay_condition", "string", Role.LINEAGE, True, REPLAY_CONDITIONS),
+        ("label_resources", "string", Role.LABEL, False, None),
+        ("control_exceeded_noise", "bool", Role.LINEAGE, True, None),
+        ("configuration_sha256", "string", Role.LINEAGE, True, None),
+    ],
+)
+def test_new_v1_3_columns(name, dtype, role, nullable, allowed):
+    column = COLUMNS_BY_NAME[name]
+    assert (column.dtype, column.role, column.nullable, column.allowed) == (
+        dtype,
+        role,
+        nullable,
+        allowed,
+    )
+
+
+def test_replay_index_is_never_negative():
+    assert check_value(COLUMNS_BY_NAME["replay_index"], 0) is None
+    assert check_value(COLUMNS_BY_NAME["replay_index"], -1) is not None
+
+
+def test_experiment_design_columns_are_leaky():
+    design = {"replay_role", "replay_condition", "replay_index", "control_exceeded_noise"}
+    assert design | {"experiment"} <= LEAKY_COLUMNS
+
+
+def test_feature_columns_are_the_fourteen_v1_2_features():
+    assert feature_columns() == V1_2_FEATURES
+    assert feature_columns() == [c.name for c in v1_2_columns() if c.role == Role.FEATURE]
+
+
+def test_frozen_contract_matches_contract():
+    frozen = (CONTRACTS_DIR / f"{SCHEMA_VERSION}.json").read_text(encoding="utf-8")
+    assert frozen == json_text(contract())
+    assert all("allow_empty" in column for column in json.loads(frozen)["columns"])
