@@ -1,0 +1,15 @@
+# calibration-v1: how M04 turns LightGBM class scores into confidence and abstentions.
+# Fixed before any calibration was fitted; any change changes the calibration version hash.
+# The contract's [calibration] table holds the gates (ECE limit, bins, abstention limit).
+version = "calibration-v1"
+
+# Temperature scaling: one parameter fitted by minimizing validation log loss. It never changes
+# the predicted class. The search is bounded; a fit at a bound is reported as such.
+min_temperature = 0.05
+max_temperature = 20.0
+# Search stops when the inverse-temperature bracket is narrower than this.
+tolerance = 1e-6
+
+# Proposed. Fewer usable validation steps than this leave the model uncalibrated, and the
+# calibration and abstention gates inconclusive, rather than fitting on too little data.
+min_validation_steps = 100

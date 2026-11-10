@@ -45,8 +45,8 @@ Outputs go to `.data/candidates/`:
 | `classifier.txt`, `regressor.txt` | Trained LightGBM models at their best iteration |
 | `preprocessing.json` | What serving must reproduce: feature order, missing-value and boolean handling, class order (the probability columns), objectives, best iterations, the excess-fraction clip range, model file hashes, LightGBM version, dataset and label versions, and the attempt's status and evaluation flag |
 | `predictions.jsonl` | Per scored step: identity, condition, label, model class and per-class probabilities, excess fraction, and the rule prediction |
-| `validation_predictions.jsonl` | The same for the validation split, for M04 calibration. Validation also drove early stopping, so calibration fitted on it is slightly optimistic |
-| `report.json` | Model and rule metrics on the same rows, regression MAE, coverage gaps, gates and summary; written last, so its presence marks a complete attempt |
+| `validation_predictions.jsonl` | The same for the validation split, read by [calibration](model-calibration.md). Validation also drove early stopping, so calibration fitted on it is slightly optimistic |
+| `report.json` | Model and rule metrics on the same rows, regression MAE, coverage gaps, gates and summary, and the SHA-256 of `predictions.jsonl`, `validation_predictions.jsonl` and `preprocessing.json`; written last, so its presence marks a complete attempt |
 | `tracking.json` | Whether the attempt reached MLflow, with the run id or the tracking error |
 
 `--explore` writes to `.data/candidates/exploratory/`, so an exploratory model never replaces an
@@ -72,8 +72,8 @@ A malformed contract, rules or training file exits with code 2 before any attemp
   inconclusive while a class lacks test steps.
 - Coverage gaps are reported, not hidden: validation rows of classes unseen in training (which
   cannot drive early stopping) and classes absent from training.
-- Calibration and abstention are left to M04; raw LightGBM probabilities are not calibrated
-  confidence. Mixed contention, unseen tasks, held-out injection methods, overhead and latency
+- Calibration and abstention are left to [M04](model-calibration.md); raw LightGBM
+  probabilities are not calibrated confidence. Mixed contention, unseen tasks, held-out injection methods, overhead and latency
   are not evaluated, with the same reasons as the rule baseline.
 
 ## Tracking

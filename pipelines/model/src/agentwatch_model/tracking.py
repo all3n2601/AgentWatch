@@ -58,6 +58,10 @@ def run_params(report: dict) -> dict[str, str]:
     for booster in ("classifier", "regressor"):
         for name, value in (settings.get(booster) or {}).items():
             params[f"{booster}.{name}"] = text(value)
+    # Calibration attempts (M04) also record their version and the M03 run they calibrate.
+    if "calibration" in report:
+        params["calibration_version"] = text(report["calibration"].get("version"))
+        params["candidates_run_id"] = text((report.get("candidates") or {}).get("run_id"))
     return params
 
 
@@ -73,6 +77,14 @@ def run_metrics(report: dict) -> dict[str, float]:
     candidates["model_mae"] = regression.get("mae")
     for name, value in (regression.get("constant_references") or {}).items():
         candidates[f"reference_{name}"] = value
+    calibration = metrics.get("calibration") or {}
+    for name in ("ece_uncalibrated", "ece_calibrated"):
+        candidates[name] = calibration.get(name)
+    abstention = (metrics.get("model") or {}).get("abstention") or {}
+    candidates["abstention_rate"] = (abstention.get("overall") or {}).get("rate")
+    fitted = report.get("calibration") or {}
+    candidates["temperature"] = fitted.get("temperature")
+    candidates["abstention_threshold"] = fitted.get("abstention_threshold")
     return {name: float(value) for name, value in candidates.items() if value is not None}
 
 
