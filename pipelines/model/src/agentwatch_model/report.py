@@ -22,7 +22,7 @@ from agentwatch_model.rules import Rules
 
 # Proposed. Fewer tasks than this give an interval too unstable to report.
 BOOTSTRAP_MIN_GROUPS = 5
-MIXED_CONTENTION_REASON = "labels-v1.1 does not define mixed contention or ties."
+MIXED_CONTENTION_REASON = "Scoring mixed contention is not defined until M02; mixed rows are refused."
 NOT_EVALUATED_FOR_RULES = {
     "gain_over_rules": "The rules are the reference a learned model is compared against.",
     "mixed_contention_gain": MIXED_CONTENTION_REASON,
@@ -33,7 +33,7 @@ NOT_EVALUATED_FOR_RULES = {
     "calibration": "rules-v1 gives no confidence score.",
     "abstention": "rules-v1 never abstains.",
     "unseen_tasks": "task_id is still an interim placeholder, not real task identity.",
-    "held_out_injection_method": "Needs at least two injection methods in the dataset.",
+    "held_out_injection_method": "Held-out-method generalization is not evaluated by this aggregate report.",
     "instrumentation_overhead": "Measured on live runs, not on a dataset split.",
     "attribution_latency": "Measured on the live service, not on a dataset split.",
 }

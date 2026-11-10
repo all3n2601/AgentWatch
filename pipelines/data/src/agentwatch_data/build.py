@@ -2,8 +2,12 @@
 
     python -m agentwatch_data.build --source local:data/evidence --output data/datasets
 
+Rows come from recorded runs (local or API sources) and from replay experiments (directories
+holding experiment.json, found under local sources only): run rows first, then replay rows.
 A release is an immutable directory named by its dataset version, holding steps.parquet,
 schema.json (the column contract), and manifest.json, which describe only the dataset content.
+From steps-v1.3 the manifest also carries content statistics: counts per label version,
+feature version, kind and label resource, and the null count of every column.
 The version is derived from the rows, the contract, and the release format, so rebuilding from
 the same evidence with the same rules and code reuses the same release, while a release in an
 older format or with an older contract is left untouched and superseded by a new version.
@@ -33,6 +37,7 @@ import sys
 import tempfile
 import uuid
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +47,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from agentwatch_data import __version__
+from agentwatch_data.evidence import experiment_files
 from agentwatch_data.extract import (
     Extraction,
     ExtractionError,
@@ -51,10 +57,16 @@ from agentwatch_data.extract import (
     combine,
     extract_api,
     extract_local,
+    summarize,
 )
 from agentwatch_data.files import file_sha256, fsync_directory, fsync_file, json_text
 from agentwatch_data.flatten import flatten_runs
 from agentwatch_data.labels import LabelConfig, LabelingError, label_rows, load_config
+from agentwatch_data.replay_evidence import MANIFEST_FILE as EXPERIMENT_MANIFEST
+from agentwatch_data.replay_evidence import ReplayEvidenceError, read_experiment
+from agentwatch_data.replay_labels import ReplayLabelConfig, load_replay_config
+from agentwatch_data.replay_rows import LABEL_STAGE as REPLAY_LABEL_STAGE
+from agentwatch_data.replay_rows import REPLAY_STAGES, experiment_rows
 from agentwatch_data.schema import (
     COLUMNS,
     SCHEMA_VERSION,
@@ -70,7 +82,11 @@ DATASET_FILE, MANIFEST_FILE, BUILDS_DIR = "steps.parquet", "manifest.json", "bui
 SCHEMA_FILE = "schema.json"  # the column contract, for tools that cannot import this package
 # The files a release holds. Format 1 (before schema.json) had only the Parquet and manifest;
 # bump this whenever the set of files or the manifest's meaning changes.
-RELEASE_FORMAT = 2
+RELEASE_FORMAT = 3
+# Schema versions whose manifests predate content statistics. Their releases are checked
+# against the manifest they shipped, so it must stay recomputable in its original shape.
+MANIFEST_WITHOUT_STATISTICS = frozenset({"steps-v1", "steps-v1.1", "steps-v1.2"})
+NO_RESOURCE = "none"  # how an empty label_resources (no confirmed resource) is counted
 CONDITION_ORDER = {"baseline": 0, "clean": 1, "contended": 2}
 ARROW_TYPES = {
     "string": pa.string(),
@@ -180,6 +196,63 @@ def extract(source: Source) -> Extraction:
     return extract_api(source.location)
 
 
+def find_experiments(root: Path) -> list[Path]:
+    """Every non-hidden directory under root holding experiment.json, without following links.
+
+    An experiment's own subdirectories are not searched. Linked and unreadable directories are
+    not reported here: extract_local walks the same trees by the same rules, without stopping
+    at experiments, and has already rejected each of them by the time a build gets here.
+    """
+    found = []
+    for current, directories, files in os.walk(root):  # links not followed
+        directories[:] = sorted(name for name in directories if not name.startswith("."))
+        if EXPERIMENT_MANIFEST in files:
+            found.append(Path(current))
+            directories[:] = []
+    return found
+
+
+def experiment_hashes(directory: Path) -> dict[str, str]:
+    """The SHA-256 of each evidence file of an experiment, by relative POSIX path."""
+    return {name: file_sha256(directory / name) for name in experiment_files(directory)}
+
+
+def experiment_directories(
+    sources: list[Source], redact: Redactor
+) -> tuple[list[Path], list[dict], int]:
+    """The replay experiments under the local sources, sorted by name, the rejection records,
+    and the number of identical copies dropped. The API serves runs only.
+
+    An experiment's directory name identifies its rows (the experiment column), so a name
+    found more than once is kept once when every copy holds identical files; otherwise every
+    copy is rejected, since nothing says which one is the evidence.
+    """
+    copies: dict[str, list[Path]] = {}
+    for source in sources:
+        if source.type == "local":
+            for directory in find_experiments(Path(source.location).resolve()):
+                copies.setdefault(directory.name, []).append(directory)
+    found, rejected, duplicates = [], [], 0
+    for name, paths in sorted(copies.items()):
+        paths = sorted(set(paths))  # a source listed twice finds the same directory twice
+        if len(paths) > 1:
+            try:
+                hashes = [experiment_hashes(path) for path in paths]
+                agree = all(copy == hashes[0] for copy in hashes)
+                reason = f"Experiment {name} has conflicting evidence in sources"
+            except (OSError, ValueError) as error:
+                agree = False
+                reason = f"Experiment {name} has copies that cannot be compared: {summarize(error)}"
+            if not agree:
+                for path in paths:
+                    logger.warning("Rejected experiment evidence from %s: %s", path, reason)
+                    rejected.append(Rejection(str(path), reason))
+                continue
+            duplicates += len(paths) - 1
+        found.append(paths[0])
+    return found, rejection_records("extract", rejected, redact), duplicates
+
+
 def step_order(row: dict) -> tuple:
     step_id = row["step_id"]
     repeat = int(step_id.rsplit("-", 1)[1]) if row["condition"] == "baseline" else 0
@@ -202,16 +275,19 @@ def rows_digest(rows: list[dict]) -> str:
     return canonical_sha256(serializable)
 
 
-def release_digest(rows_sha256: str, release_contract: dict | None = None) -> str:
+def release_digest(
+    rows_sha256: str, release_contract: dict | None = None, release_format: int | None = None
+) -> str:
     """Identify a whole release: its rows, the column contract it ships, and its format.
 
     Releases are never rewritten, so anything a release must contain is part of its identity;
     otherwise an older release with the same rows would be reused without it. A release
     checked later passes the contract it shipped, which may predate the current one.
     """
+    release_format = RELEASE_FORMAT if release_format is None else release_format
     shipped = contract() if release_contract is None else release_contract
     return canonical_sha256(
-        {"release_format": RELEASE_FORMAT, "contract": shipped, "rows_sha256": rows_sha256}
+        {"release_format": release_format, "contract": shipped, "rows_sha256": rows_sha256}
     )
 
 
@@ -223,10 +299,12 @@ def release_manifest(
     parquet_sha256: str,
     schema_sha256: str,
     schema_version: str = SCHEMA_VERSION,
+    release_format: int | None = None,
 ) -> dict:
     """A release's manifest: content-derived fields only, so its rows determine it."""
-    return {
-        "release_format": RELEASE_FORMAT,
+    release_format = RELEASE_FORMAT if release_format is None else release_format
+    manifest = {
+        "release_format": release_format,
         "dataset_version": version,
         "schema_version": schema_version,
         "label_version": label_version,
@@ -242,6 +320,49 @@ def release_manifest(
         "condition": counts(rows, "condition"),
         "telemetry_status": counts(rows, "telemetry_status"),
     }
+    if schema_version in MANIFEST_WITHOUT_STATISTICS:
+        return manifest
+    manifest |= {
+        "label_versions": counts(rows, "label_version"),
+        "feature_version": counts(rows, "feature_version"),
+        "kind": counts(rows, "kind"),
+        "label_resources": resource_counts(rows),
+        # Every column, zeros included, so a column that is never null is shown as such. Built
+        # rows hold every column; a value absent from a row (only rows that break the contract,
+        # which integrity refuses separately) is missing too, never a measured value.
+        "missing": {
+            column.name: sum(row.get(column.name) is None for row in rows) for column in COLUMNS
+        },
+    }
+
+    if release_format >= 3:
+        manifest["missing_by_kind"] = {
+            kind: {
+                column.name: sum(
+                    row.get(column.name) is None for row in rows if row["kind"] == kind
+                )
+                for column in COLUMNS
+            }
+            for kind in sorted({row["kind"] for row in rows})
+        }
+    return manifest
+
+
+def resource_counts(rows: list[dict]) -> dict:
+    """Rows per confirmed resource; a mixed row counts once for each of its resources."""
+    found = Counter(
+        resource
+        for row in rows
+        for resource in (
+            row["label_resources"].split(",") if row["label_resources"] else [NO_RESOURCE]
+        )
+    )
+    return dict(sorted(found.items()))
+
+
+def release_label_version(rows: list[dict]) -> str:
+    """Every label version the rows were labeled under, sorted and comma-separated."""
+    return ",".join(sorted({row["label_version"] for row in rows}))
 
 
 def contract_text() -> str:
@@ -264,6 +385,7 @@ def build(
     output_dir: Path,
     rules: Path | None = None,
     now: datetime | None = None,
+    replay_rules: Path | None = None,
 ) -> BuildResult:
     """Build or reuse a release under output_dir, and write this build's report."""
     if not sources:
@@ -273,6 +395,10 @@ def build(
         config = load_config(rules)
     except LabelingError as error:
         raise BuildError(f"Label rules are invalid: {error}") from error
+    try:
+        replay_config = load_replay_config(replay_rules)
+    except LabelingError as error:
+        raise BuildError(redact(f"Replay label rules are invalid: {error}")) from error
 
     extractions, source_summaries = [], []
     for source in sources:
@@ -289,12 +415,18 @@ def build(
             }
         )
     merged = combine(*extractions)
-    labeled, stage_rejections = derive_rows(merged.runs, config)
-    rejections = rejection_records("extract", merged.rejections, redact)
+    experiments, experiment_rejections, experiment_duplicates = experiment_directories(
+        sources, redact
+    )
+    labeled, stage_rejections = derive_rows(merged.runs, config, experiments, replay_config)
+    rejections = rejection_records("extract", merged.rejections, redact) + experiment_rejections
     for stage, items in stage_rejections.items():
         rejections += rejection_records(stage, items, redact)
     if not labeled:
-        raise BuildError(f"No usable rows: every run was rejected ({len(rejections)} rejections)")
+        raise BuildError(
+            f"No usable rows: every run and experiment was rejected ({len(rejections)} rejections)"
+        )
+    label_version = release_label_version(labeled)
 
     digest = rows_digest(labeled)
     version = f"{SCHEMA_VERSION}+{release_digest(digest)[:12]}"
@@ -317,12 +449,13 @@ def build(
             "dataset_version": version,
             "release": version,
             "reused_release": reused,
-            "label_version": config.label_version,
+            "label_version": label_version,
             "builder_version": __version__,
             "rows": len(final),
             "runs": len({row["run_id"] for row in final}),
+            "experiments": len(experiments),
             "sources": source_summaries,
-            "duplicate_copies": len(merged.duplicates),
+            "duplicate_copies": len(merged.duplicates) + experiment_duplicates,
             "rejections": rejections,
         }
 
@@ -335,7 +468,7 @@ def build(
         reused = release.exists() and verify_existing(release, digest)
         staged = stage_report(report_path, report(reused))
         if not reused:
-            reused = write_release(release, final, version, digest, config.label_version)
+            reused = write_release(release, final, version, digest, label_version)
             if reused:  # a concurrent build published the identical release first
                 staged = stage_report(report_path, report(reused))
         os.replace(staged, report_path)
@@ -356,9 +489,16 @@ def build(
 
 
 def derive_rows(
-    runs: list[RawRun], config: LabelConfig
+    runs: list[RawRun],
+    config: LabelConfig,
+    experiments: Sequence[Path] = (),
+    replay_config: ReplayLabelConfig | None = None,
 ) -> tuple[list[dict], dict[str, list[Rejection]]]:
-    """The rows runs produce under config, in release order, with each stage's rejections.
+    """The rows runs and experiments produce, in release order, with each stage's rejections.
+
+    Run rows come first, sorted by step_order, then replay rows sorted by (experiment,
+    replay_index, step_id). Rejections are keyed by stage: flatten, label and schema for runs,
+    then REPLAY_STAGES. replay_config defaults to the packaged labels-v2 rules.
 
     The one derivation of release rows from evidence: the build uses it, and integrity uses
     it to prove a release is what its stored evidence builds.
@@ -368,11 +508,59 @@ def derive_rows(
     origins = {run.run_id: run.origin for run in runs}
     labeled, schema_rejections = validate_runs(labeled, origins)
     labeled.sort(key=step_order)
-    return labeled, {
+    replayed, replay_rejections = derive_replay_rows(experiments, replay_config)
+    return labeled + replayed, {
         "flatten": flatten_rejections,
         "label": label_rejections,
         "schema": schema_rejections,
+        **replay_rejections,
     }
+
+
+def derive_replay_rows(
+    experiments: Sequence[Path], config: ReplayLabelConfig | None
+) -> tuple[list[dict], dict[str, list[Rejection]]]:
+    """Replay rows of every experiment, sorted, and rejections keyed by REPLAY_STAGES.
+
+    An experiment whose evidence cannot be read is rejected whole at the label stage, so the
+    others still build and the report says why it contributed nothing.
+    """
+    rejections: dict[str, list[Rejection]] = {stage: [] for stage in REPLAY_STAGES}
+    if not experiments:
+        return [], rejections
+    rules = config if config is not None else load_replay_config()
+    experiments = sorted(set(experiments))
+    # Run UUIDs identify replay evidence independently of delivery folder names. Reject
+    # every owner of a collision; choosing a copy could hide a changed manifest or plan.
+    owners: dict[str, set[Path]] = {}
+    for directory in experiments:
+        try:
+            experiment = read_experiment(directory)
+        except (ReplayEvidenceError, OSError):
+            continue  # the derivation below records the original read failure
+        for replay in experiment.replays:
+            if replay.run_id is not None:
+                owners.setdefault(replay.run_id, set()).add(directory)
+    conflicting = {path for paths in owners.values() if len(paths) > 1 for path in paths}
+    rows = []
+    for directory in experiments:
+        if directory in conflicting:
+            rejections[REPLAY_LABEL_STAGE].append(
+                Rejection(str(directory), "Replay run identity occurs in multiple experiments")
+            )
+            continue
+        try:
+            found, stages = experiment_rows(directory, rules)
+        except (ReplayEvidenceError, OSError) as error:
+            reason = f"Experiment cannot be read: {summarize(error)}"
+            logger.warning("Rejected experiment %s: %s", directory, reason)
+            rejections[REPLAY_LABEL_STAGE].append(Rejection(str(directory), reason))
+            continue
+        rows.extend(found)
+        for stage, items in stages.items():
+            rejections[stage].extend(items)
+    rows.sort(key=lambda row: (row["experiment"], row["replay_index"], row["step_id"]))
+    return rows, rejections
 
 
 def parquet_bytes(rows: list[dict], schema: pa.Schema = ARROW_SCHEMA) -> bytes:
@@ -532,11 +720,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output", type=Path, default=Path("data/datasets"))
     parser.add_argument("--rules", type=Path, help="label rules (default: packaged labels.toml)")
+    parser.add_argument(
+        "--replay-rules",
+        type=Path,
+        help="replay label rules (default: packaged labels-v2.toml)",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try:
         sources = [Source.parse(text) for text in args.source]
-        result = build(sources, args.output, args.rules)
+        result = build(sources, args.output, args.rules, replay_rules=args.replay_rules)
     except (ValueError, BuildError) as error:
         print(f"Dataset build failed: {error}", file=sys.stderr)
         return 1

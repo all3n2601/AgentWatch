@@ -1,7 +1,8 @@
 """Turn validated runs into one row per step, with resource readings for each step window.
 
 Rows carry identity, feature, rule, and provenance columns. Labels and release metadata are
-added later by the labeling and build stages.
+added later by the labeling and build stages. The steps-v1.3 replay columns describe replay
+evidence only, so run rows leave them null.
 """
 
 import logging
@@ -10,7 +11,7 @@ import re
 import statistics
 from itertools import pairwise
 
-from agentwatch_features.legacy import window_readings
+from agentwatch_features.legacy import LEGACY_FEATURE_VERSION, window_readings
 
 from agentwatch_data.extract import TELEMETRY_PRESENT, RawRun, Rejection
 from agentwatch_data.schema import SCHEMA_VERSION, brief, finite_number
@@ -18,6 +19,16 @@ from agentwatch_data.schema import SCHEMA_VERSION, brief, finite_number
 logger = logging.getLogger(__name__)
 
 BASELINE_STEP_ID = re.compile(r"baseline-\d+")
+REPLAY_ONLY_COLUMNS = (
+    "experiment",
+    "plan_sha256",
+    "replay_index",
+    "step_type",
+    "replay_role",
+    "replay_condition",
+    "control_exceeded_noise",
+    "configuration_sha256",
+)
 NO_OVERLAP = "no_overlap"  # the run has samples, but none inside any of its steps
 
 
@@ -142,9 +153,11 @@ def flatten_run(run: RawRun) -> list[dict]:
     present = status == TELEMETRY_PRESENT
     measured = sampling_interval_seconds(run.samples) if present else None
     interval = declared if present else None
+    task = task_id(run)
     shared = {
         "run_id": run.run_id,
-        "task_id": task_id(run),
+        "task_id": task,
+        "task_group": task,
         "kind": run.kind,
         "source": run.source,
         "recorded_at": run.recorded_at,
@@ -160,7 +173,8 @@ def flatten_run(run: RawRun) -> list[dict]:
         "measured_sampling_interval_seconds": measured,
         "schema_version": SCHEMA_VERSION,
         "source_sha256": run.source_sha256,
-    }
+        "feature_version": LEGACY_FEATURE_VERSION,
+    } | dict.fromkeys(REPLAY_ONLY_COLUMNS)
     return [
         shared
         | {

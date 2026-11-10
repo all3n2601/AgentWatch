@@ -149,6 +149,18 @@ def test_bad_rows_are_kept_as_a_failed_run_not_a_crash(tmp_path):
     assert logged.data.tags["status"] == "failed"
 
 
+def test_a_mixed_label_row_is_a_failed_run_naming_the_unscored_label(tmp_path):
+    mixed = dict(SPLITS) | {
+        "test": SPLITS["test"] + [featured_row("none", 0) | {"label_resource": "mixed"}]
+    }
+    output = tmp_path / "out"
+    outcome = run(
+        tmp_path / "split.json", output, loader=loader_for([], mixed), **tracking(tmp_path)
+    )
+    assert outcome.status == "failed"
+    assert "labeled 'mixed'" in read(output / "report.json")["reason"]
+
+
 def test_rows_from_mixed_dataset_versions_are_a_failed_run(tmp_path):
     other = featured_row("none", 0) | {"dataset_version": "steps-v1.3+other"}
     mixed = dict(SPLITS) | {"test": SPLITS["test"] + [other]}
@@ -309,3 +321,46 @@ def test_main_exits_two_on_a_configuration_error(tmp_path, capsys):
     args = ["--split", str(tmp_path / "split.json"), "--training", str(tmp_path / "missing.toml")]
     assert main(args) == 2
     assert "Training error" in capsys.readouterr().err
+
+
+def test_all_label_versions_are_retained_in_model_and_serving_identity(tmp_path):
+    splits = {
+        name: [
+            r
+            | {
+                "label_version": "labels-v2+synthetic"
+                if name == "test"
+                else "labels-v1.1+synthetic",
+                "feature_version": "step-features-v1",
+            }
+            for r in rows
+        ]
+        for name, rows in SPLITS.items()
+    }
+    output = tmp_path / "out"
+    outcome = run(
+        tmp_path / "split.json", output, loader=loader_for([], splits), **tracking(tmp_path)
+    )
+    assert outcome.status == "evaluated"
+    model = read(output / "report.json")["model"]
+    serving = read(output / "preprocessing.json")
+    for identity in (model, serving):
+        assert identity["label_versions"] == ["labels-v1.1+synthetic", "labels-v2+synthetic"]
+        assert identity["feature_versions"] == ["step-features-v1"]
+
+
+def test_training_refuses_incompatible_feature_definitions(tmp_path):
+    splits = {
+        name: [
+            r | {"feature_version": "steps-v1.2" if name == "test" else "step-features-v1"}
+            for r in rows
+        ]
+        for name, rows in SPLITS.items()
+    }
+    output = tmp_path / "out"
+    outcome = run(
+        tmp_path / "split.json", output, loader=loader_for([], splits), **tracking(tmp_path)
+    )
+    assert outcome.status == "failed"
+    assert "Incompatible feature definitions" in read(output / "report.json")["reason"]
+    assert not (output / "classifier.txt").exists()

@@ -2,7 +2,9 @@
 
 Status: `rules-v1`, implemented and tested; not yet evaluated on a dataset that can be evaluated.
 On the interim `steps-v1.2+5954f97ef8b2` split (2026-10-26) the report is **blocked** by the
-leakage check, with no metrics.
+leakage check, with no metrics. On dataset v1 (`steps-v1.3+aafae73eb211`, split
+`split-v2+febe942a2b59`) it stops before scoring, because that split holds steps labeled
+`mixed` and no scoring rule for them exists until M02 (see below).
 
 The rule baseline is the transparent reference a learned model must beat. It names the resource
 a step waited on from measured features, and is scored against
@@ -33,7 +35,25 @@ make rule-baseline SPLIT=data/datasets/splits/<release>/<split>.json
 ```
 
 Splits are read only through `load_split`, which refuses a split whose quality verdict or
-leakage check does not pass. The command writes to `.data/rule-baseline/`:
+leakage check does not pass. The defaults are the current contract (`eval-contract-v2`) and
+frozen schema (`steps-v1.3.pbtxt`). To rerun on a `steps-v1.2` split, pass the files it was
+made with:
+
+```sh
+make rule-baseline SPLIT=data/datasets/splits/steps-v1.2+5954f97ef8b2/split-v1+58e921fa846a.json \
+  EVALUATION_CONTRACT=pipelines/model/evaluation-contract-v1.toml \
+  VALIDATION_SCHEMA=pipelines/validation/schema/steps.pbtxt
+```
+
+**A split with `mixed` labels is refused.** `mixed` is a `labels-v2` label value outside the
+four classes, and how a four-class prediction is scored on a `mixed` step is Rohit's M02
+decision (item 2 of [the v2 proposal](evaluation-contract-v2-proposal.md)). Until it is
+defined, a row labeled `mixed` is an unusable row: the command exits 2 with
+"`<split> row <n> is labeled 'mixed', which has no scoring rule until M02 defines one`" and
+writes no report. Every `split-v2` split of dataset v1 holds `mixed` steps (93 in test, 53 in
+train), so the rule baseline cannot run on it yet. Its `steps-v1.2` behavior is unchanged.
+
+The command writes to `.data/rule-baseline/`:
 
 - `report.json`: status, rules and contract identity, split file and hash, metrics and gates;
 - `predictions.jsonl`: one line per scored step (`run_id`, `step_id`, `task_id`, `condition`,

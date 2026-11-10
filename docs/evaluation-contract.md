@@ -1,7 +1,13 @@
 # AgentWatch evaluation contract
 
-Status: proposed `eval-contract-v1`, pending review. Thresholds live in
-`pipelines/model/evaluation-contract.toml`. No model or rule baseline has been evaluated yet.
+Status: `eval-contract-v2` (frozen identifier `9b55506c`) records accepted metadata,
+based on reported verbal acceptance on 2026-11-05. Rohit's written confirmation is still
+required before PR #59 may merge; it is not yet an acceptance record. It adopts items 1, 3 and 4 of [the v2 proposal](evaluation-contract-v2-proposal.md);
+item 2, the multi-resource metric and the rule for scoring a `mixed` step, is not encoded and
+remains Rohit's M02 decision. Thresholds live in `pipelines/model/evaluation-contract.toml`.
+`eval-contract-v1` (identifier `3022770b`) is kept unchanged as
+`pipelines/model/evaluation-contract-v1.toml`, so splits and results made under it still rebuild.
+No model or rule baseline has been evaluated yet.
 
 These targets are fixed before any evaluation so that no threshold is tuned to held-out results.
 Each value's basis is **Plan** (from the planning documents), **Plan, metric chosen here** (the
@@ -10,22 +16,33 @@ must be accepted or changed before first use).
 
 ## Dataset and splits
 
-Uses `steps-v1.1` or a later compatible minor version (`steps-v1.x`, which only adds columns),
-exactly `labels-v1.1`, the classes `none`, `cpu_sandbox`, `inference`, and `retrieval`, and the
-70/15/15 split grouped by `task_id` from [the data card](data-card.md). The test split contains
+Uses `steps-v1.3` or a later compatible minor version (`steps-v1.x`, which only adds columns),
+the label rules `labels-v1.1` and `labels-v2` (a release is accepted when every label version it
+holds is listed), the classes `none`, `cpu_sandbox`, `inference`, and `retrieval`, and the
+`split-v2` split from [the data card](data-card.md): grouped by `task_group`, with the frozen
+assignment file `split-assignment.toml` declaring the test task group and the held-out injection
+method; other groups keep their `split-v1` hash position under the 70/15/15 fractions. `mixed`
+is a `labels-v2` label value outside the four prediction classes. The test split contains
 `measured` runs only and is frozen, with its hash recorded, before any tuning. Label versions do
 not follow the schema's compatible-minor rule: any other label version needs a contract change.
 Tuning, calibration, and the abstention threshold use the validation split only.
+
+`eval-contract-v1` evaluated `steps-v1.1` or later with exactly `labels-v1.1` and `split-v1`
+(70/15/15 grouped by `task_id`). To rebuild its splits and results, pass
+`pipelines/model/evaluation-contract-v1.toml` and `pipelines/validation/schema/steps.pbtxt`
+(see [the data card](data-card.md#splits)).
 
 | Requirement | Basis |
 |---|---|
 | At least one injection method and unseen tasks appear only in the test split | Plan |
 | Mixed-contention cases appear in the test split | Plan |
-| At least 30 test steps per class, 100 `clean`, and 30 mixed-contention; otherwise the dependent gate is inconclusive | Proposed |
-| No single feature has a one-vs-rest AUC above 0.98 for `label_resource` on the training split; otherwise evaluation is blocked | Proposed |
+| At least 30 test steps per class, 100 `clean`, and 30 mixed-contention; otherwise the dependent gate is inconclusive. Splits record this as `class_balance`, counting steps labeled `mixed` for the mixed minimum | Proposed |
+| No single feature has a one-vs-rest AUC above 0.98 for `label_resource` on the training split; otherwise evaluation is blocked. A step is a positive for every class in its `label_resources` | Proposed |
 
-The leakage check exists because on current data `label_resource` equals `rule_prediction` on
-every row and `queue_fraction` nearly separates the classes.
+The leakage check exists because on the CPU and coding data `label_resource` equals
+`rule_prediction` on every row and `queue_fraction` nearly separates the classes. On the first
+`split-v2` split (`split-v2+febe942a2b59`, dataset v1) the check passed, with an observed
+maximum of 0.974242 (`queue_seconds`, `retrieval`) against the 0.98 bound.
 
 ## Gates
 
@@ -48,9 +65,10 @@ Some gates cannot be evaluated yet and are reported as not evaluated until their
 
 | Gate | Needs |
 |---|---|
-| Unseen tasks, and `task_id`-grouped bootstrap intervals | Real task identity in step events; today's `task_id` is an interim placeholder that can place one project in several splits |
-| Held-out injection method | At least two values of the `injection_method` lineage column; only `worker_queue_blocker` exists today |
-| Mixed-contention gain | Label rules that define mixed contention and ties; `labels-v1.1` does not |
+| Unseen tasks, and task-grouped bootstrap intervals | More than one task per split: dataset v1 has one training task group, an empty validation split, and an interim `task_id` on CPU and coding rows |
+| Held-out injection method, as a model gate | A model evaluated on a split where it is held out; `split-v2` holds out `worker_queue_blocker` and records the check, but no model or rule evaluation has run |
+| Mixed-contention gain, and any score on `mixed` steps | The `mixed` scoring rule (proposal item 2, Rohit's M02 decision); until then `make rule-baseline` and `make train-candidates` refuse a split with `mixed` labels |
+| Calibration, abstention, and validation-dependent gates | A non-empty validation split; dataset v1 has none, so these are inconclusive |
 
 ## Promotion
 
@@ -79,3 +97,21 @@ change it.
 
 Change thresholds only before an evaluation uses them, and bump `version` with every change.
 Moving `status` to `accepted` requires review by the dataset owner and the promotion-check owner.
+Keep the previous contract file when a new version changes how splits are made, so earlier
+splits and results still rebuild (`evaluation-contract-v1.toml`).
+
+### D03 acceptance and evaluation merge conditions (2026-11-10)
+
+PR #59 must not merge until Rohit (M02/promotion-check owner) supplies written
+confirmation of `eval-contract-v2` and the final revision has the required two
+non-author approvals. The owner's report of verbal acceptance is not that record.
+The frozen contract's `status = "accepted"` and hash `9b55506c` are preserved to
+avoid silently changing published split identities; this metadata does not prove
+that the written merge condition has been satisfied. That condition remains open.
+
+The test split crosses feature definitions: 350 CPU/coding rows use `steps-v1.2`,
+while replay rows use `step-features-v1`. Model and rule evaluation now refuse a
+combined population with differing feature versions (including present versus
+missing identity), even after M02 defines mixed-label scoring. A future versioned
+split/report design must evaluate compatible populations separately. Model and
+serving metadata retain the full label-version set beside the legacy singular field.

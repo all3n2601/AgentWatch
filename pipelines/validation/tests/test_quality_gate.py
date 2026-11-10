@@ -1,4 +1,4 @@
-"""Quality gate tests on a real release: steps-v1.2 built from the recorded macOS coding run."""
+"""Quality gate tests on a real release: steps-v1.3 built from the recorded macOS coding run."""
 
 import hashlib
 import json
@@ -32,7 +32,7 @@ from agentwatch_validation.gate import (
 
 HERE = Path(__file__).parent
 [FIXTURE] = sorted((HERE / "fixtures").iterdir())
-FROZEN = HERE.parent / "schema" / "steps.pbtxt"
+FROZEN = HERE.parent / "schema" / "steps-v1.3.pbtxt"
 NOW = datetime(2026, 10, 12, tzinfo=UTC)
 
 
@@ -106,12 +106,13 @@ def test_committed_schema_accepts_the_committed_release(release):
 
 def test_frozen_schema_uses_contract_domains_not_observed_values(schema):
     features = {feature.name: feature for feature in tfdv.load_schema_text(str(schema)).feature}
-    # Only none and cpu_sandbox occur in the data, but all four classes are allowed.
+    # Only none and cpu_sandbox occur in the data, but every label value is allowed.
     assert list(features["label_resource"].string_domain.value) == [
         "none",
         "cpu_sandbox",
         "inference",
         "retrieval",
+        "mixed",
     ]
     assert features["queue_fraction"].float_domain.min == 0.0
     assert features["queue_fraction"].float_domain.max == 1.0
@@ -124,7 +125,7 @@ def test_frozen_schema_uses_contract_domains_not_observed_values(schema):
 
 
 def test_frozen_schema_file_is_marked_as_reviewed_input(schema):
-    assert schema.read_text().startswith("# Frozen TFDV schema for steps-v1.2.")
+    assert schema.read_text().startswith("# Frozen TFDV schema for steps-v1.3.")
 
 
 # Passing and failing releases
@@ -214,12 +215,27 @@ def test_partial_nulls_in_nullable_columns_pass_the_committed_schema(release):
         ("cpu_pressure_max_avg10", [float("nan")] + [None] * 6, "contains NaN"),
         ("task_id", ["  "] * 7, "contains an empty string"),
         ("failed_checks", [""] + [None] * 6, "contains an empty string"),
+        # label_resources allows exactly "", not whitespace.
+        ("label_resources", ["  "] * 7, "contains an empty string"),
     ],
 )
 def test_values_tfdv_cannot_see_are_refused(release, schema, column, values, message):
     """NaN would become "missing" in pandas, and TFDV has no nonempty-string domain."""
     change_column(release, column, values, pa.field(column, release_type(release, column)).type)
     with pytest.raises(GateError, match=f"column {column} {message}"):
+        validate(release, schema)
+
+
+def test_the_empty_string_passes_only_where_the_contract_allows_it(release, schema):
+    # The fixture's run rows record "no resource" as "" in label_resources.
+    assert "" in pq.read_table(release / "steps.parquet").column("label_resources").to_pylist()
+    assert validate(release, schema, now=NOW).status == PASSED
+    contract = json.loads((release / "schema.json").read_text())
+    for column in contract["columns"]:
+        del column["allow_empty"]  # as in contracts frozen before steps-v1.3
+    (release / "schema.json").write_text(json.dumps(contract))
+    resign(release)
+    with pytest.raises(GateError, match="column label_resources contains an empty string"):
         validate(release, schema)
 
 
@@ -306,7 +322,7 @@ def test_an_unsupported_contract_dtype_is_refused(release, schema):
 
 def test_drift_is_reported_against_the_previous_passing_release(datasets, release, schema):
     assert validate(release, schema, now=NOW).status == PASSED
-    later = copy_release(datasets, "steps-v1.2+later")
+    later = copy_release(datasets, "steps-v1.3+later")
     change_column(later, "label_resource", ["cpu_sandbox"] * 7)
     outcome = validate(later, schema, now=datetime(2026, 10, 13, tzinfo=UTC))
     assert outcome.status == PASSED  # drift alone never fails the gate
@@ -578,7 +594,7 @@ def test_cli_exits_one_when_the_gate_cannot_run(tmp_path, schema, capsys):
 
 def test_cli_reports_drift(datasets, release, schema, capsys):
     validate(release, schema, now=NOW)
-    later = copy_release(datasets, "steps-v1.2+later")
+    later = copy_release(datasets, "steps-v1.3+later")
     change_column(later, "label_resource", ["cpu_sandbox"] * 7)
     assert main(["validate", "--release", str(later), "--schema", str(schema)]) == 0
     assert "drift label_resource" in capsys.readouterr().out
@@ -602,7 +618,7 @@ def test_dataset_level_anomalies_block_the_gate(release, schema, tmp_path):
     frozen = tfdv.load_schema_text(str(schema))
     frozen.dataset_constraints.min_examples_count = 1000
     strict = tmp_path / "strict.pbtxt"
-    write_schema(frozen, strict, "steps-v1.2")
+    write_schema(frozen, strict, "steps-v1.3")
     outcome = validate(release, strict, now=NOW)
     assert outcome.status == FAILED
     [found] = outcome.result["anomalies"]

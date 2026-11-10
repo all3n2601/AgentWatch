@@ -68,7 +68,7 @@ def test_packaged_rules_are_frozen_and_versioned(config):
 # in labels.toml, which also needs an evaluation-contract change. Otherwise (a comment, a
 # refactor, or a guard against rows flattening cannot produce) keep the version, and say why
 # in the PR. Either way, update the pin in the same PR.
-PINNED_LABEL_VERSION = "labels-v1.1+fd085fa4"
+PINNED_LABEL_VERSION = "labels-v1.1+2c495a72"
 
 
 def test_label_version_is_pinned(config):
@@ -90,6 +90,13 @@ def test_real_run_is_labeled_from_experiment_design(config):
     assert contended["noise_threshold_seconds"] == pytest.approx(0.01)
     assert contended["label_excess_fraction"] == pytest.approx((2.868 - 0.3694) / 2.868)
     assert contended["label_version"] == config.label_version
+
+
+def test_label_resources_name_the_label_resource_or_are_empty_for_none(config):
+    labeled = label_run(run_rows(), config)
+    assert [row["label_resources"] for row in labeled] == [""] * 6 + ["cpu_sandbox"]
+    below = label_run(run_rows(contended=0.375), config)[-1]
+    assert (below["label_resource"], below["label_resources"]) == ("none", "")
 
 
 def test_contention_within_noise_is_labeled_none(config):

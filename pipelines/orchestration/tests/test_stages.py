@@ -358,3 +358,10 @@ def test_config_rejects_a_root_that_is_not_a_checkout(tmp_path):
 def test_absolute_store_paths_are_kept(config):
     assert config.path(Path("/srv/evidence")) == Path("/srv/evidence")
     assert config.path(Path("data/evidence")) == config.root / "data/evidence"
+
+
+def test_the_default_config_uses_the_committed_contract_and_steps_v1_3_schema() -> None:
+    config = stages.PipelineConfig()
+    assert config.schema == Path("pipelines/validation/schema/steps-v1.3.pbtxt")
+    assert config.contract == Path("pipelines/model/evaluation-contract.toml")
+    assert (config.root / config.schema).is_file() and (config.root / config.contract).is_file()

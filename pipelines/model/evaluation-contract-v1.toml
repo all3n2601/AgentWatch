@@ -1,0 +1,105 @@
+# Evaluation targets and model promotion gates, declared before any model is evaluated.
+# Meaning, rationale, and the change policy are in docs/evaluation-contract.md.
+# Never edit a threshold after seeing test-split results; change the version instead.
+# Reports identify this file by SHA-256 of its parsed contents as canonical JSON, so line
+# endings and comments do not change the identifier.
+version = "eval-contract-v1"
+# "proposed" until reviewed; values marked "proposed" below have no supporting data yet.
+status = "proposed"
+
+[dataset]
+# Later compatible minor versions (steps-v1.x, which only add columns) are also accepted.
+schema_version = "steps-v1.1"
+accept_compatible_minor_versions = true
+# Pinned exactly: a label-rule change can change labels, so schema compatibility never
+# permits a different label version. Reports record the full label_version with its
+# fingerprint, for example labels-v1.1+740e0355.
+label_rules = "labels-v1.1"
+# Must match RESOURCE_CLASSES in pipelines/data/src/agentwatch_data/schema.py.
+classes = ["none", "cpu_sandbox", "inference", "retrieval"]
+classification_target = "label_resource"
+regression_target = "label_excess_fraction"
+# Only measured runs may appear in the final test split (see docs/data-card.md).
+test_sources = ["measured"]
+
+[splits]
+group_key = "task_id"
+train_fraction = 0.70
+validation_fraction = 0.15
+test_fraction = 0.15
+# At least this many injection methods, from the injection_method lineage column, appear
+# only in the test split. Needs at least two injection methods; one exists today.
+held_out_injection_methods = 1
+# Needs real task identity from step events; the current task_id is an interim
+# placeholder that can split one project across splits.
+require_unseen_tasks = true
+# Mixed-contention cases must appear in the test split; training may also contain them.
+require_mixed_contention_in_test = true
+# Proposed. Below any of these counts, the affected gate is inconclusive.
+min_test_steps_per_class = 30
+min_clean_test_steps = 100
+min_mixed_contention_test_steps = 30
+
+[leakage]
+# Checked on the training split before evaluation. If any single feature's one-vs-rest
+# AUC for label_resource exceeds this bound, evaluation is blocked. Proposed.
+max_single_feature_auc = 0.98
+
+[classification]
+primary_metric = "macro_f1"
+# An abstained step counts as a miss for its true class.
+abstention_scoring = "incorrect"
+# Absolute macro F1 gain over the rule baseline on the mixed-contention test subset.
+min_gain_over_rules_mixed = 0.10
+# The model must not be worse than the rule baseline on the full test split.
+min_gain_over_rules_overall = 0.0
+
+[clean_runs]
+# Share of steps predicted "none"; abstentions count as misses. Gated on clean steps
+# alone, because baseline steps are the label reference, and on baseline and clean together.
+min_none_rate_clean = 0.95
+min_none_rate_baseline_and_clean = 0.95
+
+[regression]
+metric = "mae"
+# Proposed.
+max_mae = 0.10
+# The model must have lower MAE than every constant reference: the training-split mean
+# and zero, which is strong because most steps have no excess latency.
+constant_references = ["training_mean", "zero"]
+
+[calibration]
+# The abstention threshold is chosen on this split and never on the test split.
+fit_split = "validation"
+# Top-label ECE: confidence of the predicted class, equal-width bins, all test steps
+# scored before abstention.
+metric = "top_label_expected_calibration_error"
+ece_bins = 10
+# Proposed.
+max_ece = 0.05
+# Proposed. Maximum share of steps abstained, applied to each scope below.
+max_abstention_rate = 0.20
+abstention_rate_scopes = ["overall", "per_true_class", "mixed_contention"]
+
+[overhead]
+# Proposed. Median step wall-time increase over uninstrumented runs on a declared workload.
+max_median_wall_time_increase = 0.05
+# Proposed statistic for the plan's "about 15 seconds": 95th percentile time from step
+# completion to a visible attribution.
+max_attribution_latency_p95_seconds = 15.0
+
+[promotion]
+# A gate that is inconclusive or not evaluated blocks promotion; it never counts as a pass.
+unevaluated_gate_blocks_promotion = true
+# A candidate must pass every gate above and must not regress against each reference,
+# compared on the same frozen test split and dataset version. Comparing against the best
+# accepted model stops small allowed drops from accumulating across promotions.
+regression_references = ["incumbent", "best_accepted_on_test_split"]
+max_macro_f1_drop = 0.01
+max_clean_none_rate_drop = 0.0
+max_mae_increase = 0.01
+# Proposed. After this many promotion evaluations, freeze a new test split from newly
+# measured runs so repeated comparisons cannot overfit one split.
+max_promotion_evaluations_per_test_split = 5
+# With no registered model yet, the rule baseline is the incumbent for classification.
+first_incumbent = "rule_baseline"

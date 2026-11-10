@@ -6,9 +6,15 @@ labels reproducible without leaking experiment design into predictions.
 steps-v1.1 and steps-v1.2 add columns to steps-v1 without changing any existing column, so
 v1 readers remain valid for the columns they know.
 
-REPLAY_LABEL_COLUMNS describes the rows of replay-experiment labels (replay_labels.py). It is
-not part of the release schema: COLUMNS, contract() and schema.json are unchanged, and D03 adds
-these columns with steps-v1.3.
+steps-v1.3 holds CPU/coding run rows and agent replay rows in one release. It keeps every
+steps-v1.2 column name, type and role, appends the replay identity and lineage columns, makes
+the readings replay evidence lacks nullable, and widens kind, label_resource, label_basis and
+telemetry_status. feature_version names the feature definition each row follows: run rows use
+the steps-v1.2 window and replay rows use step-features-v1, so the shared FEATURE columns are
+labeled by definition rather than presented as one.
+
+REPLAY_LABEL_COLUMNS describes the rows of replay-experiment labels (replay_labels.py), before
+features are joined and they become release rows.
 """
 
 import math
@@ -16,13 +22,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-SCHEMA_VERSION = "steps-v1.2"
+from agentwatch_features import FEATURE_VERSION, LEGACY_FEATURE_VERSION
+
+SCHEMA_VERSION = "steps-v1.3"
 
 RESOURCE_CLASSES = ("none", "cpu_sandbox", "inference", "retrieval")
 SOURCES = ("measured", "simulated", "rcaeval")
-KINDS = ("cpu", "coding")
+KINDS = ("cpu", "coding", "agent_replay")
 CONDITIONS = ("baseline", "clean", "contended")
-TELEMETRY_STATUSES = ("present", "empty", "missing", "no_overlap")
+# unaligned comes from step-features-v1: replay samples with no clock mapping to the steps.
+TELEMETRY_STATUSES = ("present", "empty", "missing", "no_overlap", "unaligned")
 LABEL_BASES = (
     "baseline_reference",
     "clean_within_noise",
@@ -47,6 +56,10 @@ REPLAY_LABEL_BASES = (
     "mixed_partial",
     "mixed_joint_only",
 )
+# A release mixes both rule sets, so label_basis allows either one's bases.
+RELEASE_LABEL_BASES = tuple(dict.fromkeys(LABEL_BASES + REPLAY_LABEL_BASES))
+# Run rows follow the steps-v1.2 window; replay rows follow step-features-v1.
+FEATURE_VERSIONS = (LEGACY_FEATURE_VERSION, FEATURE_VERSION)
 INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
 FLOAT64_EXACT_INTEGER = 2**53
 
@@ -73,6 +86,9 @@ class Column:
     allowed: tuple[str, ...] | None = None
     minimum: float | None = None
     maximum: float | None = None
+    # A string column normally rejects "" (an unrecorded value must be null, not blank). Only a
+    # column whose empty string is itself a meaningful value sets this.
+    allow_empty: bool = False
 
 
 def seconds(name: str, role: Role, description: str) -> Column:
@@ -97,14 +113,35 @@ COLUMNS = (
     seconds("queue_seconds", Role.FEATURE, "Measured wait before a worker started"),
     seconds("execution_seconds", Role.FEATURE, "Worker start to finish wall time"),
     seconds("duration_seconds", Role.FEATURE, "Submission to finish wall time"),
-    seconds("cpu_seconds", Role.FEATURE, "Process and child CPU time"),
+    Column(
+        "cpu_seconds",
+        "float64",
+        Role.FEATURE,
+        "Process and child CPU time; null when the step recorded none",
+        True,
+        minimum=0,
+    ),
     fraction("queue_fraction", Role.FEATURE, "queue_seconds / duration_seconds"),
     # Workload features
-    Column("workload_iterations", "int64", Role.FEATURE, "Fixed work size of the step", minimum=1),
+    Column(
+        "workload_iterations",
+        "int64",
+        Role.FEATURE,
+        "Fixed work size of the step; null where none is recorded (replay rows)",
+        True,
+        minimum=1,
+    ),
     Column(
         "tests_per_step", "int64", Role.FEATURE, "Tests executed by the tool step", True, minimum=0
     ),
-    Column("worker_capacity", "int64", Role.FEATURE, "Sandbox workers available", minimum=1),
+    Column(
+        "worker_capacity",
+        "int64",
+        Role.FEATURE,
+        "Sandbox workers available; null where none is recorded (replay rows)",
+        True,
+        minimum=1,
+    ),
     # Resource-window features; missing readings stay null, never zero
     Column(
         "cpu_pressure_max_avg10",
@@ -145,8 +182,8 @@ COLUMNS = (
         "label_resource",
         "string",
         Role.LABEL,
-        f"Resource that caused excess waiting: {', '.join(RESOURCE_CLASSES)}",
-        allowed=RESOURCE_CLASSES,
+        f"Resource that caused excess waiting: {', '.join(LABEL_RESOURCE_VALUES)}",
+        allowed=LABEL_RESOURCE_VALUES,
     ),
     fraction(
         "label_excess_fraction",
@@ -158,10 +195,11 @@ COLUMNS = (
         "rule_prediction",
         "string",
         Role.RULE,
-        "Resource named by the threshold rule",
+        "Resource named by the threshold rule; null where the evidence has no rule output",
+        True,
         allowed=RESOURCE_CLASSES,
     ),
-    Column("rule_version", "string", Role.RULE, "Version of the rule that produced it"),
+    Column("rule_version", "string", Role.RULE, "Version of the rule that produced it", True),
     # Provenance and label evidence
     Column(
         "condition",
@@ -186,7 +224,7 @@ COLUMNS = (
         "telemetry_status",
         "string",
         Role.LINEAGE,
-        "Run telemetry: present, empty, missing, or no_overlap",
+        f"Run telemetry: {', '.join(TELEMETRY_STATUSES)}",
         allowed=TELEMETRY_STATUSES,
     ),
     Column(
@@ -212,21 +250,89 @@ COLUMNS = (
         "string",
         Role.LINEAGE,
         "Why the step received its label",
-        allowed=LABEL_BASES,
+        allowed=RELEASE_LABEL_BASES,
     ),
-    Column("label_version", "string", Role.LINEAGE, "Labeling rules version and fingerprint"),
+    Column(
+        "label_version",
+        "string",
+        Role.LINEAGE,
+        "Labeling rules version and fingerprint: labels-v1.1 for runs, labels-v2 for replays",
+    ),
     Column("schema_version", "string", Role.LINEAGE, "Dataset schema version of the row"),
     Column("dataset_version", "string", Role.LINEAGE, "Dataset release this row belongs to"),
     Column("source_sha256", "string", Role.LINEAGE, "SHA-256 of the run's results and samples"),
+    # steps-v1.3: replay identity and lineage; null on CPU/coding run rows unless noted
+    Column(
+        "feature_version",
+        "string",
+        Role.LINEAGE,
+        "Feature definition the row's FEATURE values follow",
+        allowed=FEATURE_VERSIONS,
+    ),
+    Column(
+        "task_group",
+        "string",
+        Role.ID,
+        "Task family; splits keep related tasks together (task_id on run rows)",
+    ),
+    Column("experiment", "string", Role.ID, "Replay experiment name", True),
+    Column("plan_sha256", "string", Role.ID, "SHA-256 of the experiment plan the replay ran", True),
+    Column(
+        "replay_index",
+        "int64",
+        Role.ID,
+        "Position of the replay in its experiment",
+        True,
+        minimum=0,
+    ),
+    Column("step_type", "string", Role.ID, "Kind of step recorded by the agent run", True),
+    Column(
+        "replay_role",
+        "string",
+        Role.LINEAGE,
+        f"Replay role: {', '.join(REPLAY_ROLES)}",
+        True,
+        allowed=REPLAY_ROLES,
+    ),
+    Column(
+        "replay_condition",
+        "string",
+        Role.LINEAGE,
+        f"Injected replay condition: {', '.join(REPLAY_CONDITIONS)}",
+        True,
+        allowed=REPLAY_CONDITIONS,
+    ),
+    Column(
+        "label_resources",
+        "string",
+        Role.LABEL,
+        "Sorted comma-separated confirmed contended resources; the empty string means none",
+        allow_empty=True,
+    ),
+    Column(
+        "control_exceeded_noise",
+        "bool",
+        Role.LINEAGE,
+        "Whether the clean control exceeded noise on this step; null when no usable control",
+        True,
+    ),
+    Column(
+        "configuration_sha256",
+        "string",
+        Role.LINEAGE,
+        "Digest of the replay's registered configuration",
+        True,
+    ),
 )
 
 COLUMNS_BY_NAME = {column.name: column for column in COLUMNS}
 
 # Replay label rows (replay_labels.ROW_KEYS, in that order). A name shared with COLUMNS reuses
-# its definition unless the replay row's values differ; the replay variants below widen
-# label_resource to include `mixed` and extend condition and label_basis. Every column here
-# is an ID, LABEL or LINEAGE except the three shared timings, which keep their release FEATURE
-# role; the experiment design (condition, role, injection, label metadata) is never a feature.
+# its definition unless the replay row's values differ: identity columns that are nullable in
+# the release are required here, and condition and label_basis use the replay rule set's own
+# values (the release maps role to condition). Every column here is an ID, LABEL or LINEAGE
+# except the three shared timings, which keep their release FEATURE role; the experiment
+# design (condition, role, injection, label metadata) is never a feature.
 REPLAY_LABEL_COLUMNS = (
     Column("experiment", "string", Role.ID, "Experiment name; replays are grouped by it"),
     COLUMNS_BY_NAME["task_id"],
@@ -254,21 +360,8 @@ REPLAY_LABEL_COLUMNS = (
     COLUMNS_BY_NAME["duration_seconds"],
     COLUMNS_BY_NAME["queue_seconds"],
     COLUMNS_BY_NAME["execution_seconds"],
-    Column(
-        "label_resource",
-        "string",
-        Role.LABEL,
-        f"Resource that caused excess waiting: {', '.join(LABEL_RESOURCE_VALUES)}",
-        allowed=LABEL_RESOURCE_VALUES,
-    ),
-    Column(
-        "label_resources",
-        "string",
-        Role.LABEL,
-        "Sorted comma-separated confirmed contended resources; the empty string means none. "
-        "D03 must allow the empty string when merging this into steps-v1.3: the release "
-        "value check rejects empty strings",
-    ),
+    COLUMNS_BY_NAME["label_resource"],
+    COLUMNS_BY_NAME["label_resources"],
     COLUMNS_BY_NAME["label_excess_fraction"],
     Column(
         "label_basis",
@@ -302,6 +395,11 @@ LEAKY_COLUMNS = frozenset(
         "injection_method",
         "failed_checks",
         "run_passed",
+        "replay_role",
+        "replay_condition",
+        "replay_index",
+        "control_exceeded_noise",
+        "experiment",
     }
 )
 
@@ -326,6 +424,7 @@ def contract() -> dict:
                 "allowed": list(column.allowed) if column.allowed is not None else None,
                 "minimum": column.minimum,
                 "maximum": column.maximum,
+                "allow_empty": column.allow_empty,
             }
             for column in COLUMNS
         ],
@@ -333,7 +432,11 @@ def contract() -> dict:
 
 
 def columns_from(document: dict) -> tuple[Column, ...]:
-    """The columns a contract() document describes (descriptions are not shipped)."""
+    """The columns a contract() document describes (descriptions are not shipped).
+
+    Contracts frozen before steps-v1.3 have no allow_empty key; none of their columns allowed
+    the empty string.
+    """
     return tuple(
         Column(
             entry["name"],
@@ -344,6 +447,7 @@ def columns_from(document: dict) -> tuple[Column, ...]:
             tuple(entry["allowed"]) if entry["allowed"] is not None else None,
             entry["minimum"],
             entry["maximum"],
+            entry.get("allow_empty", False),
         )
         for entry in document["columns"]
     )
@@ -384,7 +488,11 @@ def check_value(column: Column, value) -> str | None:
     if value is None:
         return None if column.nullable else "is null"
     if column.dtype == "string":
-        if not isinstance(value, str) or not value.strip():
+        if not isinstance(value, str):
+            return f"must be a string, got {value!r}"
+        if value == "" and column.allow_empty:
+            return None
+        if not value.strip():
             return f"must be a nonempty string, got {value!r}"
         if column.allowed is not None and value not in column.allowed:
             return f"must be one of {', '.join(column.allowed)}, got {value!r}"

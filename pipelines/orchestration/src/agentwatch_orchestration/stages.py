@@ -55,7 +55,7 @@ class PipelineConfig:
     root: Path = DEFAULT_ROOT
     evidence: Path = Path("data/evidence")
     datasets: Path = Path("data/datasets")
-    schema: Path = Path("pipelines/validation/schema/steps.pbtxt")
+    schema: Path = Path("pipelines/validation/schema/steps-v1.3.pbtxt")
     contract: Path = Path("pipelines/model/evaluation-contract.toml")
     reports: Path = Path(".data/reports")  # derived reports, outside the versioned stores
     api_url: str | None = None  # also build from runs saved through the ingestion API
