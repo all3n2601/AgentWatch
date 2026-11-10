@@ -12,7 +12,7 @@
           "concurrency policy"
         ],
         "summary": "Get Active Policy",
-        "description": "The active policy version; version 0 is the no-limit baseline. Policy is stored and versioned only; nothing enforces these limits yet.",
+        "description": "The active policy version; version 0 is the no-limit baseline. The service stores and versions policy only. Agent runner processes that read it limit their own model requests and test jobs (per process, not globally); a stored version or run link is not evidence that any work was limited.",
         "operationId": "get_active_policy_v1_policies_concurrency__target__get",
         "parameters": [
           {
@@ -85,7 +85,7 @@
           "concurrency policy"
         ],
         "summary": "List Policy Versions",
-        "description": "Policy history newest first, ending with the version 0 baseline. Policy is stored and versioned only; nothing enforces these limits yet.",
+        "description": "Policy history newest first, ending with the version 0 baseline. The service stores and versions policy only. Agent runner processes that read it limit their own model requests and test jobs (per process, not globally); a stored version or run link is not evidence that any work was limited.",
         "operationId": "list_policy_versions_v1_policies_concurrency__target__versions_get",
         "parameters": [
           {
@@ -186,7 +186,7 @@
           "concurrency policy"
         ],
         "summary": "Change Policy",
-        "description": "Append a set, disable or restore version and link it to open coding-agent runs; an identical retry returns 200. Policy is stored and versioned only; nothing enforces these limits yet.",
+        "description": "Append a set, disable or restore version and link it to open coding-agent runs; an identical retry returns 200. The service stores and versions policy only. Agent runner processes that read it limit their own model requests and test jobs (per process, not globally); a stored version or run link is not evidence that any work was limited.",
         "operationId": "change_policy_v1_policies_concurrency__target__versions_post",
         "parameters": [
           {

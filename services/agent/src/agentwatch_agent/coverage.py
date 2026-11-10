@@ -1,6 +1,6 @@
 """Report how one run's resource samples cover its steps, from what the runner journaled.
 
-This is producer-side evidence for checking sampling (method `coverage-v3`), not the
+This is producer-side evidence for checking sampling (method `coverage-v4`), not the
 service's window join (B02). It reads `live-journal.jsonl` and `agent-evidence.json` and
 applies the live contracts' rules:
 
@@ -25,10 +25,13 @@ measured readings only: gauges report min/mean/max, and cumulative counters repo
 increase from the first to the last reading inside the window, with the span it covers, or
 null when the window holds fewer than two readings or the counter decreased in it (a reset).
 
-Each executed step also reports its observed dispatch queue (submission to start, runner
-side) apart from service time where one was measured: Ollama's reported total for model
-calls, whose own queue is unavailable, and the search alone for retrieval, whose index has
-no queue. The remainder of execution is the runner's own handling, an estimate.
+Each executed step also reports its queue (submission to start, runner side), split into the
+runner-process admission wait (O03, from the run's admission evidence on the same clock) and
+the remaining dispatch, apart from service time where one was measured: Ollama's reported
+total for model calls, whose own queue is unavailable, and the search alone for retrieval,
+whose index has no queue. The remainder of execution is the runner's own handling, an
+estimate. A step that needed a permit but has no usable admission record reports its
+admission wait and dispatch as unknown, never as zero.
 """
 
 import json
@@ -41,11 +44,13 @@ from agentwatch_sdk.live import ResourceSample, StepEvent
 from pydantic import ValidationError
 
 from agentwatch_agent.resources import COUNTER_METRICS, interval_summary
+from agentwatch_agent.runner import ADMITTED_TOOLS
 from agentwatch_agent.service_probes import SERVICE_COUNTER_METRICS
 
-# v3 lists `sampling` and `context` as entries carrying their full identity; v2 keyed them by
-# resource ID alone. The method names the output shape, so recorded documents stay readable.
-COVERAGE_METHOD = "coverage-v3"
+# v4 splits each step's queue into admission wait and dispatch (O03); v3 lists `sampling` and
+# `context` as entries carrying their full identity, and v2 keyed them by resource ID alone.
+# The method names the output shape, so recorded documents stay readable.
+COVERAGE_METHOD = "coverage-v4"
 RECORD_MODELS = {"resource_sample": ResourceSample, "step_event": StepEvent}
 # The live contracts' timing-breakdown tolerance.
 TIMING_TOLERANCE_SECONDS = 1e-6
@@ -173,14 +178,92 @@ def _difference(total: float | None, part: float | None) -> float | None:
     return difference if difference >= -TIMING_TOLERANCE_SECONDS else None
 
 
-def _timing(event: dict, call_timing: dict | None) -> dict:
-    """Observed queue (runner dispatch) apart from the service time measured for the call."""
-    submitted, started = event["submitted_tick_ns"], event["started_tick_ns"]
+class Admissions:
+    """A run's admission evidence: whether admission was configured, and its records by step."""
+
+    def __init__(self, evidence: dict):
+        configured = evidence.get("admission")
+        self.records: dict[str, dict] = {}
+        self.required: set[str] = set()
+        if not isinstance(configured, dict):
+            # Runners before agent-runner-v4 had no admission: nothing waited for a permit.
+            self.status = "not_recorded"
+            return
+        if configured.get("status") != "configured":
+            self.status = "not_configured"
+            return
+        self.status = "configured"
+        for record in evidence.get("admissions") or []:
+            if isinstance(record, dict) and isinstance(record.get("step_id"), str):
+                self.records[record["step_id"]] = record
+        # The steps the runner admits: every model call, the tools it admits, verification.
+        for call in evidence.get("model_calls") or []:
+            if isinstance(call, dict) and isinstance(call.get("step_id"), str):
+                self.required.add(call["step_id"])
+        for call in evidence.get("tool_calls") or []:
+            if (
+                isinstance(call, dict)
+                and call.get("name") in ADMITTED_TOOLS
+                and isinstance(call.get("step_id"), str)
+            ):
+                self.required.add(call["step_id"])
+        verification = evidence.get("verification")
+        if isinstance(verification, dict) and isinstance(verification.get("step_id"), str):
+            self.required.add(verification["step_id"])
+
+    def queue(self, event: dict) -> dict:
+        """The step's queue split into admission wait and the remaining runner dispatch."""
+        submitted, started = event["submitted_tick_ns"], event["started_tick_ns"]
+        queue = (started - submitted) / 1e9
+        if self.status != "configured":
+            # No admission happened, so the whole queue is runner dispatch.
+            return {
+                "queue_seconds": queue,
+                "admission": self.status,
+                "admission_wait_seconds": None,
+                "dispatch_queue_seconds": queue,
+            }
+        record = self.records.get(event["step_id"])
+        if record is None:
+            required = event["step_id"] in self.required
+            return {
+                "queue_seconds": queue,
+                "admission": "missing" if required else "not_required",
+                "admission_wait_seconds": None,
+                "dispatch_queue_seconds": None if required else queue,
+            }
+        arrived, admitted = record.get("arrived_tick_ns"), record.get("admitted_tick_ns")
+        consistent = (
+            record.get("outcome") == "admitted"
+            and record.get("clock_id") == event["clock_id"]
+            and all(type(tick) is int for tick in (arrived, admitted))
+            and submitted <= arrived <= admitted <= started
+        )
+        if not consistent:
+            # Never subtract ticks of another clock or an impossible order: report unknown.
+            return {
+                "queue_seconds": queue,
+                "admission": "inconsistent",
+                "admission_wait_seconds": None,
+                "dispatch_queue_seconds": None,
+            }
+        wait = (admitted - arrived) / 1e9
+        return {
+            "queue_seconds": queue,
+            "admission": "admitted",
+            "admission_wait_seconds": wait,
+            "dispatch_queue_seconds": queue - wait,
+            "admission_policy_version": record.get("policy_version"),
+            "admission_limit": record.get("limit"),
+            "admission_enforced": record.get("enforced"),
+        }
+
+
+def _timing(event: dict, call_timing: dict | None, admissions: Admissions) -> dict:
+    """Admission wait and runner dispatch apart from the service time measured for the call."""
+    started = event["started_tick_ns"]
     execution = (event["finished_tick_ns"] - started) / 1e9
-    timing = {
-        "dispatch_queue_seconds": (started - submitted) / 1e9,
-        "execution_seconds": execution,
-    }
+    timing = admissions.queue(event) | {"execution_seconds": execution}
     if call_timing is None:
         return timing
     if event["step_type"] == "retrieval":
@@ -224,6 +307,7 @@ def _step_coverage(
     scopes: dict[str, str | None],
     declared: float,
     call_timing: dict | None,
+    admissions: Admissions,
 ) -> dict:
     started, finished = event.get("started_tick_ns"), event.get("finished_tick_ns")
     base = {
@@ -265,7 +349,7 @@ def _step_coverage(
         "status": own["status"],
         "own": own,
         "context": context,
-        "timing": _timing(event, call_timing),
+        "timing": _timing(event, call_timing, admissions),
     }
 
 
@@ -325,8 +409,9 @@ def coverage_report(run_dir: Path) -> dict:
                 | {"metrics": sorted(metrics[clock_id])}
             )
     timings = _call_timings(evidence)
+    admissions = Admissions(evidence)
     steps = [
-        _step_coverage(event, rounds, scopes, declared, timings.get(event["step_id"]))
+        _step_coverage(event, rounds, scopes, declared, timings.get(event["step_id"]), admissions)
         for event in sorted(_latest_events(records).values(), key=lambda e: e["submitted_tick_ns"])
     ]
     return {

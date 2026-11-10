@@ -10,7 +10,9 @@ from agentwatch_worker.ollama import CHAT_TIMEOUT_SECONDS
 # v2 (A04): GPU sampling, per-round sampler cost and the inference request-timing breakdown.
 # v3 (M2, ADR 0007): streamed model calls timed on the runner's clock, a vLLM backend with its
 # server metrics and per-request trace spans, and optional DCGM device fields.
-RUNNER_VERSION = "agent-runner-v3"
+# v4 (O03, ADR 0010): model requests and test jobs wait for runner-process admission permits
+# under the active concurrency policy; the declared queue bounds are part of the configuration.
+RUNNER_VERSION = "agent-runner-v4"
 MODEL_BACKENDS = ("ollama", "vllm")
 # Model calls stream so the runner observes the first output. Recorded so that a different
 # transport, if one is added, never shares a digest with streamed runs.
@@ -105,6 +107,10 @@ class RunConfiguration:
     sampling_interval_seconds: float = DEFAULT_SAMPLING_INTERVAL_SECONDS
     cancel_poll_seconds: float = DEFAULT_CANCEL_POLL_SECONDS
     model_socket_timeout_seconds: float = MODEL_SOCKET_TIMEOUT_SECONDS
+    # Declared admission settings (method, scope and queue bounds), or None when the run
+    # consults no concurrency policy. The policy version in force is evidence, not
+    # configuration: it can change while the run is open.
+    admission: dict | None = None
     runner_version: str = RUNNER_VERSION
     contract_version: str = CONTRACT_VERSION
 

@@ -284,3 +284,65 @@ class FakeGpu:
 
     def close(self):
         self.closed += 1
+
+
+def policy_version(
+    version,
+    *,
+    inference=None,
+    tests=None,
+    inference_service="ollama",
+    action=None,
+    restored_from=None,
+):
+    """A coding-agent PolicyVersion as the O02 service serves it; synthetic, never evidence."""
+    from agentwatch_sdk.policy import PolicyVersion
+
+    limits = {
+        key: value
+        for key, value in (("inference_requests", inference), ("test_jobs", tests))
+        if value is not None
+    }
+    baseline = version == 0
+    return PolicyVersion.model_validate(
+        {
+            "target": "coding-agent",
+            "version": version,
+            "action": "baseline" if baseline else (action or ("set" if limits else "disable")),
+            "limits": limits,
+            "restored_from": restored_from,
+            "operator": None if baseline else "test",
+            "reason": None if baseline else "test policy",
+            "request_id": None if baseline else str(uuid4()),
+            "created_at": None if baseline else "2026-11-09T12:00:00+00:00",
+            "controlled_services": {
+                "inference_requests": {
+                    "service_id": inference_service,
+                    "resource_class": "inference",
+                },
+                "test_jobs": {
+                    "service_id": "agentwatch-agent-runner",
+                    "resource_class": "cpu_sandbox",
+                },
+            },
+            "enforcement_scope": "runner_process",
+        }
+    )
+
+
+class FakePolicySource:
+    """In-memory stand-in for the O02 policy service's `GET .../coding-agent`."""
+
+    def __init__(self, policy):
+        self.policy = policy
+        self.failures: list[BaseException] = []  # raised by the next reads, in order
+        self.reads = 0
+        self.lock = threading.Lock()
+
+    def get_policy(self, target="coding-agent"):
+        with self.lock:
+            self.reads += 1
+            assert target == "coding-agent"
+            if self.failures:
+                raise self.failures.pop(0)
+            return self.policy

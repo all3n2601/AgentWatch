@@ -1,4 +1,15 @@
+import json
+from urllib.error import URLError
+
 import pytest
+from agent_test_doubles import (
+    SOLVE_MEAN,
+    FakeLiveServer,
+    FakePolicySource,
+    ScriptedModel,
+    chat_response,
+    policy_version,
+)
 from agentwatch_agent import cli
 from agentwatch_agent.config import RunConfiguration, RunLimits
 
@@ -277,3 +288,121 @@ def test_a_mistyped_backend_in_the_environment_is_refused(monkeypatch, value):
 def test_a_valid_backend_in_the_environment_is_used(monkeypatch):
     monkeypatch.setenv("AGENTWATCH_MODEL_BACKEND", "vllm")
     assert cli.parser().parse_args(["run", "--task", "x"]).model_backend == "vllm"
+
+
+class PolicyLiveServer(FakeLiveServer):
+    """The fake live API plus the O02 policy read the runner makes (test double)."""
+
+    def __init__(self, policy):
+        super().__init__()
+        self.policy_source = FakePolicySource(policy)
+        self.base_url = "http://fake-live"
+
+    def get_policy(self, target="coding-agent"):
+        return self.policy_source.get_policy(target)
+
+
+def fake_cli_services(monkeypatch, policy, scripts):
+    server = PolicyLiveServer(policy)
+    monkeypatch.setattr(cli, "LiveClient", lambda *_args, **_kwargs: server)
+    models = iter([ScriptedModel(script) for script in scripts])
+    monkeypatch.setattr(cli, "build_model", lambda _args: next(models))
+    return server
+
+
+def test_an_unreadable_policy_exits_four_and_names_the_way_out(tmp_path, capsys, monkeypatch):
+    server = fake_cli_services(monkeypatch, policy_version(1), [SOLVE_MEAN])
+    server.policy_source.failures = [URLError("policy service down")] * 4
+    code = cli.main(["run", "--task", "fix-mean-empty", "--output-dir", str(tmp_path)])
+    error = capsys.readouterr().err
+    assert code == cli.EXIT_LIVE_UNAVAILABLE
+    assert "concurrency policy" in error and "--no-policy" in error
+    assert server.runs == {}
+
+
+def test_no_policy_runs_without_reading_the_policy(tmp_path, monkeypatch):
+    server = fake_cli_services(monkeypatch, policy_version(1), [SOLVE_MEAN])
+    code = cli.main(
+        ["run", "--task", "fix-mean-empty", "--output-dir", str(tmp_path), "--no-policy"]
+    )
+    assert code == cli.EXIT_PASSED
+    assert server.policy_source.reads == 0
+    (evidence_path,) = tmp_path.glob("*/agent-evidence.json")
+    assert json.loads(evidence_path.read_text())["admission"]["status"] == "not_configured"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--test-max-queue", "-1"],
+        ["--inference-max-wait", "0"],
+        ["--policy-poll", "inf"],
+    ],
+)
+def test_invalid_admission_arguments_are_usage_errors(extra):
+    for command in ("run", "batch"):
+        with pytest.raises(SystemExit) as exit_info:
+            cli.main([command, "--task", "fix-mean-empty", *extra])
+        assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize("command", ["run", "batch"])
+def test_admission_bounds_beyond_their_range_are_usage_errors(command, tmp_path, capsys):
+    argv = [command, "--task", "fix-mean-empty", "--output-dir", str(tmp_path)]
+    assert cli.main([*argv, "--inference-max-wait", "4000"]) == 2
+    assert cli.main([*argv, "--test-max-queue", "2000"]) == 2
+    assert "max_" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_oversized_batch_is_a_usage_error_that_creates_nothing(tmp_path, capsys):
+    code = cli.main(
+        ["batch", "--task", "fix-mean-empty", "--repeat", "33", "--output-dir", str(tmp_path)]
+    )
+    assert code == 2 and "at most 32 runs" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_batch_exits_with_its_most_severe_run(tmp_path, capsys, monkeypatch):
+    wrong_patch = [
+        chat_response(tool_calls=[("apply_patch", {"patch_id": "return-zero-for-empty"})]),
+        chat_response("Applied the patch."),
+    ]
+    server = fake_cli_services(
+        monkeypatch, policy_version(2, inference=1, tests=1), [SOLVE_MEAN, wrong_patch]
+    )
+    code = cli.main(
+        [
+            "batch",
+            "--task",
+            "fix-mean-empty",
+            "--repeat",
+            "2",
+            "--output-dir",
+            str(tmp_path),
+            "--policy-poll",
+            "0.05",
+        ]
+    )
+    assert code == cli.EXIT_FAILED
+    (batch_file,) = tmp_path.glob("batch-*/batch.json")
+    saved = json.loads(batch_file.read_text())
+    assert sorted(run["state"] for run in saved["runs"]) == ["completed", "failed"]
+    assert saved["permits_returned"] is True
+    assert saved["admission"]["policy_version"] == 2
+    assert saved["policy_watcher"]["poll_failures"] == 0
+    assert len(server.runs) == 2
+    assert "Batch " in capsys.readouterr().out
+
+
+def test_a_batch_with_an_unreadable_policy_exits_four(tmp_path, capsys, monkeypatch):
+    server = fake_cli_services(monkeypatch, policy_version(1), [SOLVE_MEAN, SOLVE_MEAN])
+    server.policy_source.failures = [URLError("down")] * 4
+    code = cli.main(
+        ["batch", "--task", "fix-mean-empty", "--repeat", "2", "--output-dir", str(tmp_path)]
+    )
+    assert code == cli.EXIT_LIVE_UNAVAILABLE
+    assert "concurrency policy" in capsys.readouterr().err
+    (batch_file,) = tmp_path.glob("batch-*/batch.json")
+    assert {run["state"] for run in json.loads(batch_file.read_text())["runs"]} == {"not_started"}
+    assert server.runs == {}

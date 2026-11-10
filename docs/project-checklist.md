@@ -754,6 +754,34 @@ from M3 through M6 and do not renumber the implementation milestones above.
   (O03), the finished controls UI (O05), real-hardware evaluation (O06) and `opt-contract-v1`
   acceptance (O01).
 - [ ] O03 — Akshayaa: bounded runner admission and cleanup after O02/A02/A03.
+  Implemented 2026-11-09 on branch `feature/runner-concurrency-limits` (not yet merged),
+  [ADR 0010](adr/0010-runner-process-admission-limits.md): `run` and the new `batch` command read
+  the active `coding-agent` policy and admit every model request and test job through one
+  runner-process controller, with first-in-first-out queues bounded in length and wait,
+  cancellation and run-deadline exits, permits returned on every path (an abandoned model
+  request keeps its permit until it really ends), and new versions applied to new admissions
+  only. The inference limit applies only to the service the policy names, so vLLM runs record
+  it as not enforced. Scope is one process; no global limit is claimed. Admission records in
+  `agent-evidence.json` correlate policy version, limit, step, span, resource and clock;
+  `coverage-v4` splits each step's queue into admission wait and dispatch.
+  Verified locally with test doubles for the model: `services/agent/tests/test_admission.py`,
+  `test_runner_admission.py`, `test_cli.py` and `test_coverage.py`, plus two dedicated-PostgreSQL
+  tests in `test_live_integration.py` that set and change policy through the real API. Each of
+  18 admission controls was also removed once to confirm its test fails. Real CPU batch
+  2026-11-09 (`batch --task fix-mean-empty --repeat 2`, Docker Ollama `qwen3:1.7b` on the
+  development Mac, isolated test-database worker, policy version 1 with `inference_requests` 1):
+  the two runs' inference permits never overlapped and alternated first in, first out (each
+  wait matched the other run's request time), every permit came back, and the runs shared one
+  clock domain. Both runs then **failed** at their 1800 s limit: CPU model calls took 57-430 s
+  each, and at limit 1 each run also waited for the other's. That is the cost of the limit on
+  this host, not an evaluation (O06). Rerun the same day with a 3600 s limit, from a script
+  using the `batch` wiring with 0.5 s sampling (the CLI's 0.25 s caps a GPU-registered run at
+  2000 s): both runs **completed** with verification passed in 858 s of batch time; 12 model
+  requests and 4 test jobs were admitted, no inference permits overlapped, none was refused or
+  held at closure, and 775 policy polls had no failures. Model calls took 16-279 s this time;
+  CPU inference speed on this Mac varies several-fold between runs. Evidence is local to the
+  Mac, not committed. Open: PR review and CI, Benoy's GPU validation, and O02's formal
+  acceptance.
 - [ ] O04 — Akshay: paired-run manifests and comparison validation after O01/D02.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
 - [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
