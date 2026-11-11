@@ -23,8 +23,11 @@ reproducible on the same LightGBM version and platform; both versions are record
 | Classifier | `label_resource`, over the classes present in the training split | Multiclass log loss |
 | Regressor | `label_excess_fraction`, clipped to 0–1 at prediction | L1 (MAE) |
 
-- Both train on the training split only. The validation split is used only for early stopping;
-  without usable validation rows the fixed number of rounds is used and recorded.
+- Both train on the training split only. The validation split is used only for early stopping,
+  recorded per model: `early_stopping` for the classifier (single-class validation rows of
+  trained classes, with the rest counted in `validation_rows_dropped`) and
+  `regressor_early_stopping` for the regressor (every validation row). A model without
+  validation rows to stop on runs the fixed number of rounds, recorded as `not_used`.
 - Inputs are exactly the schema's feature columns. Missing readings (null in the dataset) go to
   LightGBM as NaN and are never imputed. A NaN or infinite value already stored in a feature is
   not treated as missing: it is a `FeatureError` and the attempt fails, since recorded data keeps

@@ -162,6 +162,18 @@ def mixed_step(index: int) -> dict:
     }
 
 
+def test_early_stopping_is_recorded_per_model_on_mixed_only_validation(tmp_path):
+    # Mixed validation steps cannot stop the classifier but can stop the regressor.
+    splits = dict(SPLITS) | {"validation": [mixed_step(i) for i in range(6)]}
+    output = tmp_path / "out"
+    run(tmp_path / "split.json", output, loader=loader_for([], splits), **tracking(tmp_path))
+    model = read(output / "report.json")["model"]
+    assert model["early_stopping"] == "not_used" and model["validation_rows_dropped"] == 6
+    assert model["regressor_early_stopping"] == "validation"
+    [logged] = logged_runs(tmp_path)
+    assert logged.data.params["regressor_early_stopping"] == "validation"
+
+
 def test_mixed_steps_train_the_regressor_and_are_scored_by_any_member(tmp_path):
     splits = {
         "train": SPLITS["train"] + [mixed_step(i) for i in range(4)],

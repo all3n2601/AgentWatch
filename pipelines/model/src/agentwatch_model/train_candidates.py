@@ -185,6 +185,7 @@ def model_identity(config: TrainingConfig, candidate: Candidate, labels: str | N
         "train_rows_not_classified": candidate.train_rows_not_classified,
         "best_iterations": candidate.best_iterations,
         "early_stopping": candidate.early_stopping,
+        "regressor_early_stopping": candidate.regressor_early_stopping,
         "settings": {
             "num_boost_round": config.num_boost_round,
             "early_stopping_rounds": config.early_stopping_rounds,

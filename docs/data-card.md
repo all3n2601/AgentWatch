@@ -261,11 +261,12 @@ still loads (train 175, validation 0, test 175) with the v1 contract file and `s
   empty and puts one task group (`fix-mean-empty`, 2,028 rows) in train. Calibration,
   abstention tuning, early stopping and every validation-dependent gate are `inconclusive`,
   and train holds no CPU or coding rows.
-- **`mixed` is unscored until M02.** `make rule-baseline` and `make train-candidates` on this
-  split stop with the reason "labeled 'mixed', which has no scoring rule until M02 defines one"
-  (the rule baseline exits 2 with no report; training records a `failed` attempt and exits 1,
-  with no model). Item 2 of the `eval-contract-v2` proposal (the multi-resource metric and the
-  `mixed` scoring rule) is Rohit's M02 decision and is not encoded in the contract.
+- **Mixed feature definitions stop evaluation.** `mixed` steps are scored by
+  `mixed-scoring-v1` (Rohit's M02 rule for item 2 of the `eval-contract-v2` proposal; see
+  [the rule baseline](rule-baseline.md)), but this split's test rows use two feature definitions
+  (`steps-v1.2` for CPU and coding rows, `step-features-v1` for replay rows), and evaluation
+  refuses a combined population. `make rule-baseline` exits 2 with no report, and
+  `make train-candidates` records a `failed` attempt and exits 1, with no model.
 - **No GPU, inference-server or retrieval readings.** `step-features-v1` reads CPU PSI and
   cgroup metrics only; inference and retrieval contention is visible only through timings.
   Reading other metrics is a new feature version.

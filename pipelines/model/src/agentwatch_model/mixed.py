@@ -37,9 +37,8 @@ PER_RESOURCE_SEMANTICS = (
 
 
 def members(row: dict, classes: tuple[str, ...]) -> tuple[str, ...]:
-    """A mixed step's confirmed resources, in contract class order."""
-    named = set(row["label_resources"].split(","))
-    return tuple(name for name in classes if name in named)
+    """A step's confirmed resources, in contract class order, by the data package's rule."""
+    return tuple(name for name in classes if name != NONE and is_member(row, name))
 
 
 def is_mixed(row: dict) -> bool:

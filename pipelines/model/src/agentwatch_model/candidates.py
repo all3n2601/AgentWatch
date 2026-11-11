@@ -59,11 +59,14 @@ class Candidate:
     classifier: "lightgbm.Booster"
     regressor: "lightgbm.Booster"
     best_iterations: dict[str, int]
+    # How each model stopped: "validation" or "not_used". early_stopping is the classifier's
+    # (single-class validation rows of trained classes); the regressor uses every validation row.
     early_stopping: str
     training_version: str
     # Coverage gaps, reported rather than hidden: validation rows of classes unseen in training
     # cannot be scored for early stopping, and absent classes can never be predicted.
     validation_rows_dropped: int = 0
+    regressor_early_stopping: str = "not_used"
     # Mixed training steps: the regressor learns from them, the classifier cannot.
     train_rows_not_classified: int = 0
     classes_absent_from_train: tuple[str, ...] = ()
@@ -187,6 +190,7 @@ def fit_candidate(train: list[dict], validation: list[dict], config: TrainingCon
             "regressor": best_iteration(regressor),
         },
         early_stopping="validation" if usable else "not_used",
+        regressor_early_stopping="validation" if validation else "not_used",
         training_version=config.version,
         validation_rows_dropped=len(validation) - len(usable),
         train_rows_not_classified=len(train) - len(classified),
