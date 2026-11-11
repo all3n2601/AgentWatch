@@ -186,13 +186,13 @@ def choose_threshold(
     limit.
     """
     flags = mixed or [False] * len(labels)
-    single = [index for index, is_mixed in enumerate(flags) if not is_mixed]
+    single = [index for index, flag in enumerate(flags) if not flag]
     single_labels = [labels[index] for index in single]
 
     def scopes(abstained: list[bool]) -> dict:
         return {
             "overall": rate(abstained),
-            "mixed": rate([a for a, is_mixed in zip(abstained, flags, strict=True) if is_mixed]),
+            "mixed": rate([a for a, flag in zip(abstained, flags, strict=True) if flag]),
             "per_true_class": abstention_rates(
                 single_labels, [abstained[index] for index in single], classes
             )["per_true_class"],

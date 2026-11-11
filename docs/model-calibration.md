@@ -75,7 +75,10 @@ the model's best guess for inspection only.
   cover single-class steps only. The abstention threshold's macro F1 is judged on single-class
   validation steps, as the classifier's fit is, but the 20% limit also covers scored mixed
   validation steps (the contract's mixed-contention scope), so a threshold that would abstain
-  on more of them is never chosen; `fit.threshold_selection` records the mixed rate.
+  on more of them is never chosen; `fit.threshold_selection` records the mixed rate. Unlike the
+  test gate, validation applies the limit at any step count, as it does per class: with three
+  mixed validation steps, one abstention (33%) rules a threshold out. The recorded overall
+  validation rate counts scored mixed steps too.
 - Calibration: top-label ECE over all scored test steps before abstention, 10 equal-width bins,
   before and after calibration; at most 0.05 passes. A hit on a mixed step counts as correct.
 - Abstention: rates overall (every scored step), per true class and for the mixed-contention
