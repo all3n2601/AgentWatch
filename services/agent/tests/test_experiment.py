@@ -611,3 +611,10 @@ def test_the_prompt_size_tolerance_boundary_is_inclusive(median, expected):
         prompt_tokens={"count": 3, "min": median, "median": median, "max": median}
     )
     assert injection_active({"injections": [injection]}) is expected
+
+
+@pytest.mark.parametrize("missing", [None, "3"])
+def test_a_prefill_flood_without_a_numeric_completion_count_is_not_active(missing):
+    # A count that is absent or malformed is unknown, never a TypeError and never active.
+    injection = prefill_injection(requests_completed=missing)
+    assert injection_active({"injections": [injection]}) is False

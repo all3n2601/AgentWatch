@@ -360,7 +360,8 @@ def _sustained(injection: dict) -> bool:
             activity.get("report") == "received"
             and activity.get("stopped_by_backstop") is False
             and activity.get("requests_failed") == 0
-            and activity.get("requests_completed", 0) > 0
+            and _is_number(activity.get("requests_completed"))
+            and activity["requests_completed"] > 0
             and _prompt_size_reached(activity)
         )
     if kind == "retrieval":
