@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createLiveApi, LIVE_API_TIMEOUT_MS } from "@/lib/live-api";
-import { gpuEvidenceSchema, type GpuEvidence } from "@/lib/live-feed-data";
+import {
+  gpuEvidenceSchema,
+  liveFeedRun,
+  type GpuEvidence,
+  type LiveFeedRun,
+} from "@/lib/live-feed-data";
 import {
   applyFailure,
   applySnapshot,
@@ -191,4 +196,21 @@ export function useGpuEvidence(runId: string | null, closed: boolean) {
     return () => controller.abort();
   }, [key, runId]);
   return evidence?.key === key ? evidence.gpu : null;
+}
+
+/**
+ * One live run read by UUID: the polled feed, the GPU diagnostic and the view built from
+ * both. Every tab of a run reads this once and shares it, so a run is polled once per page.
+ */
+export function useLiveRun(runId: string | null) {
+  const { feed, readAgain } = useRunFeed(runId);
+  const snapshot = feed?.snapshot ?? null;
+  const records = feed?.records;
+  const closed = feed ? runClosed(feed) : false;
+  const gpu = useGpuEvidence(snapshot ? runId : null, closed);
+  const run: LiveFeedRun | null = useMemo(
+    () => (snapshot && records ? liveFeedRun(snapshot, records, gpu) : null),
+    [snapshot, records, gpu],
+  );
+  return { feed, run, readAgain };
 }

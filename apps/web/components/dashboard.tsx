@@ -1,5 +1,6 @@
 "use client";
 
+import { routes } from "@/lib/routes";
 import {
   useCallback,
   useEffect,
@@ -9,58 +10,43 @@ import {
 } from "react";
 import Link from "next/link";
 import {
-  Activity,
   ArrowDownToLine,
   ArrowRight,
-  Bot,
-  Check,
-  ChevronRight,
-  Clock3,
-  Cpu,
-  Database,
   GitCompareArrows,
+  Info,
   Layers3,
   LayoutDashboard,
-  ListTree,
   Menu,
+  FlaskConical,
   Orbit,
+  PanelLeftClose,
+  PanelLeftOpen,
   RadioTower,
   RefreshCw,
-  Search,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { AgentRun } from "@/components/agent-run";
 import { ConcurrencyControls } from "@/components/concurrency-controls";
+import { DatasetSummary } from "@/components/dataset-views";
+import { CommandCenter } from "@/components/command-center";
 import { LiveFeed } from "@/components/live-feed";
-import {
-  PanelHeading,
-  Resources,
-  Status,
-  TraceExplorer,
-} from "@/components/run-views";
+import { ExperimentsView } from "@/components/experiments-view";
+import { InsightPanel } from "@/components/insight-panel";
+import { RunPage } from "@/components/run-page";
+import { RunsList } from "@/components/runs-list";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { PanelHeading, Status } from "@/components/run-views";
 import {
   aggregate,
   duration,
   evidenceUrl,
   executionOf,
   matchingWorkload,
-  percent,
   queueOf,
   runLabel,
   runTime,
@@ -68,6 +54,10 @@ import {
   stepsOf,
   type Page,
 } from "@/lib/dashboard-data";
+import type { DatasetSnapshot } from "@/lib/dataset-schema";
+import type { LiveRunSummary } from "@/lib/live-feed-data";
+import type { OverviewModel } from "@/lib/overview-model";
+import { fromLive, fromSaved, type RunView } from "@/lib/unified-runs";
 import type { DashboardData, Experiment } from "@/lib/experiment-schema";
 import { cn } from "@/lib/utils";
 
@@ -76,60 +66,65 @@ const navigation = [
     id: "overview",
     label: "Overview",
     icon: LayoutDashboard,
-    detail: "Activity across your workspace",
-  },
-  {
-    id: "live",
-    label: "Live runs",
-    icon: RadioTower,
-    detail: "Active steps, failures and feed status for runs in progress",
+    group: "Investigate",
+    detail: "Where waiting time goes across your runs",
   },
   {
     id: "runs",
-    label: "Run history",
+    label: "Runs",
     icon: Layers3,
-    detail: "Search, inspect, and export recorded experiments",
+    group: "Investigate",
+    detail: "Every run, live or saved, in one list",
   },
   {
-    id: "traces",
-    label: "Trace explorer",
-    icon: ListTree,
-    detail: "Follow each step from submission to completion",
-  },
-  {
-    id: "agents",
-    label: "Agents",
-    icon: Bot,
-    detail: "Model requests, tool feedback, and conversation evidence",
-  },
-  {
-    id: "resources",
-    label: "Resources",
-    icon: Cpu,
-    detail: "Measurement coverage, pressure readings, and experiment integrity",
+    id: "experiments",
+    label: "Experiments",
+    icon: FlaskConical,
+    group: "Investigate",
+    detail: "Replays under injected contention, against their baseline",
   },
   {
     id: "compare",
-    label: "Compare runs",
+    label: "Compare",
     icon: GitCompareArrows,
-    detail: "Evaluate timing differences between recorded workloads",
+    group: "Investigate",
+    detail: "Timing differences between recorded workloads",
+  },
+  {
+    id: "quality",
+    label: "Data quality",
+    icon: ShieldCheck,
+    group: "Trust",
+    detail: "Telemetry coverage, labels, splits and quality checks",
   },
   {
     id: "controls",
     label: "Controls",
     icon: SlidersHorizontal,
+    group: "Operate",
     detail: "Versioned manual concurrency limits for coding-agent runs",
   },
   {
     id: "settings",
-    label: "Workspace settings",
+    label: "Settings",
     icon: Settings2,
-    detail: "Configure this dashboard and inspect your data connection",
+    group: "Operate",
+    detail: "Display preferences and the data connection",
+  },
+  {
+    // Reachable by URL but not listed: the Runs page opens a live run in its own tabs.
+    id: "live",
+    label: "Live runs",
+    icon: RadioTower,
+    group: "Hidden",
+    detail: "Active steps, failures and feed status for runs in progress",
   },
 ] as const;
+const navigationGroups = ["Investigate", "Trust", "Operate"] as const;
 const defaultPreferences = JSON.stringify({
   density: "comfortable",
   refresh: 0,
+  sidebar: "expanded",
 });
 function preferenceSnapshot() {
   try {
@@ -152,12 +147,14 @@ function usePreferences() {
     preferenceSnapshot,
     () => defaultPreferences,
   );
-  let prefs: { density: string; refresh: number };
+  let prefs: { density: string; refresh: number; sidebar: string };
   try {
-    prefs = JSON.parse(raw);
+    // Preferences saved before a field existed fall back to its default.
+    prefs = { ...JSON.parse(defaultPreferences), ...JSON.parse(raw) };
     if (
       !["comfortable", "compact"].includes(prefs.density) ||
-      ![0, 15, 30, 60].includes(prefs.refresh)
+      ![0, 15, 30, 60].includes(prefs.refresh) ||
+      !["expanded", "collapsed"].includes(prefs.sidebar)
     )
       throw Error();
   } catch {
@@ -171,28 +168,21 @@ function usePreferences() {
     },
   ] as const;
 }
-function Metric({
-  label,
-  value,
-  detail,
-  icon: Icon,
+function Notice({
+  role,
+  children,
 }: {
-  label: string;
-  value: React.ReactNode;
-  detail: string;
-  icon: typeof Activity;
+  role: "alert" | "status";
+  children: React.ReactNode;
 }) {
   return (
-    <Card className="gap-0 p-5">
-      <div className="flex min-h-8 items-start justify-between gap-2">
-        <span className="text-xs text-muted-foreground">{label}</span>
-        <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-      </div>
-      <div className="metric-number mt-4 text-[30px] font-semibold">
-        {value}
-      </div>
-      <p className="mt-2 text-[11px] text-muted-foreground">{detail}</p>
-    </Card>
+    <div
+      role={role}
+      className="flex items-center gap-2 rounded-md border border-amber-400/25 bg-amber-400/5 px-3 py-2 text-xs text-amber-200"
+    >
+      <Info className="size-3.5 shrink-0" aria-hidden />
+      <span className="min-w-0 break-words">{children}</span>
+    </div>
   );
 }
 function Filters({
@@ -200,15 +190,20 @@ function Filters({
   value,
   onChange,
   label,
+  compact = false,
 }: {
   options: [string, string][];
   value: string;
   onChange: (value: string) => void;
   label: string;
+  compact?: boolean;
 }) {
   return (
     <div
-      className="flex flex-wrap gap-1 rounded-lg border bg-card p-1"
+      className={cn(
+        "flex flex-wrap gap-1 rounded-lg border bg-card p-1",
+        compact && "gap-0.5 p-0.5",
+      )}
       role="group"
       aria-label={label}
     >
@@ -219,6 +214,7 @@ function Filters({
           onClick={() => onChange(id)}
           className={cn(
             "rounded-md px-3 py-1.5 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-primary",
+            compact && "py-1",
             value === id
               ? "bg-accent text-foreground shadow-sm"
               : "text-muted-foreground hover:text-foreground",
@@ -260,40 +256,51 @@ export function Dashboard({
   initialRunId,
   initialBaselineId,
   live,
+  dataset,
+  liveRuns,
+  runView,
+  initialTab,
+  insightsEnabled = false,
+  overview,
+  initialQuery,
 }: {
   initialData: DashboardData;
   page?: Page;
   initialRunId?: string;
   initialBaselineId?: string;
+  /** On the Runs list: search text from `/runs?q=`. */
+  initialQuery?: string;
   /** On the live page: the `?liveRun=` UUID, or null to follow the newest run. */
   live?: { requested: string | null };
+  /** On the dataset page: the dataset release read from the local DVC checkout. */
+  dataset?: DatasetSnapshot;
+  /** On the Runs list: one page of live runs, read alongside the saved runs. */
+  liveRuns?: {
+    runs: LiveRunSummary[];
+    nextCursor: number | null;
+    error?: string;
+  };
+  /** On a run's own page: the run, from whichever store holds it. */
+  runView?: RunView;
+  initialTab?: string;
+  /** True when an AI endpoint and model are configured on the server. */
+  insightsEnabled?: boolean;
+  /** On Overview: the dataset-derived panels, or why they are unavailable. */
+  overview?: OverviewModel | { unavailable: string };
 }) {
   const [data, setData] = useState(initialData);
   const [range, setRange] = useState("all");
-  const [search, setSearch] = useState("");
-  const [type, setType] = useState("all");
-  const [status, setStatus] = useState("all");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [mobile, setMobile] = useState(false);
   const [prefs, setPrefs] = usePreferences();
+  // Collapsing only applies from the lg breakpoint up; the mobile drawer is always full width.
+  const collapsed = prefs.sidebar === "collapsed";
   const inflight = useRef(false);
   const meta = navigation.find((item) => item.id === page)!;
   const runs = scopedRuns(data.experiments, range);
   const totals = aggregate(runs);
-  const eligible = page === "agents" ? runs.filter((run) => run.agent) : runs;
-  const selected =
-    eligible.find((run) => run.run_id === initialRunId) ?? eligible[0];
-  const visible = runs.filter(
-    (run) =>
-      `${run.run_id} ${runLabel(run)} ${run.kind}`
-        .toLowerCase()
-        .includes(search.toLowerCase()) &&
-      (type === "all" ||
-        (type === "agent" ? !!run.agent : run.kind === type && !run.agent)) &&
-      (status === "all" ||
-        (status === "passed" ? run.checks.passed : !run.checks.passed)),
-  );
+  const selected = runs.find((run) => run.run_id === initialRunId) ?? runs[0];
   const refresh = useCallback(async () => {
     if (inflight.current) return;
     inflight.current = true;
@@ -356,20 +363,20 @@ export function Dashboard({
       setBusy(false);
     }
   }
-  const path = (target: string, run?: Experiment, baseline?: Experiment) => {
-    const targetRun =
-      target === "agents" && !run?.agent ? runs.find((r) => r.agent) : run;
-    return `/${target}${targetRun ? `?run=${targetRun.run_id}${baseline ? `&baseline=${baseline.run_id}` : ""}` : ""}`;
-  };
   const baseline = data.experiments.find((r) => r.run_id === initialBaselineId);
   const source =
     page === "live" && live
       ? { badge: "LIVE API", description: "live run read API" }
       : page === "controls"
         ? { badge: "POLICY API", description: "concurrency policy API" }
-        : data.source === "database"
-          ? { badge: "HISTORY", description: "saved run history" }
-          : { badge: "LOCAL FILES", description: "local artifact fallback" };
+        : page === "experiments" || page === "quality"
+          ? {
+              badge: "DATASET FILES",
+              description: "local DVC dataset release files",
+            }
+          : data.source === "database"
+            ? { badge: "HISTORY", description: "saved run history" }
+            : { badge: "LOCAL FILES", description: "local artifact fallback" };
   return (
     <div
       className={cn(
@@ -385,16 +392,30 @@ export function Dashboard({
         />
       )}
       <aside
+        id="app-sidebar"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-[232px] flex-col border-r bg-[#111720] px-4 transition-transform lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 flex w-[232px] flex-col overflow-y-auto border-r bg-sidebar px-4 transition-[transform,width] lg:translate-x-0",
+          collapsed && "lg:w-[72px]",
           mobile ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <Link href="/" className="flex h-[76px] items-center gap-2.5 px-2">
-          <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+        <Link
+          href="/"
+          aria-label="AgentWatch home"
+          className={cn(
+            "flex h-14 shrink-0 items-center gap-2.5 px-2",
+            collapsed && "lg:justify-center lg:px-0",
+          )}
+        >
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Orbit className="size-5" />
           </span>
-          <span className="text-lg font-semibold tracking-tight">
+          <span
+            className={cn(
+              "text-lg font-semibold tracking-tight",
+              collapsed && "lg:hidden",
+            )}
+          >
             agentwatch<span className="text-primary">.</span>
           </span>
         </Link>
@@ -405,333 +426,172 @@ export function Dashboard({
         >
           <X className="size-4" />
         </button>
-        <div className="mb-7 rounded-lg border bg-white/[.02] p-3">
-          <div className="flex items-center gap-2 text-xs font-medium">
-            <Database className="size-3.5 text-primary" />
-            AgentWatch workspace
-          </div>
-          <p className="mt-1.5 pl-5.5 text-[10px] text-muted-foreground">
-            Local development · measured evidence
-          </p>
-        </div>
-        <p className="mb-3 px-3 text-[10px] font-medium uppercase tracking-[.16em] text-muted-foreground">
-          Observability
-        </p>
-        <nav aria-label="Main navigation" className="space-y-1">
-          {navigation
-            .filter((n) => n.id !== "settings")
-            .map((item) => (
-              <Link
-                key={item.id}
-                href={path(item.id, selected)}
-                onClick={() => setMobile(false)}
-                aria-current={page === item.id ? "page" : undefined}
+        <nav aria-label="Main navigation" className="space-y-5">
+          {navigationGroups.map((group) => (
+            <div key={group} className="space-y-1">
+              <p
                 className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] transition-colors",
-                  page === item.id
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                  "mb-2 px-3 text-[10px] font-medium uppercase tracking-[.16em] text-muted-foreground",
+                  collapsed && "lg:hidden",
                 )}
               >
-                <item.icon className="size-4" />
-                {item.label}
-                {item.id === "runs" && (
-                  <span className="ml-auto rounded bg-white/5 px-1.5 text-[10px]">
-                    {data.experiments.length}
-                  </span>
-                )}
-              </Link>
-            ))}
+                {group}
+              </p>
+              {navigation
+                .filter((item) => item.group === group)
+                .map((item) => (
+                  <Link
+                    key={item.id}
+                    href={routes.section(item.id)}
+                    onClick={() => setMobile(false)}
+                    aria-current={page === item.id ? "page" : undefined}
+                    title={collapsed ? item.label : undefined}
+                    className={cn(
+                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] transition-colors",
+                      collapsed && "lg:justify-center",
+                      page === item.id
+                        ? "bg-primary/10 text-primary"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                    )}
+                  >
+                    <item.icon className="size-4 shrink-0" />
+                    <span className={cn(collapsed && "lg:sr-only")}>
+                      {item.label}
+                    </span>
+                  </Link>
+                ))}
+            </div>
+          ))}
         </nav>
-        <div className="mt-8 border-t pt-5">
-          <Link
-            href="/settings"
-            aria-current={page === "settings" ? "page" : undefined}
+        <div className="mt-auto space-y-3 pb-5 pt-4">
+          <button
+            type="button"
+            aria-expanded={!collapsed}
+            aria-controls="app-sidebar"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() =>
+              setPrefs({
+                ...prefs,
+                sidebar: collapsed ? "expanded" : "collapsed",
+              })
+            }
             className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px]",
-              page === "settings"
-                ? "bg-primary/10 text-primary"
-                : "text-muted-foreground hover:text-foreground",
+              "hidden w-full items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:flex",
+              collapsed && "justify-center",
             )}
           >
-            <Settings2 className="size-4" />
-            Workspace settings
-          </Link>
-        </div>
-        <div className="mt-auto mb-5 rounded-lg border bg-background/30 p-3">
-          <div className="flex items-center gap-2 text-xs">
-            <span
-              className={cn(
-                "size-1.5 rounded-full",
-                data.source === "database" ? "bg-emerald-400" : "bg-amber-400",
-              )}
-            />
-            {data.source === "database"
-              ? "History connected"
-              : "Local file fallback"}
+            {collapsed ? (
+              <PanelLeftOpen className="size-4 shrink-0" />
+            ) : (
+              <PanelLeftClose className="size-4 shrink-0" />
+            )}
+            {!collapsed && <span>Collapse</span>}
+          </button>
+          <div className={cn(collapsed && "lg:hidden")}>
+            <ThemeToggle />
           </div>
-          <p className="mt-2 text-[11px] leading-5 text-muted-foreground">
-            {data.experiments.length} loaded runs ·{" "}
-            {aggregate(data.experiments).agentRuns} agent runs
-          </p>
-          <Link
-            href="/settings"
-            className="mt-2 flex items-center gap-1 text-[11px] text-primary"
-          >
-            Connection details <ChevronRight className="size-3" />
-          </Link>
-        </div>
-        <div className="mb-5 flex items-center gap-2 px-2 text-[10px] text-muted-foreground">
-          <ShieldCheck className="size-3.5" />
-          Evidence-based attribution<span className="ml-auto">v0.1</span>
+          {collapsed && (
+            <div className="hidden lg:block">
+              <ThemeToggle compact />
+            </div>
+          )}
         </div>
       </aside>
-      <div className="lg:ml-[232px]">
-        <header className="sticky top-0 z-20 flex h-16 items-center justify-between gap-3 border-b bg-background/95 px-5 backdrop-blur sm:px-8">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+      <div
+        className={cn(
+          "transition-[margin]",
+          collapsed ? "lg:ml-[72px]" : "lg:ml-[232px]",
+        )}
+      >
+        <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur">
+          <div className="mx-auto flex min-h-14 max-w-[1680px] flex-wrap items-center gap-x-4 gap-y-2 px-5 py-2 sm:px-6">
             <button
               aria-label="Open navigation"
               onClick={() => setMobile(true)}
-              className="mr-1 lg:hidden"
+              className="-ml-1.5 flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground lg:hidden"
             >
               <Menu className="size-5" />
             </button>
-            <span className="hidden sm:inline">Workspace</span>
-            <ChevronRight className="hidden size-3 sm:inline" />
-            <span className="text-foreground">{meta.label}</span>
-          </div>
-          <div className="flex items-center gap-2 sm:gap-3">
-            {data.loadedAt && (
-              <span className="text-[11px] text-muted-foreground">
-                <span className="sr-only sm:not-sr-only">History updated </span>
-                <time dateTime={data.loadedAt} suppressHydrationWarning>
-                  {new Date(data.loadedAt).toLocaleTimeString()}
-                </time>
-              </span>
-            )}
-            <Badge
-              variant="outline"
-              aria-label={`Data source: ${source.description}`}
-              className="text-[9px] tracking-wide text-muted-foreground"
-            >
-              {source.badge}
-            </Badge>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label="Refresh data"
-              disabled={busy}
-              onClick={() => void refresh()}
-            >
-              <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
-              <span className="hidden sm:inline">Refresh</span>
-            </Button>
-          </div>
-        </header>
-        <main className="mx-auto max-w-[1680px] space-y-6 px-5 py-7 sm:px-8">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p className="mb-2 text-[10px] font-medium uppercase tracking-[.18em] text-primary">
-                Agent observability
-              </p>
-              <h1 className="text-[28px] font-semibold tracking-tight">
+            <div className="flex min-w-0 flex-1 items-baseline gap-3">
+              <h1 className="shrink-0 text-[17px] font-semibold tracking-tight">
                 {meta.label}
               </h1>
-              <p className="mt-1.5 text-[13px] text-muted-foreground">
+              <p
+                title={meta.detail}
+                className="hidden min-w-0 truncate text-[13px] text-muted-foreground md:block"
+              >
                 {meta.detail}
               </p>
             </div>
-            {page !== "settings" && page !== "live" && page !== "controls" && (
-              <Filters
-                label="Time range"
-                options={[
-                  ["all", "All recorded"],
-                  ["24h", "Last 24h"],
-                  ["7d", "Last 7 days"],
-                ]}
-                value={range}
-                onChange={setRange}
-              />
+            {page === "compare" && (
+              <div className="order-last w-full overflow-x-auto sm:order-none sm:w-auto">
+                <Filters
+                  compact
+                  label="Time range"
+                  options={[
+                    ["all", "All recorded"],
+                    ["24h", "Last 24h"],
+                    ["7d", "Last 7 days"],
+                  ]}
+                  value={range}
+                  onChange={setRange}
+                />
+              </div>
             )}
+            <div className="flex items-center gap-2 sm:gap-3">
+              <Badge
+                variant="outline"
+                aria-label={`Data source: ${source.description}`}
+                className="text-[9px] tracking-wide text-muted-foreground"
+              >
+                {source.badge}
+              </Badge>
+              {data.loadedAt && (
+                <span className="hidden text-[11px] text-muted-foreground sm:inline">
+                  Updated{" "}
+                  <time dateTime={data.loadedAt} suppressHydrationWarning>
+                    {new Date(data.loadedAt).toLocaleTimeString()}
+                  </time>
+                </span>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label="Refresh data"
+                disabled={busy}
+                onClick={() => void refresh()}
+              >
+                <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
+                <span className="hidden sm:inline">Refresh</span>
+              </Button>
+            </div>
           </div>
-          {error && (
-            <div
-              role="alert"
-              className="rounded-lg border border-amber-400/20 p-3 text-xs text-amber-200"
-            >
-              {error}
-            </div>
-          )}
+        </header>
+        <main className="mx-auto max-w-[1680px] space-y-4 px-5 py-5 sm:px-6">
+          {error && <Notice role="alert">{error}</Notice>}
           {data.warnings.length > 0 && (
-            <div
-              role="status"
-              className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-3 text-xs text-amber-200"
-            >
-              {data.warnings.join(" ")}
-            </div>
+            <Notice role="status">{data.warnings.join(" ")}</Notice>
           )}
           {page === "live" && live && <LiveFeed requested={live.requested} />}
           {page === "overview" && (
             <>
-              <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-                <Metric
-                  icon={Layers3}
-                  label="Recorded runs"
-                  value={totals.runs}
-                  detail={`${totals.passed} passed · ${totals.runs - totals.passed} inconclusive`}
-                />
-                <Metric
-                  icon={ListTree}
-                  label="Profiled tool steps"
-                  value={totals.steps}
-                  detail={`${totals.attributed} attributed to CPU worker queue`}
-                />
-                <Metric
-                  icon={Clock3}
-                  label="Worker queue time"
-                  value={duration(totals.queue)}
-                  detail={`${percent(totals.queueFraction)} of profiled tool-step time`}
-                />
-                <Metric
-                  icon={Bot}
-                  label="Model requests"
-                  value={totals.modelCalls}
-                  detail={`${totals.agentRuns} agent runs · ${duration(totals.inferenceWall)} inference wall time`}
-                />
-              </div>
-              <div className="grid gap-5 min-[1100px]:grid-cols-[1.7fr_1fr]">
-                <Card className="gap-0 p-6">
-                  <PanelHeading
-                    title="Tool time by run"
-                    detail="Measured execution and queue · latest 20 runs"
-                  >
-                    <div className="flex gap-3 text-[10px] text-muted-foreground">
-                      <span className="flex items-center gap-1.5">
-                        <i className="size-2 rounded bg-violet-400" />
-                        Execution
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <i className="size-2 rounded bg-amber-400" />
-                        Queue
-                      </span>
-                    </div>
-                  </PanelHeading>
-                  {runs.length ? (
-                    <div className="h-64">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart
-                          data={runs
-                            .slice(0, 20)
-                            .reverse()
-                            .map((r) => ({
-                              run: r.run_id.slice(0, 6),
-                              execution: executionOf(r),
-                              queue: queueOf(r),
-                            }))}
-                          barCategoryGap="30%"
-                        >
-                          <CartesianGrid vertical={false} stroke="#273140" />
-                          <XAxis
-                            dataKey="run"
-                            axisLine={false}
-                            tickLine={false}
-                          />
-                          <YAxis unit="s" axisLine={false} tickLine={false} />
-                          <Tooltip
-                            cursor={{ fill: "#ffffff05" }}
-                            contentStyle={{
-                              background: "#171d27",
-                              border: "1px solid #303948",
-                              borderRadius: 8,
-                            }}
-                            formatter={(v) => `${Number(v).toFixed(3)} s`}
-                          />
-                          <Bar
-                            dataKey="execution"
-                            stackId="time"
-                            fill="#a78bfa"
-                            isAnimationActive={false}
-                          />
-                          <Bar
-                            dataKey="queue"
-                            stackId="time"
-                            fill="#fbbf24"
-                            radius={[3, 3, 0, 0]}
-                            isAnimationActive={false}
-                          />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  ) : (
-                    <p className="py-20 text-center text-sm text-muted-foreground">
-                      No runs in this time range.
-                    </p>
-                  )}
-                  <p className="mt-4 text-[11px] text-muted-foreground">
-                    Sums baseline and evaluation tool steps. Model request time
-                    is measured separately.
-                  </p>
-                </Card>
-                <Card className="gap-0 p-6">
-                  <PanelHeading
-                    title="Resource coverage"
-                    detail="Signals present in loaded history"
-                  />
-                  <div className="space-y-5">
-                    {[
-                      {
-                        name: "CPU worker queue",
-                        value: `${totals.steps} steps`,
-                        detail: "Direct enqueue and worker-start timestamps",
-                        color: "bg-emerald-400",
-                      },
-                      {
-                        name: "CPU inference",
-                        value: `${totals.modelCalls} requests`,
-                        detail: "Ollama request wall time and server timings",
-                        color: "bg-violet-400",
-                      },
-                      {
-                        name: "GPU / retrieval",
-                        value: "Not instrumented",
-                        detail: "No measured evidence in these runs",
-                        color: "bg-slate-500",
-                      },
-                    ].map((item) => (
-                      <div
-                        key={item.name}
-                        className="border-b pb-5 last:border-0 last:pb-0"
-                      >
-                        <div className="flex items-center justify-between gap-3 text-xs">
-                          <span className="flex items-center gap-2">
-                            <i
-                              className={`size-1.5 rounded-full ${item.color}`}
-                            />
-                            {item.name}
-                          </span>
-                          <span className="font-mono text-[10px] text-muted-foreground">
-                            {item.value}
-                          </span>
-                        </div>
-                        <p className="mt-2 pl-3.5 text-[11px] leading-5 text-muted-foreground">
-                          {item.detail}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    asChild
-                    className="mt-5 w-full"
-                  >
-                    <Link href={path("resources", selected)}>
-                      Inspect resource evidence{" "}
-                      <ArrowRight className="size-3.5" />
-                    </Link>
-                  </Button>
-                </Card>
-              </div>
+              {insightsEnabled && (
+                <InsightPanel request={{ kind: "overview" }} />
+              )}
+              <CommandCenter
+                model={overview && "release" in overview ? overview : undefined}
+                unavailable={
+                  overview && "unavailable" in overview
+                    ? overview.unavailable
+                    : undefined
+                }
+                saved={{
+                  runs: totals.runs,
+                  passed: totals.passed,
+                  queueFraction: totals.queueFraction,
+                }}
+              />
               <RunTable
                 runs={runs.slice(0, 6)}
                 title="Recent activity"
@@ -746,122 +606,49 @@ export function Dashboard({
               </div>
             </>
           )}
-          {page === "runs" && (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="relative min-w-0 flex-1 sm:max-w-sm">
-                  <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
-                  <Input
-                    className="h-9 pl-9 text-xs"
-                    aria-label="Search run history"
-                    placeholder="Search run ID, model, or workload…"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-                </div>
-                <Filters
-                  label="Workload filter"
-                  options={[
-                    ["all", "All workloads"],
-                    ["agent", "Agent"],
-                    ["coding", "Test tool"],
-                    ["cpu", "CPU"],
-                  ]}
-                  value={type}
-                  onChange={setType}
-                />
-                <Filters
-                  label="Run status"
-                  options={[
-                    ["all", "Any status"],
-                    ["passed", "Passed"],
-                    ["inconclusive", "Inconclusive"],
-                  ]}
-                  value={status}
-                  onChange={setStatus}
-                />
-              </div>
-              <RunTable
-                runs={visible}
-                title="Recorded experiments"
-                detail={`${visible.length} matching runs · ${data.nextCursor ? "more history available" : "all loaded history"}`}
-              />
-              {data.nextCursor && (
-                <Button disabled={busy} variant="outline" onClick={loadOlder}>
-                  Load older runs
-                </Button>
-              )}
-            </>
+          {page === "runs" && runView && (
+            <RunPage
+              view={runView}
+              initialTab={initialTab}
+              insightsEnabled={insightsEnabled}
+            />
           )}
-          {page === "agents" && (
-            <>
-              <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-                <Metric
-                  icon={Bot}
-                  label="Agent sessions"
-                  value={totals.agentRuns}
-                  detail="Real tool-calling runs"
-                />
-                <Metric
-                  icon={Activity}
-                  label="Inference requests"
-                  value={totals.modelCalls}
-                  detail="Includes correction attempts"
-                />
-                <Metric
-                  icon={Clock3}
-                  label="Inference wall time"
-                  value={duration(totals.inferenceWall)}
-                  detail="Sum of elapsed model requests"
-                />
-                <Metric
-                  icon={Layers3}
-                  label="Generated tokens"
-                  value={totals.outputTokens ?? "Unavailable"}
-                  detail="Reported server counts; missing stays unavailable"
-                />
-              </div>
-            </>
+          {page === "runs" && !runView && (
+            <RunsList
+              runs={[
+                ...data.experiments.map(fromSaved),
+                ...(liveRuns?.runs.map(fromLive) ?? []),
+              ]}
+              liveLoaded={liveRuns?.runs.length ?? 0}
+              savedLoaded={data.experiments.length}
+              liveError={liveRuns?.error}
+              olderLive={
+                liveRuns?.nextCursor
+                  ? routes.runs({ liveBefore: String(liveRuns.nextCursor) })
+                  : undefined
+              }
+              loadOlderSaved={data.nextCursor ? loadOlder : undefined}
+              loadingSaved={busy}
+              initialQuery={initialQuery}
+            />
           )}
-          {["traces", "agents", "resources"].includes(page) &&
-            (selected && eligible.length ? (
-              <div className="grid items-start gap-5 min-[1100px]:grid-cols-[250px_minmax(0,1fr)]">
-                <RunNavigator runs={eligible} selected={selected} page={page} />
-                <div className="min-w-0 space-y-5">
-                  <RunContext run={selected} />
-                  {page === "traces" && (
-                    <TraceExplorer key={selected.run_id} run={selected} />
-                  )}{" "}
-                  {page === "agents" && (
-                    <AgentRun
-                      experiment={selected}
-                      onInspectTool={() =>
-                        window.location.assign(path("traces", selected))
-                      }
-                    />
-                  )}{" "}
-                  {page === "resources" && (
-                    <Resources key={selected.run_id} run={selected} />
-                  )}
-                </div>
-              </div>
-            ) : (
-              <Empty
-                title="No recorded evidence in this view"
-                detail={
-                  page === "agents"
-                    ? "No run in this time range has saved agent evidence. Choose a wider range; new agent runs (make agent-run) report to the live API instead."
-                    : "Record an experiment and refresh, or choose a wider time range."
-                }
-              />
-            ))}
+          {page === "experiments" && dataset && (
+            <ExperimentsView snapshot={dataset} />
+          )}
+          {page === "quality" && dataset?.status === "ready" && (
+            <DatasetSummary snapshot={dataset} />
+          )}
+          {(page === "experiments" || page === "quality") &&
+            dataset?.status === "unavailable" && (
+              <Empty title="Dataset unavailable" detail={dataset.reason} />
+            )}
           {page === "controls" && <ConcurrencyControls />}
           {page === "compare" && (
             <ComparePage runs={runs} current={selected} baseline={baseline} />
           )}
           {page === "settings" && (
             <div className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-2">
-              <Card className="gap-0 p-6">
+              <Card className="gap-0 p-5">
                 <PanelHeading
                   title="Display preferences"
                   detail="Saved in this browser and applied across every page"
@@ -910,7 +697,7 @@ export function Dashboard({
                   Reset preferences
                 </Button>
               </Card>
-              <Card className="gap-0 p-6">
+              <Card className="gap-0 p-5">
                 <PanelHeading
                   title="Data connection"
                   detail="Observed application source"
@@ -936,7 +723,6 @@ export function Dashboard({
                         ? `Every ${prefs.refresh} seconds`
                         : "Manual",
                     ],
-                    ["Environment", "Local development"],
                   ].map(([label, value]) => (
                     <div
                       key={label}
@@ -962,7 +748,7 @@ export function Dashboard({
                   </Button>
                 </div>
               </Card>
-              <Card className="gap-0 p-6 xl:col-span-2">
+              <Card className="gap-0 p-5 xl:col-span-2">
                 <PanelHeading
                   title="Measurement contract"
                   detail="What this workspace currently verifies"
@@ -1060,7 +846,7 @@ function RunTable({
     );
   }
   return (
-    <Card className="gap-0 overflow-hidden">
+    <Card className="gap-0 overflow-hidden py-0">
       <div className="p-5 pb-0">
         <PanelHeading title={title} detail={detail} />
       </div>
@@ -1083,7 +869,7 @@ function RunTable({
               <tr key={run.run_id}>
                 <td>
                   <Link
-                    href={`/traces?run=${run.run_id}`}
+                    href={routes.run(run.run_id)}
                     className="font-medium text-foreground hover:text-primary"
                   >
                     {runLabel(run)}
@@ -1127,101 +913,6 @@ function RunTable({
         </p>
       )}
     </Card>
-  );
-}
-function RunNavigator({
-  runs,
-  selected,
-  page,
-}: {
-  runs: Experiment[];
-  selected: Experiment;
-  page: Page;
-}) {
-  const [query, setQuery] = useState("");
-  const visible = runs.filter((r) =>
-    `${r.run_id} ${runLabel(r)}`.toLowerCase().includes(query.toLowerCase()),
-  );
-  return (
-    <Card className="gap-0 overflow-hidden min-[1100px]:sticky min-[1100px]:top-21">
-      <div className="border-b p-4">
-        <div className="mb-3 flex justify-between text-xs font-medium">
-          <span>Recorded runs</span>
-          <span className="text-muted-foreground">{runs.length}</span>
-        </div>
-        <div className="relative">
-          <Search className="absolute top-2.5 left-2.5 size-3 text-muted-foreground" />
-          <Input
-            aria-label="Find a recorded run"
-            className="h-8 pl-7 text-xs"
-            placeholder="Find run or model…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
-      </div>
-      <div className="max-h-[280px] overflow-y-auto p-2 min-[1100px]:max-h-[620px]">
-        {visible.map((run) => (
-          <Link
-            key={run.run_id}
-            href={`/${page}?run=${run.run_id}`}
-            className={cn(
-              "mb-1 block rounded-lg border p-3 transition-colors",
-              selected.run_id === run.run_id
-                ? "border-primary/25 bg-primary/5"
-                : "border-transparent hover:bg-accent",
-            )}
-          >
-            <div className="flex items-center gap-2">
-              <span
-                className={cn(
-                  "size-1.5 rounded-full",
-                  run.checks.passed ? "bg-emerald-400" : "bg-amber-400",
-                )}
-              />
-              <span className="truncate text-xs font-medium">
-                {runLabel(run)}
-              </span>
-              {run.run_id === selected.run_id && (
-                <Check className="ml-auto size-3 shrink-0 text-primary" />
-              )}
-            </div>
-            <div className="mt-2 flex justify-between gap-2 font-mono text-[10px] text-muted-foreground">
-              <span>{run.run_id.slice(0, 8)}</span>
-              <span>{duration(queueOf(run))} queued</span>
-            </div>
-            <div className="mt-2 text-[10px] text-muted-foreground">
-              <RunDate run={run} />
-            </div>
-          </Link>
-        ))}
-        {!visible.length && (
-          <p className="p-5 text-xs text-muted-foreground">No matching runs</p>
-        )}
-      </div>
-    </Card>
-  );
-}
-function RunContext({ run }: { run: Experiment }) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-5 py-4">
-      <div>
-        <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
-          {runLabel(run)}
-          <Status passed={run.checks.passed} />
-        </div>
-        <p className="mt-2 font-mono text-[10px] text-muted-foreground">
-          {run.run_id.slice(0, 8)} · <RunDate run={run} /> ·{" "}
-          {stepsOf(run).length} tool steps
-        </p>
-      </div>
-      <Button variant="outline" size="sm" asChild>
-        <a href={evidenceUrl(run)}>
-          <ArrowDownToLine className="size-3.5" />
-          Export evidence
-        </a>
-      </Button>
-    </div>
   );
 }
 function ComparePage({
@@ -1296,7 +987,10 @@ function ComparePage({
                       <Link
                         key={item.run_id}
                         className="block rounded-lg p-3 hover:bg-accent"
-                        href={`/compare?run=${label === "Candidate" ? item.run_id : current.run_id}&baseline=${label === "Baseline" ? item.run_id : previous.run_id}`}
+                        href={routes.compare(
+                          label === "Candidate" ? item.run_id : current.run_id,
+                          label === "Baseline" ? item.run_id : previous.run_id,
+                        )}
                       >
                         <span className="block text-xs font-medium">
                           {runLabel(item)}
@@ -1329,7 +1023,7 @@ function ComparePage({
           ? "Matching workload: checksum, iterations, and worker capacity agree."
           : "Workload settings differ. Timing differences do not establish a performance regression."}
       </div>
-      <Card className="gap-0 overflow-hidden">
+      <Card className="gap-0 overflow-hidden py-0">
         <div className="p-5 pb-0">
           <PanelHeading
             title="Measured timing differences"
@@ -1375,7 +1069,7 @@ function ComparePage({
       </Card>
       <div className="flex gap-2">
         <Button asChild variant="outline" size="sm">
-          <Link href={`/traces?run=${current.run_id}`}>
+          <Link href={routes.run(current.run_id)}>
             Inspect candidate trace <ArrowRight className="size-3.5" />
           </Link>
         </Button>

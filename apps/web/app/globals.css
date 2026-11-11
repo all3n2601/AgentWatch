@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "./design-system.css";
 @custom-variant dark (&:is(.dark *));
 @layer base {
   * {
@@ -14,29 +15,109 @@
   --color-popover: var(--card);
   --color-popover-foreground: var(--foreground);
   --color-primary: var(--primary);
-  --color-primary-foreground: #101511;
-  --color-secondary: #23272c;
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--foreground);
-  --color-muted: #202429;
-  --color-muted-foreground: #8e959f;
-  --color-accent: #282e35;
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
   --color-accent-foreground: var(--foreground);
-  --color-destructive: #f87171;
-  --color-border: #2a2f36;
-  --color-input: #343a42;
-  --color-ring: #b7f58b;
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
   --radius-xl: 16px;
 }
+/* Light is the base theme; `.dark` is set on <html> by the theme script. */
 :root {
+  color-scheme: light;
+  --background: #f4f6f9;
+  --foreground: #141a23;
+  --card: #ffffff;
+  --sidebar: #ffffff;
+  --primary: #2f6b12;
+  --primary-foreground: #ffffff;
+  --secondary: #e8ecf1;
+  --muted: #edf0f4;
+  --muted-foreground: #556072;
+  --accent: #e5eaf0;
+  --destructive: #c62828;
+  --border: #d5dbe3;
+  --input: #c3cbd6;
+  --ring: #3f8a1c;
+  --chart-grid: #dde3ea;
+  --chart-axis: #556072;
+  --chart-tooltip-bg: #ffffff;
+  --chart-tooltip-border: #cfd6e0;
+  --series-violet: #7c3aed;
+  --series-amber: #d97706;
+  --series-emerald: #059669;
+  --series-sky: #0284c7;
+  --series-slate: #64748b;
+  --series-rose: #e11d48;
+  --table-header-bg: #0f172a08;
+  --table-header-border: #0f172a12;
+  --table-row-border: #0f172a0d;
+  --table-row-hover: #0f172a08;
+  font-family:
+    ui-sans-serif,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+:root.dark {
   color-scheme: dark;
-  --background: #111418;
-  --foreground: #edf0f3;
-  --card: #191d22;
-  --primary: #b7f58b;
-  font-family: Arial, Helvetica, sans-serif;
+  --background: #0d131c;
+  --foreground: #e7edf5;
+  --card: #161e2a;
+  --sidebar: #111720;
+  --primary: #b7ed95;
+  --primary-foreground: #101511;
+  --secondary: #23272c;
+  --muted: #202429;
+  --muted-foreground: #8e959f;
+  --accent: #282e35;
+  --destructive: #f87171;
+  --border: #2a2f36;
+  --input: #343a42;
+  --ring: #b7f58b;
+  --chart-grid: #273140;
+  --chart-axis: #939aa5;
+  --chart-tooltip-bg: #171d27;
+  --chart-tooltip-border: #303948;
+  --series-violet: #a78bfa;
+  --series-amber: #fbbf24;
+  --series-emerald: #34d399;
+  --series-sky: #38bdf8;
+  --series-slate: #64748b;
+  --series-rose: #fb7185;
+  --table-header-bg: #ffffff03;
+  --table-header-border: #ffffff08;
+  --table-row-border: #ffffff06;
+  --table-row-hover: #ffffff04;
+}
+/*
+ * Status text uses the pale 100-300 shades that read on dark surfaces. Map them
+ * to darker shades of the same hue on the light theme so they keep their
+ * contrast without per-component dark: variants.
+ */
+:root:not(.dark) {
+  --color-amber-100: #78350f;
+  --color-amber-200: #92400e;
+  --color-amber-300: #b45309;
+  --color-emerald-200: #065f46;
+  --color-emerald-300: #047857;
+  --color-sky-100: #0c4a6e;
+  --color-sky-200: #075985;
+  --color-rose-200: #9f1239;
+  --color-violet-200: #5b21b6;
+  --color-violet-300: #6d28d9;
+  --color-lime-200: #3f6212;
 }
 * {
   box-sizing: border-box;
@@ -63,7 +144,7 @@ button {
   letter-spacing: -0.055em;
 }
 .recharts-cartesian-axis-tick-value {
-  fill: #939aa5;
+  fill: var(--chart-axis);
   font-size: 11px;
 }
 .recharts-tooltip-wrapper {
@@ -74,7 +155,11 @@ button {
   outline: none;
 }
 .trace-grid {
-  background-image: linear-gradient(to right, #2a2f3666 1px, transparent 1px);
+  background-image: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--border) 40%, transparent) 1px,
+    transparent 1px
+  );
   background-size: 20% 100%;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -87,18 +172,6 @@ button {
 }
 
 /* Shared workspace surfaces and tabular density. */
-:root {
-  --background: #0d131c;
-  --foreground: #e7edf5;
-  --card: #161e2a;
-  --primary: #b7ed95;
-  font-family:
-    ui-sans-serif,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
-}
 .aw-table {
   width: 100%;
   border-collapse: collapse;
@@ -107,29 +180,29 @@ button {
   font-size: 12px;
 }
 .aw-table thead {
-  background: #ffffff03;
-  border-block: 1px solid #ffffff08;
+  background: var(--table-header-bg);
+  border-block: 1px solid var(--table-header-border);
 }
 .aw-table th {
   padding: 12px 20px;
-  color: #8e9bae;
+  color: var(--muted-foreground);
   font-size: 10px;
   letter-spacing: 0.04em;
   font-weight: 500;
 }
 .aw-table td {
-  padding: 16px 20px;
-  border-bottom: 1px solid #ffffff06;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--table-row-border);
   font-variant-numeric: tabular-nums;
 }
 .aw-table tbody tr:last-child td {
   border-bottom: 0;
 }
 .aw-table tbody tr:hover {
-  background: #ffffff04;
+  background: var(--table-row-hover);
 }
 .aw-compact .aw-table td {
-  padding-block: 10px;
+  padding-block: 8px;
 }
 .aw-compact .aw-table th {
   padding-block: 9px;
@@ -139,4 +212,13 @@ a:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 3px;
+}
+
+/* Dense variant for small panels. */
+.aw-dense th {
+  padding: 6px 12px;
+}
+.aw-dense td {
+  padding: 6px 12px;
+  font-size: 11px;
 }

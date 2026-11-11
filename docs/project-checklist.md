@@ -797,7 +797,10 @@ frozen evaluation sets without tuning against them.
   ([calibration](model-calibration.md), `pipelines/model/tests`). Tested on synthetic fixtures
   only. After the M02 merge (`mixed-scoring-v1`), mixed steps are scored by hit, joint-only steps
   are never scored, the mixed-contention abstention scope and gain gate are measured, and the
-  threshold is chosen on single-class validation steps. Open: `split-v2` has an empty validation
+  threshold is chosen on single-class validation steps. 2026-11-11 (PR #63, not merged): the
+  threshold's 20% limit also covers scored mixed validation steps and reads the contract's
+  `abstention_rate_scopes`, as the test gate does (`test_calibration.py`, `test_calibrate.py`;
+  synthetic fixtures only). Open: `split-v2` has an empty validation
   split, so nothing is fitted yet, and showing uncertain results belongs to serving and the
   dashboard.
 - [ ] Load a versioned registered model in the correlation service.
@@ -1047,3 +1050,120 @@ serving metadata retain the full label-version set beside the legacy singular fi
 - [ ] Fresh PR CI and two non-author approvals, including Rohit's written contract
   confirmation, remain required before merge. Non-blocking fingerprint/journal/legacy
   gate-fixture follow-ups are recorded in the data card, not marked implemented.
+
+### Dashboard information architecture — 2026-11-10
+
+- [x] Web app reorganized per `docs/ui-redesign-plan.md` (web only, no API or schema change):
+  Investigate / Trust / Operate sidebar, one Runs list over live and saved runs, one Run page
+  (`/runs/UUID`) with Diagnosis plus the existing live and saved-run views as tabs, Experiments
+  and Data quality pages, redirects for the retired Trace, Agents, Resources and Dataset routes.
+  Regression evidence: `apps/web/tests/unified-runs.test.ts` (state groups, filters, ordering,
+  live diagnosis never names an attribution, experiment grouping and ratios); the 27 live-view
+  Playwright tests still pass.
+- [ ] Backend gaps from section 5 of the plan remain open: stored `source_run_id`, a unified run
+  read model with counts, measurement-state fields, per-step attribution endpoint, experiments in
+  the database. Not verified: dark mode and 768 px layouts of the new pages, keyboard operation
+  of the Run page tabs.
+
+### Optional AI summaries — 2026-11-10
+
+- [x] Overview and the run Diagnosis tab can show a model-written summary through any
+  OpenAI-compatible endpoint (`AGENTWATCH_INSIGHTS_*`, off by default). Facts are rebuilt on the
+  server from computed aggregates; replies are accepted only for points that cite known facts and
+  repeat only figures those facts contain. Regression evidence: `apps/web/tests/insights.test.ts`
+  (fact content, live steps never called attributed, grounding keeps and drops the right points,
+  config validation, request shape, no key or endpoint body in errors). Tested against stub
+  transports only.
+- [ ] Not verified against a real 9router or model, and the model's wording quality is unmeasured.
+  The summary can still be unhelpful even when every figure is grounded.
+
+### Glass design system base — 2026-11-11
+
+- [x] Tokens, glass surface utilities, primitives, data widgets and the workspace shell for the
+  approved glass design (`docs/design-system.md`), reviewed at `/design-system` (development
+  only, illustrative values). Regression evidence: `apps/web/tests/design-system.test.ts`
+  (missing versus measured zero, estimate marking, unit precision, status and slowdown tones,
+  segment validation, donut arcs, scene manifest bounds).
+- [x] Overview campus scene generated in Blender by `apps/web/scenes/overview_campus.py`, light
+  and dark renders with projected label anchors. Decorative only: it encodes no telemetry.
+- [x] Overview moved to the glass shell at `/` (`/overview` redirects): one agent model's runs in
+  the newest release, from `lib/model-overview.ts`, with failed runs in the assistant rail.
+  Regression evidence: `apps/web/tests/model-overview.test.ts` (default and requested model,
+  unrecorded outcomes kept apart, call-type and label counts, slowdown over the own clean median,
+  import-map links) and `tests/dataset.test.ts` (per-run call-type counts). Checked in a browser
+  at 390, 768 and 1440 px, light and dark.
+- [x] The Overview campus is a real-time three.js scene (GLB exported from Blender) with status
+  halos, traffic and stage cards computed from the release by `lib/campus-status.ts`, a pause
+  control, reduced-motion and off-screen pausing, and a static fallback for missing WebGL or a
+  failed GLB load. Regression evidence: `apps/web/tests/campus-status.test.ts` (tone thresholds,
+  per-stage shares, unrecorded outcomes, bead spreading) and per-call-type excess counts in
+  `tests/dataset.test.ts`. Checked in a browser (2026-11-11): 1440 px light and dark, 768 and
+  390 px, orbit, label tracking, stage cards, reduced motion, GLB 404 fallback. Not measured:
+  frame rate and GPU cost on low-end devices.
+- [x] Overview investigation assistant: a chat over the dataset release and the ingestion
+  database's live and saved runs through the configured OpenAI-compatible endpoint, with four
+  read-only, schema-checked tools, bounded tool rounds, figure grounding and cited run links
+  (`docs/dashboard.md`). Regression evidence: `apps/web/tests/assistant.test.ts` (refused tool
+  calls, failed-run search with an unreachable store, prefix lookup and import labelling,
+  grounding, the tool loop, the no-tools fallback, the round limit, safe endpoint errors). Checked
+  end to end on 2026-11-11 against the configured 9router gateway (`cc/claude-sonnet-5-5`): failed
+  runs, stage excess wait, condition slowdown and a run's slowest steps answered from real data
+  with nothing removed. Not evaluated: answer accuracy over a fixed question set.
+- [x] Routing: one App Router segment per page instead of the `[section]` catch-all, links
+  built from `lib/routes.ts` with `typedRoutes` (checked by `pnpm typecheck` via `next typegen`),
+  legacy redirects in `next.config.ts`, per-route titles, branded 404 and error pages, and the
+  header search wired to `/runs?q=`. Regression evidence: `apps/web/tests/routes.test.ts`.
+  Checked 2026-11-11 by crawling every linked page from `/` (all 200, no console errors) and
+  requesting each legacy, unknown and invalid-run URL.
+- [x] Overview campus no longer rotates (orbit controls removed). Clicking a stage zooms to it and
+  opens an animated component model (GPU card, CPU board, database, router, output store) built
+  in Blender by `apps/web/scenes/component_models.py`, tinted by the stage's measured status.
+  Regression evidence: `apps/web/tests/design-system.test.ts` (each model's glow material and
+  spinning parts). Checked 2026-11-11 in a browser: drag does not move the view, all five stages
+  open and close (button, Escape, ground click), fans animate and stop when paused, reduced
+  motion, dark mode, 390/768/1440 px with no horizontal overflow.
+- [ ] The Overview has no **Summarize** button: the insight facts still describe the earlier
+  command-center figures and need rebasing on the model overview first.
+- [ ] The command-center panels dropped from the Overview (replay dot plot, slowest runs,
+  per-task slowdown) have no other home yet.
+- [x] Runs, Run detail, Experiments, Compare, Data quality and Settings rebuilt on the glass shell
+  (2026-11-11), each in `apps/web/components/pages/<page>/` with logic in `lib/<page>-page*.ts`.
+  Regression evidence: `tests/runs-page.test.ts`, `run-detail.test.ts`, `experiments-page.test.ts`,
+  `compare-page.test.ts`, `quality-page.test.ts`, `settings-page.test.ts` (63 tests). Checked in a
+  browser: every page 200 with no console errors, no horizontal overflow at 390 and 768 px. Compare
+  no longer fills in a missing baseline with another run.
+- [x] One persistent workspace layout (`app/(workspace)/layout.tsx`) with a fixed, labelled sidebar
+  listing every page; Controls and Live moved onto it (their inner components are unchanged and
+  still use the earlier styling). Every page fits one screen at ≥ 1280×760 with tabs
+  (`TabbedView`, `?view=`). Checked 2026-11-11 in a browser: page and main overflow 0 on all nine
+  pages at 1440×900 and 1280×800, sidebar item positions identical on every page, no horizontal
+  overflow at 390 px, arrow keys switch tabs, no console errors.
+- [ ] Controls' inner components have no approved glass design yet.
+- [x] Live runs and the Run page's Timeline, Resources and Evidence tabs redesigned on the glass
+  system (2026-11-11): a shared `TimelineChart` (`lib/run-timeline.ts`) for saved worker spans
+  and live wall-clock steps, CPU pressure with the clean and contended windows marked
+  (`lib/run-samples.ts`; missing readings stay gaps), evidence files with acceptance checks, and
+  Live runs as a run list beside Status / Timeline / Resources / Evidence tabs sharing one poll.
+  `duration()` now picks its unit after rounding (no "1000 μs"). Regression evidence:
+  `tests/run-timeline.test.ts`, `tests/dashboard-data.test.ts`, and the live browser tests
+  (`apps/web/e2e/live-*.spec.ts`, 27 pass, updated to open the tab that holds each view; a
+  failed step's reason is shown on the Status tab without selecting it). Checked in a browser: page
+  overflow 0 on every new tab at 1280×800 and 1440×900, no horizontal overflow at 390 px, no
+  console errors from the new views.
+- [ ] `components/dashboard.tsx` (the earlier layout) is no longer rendered by any route and can be
+  removed once nothing else needs its helpers.
+- [x] Display density, sidebar and refresh preferences apply to every workspace page
+  (`components/shell/workspace-preferences.tsx`, `nav-rail.tsx`).
+
+### Command-center Overview — 2026-11-10
+
+- [x] Overview rebuilt as small tiles and panels around time lost against each experiment's own
+  clean replays, with a dot plot of all replay runs. Finding behind it: in the dataset's replay
+  runs, inference and mixed contention raise total time several-fold while median queue delay
+  stays near 0.02 s, so queue delay does not show the slowdown. Regression evidence:
+  `apps/web/tests/overview-model.test.ts` (own-baseline ratios, worst-run ordering, dots, task
+  ratios, optional import map).
+- [ ] The Run page's Diagnosis tab still ranks steps by queue delay and should show time lost
+  against a baseline where one exists. Live runs outside an experiment have no baseline, and only
+  the untracked import map links dataset runs to live runs until a stored source run ID exists.
+
