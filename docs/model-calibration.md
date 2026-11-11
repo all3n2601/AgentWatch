@@ -19,7 +19,7 @@ the parsed file's SHA-256.
 | Calibration | Temperature scaling: divide the log class scores by one temperature, fitted by minimizing validation log loss within 0.05 to 20. It never changes the predicted class | Proposed |
 | Minimum fit size | At least 100 usable validation steps (rows whose class the model was trained on); fewer leaves the model uncalibrated | Proposed |
 | Abstention | A step abstains when its calibrated top-label confidence is below the threshold | Contract |
-| Threshold | Of zero and every distinct validation confidence, the one with the best validation macro F1 (defined classes, abstentions counted as misses) that keeps abstention at or below 20% overall and for every true class; ties keep the lowest | Proposed |
+| Threshold | Of zero and every distinct validation confidence, the one with the best validation macro F1 (single-class steps, defined classes, abstentions counted as misses) that keeps abstention at or below 20% overall, for every true class and on scored mixed steps; ties keep the lowest | Proposed |
 
 The validation split also chose M03's early-stopping iteration, so a calibration fitted on it is
 slightly optimistic. The report records this as a limitation; the test-split ECE gate is the
@@ -72,8 +72,14 @@ the model's best guess for inspection only.
   `mixed` step is correct when it names any resource in `label_resources`; steps with basis
   `mixed_joint_only` are never scored, and the report counts them apart
   (`joint_only_steps_not_scored`, `slices.mixed_contention.joint_only`). The four-class metrics
-  cover single-class steps only. The abstention threshold is chosen on single-class validation
-  steps, as the classifier's fit is, so mixed validation steps do not move it.
+  cover single-class steps only. The abstention threshold's macro F1 is judged on single-class
+  validation steps, as the classifier's fit is, but the 20% limit also covers scored mixed
+  validation steps (the contract's mixed-contention scope; validation limits the same
+  `abstention_rate_scopes` the test gate reads), so a threshold that would abstain
+  on more of them is never chosen; `fit.threshold_selection` records the mixed rate. Unlike the
+  test gate, validation applies the limit at any step count, as it does per class: with three
+  mixed validation steps, one abstention (33%) rules a threshold out. The recorded overall
+  validation rate counts scored mixed steps too.
 - Calibration: top-label ECE over all scored test steps before abstention, 10 equal-width bins,
   before and after calibration; at most 0.05 passes. A hit on a mixed step counts as correct.
 - Abstention: rates overall (every scored step), per true class and for the mixed-contention
