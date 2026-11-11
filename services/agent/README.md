@@ -422,7 +422,9 @@ yet, so its values may still change until then, and any change after it is a new
 sweep runs without the concurrency policy (`admission.status: not_configured`).
 
 Results describe this laptop (RTX 5070 Laptop, 8 GB, WSL2) and the named configuration only,
-never cloud capacity. The configurations are swept separately and never pooled.
+never cloud capacity. The configurations are swept separately and never pooled. The measured
+results of 2026-11-11 (capacity 3 agents on `cfg-default`, 8 on `cfg-hardware`) are in the
+[capacity record](../../docs/capacity-record.md).
 
 **Invocation.** One sweep per configuration, with the live API, vLLM and its trace collector
 running. Two sources are required: completed, verified runs of two different tasks

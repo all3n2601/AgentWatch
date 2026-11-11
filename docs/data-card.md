@@ -274,6 +274,26 @@ still loads (train 175, validation 0, test 175) with the v1 contract file and `s
 - **Two agent tasks on one host.** All replays come from one GPU laptop and one model; the test
   task differs from the training task, so held-out results will have wide uncertainty.
 
+## Held-out A06 evidence (in no release)
+
+The A06 natural-overload sweeps of 2026-11-11 ([capacity record](capacity-record.md)) are
+held-out test evidence. They are kept outside every dataset release until `split-v3` holds
+them out, and must never be used for training, calibration, threshold selection or tuning.
+This covers:
+
+- **Natural-overload replays**, under sweep protocol `natural-overload-sweep-v1`. They carry no
+  injection method, so a hold-out must match them by sweep protocol, not by method.
+- **Injected runs** using `prefill-flood-openai-chat-v1` ([ADR 0011](adr/0011-prefill-flood-held-out-injection-method.md)).
+  The hold-out must list this method in `held_out_injection_methods`.
+- **`fix-median-even` task runs.** `fix-median-even` r1 is a new task. `split-v2` does not name
+  it, so it would be placed by its `split-v1` hash position, 0.622, which falls in **train**.
+  No `fix-median-even` rows may enter a release before `split-v3` places this task group in
+  test.
+
+The evidence is in `.data/a06-20261111/` and the bundle
+`C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`. Rohit and Akshay decide the `split-v3`
+assignment.
+
 ## Sources
 
 Every row records its origin in `source`.

@@ -427,13 +427,16 @@ Ubuntu, GPM exporter on Windows, then `make agent-run` for `fix-mean-empty` and
 completed with passing verification; keep failed attempts, never re-record a passing source.
 Done 2026-11-11 (`.data/a06-20261111/sources/`). `fix-window-count` failed 4 of 4 on vLLM and
 was replaced by `fix-median-even` (see the spec, "Changes before the first protocol session").
-- [ ] **Step 2: Sweep `cfg-default`**: `make agent-capacity-sweep CONFIG=cfg-default
+- [x] **Step 2: Sweep `cfg-default`**: `make agent-capacity-sweep CONFIG=cfg-default
 SOURCES="..."` with `--gpm-file` and `--dcgm-url` if DCGM is up. Then
 `python -m agentwatch_agent coverage` on one run per level for sampling quality.
-- [ ] **Step 3: Restart vLLM for `cfg-hardware`**: `VLLM_MAX_NUM_SEQS=16
+Done 2026-11-11: capacity 3; coverage in `docs/capacity-record.md` (the HTTP sampler misses
+rounds at N = 16).
+- [x] **Step 3: Restart vLLM for `cfg-hardware`**: `VLLM_MAX_NUM_SEQS=16
 VLLM_GPU_MEMORY_UTILIZATION=0.8 make vllm-up`; on failure try 0.75, then 0.7, recording each
 attempt's error. Sweep `cfg-hardware`, passing every attempt with `--start-attempt`.
-- [ ] **Step 4: Stop Docker services and Postgres when done** (Benoy's preference).
+Done 2026-11-11: 0.8 started on the first attempt; capacity 8.
+- [x] **Step 4: Stop Docker services and Postgres when done** (Benoy's preference).
 
 ### Task 9: Capacity record, checklist, data card and handoff
 
@@ -441,15 +444,15 @@ attempt's error. Sweep `cfg-hardware`, passing every attempt with `--start-attem
 - Create: `docs/capacity-record.md`
 - Modify: `docs/project-checklist.md`, `docs/data-card.md`
 
-- [ ] **Step 1:** Write `docs/capacity-record.md` from `sweep.json` only: hardware, both
+- [x] **Step 1:** Write `docs/capacity-record.md` from `sweep.json` only: hardware, both
 configurations as verified, each level's throughput/pass rate/p90/CV/queue/prefix-cache/
 SM clock, hard stops, capacity per configuration with criteria, label-validation verdicts,
 the injected-condition result, every failed or stopped attempt, limitations (this laptop
 only; replays share prefixes; thermals; WSL2 PSI scope).
-- [ ] **Step 2:** Checklist: A06 progress dated 2026-11-xx with sweep IDs; "Evaluate natural
+- [x] **Step 2:** Checklist: A06 progress dated 2026-11-xx with sweep IDs; "Evaluate natural
 overload" stays open until model and rule scoring (PR 3). Data card: natural-overload and
 `prefill-flood-openai-chat-v1` runs are held-out test evidence.
-- [ ] **Step 3:** Copy redacted bundles to `C:\Users\benoy\AgentWatch-evidence\a06-<date>\`;
+- [x] **Step 3:** Copy redacted bundles to `C:\Users\benoy\AgentWatch-evidence\a06-<date>\`;
 draft the split-v3 hold-out note for Rohit and Akshay and the configuration table for Meghana
 (Benoy sends them).
 - [ ] **Step 4:** Commit — `docs: record measured capacity and natural-overload label validation`.

@@ -760,9 +760,9 @@ frozen evaluation sets without tuning against them.
   ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
   evaluable release; open until one covering all four classes passes the leakage check.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
-  2026-11-11 (A06, draft PR #65 on branch `feature/natural-overload-capacity-sweep`, stacked on
-  #64, not yet merged): `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the
-  declared protocol `natural-overload-sweep-v1`
+  2026-11-11 (A06, PR #65 on branch `feature/natural-overload-capacity-sweep`, not yet merged):
+  `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol
+  `natural-overload-sweep-v1`
   ([design](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md)). It
   decides capacity by the declared rules and validates the contention label against vLLM's
   measured queue time. The GPU preflight on 2026-11-11 (evidence `.data/a06-20261111/`) led to
@@ -779,8 +779,8 @@ frozen evaluation sets without tuning against them.
     - The new task `fix-median-even` (revision 1; 4 fixture tests: fails unpatched, passes
       only with `average-middle-pair`) was declared with one design and at most 3 attempts.
       It passed on vLLM on the first attempt.
-    - It is not in `split-v2`, so its runs need a `split-v3` assignment before any dataset
-      release.
+    - It is not named in `split-v2`, whose hash would place it in train (position 0.622), so
+      its runs need a `split-v3` assignment before any dataset release.
 
   The preflight also checked the live path and the full sweep flow:
   - **16-agent live batch:** all 63,427 events delivered; CPU/NVML sampler 0 late of 1,495
@@ -790,8 +790,23 @@ frozen evaluation sets without tuning against them.
     flood active (median 2,080 prompt tokens, every reply 1 token) and cleanup confirmed. As
     preflight evidence it is not a capacity result.
 
-  Open until both configurations are swept under the protocol and the capacity record is
-  written, and until model and rule scoring of the evidence (A06 PR 3) is done.
+  Protocol sweeps, 2026-11-11, at commit `d5eb41a` with a clean tree
+  ([capacity record](capacity-record.md); evidence `.data/a06-20261111/capacity-sweeps/` and
+  `C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`):
+  - **`cfg-default`** (sweep `c5a40c4c-e4b3-4dc1-b660-21ca4c88bc93`): capacity **3** agents
+    (`measured`). Throughput at 4 agents was 6.4% below 3 agents. Label `validated` (precision
+    0.971, recall 0.999).
+  - **`cfg-hardware`** (sweep `068e27a9-5933-4f99-b465-75502f7e523b`, vLLM started at 0.8 on the
+    first attempt): capacity **8** agents (`measured`). Throughput at 12 agents was 12.5% below
+    8 agents, while the SM clock was 634 MHz below N = 1's. Label `inconclusive`: vLLM never
+    queued a request (0.008 s in total), so the queue-time reference has no positives; the
+    slowdown came from longer prefill and decode.
+  - **Both sweeps:** full ramp to 16 agents, no hard stops, no excluded batches, and every run
+    passed (175 and 208 runs). The prefill flood was active and cleaned up in all 6 injected
+    batches.
+
+  Open until model and rule scoring of this evidence (A06 PR 3) is done. The capacity
+  describes this laptop and these two configurations only, from one sweep each.
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
   2026-11-10 (M04): `make calibrate` fits `calibration-v1` temperature scaling and the abstention
   threshold on the validation split only, then reports test-split ECE, abstention rates, clean
