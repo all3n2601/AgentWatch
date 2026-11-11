@@ -414,3 +414,20 @@ def test_level_one_never_enters_validation(tmp_path):
     assert result["levels_skipped"] == [1]
     assert 1 not in result["levels"]
     assert result["overall"]["confusion"] == {"tp": 0, "fp": 0, "fn": 0, "tn": 1}
+
+
+def test_the_label_rule_baseline_count_is_model_calls_only(tmp_path):
+    runs = []
+    for index, duration in enumerate((0.9, 1.0, 1.1)):
+        run = tmp_path / f"base-{index}"
+        steps = [
+            (MODEL_STEP, "model_call", duration, span_call(MODEL_STEP)),
+            ("tool-1", "tool", duration, None),
+            ("agent-run", "other", 3 * duration, None),
+        ]
+        write_run(run, steps)
+        runs.append(run)
+    report = label_validation([], baselines(runs))
+    # Tool and root-step baselines exist, but the label rule is validated on model calls only.
+    assert report["label_rule_baselines"] == 1
+    assert report["baselines_by_step_type"] == {"model_call": 1, "tool": 1, "other": 1}

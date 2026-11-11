@@ -134,6 +134,7 @@ def baselines(n1_runs: list[Path]) -> Baselines:
     result = Baselines()
     durations: dict[BaselineKey, list[float]] = {}
     services: dict[BaselineKey, list[float]] = {}
+    step_types: dict[BaselineKey, str] = {}
     for run_dir in n1_runs:
         plan, timings, spans = _read_run(run_dir)
         if plan is None:
@@ -152,6 +153,7 @@ def baselines(n1_runs: list[Path]) -> Baselines:
                     result.excluded_malformed += 1
                 continue
             durations.setdefault((plan, step_id), []).append(float(total))
+            step_types[(plan, step_id)] = timing["step_type"]
             span = spans.get(step_id)
             if span and span["status"] == "measured":
                 services.setdefault((plan, step_id), []).append(span["service_seconds"])
@@ -161,7 +163,8 @@ def baselines(n1_runs: list[Path]) -> Baselines:
             continue
         service = services.get(key)
         result[key] = variability(values) | {
-            "service_mean_seconds": sum(service) / len(service) if service else None
+            "step_type": step_types[key],
+            "service_mean_seconds": sum(service) / len(service) if service else None,
         }
     return result
 
@@ -328,8 +331,14 @@ def label_validation(runs: list[Path] | dict[int, list[Path]], reference: Baseli
         if level is not None:
             levels[level] = _report(tally)
         _merge(overall, tally)
+    by_type: dict[str, int] = {}
+    for baseline in reference.values():
+        step_type = str(baseline.get("step_type"))
+        by_type[step_type] = by_type.get(step_type, 0) + 1
     return {
-        "label_rule_baselines": len(reference),
+        # The label rule is validated on model calls only; other baselines are counted apart.
+        "label_rule_baselines": by_type.get(MODEL_STEP_TYPE, 0),
+        "baselines_by_step_type": by_type,
         "baselines_omitted": getattr(reference, "omitted", None),
         "baseline_runs_without_plan": getattr(reference, "runs_without_plan", None),
         "baseline_steps_not_completed": getattr(reference, "excluded_not_completed", None),
