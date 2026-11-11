@@ -728,6 +728,11 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   2026-11-06 (D03, not merged): `steps-v1.3+aafae73eb211` covers all four classes and `mixed`,
   and its split passes the leakage check, but `make rule-baseline` refuses it because `mixed`
   has no scoring rule until M02 (`pipelines/model/tests/test_rule_baseline.py`).
+  2026-11-10 (M02): `mixed-scoring-v1` scores `mixed` steps for the rules and the model (naming
+  any confirmed resource is correct; `mixed_joint_only` reported apart; per-resource F1 beside
+  macro F1), and adds the mixed-contention gain gate (`pipelines/model/tests/test_mixed.py`,
+  `test_comparison.py`). Tested on synthetic rows only. Open: dataset v1's test split mixes two
+  feature definitions, which evaluation refuses, so no rule metrics exist yet.
 
 **Exit test:** Rebuild labels and features from recorded evidence. Validate schema, missingness,
 class balance, baseline noise, split independence, and feature leakage. Report rule metrics on the
@@ -745,6 +750,15 @@ frozen evaluation sets without tuning against them.
   evaluable release; open until one covering all four classes passes the leakage check.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
+  2026-11-10 (M04): `make calibrate` fits `calibration-v1` temperature scaling and the abstention
+  threshold on the validation split only, then reports test-split ECE, abstention rates, clean
+  and missing-feature slices and every contract gate, with abstentions counted as misses
+  ([calibration](model-calibration.md), `pipelines/model/tests`). Tested on synthetic fixtures
+  only. After the M02 merge (`mixed-scoring-v1`), mixed steps are scored by hit, joint-only steps
+  are never scored, the mixed-contention abstention scope and gain gate are measured, and the
+  threshold is chosen on single-class validation steps. Open: `split-v2` has an empty validation
+  split, so nothing is fitted yet, and showing uncertain results belongs to serving and the
+  dashboard.
 - [ ] Load a versioned registered model in the correlation service.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
 

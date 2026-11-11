@@ -131,6 +131,8 @@ def prediction_records(
             "dataset_version": row["dataset_version"],
             "label_version": row["label_version"],
             "label_resource": row["label_resource"],
+            "label_resources": row.get("label_resources"),
+            "label_basis": row.get("label_basis"),
             "label_excess_fraction": row["label_excess_fraction"],
             "prediction": prediction.label,
             "probabilities": prediction.probabilities,
@@ -180,8 +182,10 @@ def model_identity(config: TrainingConfig, candidate: Candidate, labels: str | N
         "class_order": list(candidate.class_order),
         "classes_absent_from_train": list(candidate.classes_absent_from_train),
         "validation_rows_dropped": candidate.validation_rows_dropped,
+        "train_rows_not_classified": candidate.train_rows_not_classified,
         "best_iterations": candidate.best_iterations,
         "early_stopping": candidate.early_stopping,
+        "regressor_early_stopping": candidate.regressor_early_stopping,
         "settings": {
             "num_boost_round": config.num_boost_round,
             "early_stopping_rounds": config.early_stopping_rounds,
@@ -252,32 +256,33 @@ def attempt(
     )
     records = prediction_records(scored, predictions, rule_labels, scored_split, evaluation)
     hashes = save_models(candidate, directory)
-    write_atomic(
-        directory / PREPROCESSING, json_text(serving_contract(candidate, model, report, hashes))
-    )
+    preprocessing = json_text(serving_contract(candidate, model, report, hashes))
+    write_atomic(directory / PREPROCESSING, preprocessing)
     write_atomic(directory / PREDICTIONS, records)
+    # Calibration (M04) reads these files, so the report binds each one by hash.
+    written = {
+        "predictions": file_identity(PREDICTIONS, records),
+        "preprocessing": file_identity(PREPROCESSING, preprocessing),
+    }
     if scored_split != "validation":
         # Probabilities for M04 calibration. Validation also drove early stopping, so
         # calibration fitted on it is slightly optimistic; M04 records that.
-        validation_predictions = predict(candidate, validation)
-        write_atomic(
-            directory / VALIDATION_PREDICTIONS,
-            prediction_records(
-                validation,
-                validation_predictions,
-                [rules.predict(row) for row in validation],
-                "validation",
-                evaluation,
-            ),
+        validation_records = prediction_records(
+            validation,
+            predict(candidate, validation),
+            [rules.predict(row) for row in validation],
+            "validation",
+            evaluation,
         )
-    return report | {
-        "scored_steps": len(scored),
-        "predictions": {
-            "file": PREDICTIONS,
-            "sha256": hashlib.sha256(records.encode()).hexdigest(),
-        },
-        "model_files": hashes,
-    }
+        write_atomic(directory / VALIDATION_PREDICTIONS, validation_records)
+        written["validation_predictions"] = file_identity(
+            VALIDATION_PREDICTIONS, validation_records
+        )
+    return report | written | {"scored_steps": len(scored), "model_files": hashes}
+
+
+def file_identity(name: str, text: str) -> dict:
+    return {"file": name, "sha256": hashlib.sha256(text.encode()).hexdigest()}
 
 
 def finish(report: dict, directory: Path, tracking_uri: str, artifact_root: Path) -> Outcome:
