@@ -100,6 +100,11 @@ def ramp_batches(level: int) -> list[Batch]:
     ]
 
 
+def declared_batches(level: int) -> int:
+    """The ramp batches a level declares: N = 1 runs per source, every other level the same."""
+    return len(ramp_batches(level))
+
+
 def live_batches(capacity: int) -> list[Batch]:
     return [
         Batch("live", capacity, repeat, level_sources(capacity, repeat), False)

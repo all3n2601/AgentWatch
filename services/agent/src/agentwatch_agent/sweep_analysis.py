@@ -26,6 +26,7 @@ from agentwatch_agent.sweep_protocol import (
     MIN_PASSED_RUNS_AT_ONE_AGENT,
     MIN_THROUGHPUT_GAIN,
     RAMP_LEVELS,
+    declared_batches,
 )
 
 ROOT_STEP_ID = "agent-run"
@@ -541,39 +542,73 @@ def _level_criteria(
     return criteria
 
 
+# Criteria about whether the evidence is there, not about what it measured. A level failing only
+# these has an unknown outcome, so it can never be the measured knee.
+EVIDENCE_CRITERIA = frozenset({"readable", "evidence_complete", "summary_present"})
+
+
 def capacity_decision(
-    levels: dict[int, dict], hard_stops: dict[int, list[str]], run_timeout_seconds: float
+    levels: dict[int, dict],
+    hard_stops: dict[int, list[str]],
+    run_timeout_seconds: float,
+    excluded_batches: dict[int, int] | None = None,
 ) -> dict:
     """Capacity is the level before the first level that fails any criterion.
 
-    `levels` maps level to its `level_summary`; levels are checked in `RAMP_LEVELS` order and
-    the ramp may end at the first failing level, so later levels may be absent. Levels absent
-    with no failure and short of the ceiling give result `incomplete` (capacity is the last
-    level evaluated), never a claimed knee.
+    `levels` maps level to its `level_summary` (its `batches` are the usable ones);
+    `excluded_batches` counts, per level, the batches left out because the sweep stopped for a
+    reason that is not a hard stop. Levels are checked in `RAMP_LEVELS` order. The result is
+    `incomplete`, never a claimed knee, when no level has failed before evaluation ends at:
+
+    - a level with no hard stop and fewer usable batches than `declared_batches` (a stopped
+      level's outcome is unknown, so its criteria are recorded but not judged);
+    - the end of the recorded ramp, short of the ceiling;
+    - or when the first failing level fails only `EVIDENCE_CRITERIA`.
+
+    An incomplete result's capacity is the last fully passing level (None when there is none).
     """
     # Levels reloaded from JSON have string keys.
     levels = {int(key): value for key, value in levels.items()}
     hard_stops = {int(key): value for key, value in hard_stops.items()}
+    excluded = {int(key): value for key, value in (excluded_batches or {}).items()}
     criteria: dict[int, dict] = {}
+    batch_counts: dict[int, dict] = {}
     previous = baseline = None
     previous_level: int | None = None  # the last level before the first failure
     first_failing: int | None = None
+    incomplete_reason: str | None = None
     for level in RAMP_LEVELS:
         summary = levels.get(level)
-        if summary is None and not hard_stops.get(level):
+        stops = hard_stops.get(level, [])
+        if summary is None and not stops and not excluded.get(level):
             break
-        if summary is None:
+        usable = summary.get("batches") if summary is not None else 0
+        declared = declared_batches(level)
+        batch_counts[level] = {
+            "usable": usable,
+            "declared": declared,
+            "excluded": excluded.get(level, 0),
+        }
+        if summary is None and stops:
             # A hard stop ended the ramp before this level produced a summary.
             criteria[level] = {
-                "no_hard_stop": _criterion(list(hard_stops[level]), [], False),
+                "no_hard_stop": _criterion(list(stops), [], False),
                 "summary_present": _criterion(False, True, False),
             }
-        else:
+        elif summary is not None:
             if level == RAMP_LEVELS[0]:
                 baseline = summary
             criteria[level] = _level_criteria(
-                summary, previous, baseline, hard_stops.get(level, []), run_timeout_seconds
+                summary, previous, baseline, stops, run_timeout_seconds
             )
+        short = not isinstance(usable, int) or isinstance(usable, bool) or usable < declared
+        if not stops and short:
+            if first_failing is None:
+                incomplete_reason = (
+                    f"level {level}: {usable} of {declared} declared batches usable "
+                    f"({excluded.get(level, 0)} excluded) and no hard stop"
+                )
+            break
         # Levels past the first failure are still evaluated so the whole curve is recorded.
         if first_failing is None:
             if all(criterion["passed"] for criterion in criteria[level].values()):
@@ -581,11 +616,25 @@ def capacity_decision(
             else:
                 first_failing = level
         previous = summary or previous
-    if first_failing is None and len(criteria) < len(RAMP_LEVELS):
+    failed = (
+        sorted(name for name, c in criteria[first_failing].items() if not c["passed"])
+        if first_failing is not None
+        else []
+    )
+    if first_failing is None and incomplete_reason is not None:
+        result, capacity = "incomplete", previous_level
+    elif first_failing is None and len(criteria) < len(RAMP_LEVELS):
         # The ramp ended with no failing level and short of the ceiling: no knee was found.
         result, capacity = "incomplete", previous_level
+        incomplete_reason = "the recorded ramp ended before a failing level or the ceiling"
     elif first_failing is None:
         result, capacity = "at_least_ceiling", RAMP_LEVELS[-1]
+    elif set(failed) <= EVIDENCE_CRITERIA:
+        result, capacity = "incomplete", previous_level
+        incomplete_reason = (
+            f"level {first_failing} failed only evidence criteria ({', '.join(failed)}), so "
+            "what it measured is unknown"
+        )
     elif previous_level is None:
         result, capacity = "below_1", None
     else:
@@ -594,5 +643,75 @@ def capacity_decision(
         "capacity": capacity,
         "result": result,
         "first_failing_level": first_failing,
+        "incomplete_reason": incomplete_reason,
+        "batch_counts": batch_counts,
         "criteria": criteria,
+    }
+
+
+# Batches whose record was never finished: the sweep failed while the batch ran.
+BATCH_NOT_FINISHED = "batch_not_finished"
+
+
+def split_ramp_entries(entries: list[dict]) -> tuple[list[dict], list[dict]]:
+    """`sweep.json` ramp batch entries usable for level metrics, and the excluded ones.
+
+    The driver marks a batch `metrics_exclusion` when the sweep stopped for a cause that is not
+    a hard stop (cancellation, runs not started, resend needed, a runner error): its runs were
+    cut short by the stop, so they say nothing about the level. A batch without its `server`
+    reading was never finished. Each exclusion keeps its level, sequence and causes.
+    """
+    usable, excluded = [], []
+    for entry in entries:
+        if entry.get("phase") != "ramp":
+            continue
+        exclusion = entry.get("metrics_exclusion")
+        if exclusion:
+            causes = exclusion["causes"]
+        elif "server" not in entry:
+            causes = [{"state": BATCH_NOT_FINISHED, "reason": "the batch's record is unfinished"}]
+        else:
+            usable.append(entry)
+            continue
+        excluded.append({"sequence": entry["sequence"], "level": entry["level"], "causes": causes})
+    return usable, excluded
+
+
+def ramp_analysis(
+    entries: list[dict],
+    hard_stop_events: list[dict],
+    run_timeout_seconds: float,
+    metrics_of,
+) -> dict:
+    """Level summaries, the capacity decision and the excluded batches of a recorded ramp.
+
+    `entries` and `hard_stop_events` are `sweep.json`'s `batches` and `hard_stops`;
+    `metrics_of(entry)` returns that batch's `batch_metrics` (recorded, or read again from
+    disk). Level keys are ints.
+    """
+    usable, excluded = split_ramp_entries(entries)
+    excluded_by_level: dict[int, int] = {}
+    for item in excluded:
+        excluded_by_level[int(item["level"])] = excluded_by_level.get(int(item["level"]), 0) + 1
+    by_level: dict[int, list[dict]] = {}
+    for entry in usable:
+        changes = entry["server"].get("changes")
+        server = {"server": changes} if changes is not None else {}
+        by_level.setdefault(int(entry["level"]), []).append(metrics_of(entry) | server)
+    summaries: dict[int, dict] = {}
+    baseline_clock = None
+    for level in sorted(by_level):
+        summary = level_summary(by_level[level], baseline_clock if level > 1 else None)
+        summaries[level] = summary | {"excluded_batches": excluded_by_level.get(level, 0)}
+        if level == RAMP_LEVELS[0]:
+            baseline_clock = summary["device"]["metrics"][SM_CLOCK]["mean"]
+    hard_stops: dict[int, list[str]] = {}
+    for event in hard_stop_events:
+        if event.get("phase") == "ramp":
+            hard_stops.setdefault(int(event["level"]), []).append(event["code"])
+    decision = capacity_decision(summaries, hard_stops, run_timeout_seconds, excluded_by_level)
+    return {
+        "level_summaries": summaries,
+        "capacity_decision": decision,
+        "excluded_batches": excluded,
     }

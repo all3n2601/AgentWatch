@@ -16,7 +16,7 @@ from agentwatch_agent.sweep_analysis import (
     p90,
     server_changes,
 )
-from agentwatch_agent.sweep_protocol import RAMP_LEVELS
+from agentwatch_agent.sweep_protocol import RAMP_LEVELS, declared_batches
 from agentwatch_sdk.live import ResourceSample, StepEvent
 
 RUN_LIMIT_SECONDS = 900.0
@@ -53,9 +53,14 @@ def level(
     passed=3,
     without_throughput=0,
     missing_durations=0,
+    batches=None,
 ):
-    """A minimal level summary in the shape `level_summary` returns."""
+    """A minimal level summary in the shape `level_summary` returns.
+
+    `batches` defaults to the most any level declares (N = 1's six), so a level is complete.
+    """
     return {
+        "batches": declared_batches(1) if batches is None else batches,
         "passed": passed,
         "batches_without_throughput": without_throughput,
         "unreadable_batches": [{"index": i, "error": "x"} for i in range(unreadable)],
@@ -83,6 +88,44 @@ def test_a_hard_stop_fails_its_level():
     decision = capacity_decision(ramp(1.0, 2.0, 3.0), {2: ["vllm_restart"]}, RUN_LIMIT_SECONDS)
     assert decision["capacity"] == 1 and decision["first_failing_level"] == 2
     assert decision["criteria"][2]["no_hard_stop"]["value"] == ["vllm_restart"]
+
+
+def test_a_level_short_of_its_declared_batches_without_a_hard_stop_is_incomplete():
+    # One usable batch of three, and it fails throughput: never a measured knee.
+    levels = {1: level(1.0), 2: level(1.0, batches=1)}
+    decision = capacity_decision(levels, {}, RUN_LIMIT_SECONDS)
+    assert decision["result"] == "incomplete" and decision["capacity"] == 1
+    assert decision["first_failing_level"] is None
+    assert decision["batch_counts"][2] == {"usable": 1, "declared": 3, "excluded": 0}
+    assert "level 2" in decision["incomplete_reason"]
+    # The same shortfall with a hard stop is the knee the hard stop declares.
+    stopped = capacity_decision(levels, {2: ["infrastructure_failure"]}, RUN_LIMIT_SECONDS)
+    assert stopped["result"] == "measured" and stopped["capacity"] == 1
+    assert stopped["first_failing_level"] == 2
+
+
+def test_a_level_whose_batches_were_all_excluded_is_incomplete():
+    decision = capacity_decision({1: level(1.0)}, {}, RUN_LIMIT_SECONDS, excluded_batches={2: 1})
+    assert decision["result"] == "incomplete" and decision["capacity"] == 1
+    assert decision["batch_counts"][2] == {"usable": 0, "declared": 3, "excluded": 1}
+
+
+def test_n1_short_of_its_six_batches_is_incomplete_not_below_1():
+    decision = capacity_decision({1: level(1.0, passed=0, batches=2)}, {}, RUN_LIMIT_SECONDS)
+    assert decision["result"] == "incomplete" and decision["capacity"] is None
+
+
+@pytest.mark.parametrize(
+    "fields", [{"unreadable": 1}, {"without_throughput": 1}, {"missing_durations": 1}]
+)
+def test_a_first_failure_on_evidence_criteria_only_is_incomplete(fields):
+    decision = capacity_decision({1: level(1.0), 2: level(2.0, **fields)}, {}, RUN_LIMIT_SECONDS)
+    assert decision["result"] == "incomplete" and decision["capacity"] == 1
+    assert decision["first_failing_level"] == 2
+    assert "evidence" in decision["incomplete_reason"]
+    # A measured criterion failing too makes it the knee.
+    slow = capacity_decision({1: level(1.0), 2: level(1.0, **fields)}, {}, RUN_LIMIT_SECONDS)
+    assert slow["result"] == "measured" and slow["capacity"] == 1
 
 
 def test_n1_failing_gives_below_1():
@@ -551,10 +594,13 @@ def test_a_run_without_an_agent_run_duration_fails_evidence_complete(tmp_path):
     batch_dir = tmp_path / "batch"
     write_run(batch_dir / "runs" / "00-a", None)
     write_batch(batch_dir, [run_entry(output_dir=recorded(batch_dir, "00-a"))])
-    summary = level_summary([batch_metrics(batch_dir, RUN_LIMIT_SECONDS)])
-    assert summary["run_duration_seconds"]["missing"] == 1
+    # N = 1's six declared batches, so the decision evaluates the level.
+    summary = level_summary([batch_metrics(batch_dir, RUN_LIMIT_SECONDS)] * declared_batches(1))
+    assert summary["run_duration_seconds"]["missing"] == declared_batches(1)
     decision = capacity_decision({1: summary}, {}, RUN_LIMIT_SECONDS)
-    assert decision["criteria"][1]["evidence_complete"]["value"]["runs_missing_duration"] == 1
+    criterion = decision["criteria"][1]["evidence_complete"]
+    assert criterion["value"]["runs_missing_duration"] == declared_batches(1)
+    # Without durations the p90 criterion fails too, so N = 1 fails on measurement.
     assert decision["result"] == "below_1"
 
 

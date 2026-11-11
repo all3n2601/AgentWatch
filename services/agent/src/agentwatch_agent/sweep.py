@@ -37,12 +37,10 @@ from agentwatch_agent.replay import ReplayPlan
 from agentwatch_agent.runner import JOURNAL_FILE, write_json_atomic
 from agentwatch_agent.session import CancellationState
 from agentwatch_agent.sweep_analysis import (
-    SM_CLOCK,
     _resolve_run_dir,
     batch_metrics,
-    capacity_decision,
     classify_run,
-    level_summary,
+    ramp_analysis,
     server_changes,
 )
 from agentwatch_agent.sweep_labels import baselines, label_validation, max_running_check
@@ -94,6 +92,9 @@ STOPPED_SERVER_BUSY = f"stopped_{SERVER_BUSY}"
 STOPPED_SERVER_STATE_UNAVAILABLE = f"stopped_{SERVER_STATE_UNAVAILABLE}"
 CANCELLED = "cancelled"
 FAILED = "failed"
+# Stops caused by the operator or the live API, not by the server under test: a batch they cut
+# short is excluded from level metrics (counted) instead of read as a slow or failing level.
+NOT_HARD_STOP_STATES = (CANCELLED, STOPPED_RUN_NOT_STARTED, STOPPED_RESEND_NEEDED)
 
 # How the ramp ended, recorded separately from the sweep state.
 RAMP_HARD_STOP = "hard_stop"
@@ -250,6 +251,8 @@ class CapacitySweep:
             "injection_logs": [],
             "hard_stops": [],
             "level_summaries": None,
+            # Ramp batches left out of level metrics, each with its level and causes.
+            "excluded_batches": [],
             "capacity_decision": None,
             "label_validation": None,
             "max_running_check": None,
@@ -391,27 +394,16 @@ class CapacitySweep:
     def _decide_capacity(self, scope: str) -> dict:
         self._begin("capacity_decision", scope=scope)
         self.record["analysis_scope"] = scope
-        by_level: dict[int, list[dict]] = {}
-        for entry in self.record["batches"]:
-            if entry["phase"] == "ramp" and "metrics" in entry:
-                changes = entry["server"]["changes"]
-                server = {"server": changes} if changes is not None else {}
-                by_level.setdefault(entry["level"], []).append(entry["metrics"] | server)
-        summaries: dict[int, dict] = {}
-        baseline_clock = None
-        for level in sorted(by_level):
-            summaries[level] = level_summary(by_level[level], baseline_clock if level > 1 else None)
-            if level == RAMP_LEVELS[0]:
-                baseline_clock = summaries[level]["device"]["metrics"][SM_CLOCK]["mean"]
-        hard_stops: dict[int, list[str]] = {}
-        for event in self.record["hard_stops"]:
-            if event["phase"] == "ramp":
-                hard_stops.setdefault(event["level"], []).append(event["code"])
-        decision = capacity_decision(summaries, hard_stops, self.run_timeout_seconds)
-        self.record |= {"level_summaries": summaries, "capacity_decision": decision}
+        analysis = ramp_analysis(
+            self.record["batches"],
+            self.record["hard_stops"],
+            self.run_timeout_seconds,
+            lambda entry: entry["metrics"],
+        )
+        self.record |= analysis
         self._complete("capacity_decision")
         self._save()
-        return decision
+        return analysis["capacity_decision"]
 
     def _validate_labels(self) -> None:
         """Labels of N >= 2 ramp runs against the N = 1 baselines, and the running-count check.
@@ -576,6 +568,15 @@ class CapacitySweep:
         self._save()
 
         errors = [run.error for run in executed.runs if run.error is not None]
+        # A batch cut short by a stop that is not a hard stop says nothing about its level.
+        excluding = [{"state": FAILED, "reason": _text(error)} for error in errors[:1]] + [
+            {"state": cause["state"], "reason": cause["reason"]}
+            for cause in causes
+            if cause["state"] in NOT_HARD_STOP_STATES
+        ]
+        if excluding:
+            entry["metrics_exclusion"] = {"causes": excluding}
+            self._save()
         if errors:
             raise errors[0]
         if causes:

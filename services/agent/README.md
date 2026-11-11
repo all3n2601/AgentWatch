@@ -475,8 +475,15 @@ limit, and `evidence_complete` (no batch without a throughput and no run without
 duration, so missing evidence never reads as slow or as passing). N = 1 also needs at least
 one passed run. The ramp continues past the knee so the whole curve is recorded. The
 `result` is `measured`, `below_1` (capacity is `null`), `at_least_ceiling` (every level
-passed; capacity 16) or `incomplete` (the ramp stopped before a failing level or the
-ceiling, so no knee was found).
+passed; capacity 16) or `incomplete`: no knee was found because, before any level failed,
+the recorded ramp ended short of the ceiling, or a level without a hard stop has fewer usable
+batches than it declares (6 at N = 1, 3 above), or the first failing level failed only the
+evidence criteria (`readable`, `evidence_complete`, `summary_present`), so what it measured
+is unknown. An incomplete result's capacity is the last fully passing level and must be read
+as a lower bound; `incomplete_reason` says why, and `batch_counts` gives each level's usable,
+declared and excluded batches. A ramp batch cut short by a stop that is not a hard stop
+(cancellation, runs not started, resend needed, a runner error) is excluded from level
+metrics and listed in `excluded_batches` with its causes, never read as zero throughput.
 
 **Label validation.** For model-call steps of N >= 2 ramp runs, a step is contended by the
 label rule when its duration exceeds its N = 1 baseline mean by more than

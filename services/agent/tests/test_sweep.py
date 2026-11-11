@@ -723,10 +723,16 @@ def test_a_sweep_stopped_mid_ramp_still_analyses_the_recorded_ramp(tmp_path, how
     harness.hooks["ramp-n2-r1"] = stop
     record = harness.run()
     assert record["state"] != "completed" and record["ramp_end"] in ("stopped", "cancelled")
-    # The ramp batches it recorded are analysed and marked with the stop.
+    # The ramp batches it recorded are analysed and marked with the stop. A restart is a hard
+    # stop, so its batch is evidence; the other causes exclude their batch, counted.
     assert set(record["level_summaries"]) == {1, 2}
-    assert record["level_summaries"][2]["batches"] == 2
-    assert record["capacity_decision"] is not None
+    excluded = [] if how == "vllm_restart" else [8]
+    assert [entry["sequence"] for entry in record["excluded_batches"]] == excluded
+    assert record["level_summaries"][2]["batches"] == 2 - len(excluded)
+    assert record["level_summaries"][2]["excluded_batches"] == len(excluded)
+    # A hard stop (restart, or the resend run's incomplete delivery) is a measured knee.
+    expected = "incomplete" if how in ("runs_not_started", "cancelled") else "measured"
+    assert record["capacity_decision"]["result"] == expected
     assert record["analysis_scope"] == "partial_ramp"
     assert record["state"] in record["analysis_note"]
     assert record["stop_reason"] in record["analysis_note"]
@@ -734,6 +740,44 @@ def test_a_sweep_stopped_mid_ramp_still_analyses_the_recorded_ramp(tmp_path, how
     assert record["max_running_check"]["status"] == "not_sampled"
     saved = read(harness.sweep_file)
     assert saved["analysis_scope"] == "partial_ramp" and "2" in saved["level_summaries"]
+
+
+@pytest.mark.parametrize("how", ["not_started", "cancelled"])
+def test_a_ramp_stopped_without_a_hard_stop_reports_no_measured_knee(tmp_path, how):
+    """The reviewer's probe: a stopped batch once read as a zero-throughput knee at N = 2."""
+    harness = Harness(tmp_path)
+
+    def stop(_stub, entries, wall):
+        if how == "not_started":
+            for entry in entries:
+                entry |= {
+                    "state": "not_started",
+                    "run_id": None,
+                    "task_passed": None,
+                    "delivery_complete": None,
+                    "resend_needed": None,
+                    "not_started": {"stage": "registration", "error": "fixture"},
+                }
+        else:
+            cancel_sweep(harness)
+            for entry in entries:
+                entry |= {"state": "cancelled", "reason": "Cancelled"}
+        return wall, [None] * len(entries)
+
+    harness.hooks["ramp-n2-r1"] = stop
+    record = harness.run()
+    decision = record["capacity_decision"]
+    assert decision["result"] == "incomplete" and decision["capacity"] == 1
+    assert decision["first_failing_level"] is None
+    assert decision["batch_counts"][2] == {"usable": 1, "declared": 3, "excluded": 1}
+    # The stopped batch is excluded and counted with its cause, never zero throughput.
+    (excluded,) = record["excluded_batches"]
+    state = "stopped_run_not_started" if how == "not_started" else "cancelled"
+    assert (excluded["sequence"], excluded["level"]) == (8, 2)
+    assert [cause["state"] for cause in excluded["causes"]] == [state]
+    assert record["batches"][-1]["metrics_exclusion"]["causes"] == excluded["causes"]
+    assert record["level_summaries"][2]["throughput_per_minute"]["count"] == 1
+    assert record["hard_stops"] == []
 
 
 @pytest.mark.parametrize("where", ["make_batch", "read_state"])
