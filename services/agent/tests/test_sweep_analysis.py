@@ -508,6 +508,7 @@ def readable_batch(throughput, durations, clock_mean=None, server=None):
         "throughput_per_minute": throughput,
         "run_durations": durations,
         "run_durations_missing": 0,
+        "runs_without_evidence": 0,
         "reply_match_rate": None,
         "spans": {
             "calls_by_status": {"measured": 0, "unavailable": 2, "malformed": 0, "not_recorded": 0},
@@ -676,3 +677,35 @@ def test_levels_reloaded_from_json_have_string_keys():
     levels = {str(n): value for n, value in ramp(1.0, 1.8, 1.9).items()}
     decision = capacity_decision(levels, {"3": ["x"]}, RUN_LIMIT_SECONDS)
     assert decision["capacity"] == 2 and decision["first_failing_level"] == 3
+
+
+def test_runs_without_readable_evidence_are_counted(tmp_path):
+    batch_dir = tmp_path / "batch"
+    write_run(batch_dir / "runs" / "00-a", 5.0)
+    write_run(batch_dir / "runs" / "01-b", 5.0)
+    (batch_dir / "runs" / "01-b" / "agent-evidence.json").write_text("{not json")
+    entries = [
+        run_entry(index=0, output_dir=recorded(batch_dir, "00-a")),
+        run_entry(index=1, output_dir=recorded(batch_dir, "01-b")),
+        run_entry(index=2, output_dir=recorded(batch_dir, "gone")),
+    ]
+    write_batch(batch_dir, entries)
+    metrics = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)
+    # Their spans and replies are absent, not zero: the counts say how many runs are missing.
+    assert metrics["runs_without_evidence"] == 2
+    assert metrics["spans"]["calls_by_status"]["not_recorded"] == 0
+    assert level_summary([metrics, metrics])["runs_without_evidence"] == 4
+
+
+@pytest.mark.parametrize("missing", ["batches_without_throughput", "run_durations_missing"])
+def test_a_summary_without_its_evidence_counts_fails_evidence_complete(missing):
+    summary = level(1.0)
+    if missing == "batches_without_throughput":
+        del summary["batches_without_throughput"]
+    else:
+        del summary["run_duration_seconds"]["missing"]
+    criterion = capacity_decision({1: summary}, {}, RUN_LIMIT_SECONDS)["criteria"][1][
+        "evidence_complete"
+    ]
+    assert criterion["passed"] is False
+    assert criterion["reason"] == "evidence counts missing"

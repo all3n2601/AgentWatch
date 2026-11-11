@@ -272,6 +272,9 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
     span_counts = {status: 0 for status in (*SPAN_STATUSES, "not_recorded")}
     span_values: dict[str, list[float]] = {field: [] for field in SPAN_FIELDS}
     matched = replies = 0
+    # Runs whose agent-evidence.json is missing or unreadable: their spans and replies are
+    # absent from the counts below, never zero.
+    without_evidence = 0
     device_runs: list[dict] = []
     run_dirs: list[dict] = []
     for entry in entries:
@@ -279,6 +282,7 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
         run_dirs.append({"index": entry.get("index"), "found_by": found_by})
         if run_dir is None:
             durations_missing += 1
+            without_evidence += 1
             device_runs.append(_unreadable("run folder not found"))
             continue
         try:
@@ -295,6 +299,7 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
         try:
             evidence = _read_json(run_dir / "agent-evidence.json")
         except (OSError, ValueError, TypeError):
+            without_evidence += 1
             continue
         counts, values = _span_values(evidence)
         for status, count in counts.items():
@@ -319,6 +324,7 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
         "run_durations_missing": durations_missing,
         "reply_match_rate": matched / replies if replies else None,
         "reply_matches": {"matched": matched, "compared": replies},
+        "runs_without_evidence": without_evidence,
         "spans": _span_stats(span_counts, span_values),
         "device": _combine_device(device_runs),
         "run_folders": run_dirs,
@@ -410,6 +416,7 @@ def level_summary(batches: list[dict], baseline_sm_clock_mhz: float | None = Non
             if batch.get("status") != "readable"
         ],
         "runs": runs,
+        "runs_without_evidence": sum(batch["runs_without_evidence"] for batch in readable),
         "passed": passed,
         "task_failures": sum(batch["task_failures"] for batch in readable),
         "agent_failures": sum(batch["agent_failures"] for batch in readable),
@@ -476,10 +483,21 @@ def _level_criteria(
         "no_hard_stop": _criterion(list(hard_stops), [], not hard_stops),
     }
 
-    # Incomplete evidence must not read as a slow or failing level, nor as a passing one.
-    without_throughput = level.get("batches_without_throughput", 0)
-    missing_durations = level["run_duration_seconds"].get("missing", 0)
-    complete = without_throughput == 0 and missing_durations == 0
+    # Incomplete evidence must not read as a slow or failing level, nor as a passing one. A
+    # summary without the counts is not evidence that nothing is missing.
+    without_throughput = level.get("batches_without_throughput")
+    missing_durations = (level.get("run_duration_seconds") or {}).get("missing")
+    counted = all(
+        isinstance(count, int) and not isinstance(count, bool)
+        for count in (without_throughput, missing_durations)
+    )
+    complete = counted and without_throughput == 0 and missing_durations == 0
+    if not counted:
+        reason = {"reason": "evidence counts missing"}
+    elif not complete:
+        reason = {"reason": "a batch has no usable throughput or a run has no agent-run duration"}
+    else:
+        reason = {}
     criteria["evidence_complete"] = _criterion(
         {
             "batches_without_throughput": without_throughput,
@@ -487,11 +505,7 @@ def _level_criteria(
         },
         {"batches_without_throughput": 0, "runs_missing_duration": 0},
         complete,
-        **(
-            {}
-            if complete
-            else {"reason": "a batch has no usable throughput or a run has no agent-run duration"}
-        ),
+        **reason,
     )
     if previous is None:
         criteria["passed_runs"] = _criterion(
