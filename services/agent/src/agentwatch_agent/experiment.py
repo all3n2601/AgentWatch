@@ -330,6 +330,15 @@ def _sustained(injection: dict) -> bool:
             and activity.get("requests_failed") == 0
             and loaded > 0
         )
+    if kind == "prefill":
+        # Only completions prove load: with max_tokens=1 a request abandoned in flight never
+        # finished its prefill, so unlike inference it does not count.
+        return (
+            activity.get("report") == "received"
+            and activity.get("stopped_by_backstop") is False
+            and activity.get("requests_failed") == 0
+            and activity.get("requests_completed", 0) > 0
+        )
     if kind == "retrieval":
         started = activity.get("threads_started", 0)
         return (

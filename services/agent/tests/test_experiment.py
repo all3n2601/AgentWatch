@@ -537,3 +537,36 @@ def test_experiment_cli_refuses_invalid_settings(tmp_path, capsys):
         cli.main([*base, "--conditions", "cpu,gpu"])
     assert exit_info.value.code == 2
     assert list(tmp_path.iterdir()) == []
+
+
+def prefill_injection(**activity: object) -> dict:
+    return {
+        "injector": "prefill",
+        "stop_reason": "requested",
+        "activity": {
+            "report": "received",
+            "stopped_by_backstop": False,
+            "requests_failed": 0,
+            "requests_completed": 3,
+            "requests_abandoned_in_flight": 0,
+            **activity,
+        },
+    }
+
+
+def test_a_sustained_prefill_flood_is_active():
+    assert injection_active({"injections": [prefill_injection()]}) is True
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"requests_completed": 0},
+        {"requests_completed": 0, "requests_abandoned_in_flight": 4},
+        {"requests_failed": 1},
+        {"report": "missing"},
+        {"stopped_by_backstop": True},
+    ],
+)
+def test_a_prefill_flood_with_gaps_is_not_active(change):
+    assert injection_active({"injections": [prefill_injection(**change)]}) is False
