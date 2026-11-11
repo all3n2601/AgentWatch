@@ -641,11 +641,25 @@ def test_every_request_has_a_unique_prefix(clock):
     assert len(set(firsts)) == len(firsts)
 
 
+def test_separate_runs_never_repeat_a_prompt_prefix(clock):
+    # Counters restart at 0 each run; a cached prefill from run one must not match run two.
+    with FakeOllama(reply=PREFILL_COMPLETION) as server:
+        run_prefill(clock, server, prompt_tokens=19)
+        first_run = {p["messages"][0]["content"].splitlines()[0] for p in server.payloads}
+        server.payloads.clear()
+        run_prefill(TestClock(), server, prompt_tokens=19)
+        second_run = {p["messages"][0]["content"].splitlines()[0] for p in server.payloads}
+    assert first_run and second_run
+    assert first_run.isdisjoint(second_run)
+
+
 def test_prompts_are_never_logged(clock):
     with FakeOllama(reply=PREFILL_COMPLETION) as server:
         log = run_prefill(clock, server, prompt_tokens=19)
-    assert "request 0-0" in server.payloads[0]["messages"][0]["content"]
-    assert "request 0-0" not in json.dumps(log)
+    nonce = server.payloads[0]["messages"][0]["content"].splitlines()[0]
+    assert nonce.startswith("request ") and nonce.endswith("-0-0")
+    assert nonce not in json.dumps(log)
+    assert nonce.split("-")[0].removeprefix("request ") not in json.dumps(log)
     assert "quick brown fox" not in json.dumps(log)
 
 

@@ -16,9 +16,13 @@ against the run's own vLLM server, from one child process that reuses the shared
 asks for one token (`max_tokens=1`), so the server's time goes to prefill, and generation
 barely runs.
 
-- The first line of every prompt is a nonce, `request {worker}-{sequence}`, followed by fixed
-  numbered filler lines. The prefix differs from the first token on, so vLLM's prefix cache
-  cannot reuse another request's prefill and every request pays its full prefill cost.
+- The first line of every prompt is a nonce, `request {run_token}-{worker}-{sequence}`, followed
+  by fixed numbered filler lines. `run_token` is random, generated once per injector instance
+  (12 hex characters), because the worker and sequence counters restart at 0 in every run and a
+  later run against the same server would otherwise repeat an earlier run's prompts. The prompts
+  share the chat template and the word "request", but they differ within the first KV-cache
+  block (vLLM's block size is 16 tokens), so no cached block can be reused and every request
+  pays its full prefill cost. The token is never logged.
 - Bounds: loopback endpoints only; concurrency at most 4; `prompt_tokens` at most 3,072;
   request timeout at most 120 s; the usual `max_duration_seconds` and backstop.
 - Prompts are fixed, non-sensitive text and are never logged. The log records the target
@@ -38,7 +42,9 @@ followed by a newline, for line number `n`:
 ```
 
 This is 19 tokens for n = 1, 57, 999 and 3071, and 200 consecutive lines are 3,800 tokens
-(19.0 per line). The nonce line `request 3-104729` followed by a newline is 11 tokens. So
+(19.0 per line). The nonce line `request 3-104729` followed by a newline is 11 tokens; that was measured for the
+worker-sequence form, and the run token in the current nonce adds a few tokens that were not
+measured. So
 `FILLER_TOKENS_PER_LINE = 19`, and a prompt has `ceil(prompt_tokens / 19)` filler lines plus the
 nonce line. A later change records vLLM's reported `usage.prompt_tokens` against the real server
 to establish the chat-template overhead.

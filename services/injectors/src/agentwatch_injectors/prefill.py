@@ -4,8 +4,8 @@ A child process keeps `concurrency` non-streaming chat requests in flight, each 
 about `prompt_tokens` tokens and `max_tokens=1`. The server spends its time prefilling long
 prompts rather than decoding, which is the opposite of `CompetingInferenceInjector`'s
 generation-heavy load, so the two are different injection methods. Each prompt starts with a
-nonce line unique to the worker and request, so vLLM's prefix cache cannot reuse an earlier
-prompt's prefill. Only loopback endpoints are accepted, as for the competing injector.
+nonce line unique to the injector run, worker and request, so vLLM's prefix cache cannot reuse
+the prefill of an earlier request, including one from an earlier run against the same server. Only loopback endpoints are accepted, as for the competing injector.
 
 The prompt size is an estimate from `FILLER_TOKENS_PER_LINE`; the server's reported
 `usage.prompt_tokens` is what the log records. Prompts are fixed, non-sensitive text and are
@@ -15,6 +15,7 @@ never logged.
 import math
 import statistics
 import urllib.parse
+import uuid
 from dataclasses import dataclass
 
 from agentwatch_injectors.base import (
@@ -51,10 +52,10 @@ class PrefillRejected(GenerateRejected):
     """The model server answered, but not with a finished chat completion."""
 
 
-def filler_prompt(worker: int, sequence: int, prompt_tokens: int) -> str:
+def filler_prompt(run_token: str, worker: int, sequence: int, prompt_tokens: int) -> str:
     """A nonce line, then enough fixed numbered lines for about `prompt_tokens` tokens."""
     line_count = math.ceil(prompt_tokens / FILLER_TOKENS_PER_LINE)
-    lines = [f"request {worker}-{sequence}"]
+    lines = [f"request {run_token}-{worker}-{sequence}"]
     lines.extend(FILLER_LINE.format(number=number) for number in range(1, line_count + 1))
     return "\n".join(lines) + "\n"
 
@@ -65,6 +66,8 @@ class PrefillProfile:
 
     model: str
     prompt_tokens: int
+    # Random per injector run: worker and sequence counters restart at 0 in every run.
+    run_token: str
     rejection = PrefillRejected
 
     @property
@@ -75,7 +78,10 @@ class PrefillProfile:
         return {
             "model": self.model,
             "messages": [
-                {"role": "user", "content": filler_prompt(worker, sequence, self.prompt_tokens)}
+                {
+                    "role": "user",
+                    "content": filler_prompt(self.run_token, worker, sequence, self.prompt_tokens),
+                }
             ],
             "max_tokens": 1,
             "temperature": 0,
@@ -143,6 +149,7 @@ class PrefillFloodInjector(BoundedInjector):
         self.request_timeout_seconds = require_seconds(
             "request_timeout_seconds", request_timeout_seconds, MAX_REQUEST_TIMEOUT_SECONDS
         )
+        self._run_token = uuid.uuid4().hex[:12]
         self._group: ChildGroup | None = None
 
     def bounds(self) -> dict:
@@ -176,7 +183,7 @@ class PrefillFloodInjector(BoundedInjector):
             [
                 (
                     self.url,
-                    PrefillProfile(self.model, self.prompt_tokens),
+                    PrefillProfile(self.model, self.prompt_tokens, self._run_token),
                     self.concurrency,
                     self.request_timeout_seconds,
                 )
