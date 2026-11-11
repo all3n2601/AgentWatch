@@ -971,3 +971,48 @@ def test_a_runner_error_with_unconfirmed_cleanup_records_the_cleanup_first(tmp_p
     assert record["state"] == "failed"
     assert [h["code"] for h in record["hard_stops"]] == ["injector_cleanup_unconfirmed"]
     assert record["batches"][-1]["injection_cleanup_confirmed"] is False
+
+
+HARDWARE_ATTEMPTS = [
+    {"gpu_memory_utilization": 0.8, "outcome": "failed: CUDA out of memory"},
+    {"gpu_memory_utilization": 0.75, "outcome": "started"},
+]
+
+
+@pytest.mark.parametrize(
+    ("reported", "attempts", "message"),
+    [
+        # The attempt that started must be what vLLM runs at.
+        ("0.8", HARDWARE_ATTEMPTS, "start attempt"),
+        # A fallback utilization needs the attempts that led to it.
+        ("0.75", None, "start attempts"),
+        # Attempts cannot be checked against a utilization vLLM did not report.
+        (None, HARDWARE_ATTEMPTS, "start attempt"),
+    ],
+)
+def test_start_attempts_must_match_what_vllm_reports(tmp_path, reported, attempts, message):
+    cache = dict(CACHE_CONFIG)
+    if reported is None:
+        del cache["gpu_memory_utilization"]
+    else:
+        cache["gpu_memory_utilization"] = reported
+    harness = Harness(
+        tmp_path, configuration="cfg-hardware", cache_config=cache, start_attempts=attempts
+    )
+    record = harness.run()
+    assert record["state"] == "refused_configuration"
+    assert message in record["stop_reason"]
+    assert harness.calls == []
+
+
+@pytest.mark.parametrize(("reported", "attempts"), [("0.8", None), ("0.75", HARDWARE_ATTEMPTS)])
+def test_matching_start_attempts_let_the_sweep_run(tmp_path, reported, attempts):
+    harness = Harness(
+        tmp_path,
+        configuration="cfg-hardware",
+        cache_config=CACHE_CONFIG | {"gpu_memory_utilization": reported},
+        start_attempts=attempts,
+    )
+    record = harness.run()
+    assert record["phases"]["configuration_check"]["status"] == "completed"
+    assert record["start_attempts"] == attempts

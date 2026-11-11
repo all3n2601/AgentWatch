@@ -18,6 +18,7 @@ no resume.
 
 import http.client
 import itertools
+import math
 import time
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -350,9 +351,38 @@ class CapacitySweep:
             problems.append(
                 "vLLM reported no process_start_time_seconds, so a restart could not be detected"
             )
+        problems.extend(self._start_attempt_problems(verified))
         if problems:
             raise _SweepStop(REFUSED_CONFIGURATION, "; ".join(problems))
         self._complete("configuration_check")
+
+    def _start_attempt_problems(self, verified: dict) -> list[str]:
+        """The recorded start attempts must describe the vLLM that is running.
+
+        The attempt that started must be the utilization vLLM reports, and a utilization other
+        than the first declared one (a fallback) needs the attempts that led to it.
+        """
+        reported = verified["settings"]["gpu_memory_utilization"]["reported"]
+        first = self.configuration.gpu_memory_utilization[0]
+        problem = None
+        if self.start_attempts:
+            started = self.start_attempts[-1]["gpu_memory_utilization"]
+            if reported is None:
+                problem = (
+                    f"the start attempt that started used {started:g}, but vLLM reported no "
+                    "gpu_memory_utilization to check it against"
+                )
+            elif not math.isclose(started, reported):
+                problem = (
+                    f"the start attempt that started used {started:g}, but vLLM reports "
+                    f"gpu_memory_utilization {reported:g}"
+                )
+        elif reported is not None and not math.isclose(reported, first):
+            problem = (
+                f"vLLM runs at gpu_memory_utilization {reported:g}, not the first declared "
+                f"{first:g}: record the start attempts that led to it (--start-attempt)"
+            )
+        return [] if problem is None else [problem]
 
     def _ramp(self) -> None:
         self._begin("warmup")
