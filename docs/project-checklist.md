@@ -902,8 +902,9 @@ from M3 through M6 and do not renumber the implementation milestones above.
   (admission records stay in local `agent-evidence.json`), O04 comparison records, batch
   completion time, throughput and p95 task latency. No automatic actuation and no speedup claim.
   Verified locally 2026-11-10: `make check` passed (98 web unit tests including
-  `apps/web/tests/run-comparison.test.ts` and `policy-api.test.ts`; 2,079 Python passed, 176
-  skipped for no test database, Docker or OpenMP; Go tests passed), and 47 Playwright tests passed
+  `apps/web/tests/run-comparison.test.ts` and `policy-api.test.ts`; 2,155 Python passed, 177
+  skipped for no test database, Docker or OpenMP; Go tests passed; rerun after merging
+  `origin/main` at `746ec26`), and 47 Playwright tests passed
   against the production build, including `e2e/concurrency-controls.spec.ts`,
   `e2e/run-policy.spec.ts` and `e2e/compare-runs.spec.ts` (selected-UUID evidence, missing and
   invalid UUIDs, unavailable history, blocked and cross-configuration pairs, keyboard selection,
