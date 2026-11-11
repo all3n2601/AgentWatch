@@ -200,6 +200,25 @@ def test_the_threshold_respects_the_abstention_limit_on_mixed_steps():
     assert chosen["validation_mixed_abstention_rate"] == 0.0
 
 
+def test_the_threshold_limits_only_the_contract_abstention_scopes():
+    # The same steps as above; a contract without the mixed scope lets 0.9 abstain on both.
+    labels = ["none"] * 8 + ["cpu_sandbox"] * 2 + ["mixed"] * 2
+    predictions = ["none"] * 8 + ["none", "cpu_sandbox"] + ["cpu_sandbox", "none"]
+    confidences = [0.9] * 8 + [0.5, 0.9] + [0.3, 0.3]
+    flags = [False] * 10 + [True] * 2
+    chosen = choose_threshold(
+        labels,
+        predictions,
+        confidences,
+        CLASSES,
+        0.5,
+        mixed=flags,
+        scopes=("overall", "per_true_class"),
+    )
+    assert chosen["threshold"] == pytest.approx(0.9)
+    assert chosen["validation_mixed_abstention_rate"] == 1.0
+
+
 def test_mixed_steps_never_enter_the_validation_macro_f1():
     # The same single-class steps, with and without two mixed steps beside them.
     labels = ["none"] * 8 + ["cpu_sandbox"] * 2

@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 from agentwatch_data.extract import canonical_sha256
 
+from agentwatch_model.contract import ABSTENTION_SCOPES
 from agentwatch_model.metrics import f1_score, is_number, macro_f1
 
 DEFAULT_CALIBRATION = Path(__file__).with_name("calibration.toml")
@@ -174,22 +175,23 @@ def choose_threshold(
     classes: tuple[str, ...],
     max_rate: float,
     mixed: list[bool] | None = None,
+    scopes: tuple[str, ...] = ABSTENTION_SCOPES,
 ) -> dict:
     """The confidence threshold with the best validation macro F1 within the abstention limit.
 
     Candidates are zero (never abstain) and every distinct validation confidence; a step
-    abstains when its confidence is below the threshold. The limit applies overall, per true
-    class, and to the steps `mixed` marks, matching the contract's abstention scopes. Macro F1
-    is over single-class steps only (mixed-scoring-v1) and the classes with a defined F1, as
-    validation can lack classes. Ties keep the lowest threshold, so abstention is added only
-    when it measurably helps. Threshold zero abstains on nothing, so it is always within the
-    limit.
+    abstains when its confidence is below the threshold. The limit applies to each of `scopes`
+    (the contract's abstention_rate_scopes): overall, per true class on single-class steps, and
+    mixed_contention on the steps `mixed` marks. Macro F1 is over single-class steps only
+    (mixed-scoring-v1) and the classes with a defined F1, as validation can lack classes. Ties
+    keep the lowest threshold, so abstention is added only when it measurably helps. Threshold
+    zero abstains on nothing, so it is always within the limit.
     """
     flags = mixed or [False] * len(labels)
     single = [index for index, flag in enumerate(flags) if not flag]
     single_labels = [labels[index] for index in single]
 
-    def scopes(abstained: list[bool]) -> dict:
+    def measure(abstained: list[bool]) -> dict:
         return {
             "overall": rate(abstained),
             "mixed": rate([a for a, flag in zip(abstained, flags, strict=True) if flag]),
@@ -198,20 +200,26 @@ def choose_threshold(
             )["per_true_class"],
         }
 
+    def limited(measured: dict) -> list[dict]:
+        rates = {
+            "overall": [measured["overall"]],
+            "per_true_class": list(measured["per_true_class"].values()),
+            "mixed_contention": [measured["mixed"]],
+        }
+        return [scope_rate for scope in scopes for scope_rate in rates[scope]]
+
     best = {"threshold": 0.0, "validation_macro_f1_defined_classes": None}
     best_value = -math.inf
     for threshold in [0.0, *sorted(set(confidences))]:
         abstained = [confidence < threshold for confidence in confidences]
-        measured = scopes(abstained)
-        limited = [measured["overall"], measured["mixed"], *measured["per_true_class"].values()]
-        if not within_limit(limited, max_rate):
+        if not within_limit(limited(measure(abstained)), max_rate):
             continue
         kept = [None if abstained[index] else predictions[index] for index in single]
         value = macro_f1(abstaining_scores(single_labels, kept, classes))
         if value is not None and value > best_value:
             best_value = value
             best = {"threshold": threshold, "validation_macro_f1_defined_classes": value}
-    chosen = scopes([confidence < best["threshold"] for confidence in confidences])
+    chosen = measure([confidence < best["threshold"] for confidence in confidences])
     return best | {
         "validation_abstention_rate": chosen["overall"]["rate"],
         "validation_mixed_abstention_rate": chosen["mixed"]["rate"],

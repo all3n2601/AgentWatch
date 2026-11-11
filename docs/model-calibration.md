@@ -74,7 +74,8 @@ the model's best guess for inspection only.
   (`joint_only_steps_not_scored`, `slices.mixed_contention.joint_only`). The four-class metrics
   cover single-class steps only. The abstention threshold's macro F1 is judged on single-class
   validation steps, as the classifier's fit is, but the 20% limit also covers scored mixed
-  validation steps (the contract's mixed-contention scope), so a threshold that would abstain
+  validation steps (the contract's mixed-contention scope; validation limits the same
+  `abstention_rate_scopes` the test gate reads), so a threshold that would abstain
   on more of them is never chosen; `fit.threshold_selection` records the mixed rate. Unlike the
   test gate, validation applies the limit at any step count, as it does per class: with three
   mixed validation steps, one abstention (33%) rules a threshold out. The recorded overall

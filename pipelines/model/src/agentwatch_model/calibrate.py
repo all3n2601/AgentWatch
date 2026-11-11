@@ -258,6 +258,7 @@ def fit_on_validation(
         contract.classes,
         contract.max_abstention_rate,
         mixed=[is_mixed(rows[index]) for index in scored],
+        scopes=contract.abstention_rate_scopes,
     )
     return Fit(
         True,
