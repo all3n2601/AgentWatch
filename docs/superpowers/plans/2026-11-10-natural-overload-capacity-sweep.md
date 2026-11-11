@@ -421,10 +421,12 @@ in-memory live server from a test (already covered in Task 5); fix anything foun
 Not automatable. Each step records commands, start and end times and outcomes; failed and
 stopped attempts are kept.
 
-- [ ] **Step 1: Record the two sources** under `cfg-default`: `make vllm-up`, the API in
+- [x] **Step 1: Record the two sources** under `cfg-default`: `make vllm-up`, the API in
 Ubuntu, GPM exporter on Windows, then `make agent-run` for `fix-mean-empty` and
-`fix-window-count` with `--model-backend vllm`. A source must be completed with passing
-verification; keep failed attempts, never re-record a passing source.
+`fix-median-even` with `--model-backend vllm` and `--run-timeout 450`. A source must be
+completed with passing verification; keep failed attempts, never re-record a passing source.
+Done 2026-11-11 (`.data/a06-20261111/sources/`). `fix-window-count` failed 4 of 4 on vLLM and
+was replaced by `fix-median-even` (see the spec, "Changes before the first protocol session").
 - [ ] **Step 2: Sweep `cfg-default`**: `make agent-capacity-sweep CONFIG=cfg-default
 SOURCES="..."` with `--gpm-file` and `--dcgm-url` if DCGM is up. Then
 `python -m agentwatch_agent coverage` on one run per level for sampling quality.

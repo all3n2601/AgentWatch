@@ -48,6 +48,13 @@ STATE_READ_RETRY_PAUSE_SECONDS = 1.0
 # Each sweep runner waits this long after its run for vLLM's request spans.
 TRACE_WAIT_SECONDS = DEFAULT_TRACE_WAIT_SECONDS
 
+# Each run's time limit. Not the runner's 900 s default: every sampling round stores one record
+# per metric, and with vLLM, DCGM and GPM sampled every 0.25 s the live API's per-run sample
+# budget allows at most about 465 s (`config.validate_sample_budget`). Changed from 900 s on
+# 2026-11-11, before any protocol evidence existed, after the GPU preflight found every 900 s
+# run refused. The p90 criterion below is therefore 225 s.
+RUN_TIMEOUT_SECONDS = 450.0
+
 MIN_THROUGHPUT_GAIN = 0.10  # over the previous level
 MAX_PASS_RATE_DROP = 0.20  # below the N = 1 pass rate
 MAX_P90_FRACTION_OF_RUN_LIMIT = 0.5

@@ -426,17 +426,20 @@ never cloud capacity. The configurations are swept separately and never pooled.
 
 **Invocation.** One sweep per configuration, with the live API, vLLM and its trace collector
 running. Two sources are required: completed, verified runs of two different tasks
-(`fix-mean-empty` and `fix-window-count`), recorded once and replayed by every sweep.
+(`fix-mean-empty` and `fix-median-even`), recorded once on vLLM with the declared model and
+replayed by every sweep. A source recorded on another backend or model is refused before
+anything runs. `fix-window-count` cannot be a source: on vLLM `Qwen/Qwen3-1.7B` it failed
+verification 4 times out of 4 (2026-11-11), although it passes on Ollama `qwen3:1.7b`.
 
 ```sh
 # cfg-default: max-num-seqs 2, gpu-memory-utilization 0.6 (the Compose defaults)
 make vllm-up
-make agent-capacity-sweep CONFIG=cfg-default SOURCES=".data/sources/mean .data/sources/window"
+make agent-capacity-sweep CONFIG=cfg-default SOURCES=".data/sources/mean .data/sources/median"
 
 # cfg-hardware: max-num-seqs 16, gpu-memory-utilization 0.8, then 0.75 or 0.7 if vLLM will not start
 make vllm-down
 VLLM_MAX_NUM_SEQS=16 VLLM_GPU_MEMORY_UTILIZATION=0.8 make vllm-up
-make agent-capacity-sweep CONFIG=cfg-hardware SOURCES=".data/sources/mean .data/sources/window"
+make agent-capacity-sweep CONFIG=cfg-hardware SOURCES=".data/sources/mean .data/sources/median"
 ```
 
 Give `SOURCES` as paths relative to the repository root: make splits it on spaces, and the
@@ -453,8 +456,11 @@ refused), the served model must be the declared `Qwen/Qwen3-1.7B@70d244cc86cc`, 
 only targets a loopback vLLM. `--api-url` (default `AGENTWATCH_API_URL` or
 `http://127.0.0.1:8090`) is the live API the runs report to. `--output-dir` (default
 `.data/capacity-sweeps`, resolved to an absolute folder when the sweep starts) and
-`--run-timeout` (default 900 s) apply as for `batch`; a run timeout whose flood bound
-(timeout + 32 s) exceeds the injector's 1,800 s cap is refused before anything runs. The
+`--run-timeout` apply as for `batch`, but the run timeout defaults to the protocol's 450 s,
+and any other value gives a different protocol hash. At 0.25 s with vLLM, DCGM and GPM, the
+per-run sample budget allows about 465 s, so the runner's 900 s default would refuse every
+run. A run timeout over the sample budget, or one whose flood bound (timeout + 32 s) exceeds
+the injector's 1,800 s cap, is refused before anything runs. The
 model, `--vllm-traces-file`, `--dcgm-url` and `--gpm-file` arguments are the `run`
 command's. vLLM does not report `max_num_seqs`, so the configuration check reads the vLLM
 container's launch arguments with `docker inspect` (`--vllm-container`, default

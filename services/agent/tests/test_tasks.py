@@ -8,6 +8,7 @@ from agentwatch_sandbox.project_tests import run_project_tests
 
 CORRECT_PATCH = {
     "fix-mean-empty": "return-none-for-empty",
+    "fix-median-even": "average-middle-pair",
     "fix-window-count": "include-final-window",
 }
 

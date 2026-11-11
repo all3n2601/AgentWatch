@@ -758,6 +758,38 @@ frozen evaluation sets without tuning against them.
   ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
   evaluable release; open until one covering all four classes passes the leakage check.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
+  2026-11-11 (A06, draft PR #65 on branch `feature/natural-overload-capacity-sweep`, stacked on
+  #64, not yet merged): `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the
+  declared protocol `natural-overload-sweep-v1`
+  ([design](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md)). It
+  decides capacity by the declared rules and validates the contention label against vLLM's
+  measured queue time. The GPU preflight on 2026-11-11 (evidence `.data/a06-20261111/`) led to
+  two protocol changes, approved by Benoy before any protocol evidence existed:
+  - **Run limit 900 s → 450 s.** With vLLM, DCGM and GPM sampled every 0.25 s, the per-run
+    sample budget (80,000 records, under the live API's 100,000) fits only about 465 s. Every
+    900 s run was refused before it started. The p90 criterion (half the run limit) is now
+    225 s, which is stricter. The sweep now checks the budget before anything runs.
+  - **Second source `fix-window-count` → `fix-median-even`.** `fix-window-count` failed 4 of 4
+    runs on vLLM `Qwen/Qwen3-1.7B` at temperature 0: it skipped the test file, applied
+    `skip-first-window` and never applied `include-final-window`. It had passed 12 of 12 on
+    Ollama `qwen3:1.7b`, a different model build. The task and the prompt were not changed to
+    make it pass.
+    - The new task `fix-median-even` (revision 1; 4 fixture tests: fails unpatched, passes
+      only with `average-middle-pair`) was declared with one design and at most 3 attempts.
+      It passed on vLLM on the first attempt.
+    - It is not in `split-v2`, so its runs need a `split-v3` assignment before any dataset
+      release.
+
+  The preflight also checked the live path and the full sweep flow:
+  - **16-agent live batch:** all 63,427 events delivered; CPU/NVML sampler 0 late of 1,495
+    rounds; service sampler 28 late and 4 missed of 1,453; vLLM timing on 80 of 80 calls.
+  - **`docker inspect` from WSL:** confirmed `max_num_seqs`.
+  - **Non-protocol dry sweep (300 s limit):** completed with every run passing, the prefill
+    flood active (median 2,080 prompt tokens, every reply 1 token) and cleanup confirmed. As
+    preflight evidence it is not a capacity result.
+
+  Open until both configurations are swept under the protocol and the capacity record is
+  written, and until model and rule scoring of the evidence (A06 PR 3) is done.
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
   2026-11-10 (M04): `make calibrate` fits `calibration-v1` temperature scaling and the abstention
   threshold on the validation split only, then reports test-split ECE, abstention rates, clean

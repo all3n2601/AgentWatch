@@ -21,6 +21,7 @@ from agentwatch_agent.config import RunConfiguration, RunLimits
 from agentwatch_agent.sweep_protocol import (
     INJECTOR_CONCURRENCY,
     INJECTOR_PROMPT_TOKENS,
+    RUN_TIMEOUT_SECONDS,
     SAMPLING_INTERVAL_SECONDS,
     TRACE_WAIT_SECONDS,
     Batch,
@@ -33,7 +34,11 @@ from agentwatch_worker.nvml import GpuIdentity, NvmlUnavailable
 def test_tasks_command_lists_pinned_identities(capsys):
     assert cli.main(["tasks"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert [line.split("\t")[1] for line in lines] == ["fix-mean-empty-r1", "fix-window-count-r1"]
+    assert [line.split("\t")[1] for line in lines] == [
+        "fix-mean-empty-r1",
+        "fix-median-even-r1",
+        "fix-window-count-r1",
+    ]
 
 
 def test_unknown_task_is_a_usage_error(capsys):
@@ -491,7 +496,12 @@ def sweep_stubs(monkeypatch):
     monkeypatch.setattr(
         cli,
         "load_replay_plan",
-        lambda directory, task: SimpleNamespace(task_id=task.task_id, source=directory.name),
+        lambda directory, task: SimpleNamespace(
+            task_id=task.task_id,
+            source=directory.name,
+            model_backend="vllm",
+            model=cli.SERVED_MODEL_NAME,
+        ),
     )
     monkeypatch.setattr(
         cli,
@@ -579,6 +589,68 @@ def test_capacity_sweep_refuses_the_ollama_backend(tmp_path, sweep_stubs, capsys
 def test_capacity_sweep_refuses_a_model_other_than_the_declared_one(tmp_path, sweep_stubs, capsys):
     code = cli.main(sweep_argv(tmp_path, "--model", "other/model@abc"))
     assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "declared model")
+
+
+@pytest.mark.parametrize(
+    ("backend", "model", "message"),
+    [
+        ("ollama", cli.SERVED_MODEL_NAME, "recorded on ollama"),
+        ("vllm", "qwen3:1.7b", "recorded with model"),
+    ],
+)
+def test_capacity_sweep_refuses_a_source_recorded_on_another_server_or_model(
+    tmp_path, sweep_stubs, capsys, monkeypatch, backend, model, message
+):
+    # A replay must run on the backend and model it was recorded with; the sweep checks that
+    # before anything starts rather than letting every run fail.
+    monkeypatch.setattr(
+        cli,
+        "load_replay_plan",
+        lambda directory, task: SimpleNamespace(
+            task_id=task.task_id,
+            source=directory.name,
+            model_backend=backend if directory.name == "b" else "vllm",
+            model=model if directory.name == "b" else cli.SERVED_MODEL_NAME,
+        ),
+    )
+    code = cli.main(sweep_argv(tmp_path))
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, message)
+
+
+def test_the_sweep_defaults_to_the_protocol_run_limit(tmp_path, sweep_stubs):
+    assert RUN_TIMEOUT_SECONDS == 450.0
+    cli.main(sweep_argv(tmp_path))
+    (sweep,) = sweep_stubs.instances
+    assert sweep.kwargs["run_timeout_seconds"] == RUN_TIMEOUT_SECONDS
+
+
+def test_the_protocol_run_limit_fits_the_sample_budget_with_every_gpu_source(tmp_path, sweep_stubs):
+    cli.main(
+        sweep_argv(
+            tmp_path,
+            "--dcgm-url",
+            "http://127.0.0.1:9400/metrics",
+            "--gpm-file",
+            str(tmp_path / "gpm.prom"),
+        )
+    )
+    assert len(sweep_stubs.instances) == 1
+
+
+def test_capacity_sweep_refuses_a_run_limit_over_the_sample_budget(tmp_path, sweep_stubs, capsys):
+    # 900 s at 0.25 s with vLLM, DCGM and GPM metrics would exceed the live API's per-run budget,
+    # so every runner would refuse to start; the sweep refuses before creating anything.
+    argv = sweep_argv(
+        tmp_path,
+        "--run-timeout",
+        "900",
+        "--dcgm-url",
+        "http://127.0.0.1:9400/metrics",
+        "--gpm-file",
+        str(tmp_path / "gpm.prom"),
+    )
+    code = cli.main(argv)
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "sample budget")
 
 
 def test_capacity_sweep_only_floods_a_loopback_server(tmp_path, sweep_stubs, capsys):
@@ -855,8 +927,10 @@ def test_code_revision_without_git_is_unavailable(monkeypatch):
 
 
 def test_a_run_timeout_beyond_the_injector_bound_is_refused_before_anything_runs(
-    tmp_path, sweep_stubs, capsys
+    tmp_path, sweep_stubs, capsys, monkeypatch
 ):
-    # 1790 s fits a run, but its flood bound, 1790 + 32 s, exceeds the injector's 1800 s cap.
+    # The sample budget refuses such long runs first today; with it out of the way, 1790 s
+    # fits a run, but its flood bound, 1790 + 32 s, exceeds the injector's 1800 s cap.
+    monkeypatch.setattr(cli, "validate_sample_budget", lambda *_args: None)
     code = cli.main(sweep_argv(tmp_path, "--run-timeout", "1790"))
     assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "max_duration_seconds")

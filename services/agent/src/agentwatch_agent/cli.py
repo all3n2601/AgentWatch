@@ -70,6 +70,7 @@ from agentwatch_agent.config import (
     DEFAULT_MODEL,
     MODEL_BACKENDS,
     RunLimits,
+    validate_sample_budget,
 )
 from agentwatch_agent.coverage import CoverageError, coverage_report
 from agentwatch_agent.delivery import (
@@ -100,6 +101,7 @@ from agentwatch_agent.runner import (
     JOURNAL_FILE,
     AgentRunner,
     default_output_dir,
+    sampled_metric_names,
     write_json_atomic,
 )
 from agentwatch_agent.sampling_overhead import measure_sampling_overhead
@@ -117,6 +119,7 @@ from agentwatch_agent.sweep_protocol import (
     INJECTOR_BOUND_MARGIN_SECONDS,
     INJECTOR_CONCURRENCY,
     INJECTOR_PROMPT_TOKENS,
+    RUN_TIMEOUT_SECONDS,
     SAMPLING_INTERVAL_SECONDS,
     SOURCE_COUNT,
     TRACE_WAIT_SECONDS,
@@ -461,8 +464,9 @@ def parser() -> argparse.ArgumentParser:
     sweep.add_argument(
         "--run-timeout",
         type=positive_seconds,
-        default=RunLimits().run_timeout_seconds,
-        help="Time limit of each run, in seconds",
+        default=RUN_TIMEOUT_SECONDS,
+        help="Time limit of each run, in seconds; the protocol declares "
+        f"{RUN_TIMEOUT_SECONDS:g} s, and any other value gives a different protocol hash",
     )
     sweep.add_argument(
         "--start-attempt",
@@ -1010,7 +1014,27 @@ def capacity_sweep_command(args: argparse.Namespace) -> int:
         if model.name != SERVED_MODEL_NAME:
             raise ValueError(f"the sweep's declared model is {SERVED_MODEL_NAME}, not {model.name}")
         loopback_url(model.endpoint)  # contention only ever targets local capacity
+        # Every sweep runner samples the GPU and vLLM, plus DCGM and GPM when given; a run
+        # limit over the sample budget would make every runner refuse to start.
+        validate_sample_budget(
+            limits.run_timeout_seconds,
+            SAMPLING_INTERVAL_SECONDS,
+            len(
+                sampled_metric_names(
+                    gpu=True,
+                    vllm=True,
+                    dcgm=args.dcgm_url is not None,
+                    gpm=args.gpm_file is not None,
+                )
+            ),
+        )
         sources = load_sweep_sources(args.source)
+        for _task, plan in sources:
+            # A replay runs only on the backend and model it was recorded with (ReplayRunner).
+            if plan.model_backend != "vllm":
+                raise ValueError(f"source {plan.task_id} was recorded on {plan.model_backend}")
+            if plan.model != SERVED_MODEL_NAME:
+                raise ValueError(f"source {plan.task_id} was recorded with model {plan.model}")
     except (TaskDefinitionError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_USAGE

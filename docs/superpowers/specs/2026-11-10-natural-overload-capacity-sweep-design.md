@@ -70,8 +70,10 @@ exists under v1 yet, so its values may still change under it until then (Ruling 
     at 0.8, the operator tries 0.75, then 0.7; every attempt is recorded and the value that
     starts is the one used. No other fallback.
 - **Workload:** concurrent replays (`agent-replay-v1`) of two frozen sources, one passing
-  `run` of `fix-mean-empty` and one of `fix-window-count`, both recorded once under
-  `cfg-default` and never re-recorded. Sources alternate within a batch.
+  `run` of `fix-mean-empty` and one of `fix-median-even`, both recorded once on vLLM under
+  `cfg-default` and never re-recorded. Sources alternate within a batch. (`fix-window-count`
+  was the planned second source; see "Changes before the first protocol session".)
+- **Run limit:** 450 s per run (`RUN_TIMEOUT_SECONDS`), not the runner's 900 s default.
 - **Ramp:** N = 1, 2, 3, 4, 6, 8, 12, 16 concurrent replays (16 is the ceiling, below
   `batch`'s 32). One discarded warm-up batch per configuration. Three batches per level,
   except N = 1, which runs three batches per source (six), so each source has the three
@@ -80,7 +82,7 @@ exists under v1 yet, so its values may still change under it until then (Ruling 
   most 30 s), then pause a fixed 10 s.
 - **Hard stop** — the ramp ends at the first level with any of:
   - a run that fails for an infrastructure reason: out of memory, a model-server error or
-    refused request, or the 900 s run limit;
+    refused request, or the 450 s run limit;
   - unconfirmed cleanup: vLLM still busy after the 30 s idle wait, or injector cleanup not
     confirmed;
   - a vLLM restart (its `process_start_time_seconds` changed).
@@ -98,7 +100,7 @@ exists under v1 yet, so its values may still change under it until then (Ruling 
   - throughput (passed runs per batch-minute, batch mean) at least 10% above the previous
     level's (N = 1 has no previous level and passes this criterion);
   - pass rate no more than 20 percentage points below N = 1's;
-  - p90 run duration at most 50% of the run limit (450 s).
+  - p90 run duration at most 50% of the run limit (225 s).
   - N = 1 must have at least one passed run, otherwise capacity is "below 1".
 
   The ramp continues past the knee to a hard stop or the ceiling, so the whole curve is
@@ -119,6 +121,37 @@ exists under v1 yet, so its values may still change under it until then (Ruling 
   holds it out. That covers `prefill-flood-openai-chat-v1` in `held_out_injection_methods`, and
   also the natural-overload replays, which carry no injection method, so the hold-out must
   also match them by their sweep protocol (`natural-overload-sweep-v1`), not by method alone.
+
+### Changes before the first protocol session (2026-11-11)
+
+Both changes came from the GPU preflight on 2026-11-11, before any evidence existed under
+`natural-overload-sweep-v1`. Benoy approved them, so the version stays v1 (Ruling 20).
+Preflight evidence is in `.data/a06-20261111/`.
+
+- **Run limit 900 s → 450 s.** Every sampling round stores one record per sampled metric,
+  and the live API keeps at most 100,000 records per run. The runner therefore refuses any
+  run that could store more than 80,000 samples (`validate_sample_budget`). At 0.25 s, the
+  sweep samples 43 metrics per round: CPU, NVML, vLLM, DCGM and GPM. Only about 465 s fits
+  that budget (769 s with vLLM metrics alone), so every 900 s run was refused before it
+  started. As a result, the p90 criterion (half the run limit) is now 225 s instead of 450 s,
+  which is stricter. The sweep now checks the budget before anything runs and exits 2 if the
+  run limit does not fit.
+- **Second source: `fix-window-count` → `fix-median-even`.**
+  - Replays need a passed source recorded on the same backend and model.
+  - `fix-window-count` failed verification in 4 of 4 runs on vLLM `Qwen/Qwen3-1.7B` at
+    temperature 0 (2026-11-11T16:02Z, `.data/a06-20261111/sources/`). It skipped
+    `test_windows.py`, applied `skip-first-window`, then named `include-final-window` but
+    never applied it.
+  - It had passed 12 of 12 times earlier on Ollama `qwen3:1.7b`, a different build of the
+    model.
+  - The task and the agent prompt were not changed to make it pass, which would be tuning
+    after seeing the result.
+  - Instead, a new task, `fix-median-even` (revision 1), was written in the same form as
+    `fix-mean-empty`. The rule for it was declared before any result: one design, at most 3
+    recording attempts, and a fallback to `fix-mean-empty` alone if it failed. It passed on
+    its first attempt (run `291762be-6b24-4bd4-9a32-7cfafe831f1b`, 2026-11-11T18:40Z).
+  - The sweep now also refuses, before anything runs, a source recorded on another backend
+    or model.
 
 ## PR 1: prefill-flood injector
 
@@ -171,7 +204,7 @@ instead of two copies.
 
 ```
 capacity-sweep --configuration cfg-default|cfg-hardware \
-  --source <fix-mean-empty run dir> --source <fix-window-count run dir> \
+  --source <fix-mean-empty run dir> --source <fix-median-even run dir> \
   [--vllm-traces-file ...] [--dcgm-url ...] [--gpm-file ...]
 ```
 

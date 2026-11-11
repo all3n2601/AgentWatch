@@ -174,6 +174,17 @@ def is_agent_decision_failure(reason: object) -> bool:
     return isinstance(reason, str) and any(p.fullmatch(reason) for p in _AGENT_DECISION_PATTERNS)
 
 
+def sampled_metric_names(*, gpu: bool, vllm: bool, dcgm: bool, gpm: bool) -> tuple[str, ...]:
+    """Every metric one sampling round records; each is one record against the sample budget."""
+    metrics = CPU_METRICS + (GPU_METRICS if gpu else ())
+    service = (
+        (VLLM_METRICS if vllm else ())
+        + (DCGM_METRICS if dcgm else ())
+        + (GPM_METRICS if gpm else ())
+    )
+    return tuple(metric for metric, _unit in metrics) + tuple(e.metric for e in service)
+
+
 # Raised by urllib/json/Ollama helpers for a failed or unusable model request.
 MODEL_REQUEST_ERRORS = (OSError, http.client.HTTPException, RuntimeError, ValueError)
 
@@ -751,13 +762,12 @@ class AgentRunner:
         )
 
     def _sampled_metrics(self) -> tuple[str, ...]:
-        metrics = CPU_METRICS + (GPU_METRICS if self.open_gpu is not None else ())
-        service = (
-            (VLLM_METRICS if self.model.backend == "vllm" else ())
-            + (DCGM_METRICS if self.dcgm_metrics_url is not None else ())
-            + (GPM_METRICS if self.gpm_file is not None else ())
+        return sampled_metric_names(
+            gpu=self.open_gpu is not None,
+            vllm=self.model.backend == "vllm",
+            dcgm=self.dcgm_metrics_url is not None,
+            gpm=self.gpm_file is not None,
         )
-        return tuple(metric for metric, _unit in metrics) + tuple(e.metric for e in service)
 
     def _probes(self, resources: dict[str, ResourceRegistration]) -> list[Probe]:
         probes: list[Probe] = [CpuProbe(resources["tool_host"], self.proc, self.cgroup_root)]
