@@ -30,20 +30,23 @@ import functools
 import http.client
 import json
 import os
+import platform
 import signal
 import sys
 import time
 import urllib.parse
 from contextlib import ExitStack
+from dataclasses import asdict
 from pathlib import Path
 from types import FrameType
 from uuid import uuid4
 
-from agentwatch_injectors.base import InjectorCleanupError
+from agentwatch_injectors.base import BoundedInjector, InjectorCleanupError
 from agentwatch_injectors.inference import loopback_url
+from agentwatch_injectors.prefill import PrefillFloodInjector
 from agentwatch_sdk import LiveClient
 from agentwatch_sdk.live import ResourceRegistration
-from agentwatch_worker.nvml import NvmlDevice
+from agentwatch_worker.nvml import NvmlDevice, NvmlUnavailable
 from agentwatch_worker.ollama import ollama_base_url
 
 from agentwatch_agent.admission import (
@@ -81,9 +84,15 @@ from agentwatch_agent.experiment import (
 )
 from agentwatch_agent.model import ChatModel, OllamaChatModel, VllmChatModel
 from agentwatch_agent.overhead import OverheadFailed, measure_overhead
-from agentwatch_agent.replay import ReplayPlanError, ReplayRunner, load_replay_plan
+from agentwatch_agent.replay import (
+    ReplayPlan,
+    ReplayPlanError,
+    ReplayRunner,
+    load_replay_plan,
+)
 from agentwatch_agent.resources import Probe
 from agentwatch_agent.runner import (
+    EVIDENCE_FILE,
     JOURNAL_FILE,
     AgentRunner,
     default_output_dir,
@@ -92,7 +101,23 @@ from agentwatch_agent.runner import (
 from agentwatch_agent.sampling_overhead import measure_sampling_overhead
 from agentwatch_agent.service_probes import GpmFileProbe, dcgm_probe, vllm_probe
 from agentwatch_agent.session import CancellationState
+from agentwatch_agent.sweep import (
+    COMPLETED,
+    REFUSED_CONFIGURATION,
+    STOPPED_RESEND_NEEDED,
+    CapacitySweep,
+)
+from agentwatch_agent.sweep_protocol import (
+    CONFIGURATIONS,
+    INJECTOR_CONCURRENCY,
+    INJECTOR_PROMPT_TOKENS,
+    SOURCE_COUNT,
+    Batch,
+    VllmConfiguration,
+)
 from agentwatch_agent.tasks import Task, TaskDefinitionError, load_task, task_names
+from agentwatch_agent.vllm import vllm_models
+from agentwatch_agent.vllm_server import SERVED_MODEL_NAME, read_server_state
 
 EXIT_PASSED, EXIT_FAILED, EXIT_INCOMPLETE_DELIVERY, EXIT_LIVE_UNAVAILABLE = 0, 1, 3, 4
 EXIT_RECORDS_REFUSED = 5
@@ -104,6 +129,8 @@ DEFAULT_VLLM_URL = "http://127.0.0.1:8000"
 # The Compose service's served name, which carries the weights' revision (compose.yaml).
 DEFAULT_VLLM_MODEL = "Qwen/Qwen3-1.7B@70d244cc86cc"
 DEFAULT_VLLM_TRACES_FILE = ".data/otel/vllm-traces.jsonl"
+DEFAULT_SWEEP_DIR = ".data/capacity-sweeps"
+START_ATTEMPT_STARTED = "started"
 LIVE_TIMEOUT_SECONDS = 10
 
 
@@ -398,6 +425,41 @@ def parser() -> argparse.ArgumentParser:
     )
     experiment.add_argument(
         "--retrieval-threads", type=positive_int, default=defaults.retrieval_threads
+    )
+
+    sweep = commands.add_parser(
+        "capacity-sweep",
+        help="Ramp concurrent replays on one vLLM configuration and record its capacity",
+    )
+    sweep.add_argument("--configuration", required=True, choices=tuple(CONFIGURATIONS))
+    sweep.add_argument(
+        "--source",
+        type=Path,
+        action="append",
+        required=True,
+        help="Recorded run directory to replay; give exactly two, of different tasks",
+    )
+    add_model_arguments(sweep)
+    # The sweep measures vLLM only: it never falls back to AGENTWATCH_MODEL_BACKEND.
+    sweep.set_defaults(model_backend="vllm")
+    add_server_evidence_arguments(sweep)
+    sweep.add_argument(
+        "--api-url", type=http_url, default=os.environ.get("AGENTWATCH_API_URL", DEFAULT_API_URL)
+    )
+    sweep.add_argument("--output-dir", type=Path, default=Path(DEFAULT_SWEEP_DIR))
+    sweep.add_argument(
+        "--run-timeout",
+        type=positive_seconds,
+        default=RunLimits().run_timeout_seconds,
+        help="Time limit of each run, in seconds",
+    )
+    sweep.add_argument(
+        "--start-attempt",
+        action="append",
+        default=[],
+        metavar="UTIL:OUTCOME",
+        help="An attempt to start vLLM, e.g. '0.8:failed: CUDA out of memory' then "
+        "'0.75:started'; repeatable, the last must be 'started'",
     )
 
     overhead = commands.add_parser(
@@ -809,6 +871,212 @@ def report_experiment(manifest: dict, output_dir: Path) -> int:
     return EXIT_PASSED if manifest.get("passed") else EXIT_FAILED
 
 
+def source_task(source_dir: Path) -> Task:
+    """The task a recorded run's evidence names."""
+    path = source_dir / EVIDENCE_FILE
+    try:
+        name = json.loads(path.read_bytes())["task"]["name"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ReplayPlanError(f"Cannot read the task from source evidence {path}") from error
+    if not isinstance(name, str):
+        raise ReplayPlanError(f"Source evidence {path} names no task")
+    return load_task(name)
+
+
+def load_sweep_sources(source_dirs: list[Path]) -> list[tuple[Task, ReplayPlan]]:
+    """Each source's task and replay plan; two sources must be of different tasks."""
+    if len(source_dirs) != SOURCE_COUNT:
+        raise ValueError(f"a sweep replays exactly {SOURCE_COUNT} sources, not {len(source_dirs)}")
+    try:
+        tasks = [source_task(directory) for directory in source_dirs]
+        if len({task.task_id for task in tasks}) != len(tasks):
+            raise ValueError("the sources must be runs of different tasks, not one task twice")
+        return [
+            (task, load_replay_plan(directory, task))
+            for directory, task in zip(source_dirs, tasks, strict=True)
+        ]
+    except ReplayPlanError as error:
+        raise ValueError(f"cannot replay the sources: {error}") from error
+
+
+def parse_start_attempts(
+    attempts: list[str], configuration: VllmConfiguration
+) -> list[dict] | None:
+    """The operator's vLLM start attempts; the last must be a declared utilization that started."""
+    if not attempts:
+        return None
+    parsed = []
+    for text in attempts:
+        utilization, separator, outcome = text.partition(":")
+        try:
+            value = float(utilization)
+        except ValueError:
+            value = float("nan")
+        if not separator or not 0 < value <= 1 or not outcome.strip():
+            raise ValueError(f"start attempt {text!r} is not UTILIZATION:OUTCOME, e.g. 0.8:started")
+        parsed.append({"gpu_memory_utilization": value, "outcome": outcome.strip()})
+    if any(attempt["outcome"] == START_ATTEMPT_STARTED for attempt in parsed[:-1]):
+        raise ValueError("start attempts: only the last one may be 'started'")
+    last = parsed[-1]
+    if last["outcome"] != START_ATTEMPT_STARTED:
+        raise ValueError("the last start attempt must be 'started', with the utilization vLLM uses")
+    if last["gpu_memory_utilization"] not in configuration.gpu_memory_utilization:
+        declared = ", ".join(str(value) for value in configuration.gpu_memory_utilization)
+        raise ValueError(
+            f"the start attempt that started used {last['gpu_memory_utilization']}, but "
+            f"{configuration.name} declares {declared}"
+        )
+    return parsed
+
+
+def host_record() -> dict:
+    """Platform, CPU count and GPU identity; anything unavailable is recorded as unavailable."""
+    try:
+        device = NvmlDevice.open()
+    except NvmlUnavailable as error:
+        gpu = {"status": "unavailable", "reason": str(error)}
+    else:
+        try:
+            identity = asdict(device.identity)
+            gpu = {"status": "available"} | {
+                key: identity[key]
+                for key in ("name", "driver_version", "memory_total_bytes", "device_count")
+            }
+        finally:
+            device.close()
+    return {
+        "platform": platform.platform(),
+        "kernel": platform.release(),
+        "cpu_count": os.cpu_count(),
+        "gpu": gpu,
+    }
+
+
+def capacity_sweep_command(args: argparse.Namespace) -> int:
+    configuration = CONFIGURATIONS[args.configuration]
+    try:
+        if args.model_backend != "vllm":
+            raise ValueError("the capacity sweep measures vLLM; use --model-backend vllm")
+        start_attempts = parse_start_attempts(args.start_attempt, configuration)
+        limits = RunLimits(run_timeout_seconds=args.run_timeout)
+        model = build_model(args)
+        if model.name != SERVED_MODEL_NAME:
+            raise ValueError(f"the sweep's declared model is {SERVED_MODEL_NAME}, not {model.name}")
+        loopback_url(model.endpoint)  # contention only ever targets local capacity
+        sources = load_sweep_sources(args.source)
+    except (TaskDefinitionError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    transport = LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS)
+    evidence = server_evidence(args)
+    metrics_url = args.vllm_url.rstrip("/") + "/metrics"
+
+    def runner_settings(directory: Path, clock: MonotonicClock) -> dict:
+        # No admission: the sweep never reads the concurrency policy. One model client per run.
+        return {
+            "model": build_model(args),
+            "transport": transport,
+            "output_dir": directory,
+            "limits": limits,
+            "clock": clock,
+            "open_gpu": NvmlDevice.open,
+            **evidence,
+        }
+
+    def make_batch(batch: Batch, path: Path, clock: MonotonicClock) -> AgentBatch:
+        runners = []
+        for index, source in enumerate(batch.sources, 1):
+            task, plan = sources[source]
+            directory = path / "runs" / f"{index:02d}-{task.name}"
+            runners.append(ReplayRunner(plan=plan, task=task, **runner_settings(directory, clock)))
+        return AgentBatch(runners, None, path)
+
+    def make_live_batch(count: int, path: Path, clock: MonotonicClock) -> AgentBatch:
+        runners = []
+        for index in range(1, count + 1):
+            task, _plan = sources[(index - 1) % len(sources)]
+            directory = path / "runs" / f"{index:02d}-{task.name}"
+            runners.append(AgentRunner(task=task, **runner_settings(directory, clock)))
+        return AgentBatch(runners, None, path)
+
+    def make_injectors(clock: MonotonicClock, bound_seconds: float) -> list[BoundedInjector]:
+        return [
+            PrefillFloodInjector(
+                clock,
+                bound_seconds,
+                url=model.endpoint,
+                model=SERVED_MODEL_NAME,
+                concurrency=INJECTOR_CONCURRENCY,
+                prompt_tokens=INJECTOR_PROMPT_TOKENS,
+            )
+        ]
+
+    try:
+        # Validates the runners and the injector settings; nothing is created or started.
+        every_source = tuple(range(len(sources)))
+        make_batch(Batch("ramp", len(sources), 0, every_source, False), Path(), MonotonicClock())
+        make_injectors(MonotonicClock(), limits.run_timeout_seconds)
+    except ValueError as error:
+        print(f"error: cannot run the sweep: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    sweep_dir = args.output_dir / f"{configuration.name}-{stamp}-{uuid4().hex[:6]}"
+    sweep = CapacitySweep(
+        configuration=configuration,
+        sources=[plan for _task, plan in sources],
+        output_dir=sweep_dir,
+        run_timeout_seconds=limits.run_timeout_seconds,
+        make_batch=make_batch,
+        make_live_batch=make_live_batch,
+        make_injectors=make_injectors,
+        read_state=functools.partial(read_server_state, metrics_url),
+        models=functools.partial(vllm_models, model.endpoint),
+        host=host_record(),
+        start_attempts=start_attempts,
+    )
+
+    def handle_signal(number: int, _frame: FrameType | None) -> None:
+        # Lock-free and print-free, as for `run`.
+        reason = f"Cancelled by operator signal {signal.Signals(number).name}"
+        sweep.request_cancel_from_signal("signal", reason)
+
+    previous = {sig: signal.signal(sig, handle_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        record = sweep.run()
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    return report_sweep(record, sweep_dir)
+
+
+def report_sweep(record: dict, sweep_dir: Path) -> int:
+    """Print the sweep's outcome and map its state to the exit code."""
+    state = record["state"]
+    print(f"Sweep: {sweep_dir}")
+    print(f"State: {state}; ramp ended: {record.get('ramp_end') or 'not reached'}")
+    if record.get("stop_reason"):
+        print(f"Stopped: {record['stop_reason']}")
+    decision = record.get("capacity_decision")
+    if decision:
+        print(f"Capacity: capacity {decision['capacity']} ({decision['result']})")
+    overall = (record.get("label_validation") or {}).get("overall")
+    if overall:
+        print(f"Label validation: {overall['verdict']}")
+    if state == STOPPED_RESEND_NEEDED:
+        print(
+            "Live evidence is incomplete for at least one run; resend each journal named in "
+            f"{sweep_dir / 'sweep.json'} with the `resend` command.",
+            file=sys.stderr,
+        )
+    if state == COMPLETED:
+        return EXIT_PASSED
+    if state == REFUSED_CONFIGURATION:
+        return EXIT_USAGE
+    if state == STOPPED_RESEND_NEEDED:
+        return EXIT_INCOMPLETE_DELIVERY
+    return EXIT_FAILED
+
+
 def tasks_command() -> int:
     for name in task_names():
         task = load_task(name)
@@ -1016,6 +1284,8 @@ def main(argv: list[str] | None = None) -> int:
         return tasks_command()
     if args.command == "experiment":
         return experiment_command(args)
+    if args.command == "capacity-sweep":
+        return capacity_sweep_command(args)
     if args.command == "overhead":
         return overhead_command(args)
     if args.command == "sampling-overhead":

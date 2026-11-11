@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset optimization-schedule compare-optimization rule-baseline train-candidates calibrate freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset optimization-schedule compare-optimization rule-baseline train-candidates calibrate freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment agent-capacity-sweep sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -213,6 +213,12 @@ agent-overhead: ## Measure agent instrumentation overhead (live API must be runn
 
 agent-experiment: ## Replay a task cleanly and under bounded CPU/inference/retrieval/mixed contention (AGENT_TASK=name, SOURCE=run dir to replay)
 	uv run --package agentwatch-agent python -m agentwatch_agent experiment --task $(AGENT_TASK) $(if $(SOURCE),--source "$(SOURCE)")
+
+agent-capacity-sweep: ## Ramp concurrent replays on the running vLLM configuration (CONFIG=cfg-default|cfg-hardware, SOURCES="dir1 dir2", START_ATTEMPTS="0.8:failed: reason;0.75:started" optional)
+	@test -n "$(CONFIG)" && test -n "$(SOURCES)" || { echo 'usage: make agent-capacity-sweep CONFIG=cfg-default|cfg-hardware SOURCES="<mean run dir> <window run dir>"' >&2; exit 2; }
+	@set -f; attempts='$(START_ATTEMPTS)'; set --; IFS=';'; \
+	for attempt in $$attempts; do set -- "$$@" --start-attempt "$$attempt"; done; unset IFS; \
+	uv run --package agentwatch-agent python -m agentwatch_agent capacity-sweep --configuration $(CONFIG) $(foreach source,$(SOURCES),--source "$(source)") "$$@"
 
 SANDBOX_IMAGE = $$(uv run --package agentwatch-sandbox python -c "from agentwatch_sandbox.container import SANDBOX_IMAGE; print(SANDBOX_IMAGE)")
 

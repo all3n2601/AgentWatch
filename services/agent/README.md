@@ -405,6 +405,114 @@ are labeling metadata and must never become features. On WSL2, CPU contention al
 model server's container, and retrieval contention slows every runner thread (see the
 [injector limitations](../injectors/README.md#limitations)).
 
+## Capacity sweep
+
+`capacity-sweep` grows the number of concurrent coding agents on one vLLM configuration and
+records what each level does to throughput, pass rate, run duration, measured queueing,
+failures and cleanup. It declares that configuration's capacity from a rule fixed in code
+before any GPU session, validates the experiment labels against the queue time vLLM measured
+for the same request, and then records a prefill-flood injection at half of capacity. The
+design is in the [capacity-sweep spec](../../docs/superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md);
+the declared values are in `sweep_protocol.py` (`natural-overload-sweep-v1`) and are hashed
+into `sweep.json`. The sweep runs without the concurrency policy (`admission.status:
+not_configured`).
+
+Results describe this laptop (RTX 5070 Laptop, 8 GB, WSL2) and the named configuration only,
+never cloud capacity. The configurations are swept separately and never pooled.
+
+**Invocation.** One sweep per configuration, with the live API, vLLM and its trace collector
+running. Two sources are required: completed, verified runs of two different tasks
+(`fix-mean-empty` and `fix-window-count`), recorded once and replayed by every sweep.
+
+```sh
+# cfg-default: max-num-seqs 2, gpu-memory-utilization 0.6 (the Compose defaults)
+make vllm-up
+make agent-capacity-sweep CONFIG=cfg-default SOURCES="<mean run dir> <window run dir>"
+
+# cfg-hardware: max-num-seqs 16, gpu-memory-utilization 0.8, then 0.75 or 0.7 if vLLM will not start
+make vllm-down
+VLLM_MAX_NUM_SEQS=16 VLLM_GPU_MEMORY_UTILIZATION=0.8 make vllm-up
+make agent-capacity-sweep CONFIG=cfg-hardware SOURCES="<mean run dir> <window run dir>"
+```
+
+Restart vLLM between configurations; the sweep refuses a server whose reported settings
+contradict the declared ones. Record each attempt to start vLLM with `--start-attempt
+"UTIL:OUTCOME"` (repeatable; `START_ATTEMPTS="0.8:failed: CUDA out of memory;0.75:started"`
+for make). The last attempt must be `started`, and its utilization must be one of the
+configuration's declared values (cfg-default: 0.6; cfg-hardware: 0.8, 0.75, 0.7). The model
+backend is vLLM only (the default for this command; Ollama is refused), the served model must
+be the declared `Qwen/Qwen3-1.7B@70d244cc86cc`, and the flood only targets a loopback vLLM.
+`--output-dir` (default `.data/capacity-sweeps`) and `--run-timeout` (default 900 s) apply as
+for `batch`; the model, `--vllm-traces-file`, `--dcgm-url` and `--gpm-file` arguments are the
+`run` command's. There is no resume: a stopped sweep is kept and a new invocation is a new
+sweep.
+
+**Output.** `.data/capacity-sweeps/<configuration>-<UTC time>-<id>/`:
+
+- `sweep.json`, rewritten after every batch: the protocol and its hash; declared and
+  verified configuration and the start attempts; host (platform, kernel, CPU count, GPU name
+  and driver when NVML is available, otherwise recorded as unavailable); sources; every batch
+  with per-run outcomes and vLLM counter changes; hard-stop events; level summaries; the
+  capacity decision; label validation; the `max_num_seqs` check; and the final `state`.
+- `batches/<NN>-<phase>-n<N>-r<repeat>/` with each batch's `batch.json` and `runs/` (each
+  run's evidence and journal).
+- `injections/<NN>.json`: each injected batch's injection log, in that batch's clock domain.
+
+**Phases.** Configuration check; one discarded warm-up batch; the ramp over N = 1, 2, 3, 4,
+6, 8, 12 and 16 concurrent replays (3 batches per level; N = 1 runs 3 per source, so each
+source has three baselines); the capacity decision; three live batches of free agents at
+capacity; and three prefill-flood batches, each followed by a clean control, at
+`max(1, floor(capacity / 2))`. After each batch the driver waits until vLLM is idle, then
+pauses 10 s.
+
+**Capacity rule.** Capacity is the level before the first level that fails any criterion:
+no hard-stop event, throughput at least 10% above the previous level's (N = 1 has none to
+beat), pass rate no more than 20 points below N = 1's, p90 run duration at most half the run
+limit, and `evidence_complete` (no batch without a throughput and no run without a
+duration, so missing evidence never reads as slow or as passing). N = 1 also needs at least
+one passed run. The ramp continues past the knee so the whole curve is recorded. The
+`result` is `measured`, `below_1` (capacity is `null`), `at_least_ceiling` (every level
+passed; capacity 16) or `incomplete` (the ramp stopped before a failing level or the
+ceiling, so no knee was found).
+
+**Label validation.** For model-call steps of N >= 2 ramp runs, a step is contended by the
+label rule when its duration exceeds its N = 1 baseline mean by more than
+`max(0.01 s, 3 x baseline stdev)`. The reference is the same threshold applied to the queue
+time vLLM measured for that request. `sweep.json` reports the confusion matrix, precision,
+recall, Spearman correlation and the share of excess explained by queueing versus longer
+prefill and decode, per level and overall, and counts steps excluded for lacking a measured
+span. The verdict is `validated` when precision and recall are both at least 0.90,
+`not_validated` otherwise and `inconclusive` when either is undefined. Tool steps have no
+measured reference and are reported `unvalidated`.
+
+**States and exit codes.**
+
+| `state` | Exit | Meaning |
+| --- | --- | --- |
+| `completed` | 0 | Every phase ran (a skipped live or injected phase when capacity is below 1 is recorded). |
+| `refused_configuration` | 2 | vLLM contradicts a declared setting or reports no start time. Invalid arguments, an unreplayable source, two sources of one task and a bad start attempt also exit 2 before anything runs. |
+| `stopped_resend_needed` | 3 | A run's journal needs `resend`; this outranks the other stops. |
+| `stopped_vllm_restart` | 1 | vLLM restarted during the sweep. |
+| `stopped_injector_cleanup_unconfirmed` | 1 | An injector's stop was not confirmed; check the host for leftover load. |
+| `stopped_run_not_started` | 1 | A run was not registered with the live API. |
+| `stopped_warmup_failed` | 1 | A hard stop in the warm-up; nothing about capacity was measured. |
+| `stopped_server_busy_after_idle_wait`, `stopped_server_state_unavailable` | 1 | Outside the ramp, vLLM stayed busy after the idle wait or its metrics could not be read. |
+| `cancelled` | 1 | Ctrl-C or SIGTERM cancelled the current batch and any injector. |
+| `failed` | 1 | An unexpected error; it is recorded and then re-raised. |
+
+A hard stop inside the ramp ends the ramp only (`ramp_end: hard_stop`); the later phases
+still run when capacity is at least 1. `ramp_end` is `ceiling`, `hard_stop`, `stopped` or
+`cancelled`. `stop_reason` and `stop_causes` give what stopped a sweep. A stopped or
+cancelled sweep still analyses the ramp batches it recorded: `analysis_scope` is `full_ramp`,
+`partial_ramp` (read the capacity decision as covering the recorded levels only) or `none`.
+
+**Evidence status.** Natural-overload and prefill-flood runs are held-out test evidence
+(`held_out: true`): never use them for training, calibration, threshold selection or
+tuning. `rules-v1` predicts only `cpu_sandbox` or `none`; it cannot predict inference, and
+this command does not score it. Scoring rules and models on this evidence follows in a later
+change. Concurrent replays share prompt prefixes, so they load vLLM less than free agents;
+the live confirmation shows the difference.
+
 ## Tests
 
 ```sh
