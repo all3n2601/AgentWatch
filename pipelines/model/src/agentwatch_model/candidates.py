@@ -59,11 +59,16 @@ class Candidate:
     classifier: "lightgbm.Booster"
     regressor: "lightgbm.Booster"
     best_iterations: dict[str, int]
+    # How each model stopped: "validation" or "not_used". early_stopping is the classifier's
+    # (single-class validation rows of trained classes); the regressor uses every validation row.
     early_stopping: str
     training_version: str
     # Coverage gaps, reported rather than hidden: validation rows of classes unseen in training
     # cannot be scored for early stopping, and absent classes can never be predicted.
     validation_rows_dropped: int = 0
+    regressor_early_stopping: str = "not_used"
+    # Mixed training steps: the regressor learns from them, the classifier cannot.
+    train_rows_not_classified: int = 0
     classes_absent_from_train: tuple[str, ...] = ()
 
 
@@ -155,14 +160,17 @@ def fit_candidate(train: list[dict], validation: list[dict], config: TrainingCon
             f"Training needs at least two classes; the training split has {list(class_order)}"
         )
     index = {name: position for position, name in enumerate(class_order)}
-    # Validation rows of a class unseen in training cannot be scored by this classifier.
+    # A mixed step has no single class to learn, so the classifier trains on single-class steps
+    # only; the regressor learns, and stops early on, every step's excess fraction. Validation
+    # rows of a class unseen in training, and mixed ones, cannot be scored by this classifier.
+    classified = [row for row in train if row["label_resource"] in index]
     usable = [row for row in validation if row["label_resource"] in index]
     held_out = feature_matrix(usable) if usable else None
     features = feature_matrix(train)
     classifier = train_booster(
         FIXED | config.classifier | {"objective": "multiclass", "num_class": len(class_order)},
-        features,
-        class_targets(train, index),
+        feature_matrix(classified),
+        class_targets(classified, index),
         None if held_out is None else (held_out, class_targets(usable, index)),
         config,
     )
@@ -170,7 +178,7 @@ def fit_candidate(train: list[dict], validation: list[dict], config: TrainingCon
         FIXED | config.regressor | {"objective": "regression_l1"},
         features,
         fraction_targets(train),
-        None if held_out is None else (held_out, fraction_targets(usable)),
+        (feature_matrix(validation), fraction_targets(validation)) if validation else None,
         config,
     )
     return Candidate(
@@ -182,8 +190,10 @@ def fit_candidate(train: list[dict], validation: list[dict], config: TrainingCon
             "regressor": best_iteration(regressor),
         },
         early_stopping="validation" if usable else "not_used",
+        regressor_early_stopping="validation" if validation else "not_used",
         training_version=config.version,
         validation_rows_dropped=len(validation) - len(usable),
+        train_rows_not_classified=len(train) - len(classified),
         classes_absent_from_train=tuple(name for name in CLASSES if name not in present),
     )
 

@@ -5,6 +5,7 @@ from agentwatch_model.comparison import (
     MODEL_NOT_EVALUATED,
     build_model_report,
     gain_gate,
+    mixed_gain_gate,
     regression_gate,
 )
 from agentwatch_model.contract import DEFAULT_CONTRACT, load_contract
@@ -31,6 +32,44 @@ def test_gain_gate_passes_only_when_the_model_is_not_worse_than_rules(contract):
 def test_gain_gate_is_inconclusive_with_too_few_steps_or_no_score(contract):
     assert gain_gate(0.9, 0.1, ["retrieval"], contract)["outcome"] == "inconclusive"
     assert gain_gate(None, 0.5, [], contract)["outcome"] == "inconclusive"
+
+
+def mixed(*members: str, basis: str = "mixed_confirmed") -> dict:
+    return row("mixed", "mixed") | {"label_resources": ",".join(members), "label_basis": basis}
+
+
+def test_mixed_gain_gate_compares_model_and_rules_on_scored_mixed_steps(contract):
+    small = replace(contract, min_mixed_steps=2)
+    steps = [mixed("cpu_sandbox", "inference"), mixed("inference", "retrieval")]
+    joint = mixed("cpu_sandbox", "retrieval", basis="mixed_joint_only")
+    # Against the recorded resources: the model names cpu and retrieval once each and never
+    # inference (macro 2/3 over the three confirmed resources); the rules name nothing.
+    gate = mixed_gain_gate(
+        small, [*steps, joint], ["cpu_sandbox", "retrieval", "none"], ["none", "none", "none"]
+    )
+    assert gate["steps"] == 2 and gate["resources"] == ["cpu_sandbox", "inference", "retrieval"]
+    assert gate["model"] == pytest.approx(2 / 3) and gate["rules"] == 0.0
+    assert gate["outcome"] == "pass"
+    gate = mixed_gain_gate(small, steps, ["none", "none"], ["cpu_sandbox", "retrieval"])
+    assert gate["outcome"] == "fail"
+
+
+def test_mixed_gain_gate_is_inconclusive_below_the_minimum_mixed_steps(contract):
+    gate = mixed_gain_gate(
+        replace(contract, min_mixed_steps=30),
+        [mixed("cpu_sandbox", "inference")],
+        ["cpu_sandbox"],
+        ["none"],
+    )
+    assert gate["outcome"] == "inconclusive" and "1 scored mixed steps" in gate["reason"]
+
+
+def test_mixed_gain_gate_is_inconclusive_for_a_resource_the_model_never_trained_on(contract):
+    small = replace(contract, min_mixed_steps=1)
+    gate = mixed_gain_gate(
+        small, [mixed("cpu_sandbox", "retrieval")], ["cpu_sandbox"], ["none"], ("retrieval",)
+    )
+    assert gate["outcome"] == "inconclusive" and "retrieval" in gate["reason"]
 
 
 def test_regression_gate_needs_the_limit_and_both_constant_references(contract):

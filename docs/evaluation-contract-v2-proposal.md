@@ -5,9 +5,10 @@ Owner: Rohit (M02). His approval confirming the contract is an explicit merge co
 for PR #59. D03 encoded items 1, 3 and 4 as `eval-contract-v2` in
 `pipelines/model/evaluation-contract.toml` (identifier `9b55506c`; see
 [the evaluation contract](evaluation-contract.md) and
-[ADR 0009](adr/0009-combined-dataset-release-and-split-v2.md)). **Item 2 is not encoded**: the
-multi-resource metric and the `mixed` scoring rule remain Rohit's M02 decision, and until then
-the rule baseline and training refuse splits with `mixed` labels. `eval-contract-v1` is kept
+[ADR 0009](adr/0009-combined-dataset-release-and-split-v2.md)). Item 2 is Rohit's M02 decision,
+recorded when he [approved PR #59](https://github.com/all3n2601/AgentWatch/pull/59#pullrequestreview-5846813656) on 2026-11-10 and implemented in code as
+`mixed-scoring-v1`: naming any confirmed resource is correct, `mixed_joint_only` steps are
+reported separately, and per-resource F1 is reported beside macro F1. `eval-contract-v1` is kept
 unchanged as `pipelines/model/evaluation-contract-v1.toml`.
 
 This proposal comes from D02 ([data card](data-card.md),
@@ -43,7 +44,7 @@ proposal as reviewed; the notes after it record what D03 did.
   `load_split` (split `split-v2+febe942a2b59`). The assignment path is written relative to the
   contract file (`../data/src/agentwatch_data/split-assignment.toml`), which resolves to the
   file named in item 3.
-- Open, M02 (Rohit): item 2, the multi-resource metric and the `mixed` scoring rule.
+- Done, M02 (Rohit): item 2 as `mixed-scoring-v1`; see [the rule baseline](rule-baseline.md).
 - With two agent tasks, validation is empty and tuning data is unavailable; calibration and
   every validation-dependent gate are `inconclusive` rather than passed. The test split meets
   the count minimums (data card, Dataset v1).

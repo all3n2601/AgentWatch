@@ -182,10 +182,10 @@ def test_four_class_macro_f1_stays_null_while_classes_are_missing(rules, contrac
     assert macro["interval_of"] == "defined_classes"
 
 
-def test_mixed_contention_slice_is_reported_as_unavailable_with_its_reason(rules, contract):
+def test_a_split_without_mixed_steps_leaves_the_mixed_slice_inconclusive(rules, contract):
     metrics = report_for(rules, contract, [row(condition="clean") for _ in range(4)])["metrics"]
     mixed = metrics["slices"]["mixed_contention"]
-    assert mixed["status"] == "unavailable" and "mixed contention" in mixed["reason"]
+    assert mixed["status"] == "inconclusive" and mixed["steps"] == 0 and mixed["hit_rate"] is None
     assert mixed["min_steps"] == contract.min_mixed_steps
     assert metrics["slices"]["by_condition"]["clean"]["steps"] == 4
 

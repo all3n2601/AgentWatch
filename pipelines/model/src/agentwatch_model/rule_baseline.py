@@ -20,7 +20,8 @@ from agentwatch_data.schema import MIXED
 from agentwatch_data.splits import SplitError, load_split
 
 from agentwatch_model.contract import DEFAULT_CONTRACT, ContractError, load_contract
-from agentwatch_model.metrics import CLASSES, is_number
+from agentwatch_model.metrics import CLASSES, NONE, is_number
+from agentwatch_model.mixed import MIXED_BASES
 from agentwatch_model.report import blocked_report, build_report, dataset_version
 from agentwatch_model.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 
@@ -64,15 +65,32 @@ def validate_rows(rows: list[dict], split: str) -> None:
             raise RowError(f"{split} has more than one row for run {key[0]} step {key[1]}")
         seen.add(key)
         if row["label_resource"] == MIXED:
-            raise RowError(
-                f"{split} row {index} is labeled 'mixed', which has no scoring rule until M02 "
-                "defines one"
-            )
-        if row["label_resource"] not in CLASSES:
+            validate_mixed(row, split, index)
+        elif row["label_resource"] not in CLASSES:
             raise RowError(f"{split} row {index} has unknown label {row['label_resource']!r}")
         fraction = row["label_excess_fraction"]
         if not is_number(fraction) or not 0 <= fraction <= 1:
             raise RowError(f"{split} row {index} label_excess_fraction is not a number from 0 to 1")
+
+
+def validate_mixed(row: dict, split: str, index: int) -> None:
+    """A mixed step is scored on its confirmed resources (mixed-scoring-v1), so it must name them."""
+    resources = row.get("label_resources")
+    if not isinstance(resources, str):
+        raise RowError(f"{split} row {index} is labeled 'mixed' without label_resources")
+    named = resources.split(",")
+    unknown = [name for name in named if name not in CLASSES or name == NONE]
+    if unknown:
+        raise RowError(f"{split} row {index} label_resources names unknown resource {unknown}")
+    if row.get("label_basis") not in MIXED_BASES:
+        raise RowError(
+            f"{split} row {index} is labeled 'mixed' with basis {row.get('label_basis')!r}, "
+            f"not one of {list(MIXED_BASES)}"
+        )
+    if len(set(named)) < 2:
+        raise RowError(
+            f"{split} row {index} is labeled 'mixed' but does not name two or more resources"
+        )
 
 
 def validate_dataset_version(rows: list[dict]) -> None:
@@ -104,6 +122,8 @@ def prediction_records(
                 "dataset_version": row["dataset_version"],
                 "label_version": row["label_version"],
                 "label_resource": row["label_resource"],
+                "label_resources": row.get("label_resources"),
+                "label_basis": row.get("label_basis"),
                 "prediction": prediction,
                 "rules_version": rules.version,
                 "evaluation": evaluation,

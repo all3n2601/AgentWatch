@@ -47,6 +47,8 @@ def test_run_writes_the_report_and_one_prediction_per_test_row(tmp_path):
         "dataset_version": "steps-v1.2+synthetic",
         "label_version": "labels-v1.1+synthetic",
         "label_resource": "cpu_sandbox",
+        "label_resources": None,
+        "label_basis": None,
         "prediction": "cpu_sandbox",
         "rules_version": report["rules"]["version"],
         "evaluation": True,
@@ -155,10 +157,23 @@ def test_rows_with_unusable_labels_or_versions_are_refused(tmp_path, change, mes
         run(tmp_path / "split.json", tmp_path / "out", loader=loader)
 
 
-def test_v1_3_split_with_mixed_labels_is_refused_with_a_clear_reason(tmp_path):
+def test_a_mixed_row_without_its_confirmed_resources_is_refused(tmp_path):
     loader = fake_loader([], {"train": TRAIN, "test": [row(), row() | {"label_resource": "mixed"}]})
-    with pytest.raises(RowError, match="test row 1 is labeled 'mixed'.*M02"):
+    with pytest.raises(RowError, match="test row 1 is labeled 'mixed' without label_resources"):
         run(tmp_path / "split.json", tmp_path / "out", loader=loader)
+
+
+def test_mixed_steps_are_scored_and_kept_in_the_predictions(tmp_path):
+    step = row("mixed", "mixed", queue_fraction=0.9) | {
+        "label_resources": "cpu_sandbox,inference",
+        "label_basis": "mixed_confirmed",
+    }
+    loader = fake_loader([], {"train": TRAIN, "test": [*TEST, step]})
+    assert run(tmp_path / "split.json", tmp_path / "out", loader=loader) == "evaluated"
+    report = read_report(tmp_path / "out")
+    assert report["metrics"]["slices"]["mixed_contention"]["hit_rate"] == 1.0
+    lines = (tmp_path / "out" / "predictions.jsonl").read_text().splitlines()
+    assert json.loads(lines[-1])["label_resources"] == "cpu_sandbox,inference"
 
 
 def test_main_exits_two_on_unusable_rows(tmp_path, monkeypatch, capsys):
