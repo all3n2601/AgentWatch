@@ -929,14 +929,17 @@ class CapacitySweep:
     def _run_events(self, batch: Batch, sequence: int, runs: list[dict]) -> list[dict]:
         """The batch's genuine infrastructure failures as one event, or none.
 
-        A run cancelled or never started by the sweep's own stop, or one whose problem is the
-        live API (classified `live_api_failure`), is never a hard stop.
+        A run cancelled or never started by the sweep's own stop, one whose problem is the live
+        API (classified `live_api_failure`), or one whose runner raised an unexpected error (no
+        outcome: a bug in the sweep's own tooling, not evidence about capacity) is never a hard
+        stop.
         """
         failed = [
             run.get("index")
             for run in runs
             if run["classification"] == "infrastructure_failure"
             and run.get("state") not in STOPPED_RUN_STATES
+            and run.get("error") is None
         ]
         if not failed:
             return []

@@ -5,6 +5,7 @@ folders, server readings and injector activity are synthetic fixtures, never swe
 """
 
 import json
+import sys
 import urllib.error
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -19,6 +20,7 @@ from agentwatch_agent.runner import (
     VERIFICATION_FAILED,
 )
 from agentwatch_agent.sweep import SWEEP_FILE, CapacitySweep
+from agentwatch_agent.sweep_offline import analyse_sweep_folder
 from agentwatch_agent.sweep_protocol import (
     CONFIGURATIONS,
     IDLE_POLL_SECONDS,
@@ -902,6 +904,52 @@ def test_a_runner_error_is_re_raised_once_the_batch_is_recorded(tmp_path):
     record = read(harness.sweep_file)
     assert record["state"] == "failed"
     assert record["batches"][-1]["phase"] == "ramp" and record["batches"][-1]["level"] == 2
+    assert record["hard_stops"] == []
+
+
+def test_a_runner_error_is_not_a_capacity_hard_stop_for_the_offline_analyser(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "default_wall_seconds", lambda level: 60.0)
+    monkeypatch.setattr(sweep, "INJECTOR_RAMP_SECONDS", 0.0)
+    harness = Harness(tmp_path)
+
+    def runner_error(_stub, entries, wall):
+        # What `BatchRun.evidence()` records for a run whose runner raised: no outcome.
+        entries[0].update(
+            state=None,
+            reason=None,
+            task_passed=None,
+            delivery_complete=None,
+            resend_needed=None,
+            records_refused=None,
+            completion_refused=None,
+            error="ValueError: fixture: runner bug",
+        )
+        return wall, [ValueError("fixture: runner bug")] + [None] * (len(entries) - 1)
+
+    harness.hooks["ramp-n4-r0"] = runner_error
+    with pytest.raises(ValueError, match="runner bug"):
+        harness.run()
+    record = read(harness.sweep_file)
+    assert record["hard_stops"] == []
+    assert record["batches"][-1]["metrics_exclusion"]
+    decision = analyse_sweep_folder(harness.output_dir)["capacity_decision"]
+    assert decision["result"] != "measured"
+    assert decision["first_failing_level"] is None
+
+
+def test_a_genuine_failure_beside_a_runner_error_is_still_a_hard_stop(tmp_path):
+    harness = Harness(tmp_path)
+
+    def mixed(_stub, entries, wall):
+        entries[0].update(state=None, delivery_complete=None, error="ValueError: runner bug")
+        entries[1].update(state="failed", reason="run_timeout")
+        return wall, [ValueError("runner bug")] + [None] * (len(entries) - 1)
+
+    harness.hooks["ramp-n2-r0"] = mixed
+    with pytest.raises(ValueError, match="runner bug"):
+        harness.run()
+    codes = [h["code"] for h in read(harness.sweep_file)["hard_stops"]]
+    assert codes == ["infrastructure_failure"]
 
 
 def test_a_hard_stop_in_the_warmup_stops_the_sweep(tmp_path):

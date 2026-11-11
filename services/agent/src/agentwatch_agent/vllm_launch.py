@@ -107,8 +107,9 @@ def read_launch_arguments(container: str, run: Runner = subprocess.run) -> dict:
                 timeout=DOCKER_INSPECT_TIMEOUT_SECONDS,
                 check=True,
             )
-        # A missing executable is an OSError; a failed or timed-out inspect a SubprocessError.
-        except (OSError, subprocess.SubprocessError) as error:
+        # A missing executable is an OSError; a failed or timed-out inspect a SubprocessError;
+        # output that is not UTF-8 raises UnicodeDecodeError, a ValueError.
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
             failures.append(_failure_text(executable, error))
             continue
         return parse_inspect(container, executable, completed.stdout)

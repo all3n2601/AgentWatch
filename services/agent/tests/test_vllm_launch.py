@@ -119,6 +119,17 @@ def test_a_timed_out_inspect_is_unavailable():
     assert launch["status"] == "unavailable" and "TimeoutExpired" in launch["reason"]
 
 
+def test_undecodable_inspect_output_is_unavailable_not_a_crash():
+    # `subprocess.run(text=True)` raises UnicodeDecodeError (a ValueError) for non-UTF-8 output.
+    def undecodable(command, **kwargs):
+        raise UnicodeDecodeError("utf-8", bytes([255]), 0, 1, "invalid start byte")
+
+    launch = read_launch_arguments(DEFAULT_VLLM_CONTAINER, run=undecodable)
+    assert launch["status"] == "unavailable"
+    assert "UnicodeDecodeError" in launch["reason"]
+    assert "docker:" in launch["reason"] and "docker.exe:" in launch["reason"]
+
+
 @pytest.mark.parametrize(
     "stdout",
     [
