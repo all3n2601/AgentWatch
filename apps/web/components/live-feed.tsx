@@ -1,44 +1,67 @@
 "use client";
-import { useMemo } from "react";
+import { routes } from "@/lib/routes";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import {
+  Activity,
   CircleAlert,
-  Database,
   Download,
+  ExternalLink,
+  FileSearch,
+  FolderArchive,
   LoaderCircle,
   RadioTower,
   RefreshCw,
-  Unplug,
+  Timer,
+  Waypoints,
 } from "lucide-react";
 import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ReferenceArea,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { PanelHeading } from "@/components/run-views";
-import { LiveRunSteps } from "@/components/live-run";
+  LiveGaps,
+  LiveRunStatus,
+  liveStepItems,
+  StepStateBadge,
+  stepTypeLabel,
+} from "@/components/live-run";
 import {
-  useGpuEvidence,
-  useRunFeed,
-  useRunList,
-} from "@/components/use-live-feed";
+  FILL_PANEL,
+  PANEL_SCROLL,
+  TAB_GRID,
+} from "@/components/shell/panel-layout";
+import { TabbedView } from "@/components/shell/tabbed-view";
+import { Button } from "@/components/ui/button";
+import { CopyChip } from "@/components/ui/copy-chip";
+import {
+  GlassPanel,
+  InsetCard,
+  PanelHeader,
+} from "@/components/ui/glass-panel";
+import { StatusBadge, TONE_DOT } from "@/components/ui/status-badge";
+import { KeyValueList } from "@/components/widgets/evidence-lists";
+import {
+  EmptyState,
+  ErrorState,
+  Skeleton,
+  UnavailableState,
+} from "@/components/widgets/state-views";
+import {
+  TimelineChart,
+  type TimelineChartRow,
+} from "@/components/widgets/timeline-chart";
+import { useLiveRun, useRunList } from "@/components/use-live-feed";
+import {
+  BAND_COLOR,
+  SignalChart,
+  type SignalBand,
+} from "@/components/widgets/signal-chart";
+import { formatSignal } from "@/lib/signal-format";
 import { duration } from "@/lib/dashboard-data";
 import { isLiveRunId } from "@/lib/live-api";
 import {
-  liveFeedRun,
   liveRunSummaries,
   summarizeSeries,
   type LiveFeedRun,
   type LiveRunSummary,
   type MetricSeries,
-  type WallStep,
 } from "@/lib/live-feed-data";
 import {
   LIVE_POLL_INTERVAL_MS,
@@ -48,456 +71,71 @@ import {
   type RunFeed,
   type RunListFeed,
 } from "@/lib/live-poll";
+import { wallSecondsInto, wallTimeline } from "@/lib/run-timeline";
+import type { StepState } from "@/lib/live-view";
+import type { Tone } from "@/lib/tone";
 import { cn } from "@/lib/utils";
 
 // Live runs read from the B01 live API through this app's routes, polled in the browser.
 
-const stepColors: Record<string, string> = {
-  model_call: "#a78bfa",
-  tool: "#34d399",
-  retrieval: "#38bdf8",
-  other: "#64748b",
-};
 const seriesColors: Record<string, string> = {
-  "gpu.util": "#a78bfa",
-  "gpu.power": "#fbbf24",
-  "gpu.nvml.utilization.gpu.v1": "#a78bfa",
-  "gpu.nvml.power.usage_watts.v1": "#fbbf24",
+  "gpu.util": "var(--series-violet)",
+  "gpu.power": "var(--series-amber)",
+  "gpu.nvml.utilization.gpu.v1": "var(--series-violet)",
+  "gpu.nvml.power.usage_watts.v1": "var(--series-amber)",
 };
-const CPU_SERIES_COLOR = "#34d399";
-const tooltipStyle = {
-  background: "#171d27",
-  border: "1px solid #303948",
-  borderRadius: 8,
-  fontSize: 12,
-};
+const CPU_SERIES_COLOR = "var(--aw-brand-strong)";
 
 const seconds = (ms: number) => `${Math.max(1, Math.round(ms / 1000))} s`;
 
-function RunPicker({
-  runs,
-  list,
-  current,
-}: {
-  runs: LiveRunSummary[];
-  list: RunListFeed;
-  current: string | null;
-}) {
-  const { connection } = list;
-  return (
-    <nav aria-label="Recorded live runs">
-      <p className="mb-2 text-[11px] text-muted-foreground">
-        {connection.status === "connecting"
-          ? "Loading live runs…"
-          : `Newest live runs from the API (${runs.length}):`}
-        {connection.status === "retrying" &&
-          ` The run list could not be refreshed (${connection.message}); retrying in ${seconds(connection.retryInMs)}.`}
-        {connection.status === "stopped" &&
-          ` The run list could not be read: ${connection.message}`}
-      </p>
-      {runs.length > 0 && (
-        <ul className="flex flex-wrap gap-2">
-          {runs.map((run) => (
-            <li key={run.runId}>
-              <Link
-                href={`/live?liveRun=${run.runId}`}
-                aria-current={run.runId === current ? "page" : undefined}
-                className={cn(
-                  "inline-flex min-h-11 flex-col justify-center rounded-md border px-3 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-primary",
-                  run.runId === current
-                    ? "border-primary/40 bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <span className="font-mono">{run.runId.slice(0, 8)}</span>
-                <span className="text-[10px]">
-                  {run.taskId} · {run.state} ·{" "}
-                  <time dateTime={run.createdAt} suppressHydrationWarning>
-                    {new Date(run.createdAt).toLocaleTimeString()}
-                  </time>
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </nav>
-  );
-}
+const RUN_STATE_TONES: Record<string, Tone> = {
+  queued: "info",
+  running: "info",
+  completed: "success",
+  failed: "danger",
+  cancelled: "warning",
+};
 
-type Window = { originMs: number; endMs: number };
+/** The live timeline gives the chart more width than the step detail beside it. */
+const WIDE_MAIN = "xl:grid-cols-[minmax(0,1.7fr)_minmax(19rem,1fr)]";
 
-function runWindow(steps: WallStep[]): Window | null {
-  if (!steps.length) return null;
-  return {
-    originMs: Math.min(...steps.map((s) => s.startMs)),
-    endMs: Math.max(...steps.map((s) => s.endMs ?? s.startMs)),
-  };
-}
-
-const secondsInto = (atMs: number, w: Window) => (atMs - w.originMs) / 1000;
-const spanSeconds = (w: Window) =>
-  Math.max((w.endMs - w.originMs) / 1000, 0.001);
-
-function Timeline({ steps, window }: { steps: WallStep[]; window: Window }) {
-  const span = spanSeconds(window);
-  return (
-    <div>
-      <ul
-        className="mb-3 flex flex-wrap gap-4 text-[11px] text-muted-foreground"
-        aria-label="Step types"
-      >
-        {Object.entries(stepColors).map(([type, color]) => (
-          <li key={type} className="flex items-center gap-1.5">
-            <span
-              className="size-2 rounded-full"
-              style={{ background: color }}
-              aria-hidden
-            />
-            {type.replace("_", " ")}
-          </li>
-        ))}
-      </ul>
-      <ol className="space-y-1" aria-label="Step timeline">
-        {steps.map((step) => {
-          const start = secondsInto(step.startMs, window);
-          const end =
-            step.endMs === null ? span : secondsInto(step.endMs, window);
-          return (
-            <li
-              key={step.stepId}
-              className="flex h-6 items-center gap-2 text-[11px]"
-            >
-              <span
-                className="w-24 shrink-0 truncate font-mono text-muted-foreground sm:w-40"
-                title={step.stepId}
-              >
-                {step.stepId}
-              </span>
-              <span
-                className="relative h-3 flex-1 rounded-sm bg-white/[0.03]"
-                aria-hidden
-              >
-                <span
-                  className={cn(
-                    "absolute inset-y-0 rounded-sm",
-                    step.endMs === null && "motion-safe:animate-pulse",
-                  )}
-                  style={{
-                    left: `${(start / span) * 100}%`,
-                    width: `${Math.max(((end - start) / span) * 100, 0.4)}%`,
-                    background: stepColors[step.stepType] ?? stepColors.other,
-                    opacity: step.state === "failed" ? 0.45 : 1,
-                  }}
-                />
-              </span>
-              <span className="w-28 shrink-0 text-right text-muted-foreground">
-                {step.endMs === null ? "in progress" : duration(end - start)}
-                <span className="sr-only">
-                  , {step.stepType.replace("_", " ")}, {step.state}, starts at{" "}
-                  {start.toFixed(2)} s
-                </span>
-                {step.state === "failed" && (
-                  <span className="ml-1 text-rose-200">failed</span>
-                )}
-              </span>
-            </li>
-          );
-        })}
-      </ol>
-      <p className="mt-2 text-[11px] text-muted-foreground">
-        0 s → {span.toFixed(1)} s on the producer&apos;s wall clock
-        (observed_at). The step details below use the runner&apos;s monotonic
-        ticks.
-      </p>
-    </div>
-  );
-}
-
-function SeriesSummaryText({ series }: { series: MetricSeries }) {
-  const summary = summarizeSeries(series);
-  if (!summary)
-    return (
-      <p className="mt-2 text-[11px] text-muted-foreground">
-        No measured values.
-      </p>
-    );
-  const f = (v: number) => `${v.toFixed(2)} ${series.unit}`;
-  return (
-    <dl className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
-      {(
-        [
-          ["Min", summary.min],
-          ["Mean", summary.mean],
-          ["Max", summary.max],
-        ] as const
-      ).map(([label, value]) => (
-        <div key={label}>
-          <dt className="text-muted-foreground">{label}</dt>
-          <dd className="metric-number">{f(value)}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function MetricChart({
-  series,
-  window,
-  modelCalls,
-  color,
-}: {
-  series: MetricSeries;
-  window: Window;
-  modelCalls: WallStep[];
-  color: string;
-}) {
-  const data = series.points.map((p) => ({
-    t: Number(secondsInto(p.atMs, window).toFixed(3)),
-    value: p.value,
-  }));
-  const measured = data.filter((p) => p.value !== null).length;
-  return (
-    <Card
-      className="min-w-0 gap-0 p-4"
-      role="group"
-      aria-label={
-        series.resource
-          ? `${series.label}, resource ${series.resource.resourceId}`
-          : series.label
-      }
-    >
-      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-2">
-        <h3 className="text-xs font-semibold">
-          {series.label}{" "}
-          <span className="font-normal text-muted-foreground">
-            ({series.unit})
-          </span>
-        </h3>
-        <span className="text-[10px] text-muted-foreground">
-          {series.source} · {measured} measured
-          {series.notMeasured
-            ? Object.entries(series.notMeasured).map(
-                ([state, { count }]) => ` · ${count} ${state}`,
-              )
-            : series.unavailable > 0 && ` · ${series.unavailable} unavailable`}
-        </span>
-      </div>
-      {series.resource && (
-        <p className="mb-2 text-[10px] break-all text-muted-foreground">
-          Resource{" "}
-          <span className="font-mono">{series.resource.resourceId}</span> ·
-          service <span className="font-mono">{series.resource.serviceId}</span>
-        </p>
-      )}
-      <div className="h-36" aria-hidden>
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart
-            data={data}
-            margin={{ top: 4, right: 8, bottom: 0, left: -16 }}
-          >
-            <CartesianGrid vertical={false} stroke="#273140" />
-            {modelCalls.map((call) => (
-              <ReferenceArea
-                key={call.stepId}
-                x1={secondsInto(call.startMs, window)}
-                x2={secondsInto(call.endMs ?? window.endMs, window)}
-                fill="#a78bfa"
-                fillOpacity={0.12}
-                ifOverflow="hidden"
-              />
-            ))}
-            <XAxis
-              dataKey="t"
-              type="number"
-              domain={[0, Number(spanSeconds(window).toFixed(3))]}
-              allowDataOverflow
-              unit="s"
-              axisLine={false}
-              tickLine={false}
-              tick={{ fontSize: 10 }}
-            />
-            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-            <Tooltip
-              contentStyle={tooltipStyle}
-              labelFormatter={(t) => `${Number(t).toFixed(2)} s`}
-              formatter={(v) => [
-                v === null || v === undefined
-                  ? "unavailable"
-                  : `${Number(v).toFixed(2)} ${series.unit}`,
-                series.label,
-              ]}
-            />
-            <Line
-              dataKey="value"
-              stroke={color}
-              strokeWidth={2}
-              dot={data.length < 40 ? { r: 2 } : false}
-              connectNulls={false}
-              isAnimationActive={false}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-      <SeriesSummaryText series={series} />
-      {series.notMeasured &&
-        Object.entries(series.notMeasured).map(([state, { reason }]) => (
-          <p
-            key={state}
-            className="mt-1 text-[11px] break-words text-muted-foreground"
-          >
-            Not measured ({state}){reason ? `: ${reason}` : ""}. Shown as gaps,
-            never as zero.
-          </p>
-        ))}
-    </Card>
-  );
-}
-
-function Resources({ run }: { run: LiveFeedRun }) {
-  const window = runWindow(run.wallSteps);
-  if (!window) return null;
-  const modelCalls = run.wallSteps.filter((s) => s.stepType === "model_call");
-  const gpu = run.gpu && "series" in run.gpu ? run.gpu : null;
-  const liveGpu = run.liveSeries.some((s) => s.metric.startsWith("gpu."));
-  const charts = [
-    ...(gpu?.series.filter((s) => s.key !== "gpu.mem") ?? []),
-    ...run.liveSeries,
-  ];
-  return (
-    <Card className="gap-0 p-5 sm:p-6">
-      <PanelHeading
-        title="Step timeline and resource signals"
-        detail="Shaded bands mark model-call steps. CPU and NVML GPU signals are ingested live samples of the whole host or device, not of one step. Signals labeled nvidia-smi come from the A01 diagnostic, which is not ingested and is aligned only by wall clock."
-      />
-      <Timeline steps={run.wallSteps} window={window} />
-      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {charts.map((s) => (
-          <MetricChart
-            key={s.key}
-            series={s}
-            window={window}
-            modelCalls={modelCalls}
-            color={seriesColors[s.metric] ?? CPU_SERIES_COLOR}
-          />
-        ))}
-      </div>
-      {run.gpu && "missing" in run.gpu && !liveGpu && (
-        <p className="mt-4 text-xs text-muted-foreground">
-          GPU: not measured for this run. {run.gpu.missing}
-        </p>
-      )}
-      <p className="mt-4 text-[11px] break-words text-muted-foreground">
-        Registered resources:{" "}
-        {run.resources
-          .map((r) => `${r.resourceClass} (${r.resourceId})`)
-          .join(", ")}
-        . Every live sample a resource reported is charted above; retrieval has
-        no registered live metric yet.
-      </p>
-    </Card>
-  );
-}
+/** A selected live run as every tab reads it. */
+export type LiveRunState = ReturnType<typeof useLiveRun>;
 
 function connectionText(connection: FeedConnection, closed: boolean) {
   switch (connection.status) {
     case "connecting":
-      return { label: "Connecting", detail: "Reading the selected run…" };
+      return {
+        label: "Connecting",
+        detail: "Reading the selected run…",
+        tone: "info" as Tone,
+      };
     case "connected":
       return closed
         ? {
             label: "Polling stopped",
             detail:
               "The run is closed. Late samples or step evidence can still arrive.",
+            tone: "info" as Tone,
           }
         : {
             label: "Connected",
             detail: `Reading new records every ${seconds(LIVE_POLL_INTERVAL_MS)}.`,
+            tone: "success" as Tone,
           };
     case "retrying":
       return {
         label: `Reconnecting (attempt ${connection.attempt})`,
         detail: `${connection.message} Retrying in ${seconds(connection.retryInMs)}; the last data received stays shown.`,
+        tone: "warning" as Tone,
       };
     case "stopped":
-      return { label: "Stopped", detail: connection.message };
+      return {
+        label: "Stopped",
+        detail: connection.message,
+        tone: "danger" as Tone,
+      };
   }
-}
-
-function ConnectionStatus({
-  feed,
-  onReadAgain,
-}: {
-  feed: RunFeed;
-  onReadAgain: () => void;
-}) {
-  const closed = runClosed(feed);
-  const { connection } = feed;
-  const text = connectionText(connection, closed);
-  const Icon =
-    connection.status === "retrying" || connection.status === "stopped"
-      ? CircleAlert
-      : connection.status === "connecting"
-        ? LoaderCircle
-        : RadioTower;
-  const checking = feed.lateCheck?.status === "checking";
-  const canReadAgain =
-    connection.status === "retrying" ||
-    (connection.status === "connected" && closed);
-  return (
-    <Card className="flex-row flex-wrap items-center gap-3 p-4">
-      <Icon
-        className={cn(
-          "size-4 shrink-0",
-          connection.status === "retrying"
-            ? "text-amber-300"
-            : "text-muted-foreground",
-        )}
-        aria-hidden
-      />
-      <div
-        className="min-w-0 flex-1 text-xs"
-        role="status"
-        aria-live="polite"
-        aria-atomic
-      >
-        <span className="sr-only">Live API connection: </span>
-        <span
-          className={cn(
-            "font-semibold",
-            connection.status === "retrying" && "text-amber-200",
-          )}
-        >
-          {text.label}
-        </span>
-        <span className="text-muted-foreground"> — {text.detail}</span>
-      </div>
-      {canReadAgain && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="min-h-11"
-          onClick={onReadAgain}
-          disabled={checking}
-        >
-          {checking ? (
-            <LoaderCircle
-              className="size-3.5 motion-safe:animate-spin"
-              aria-hidden
-            />
-          ) : (
-            <RefreshCw className="size-3.5" aria-hidden />
-          )}
-          {checking
-            ? "Checking…"
-            : closed
-              ? "Check for late evidence"
-              : "Retry now"}
-        </Button>
-      )}
-      <LateCheckResult check={feed.lateCheck} />
-    </Card>
-  );
 }
 
 function lateCheckText(check: LateCheck) {
@@ -520,8 +158,8 @@ function LateCheckResult({ check }: { check: LateCheck | null }) {
   return (
     <p
       className={cn(
-        "basis-full text-xs break-words empty:sr-only",
-        check?.status === "failed" ? "text-amber-200" : "text-muted-foreground",
+        "basis-full text-sm break-words empty:sr-only",
+        check?.status === "failed" ? "text-warning" : "text-ink-muted",
       )}
       role="status"
       aria-live="polite"
@@ -532,182 +170,731 @@ function LateCheckResult({ check }: { check: LateCheck | null }) {
   );
 }
 
-function EmptyState({
-  title,
-  detail,
-  alert = false,
-}: {
-  title: string;
-  detail: string;
-  alert?: boolean;
-}) {
-  return (
-    <Card
-      className="items-center gap-3 border-dashed p-8 text-center"
-      role={alert ? "alert" : undefined}
-    >
-      <Unplug className="size-7 text-muted-foreground" aria-hidden />
-      <h2 className="text-base font-semibold">{title}</h2>
-      <p className="max-w-lg text-sm break-words text-muted-foreground">
-        {detail}
-      </p>
-    </Card>
-  );
-}
-
-function LiveEvidence({ runId }: { runId: string }) {
-  return (
-    <Card className="gap-0 p-5 sm:p-6">
-      <PanelHeading
-        title="Evidence for this run"
-        detail="What can be downloaded for the selected live run."
-      />
-      <dl className="grid grid-cols-1 gap-4 text-xs sm:grid-cols-2">
-        <div>
-          <dt className="font-semibold">Saved evidence</dt>
-          <dd className="mt-1 leading-5 text-muted-foreground">
-            Not available for live runs. Live records are kept separately from
-            saved run history, and agent runs report only to the live API, so
-            this run has no saved-run file.
-          </dd>
-        </div>
-        <div>
-          <dt className="font-semibold">Live records</dt>
-          <dd className="mt-1 leading-5 text-muted-foreground">
-            Every record the live API holds for run{" "}
-            <span className="font-mono break-all">{runId}</span>, read page by
-            page with its gaps and pending or expired records unchanged. Run
-            state, steps and gaps are as of the time of reading.
-          </dd>
-          <dd className="mt-3">
-            <Button asChild variant="outline" className="min-h-11">
-              <a href={`/api/live/runs/${encodeURIComponent(runId)}/export`}>
-                <Download className="size-4" aria-hidden />
-                Download live records (JSON)
-              </a>
-            </Button>
-          </dd>
-        </div>
-      </dl>
-    </Card>
-  );
-}
-
-function SelectedRun({
+/** The live API connection for the selected run, with retry and late-evidence checks. */
+function ConnectionBanner({
   feed,
   onReadAgain,
 }: {
   feed: RunFeed;
   onReadAgain: () => void;
 }) {
-  const { snapshot, records, connection } = feed;
-  const gpu = useGpuEvidence(snapshot ? feed.runId : null, runClosed(feed));
-  const run: LiveFeedRun | null = useMemo(
-    () => (snapshot ? liveFeedRun(snapshot, records, gpu) : null),
-    [snapshot, records, gpu],
-  );
-  const notFound =
-    connection.status === "stopped" && connection.kind === "not_found";
+  const closed = runClosed(feed);
+  const { connection } = feed;
+  const text = connectionText(connection, closed);
+  const Icon =
+    connection.status === "retrying" || connection.status === "stopped"
+      ? CircleAlert
+      : connection.status === "connecting"
+        ? LoaderCircle
+        : RadioTower;
+  const checking = feed.lateCheck?.status === "checking";
+  const canReadAgain =
+    connection.status === "retrying" ||
+    (connection.status === "connected" && closed);
   return (
-    <>
-      <ConnectionStatus feed={feed} onReadAgain={onReadAgain} />
-      {notFound && (
-        <EmptyState
-          title="Live run not found"
-          detail={`The live API has no run ${feed.runId}. No other run is shown in its place.`}
-          alert
-        />
+    <InsetCard className="flex flex-wrap items-center gap-x-3 gap-y-2">
+      <Icon
+        className={cn(
+          "size-5 shrink-0 text-ink-muted",
+          connection.status === "connecting" && "motion-safe:animate-spin",
+        )}
+        aria-hidden
+      />
+      <div
+        className="min-w-48 flex-1 text-sm"
+        role="status"
+        aria-live="polite"
+        aria-atomic
+      >
+        <span className="sr-only">Live API connection: </span>
+        <StatusBadge label={text.label} tone={text.tone} appearance="dot" />
+        <span className="ml-2 text-ink-muted">{text.detail}</span>
+      </div>
+      {canReadAgain && (
+        <Button
+          variant="glass"
+          size="pill"
+          onClick={onReadAgain}
+          disabled={checking}
+        >
+          {checking ? (
+            <LoaderCircle className="motion-safe:animate-spin" aria-hidden />
+          ) : (
+            <RefreshCw aria-hidden />
+          )}
+          {checking
+            ? "Checking…"
+            : closed
+              ? "Check for late evidence"
+              : "Retry now"}
+        </Button>
       )}
-      {run ? (
-        <>
-          <p className="text-[11px] text-muted-foreground">
-            {run.recordCount} record{run.recordCount === 1 ? "" : "s"} received
-            for run <span className="font-mono break-all">{feed.runId}</span>.
-          </p>
-          <Resources run={run} />
-          <LiveRunSteps
-            runId={feed.runId}
-            run={run.run}
-            view={run.view}
-            receipt={feed.receipt}
-          />
-          <LiveEvidence runId={feed.runId} />
-        </>
-      ) : (
-        !notFound &&
-        connection.status !== "connecting" && (
-          <EmptyState
-            title="Live run unavailable"
-            detail={`No data has been received for run ${feed.runId} yet.`}
-          />
-        )
-      )}
-    </>
+      <LateCheckResult check={feed.lateCheck} />
+    </InsetCard>
   );
 }
 
-export function LiveFeed({
-  requested,
-}: {
-  /** The `?liveRun=` UUID, or null to follow the newest run when the list first loads. */
-  requested: string | null;
-}) {
-  const { list, firstNewest } = useRunList();
-  const requestedValid = requested === null || isLiveRunId(requested);
-  // An explicit selection is read directly by UUID, so it need not be on the newest page.
-  const selectedId = requested ?? firstNewest;
-  const { feed, readAgain } = useRunFeed(requestedValid ? selectedId : null);
-  const runs = useMemo(
-    () => (list.page ? liveRunSummaries(list.page) : []),
-    [list.page],
-  );
+/**
+ * What to show instead of a run's tabs: not found, not received yet or still connecting.
+ * Null once the run has data. A missing run is never replaced by another one.
+ */
+export function LiveRunNotice({ live }: { live: LiveRunState }) {
+  const { feed, run } = live;
+  if (!feed)
+    return (
+      <Skeleton label="Contacting the live API" className="h-48 fit:flex-1" />
+    );
+  if (
+    feed.connection.status === "stopped" &&
+    feed.connection.kind === "not_found"
+  )
+    return (
+      <ErrorState
+        title="Live run not found"
+        detail={`The live API has no run ${feed.runId}. No other run is shown in its place.`}
+      />
+    );
+  if (run) return null;
+  if (feed.connection.status === "connecting")
+    return (
+      <Skeleton label="Reading the live run" className="h-48 fit:flex-1" />
+    );
   return (
-    <div className="space-y-6">
-      <div
-        role="note"
-        className="flex items-start gap-3 rounded-lg border border-sky-400/30 bg-sky-400/10 p-3 text-xs leading-5 text-sky-100"
+    <UnavailableState
+      title="Live run unavailable"
+      reason={`No data has been received for run ${feed.runId} yet.`}
+    />
+  );
+}
+
+function stepRow(
+  row: NonNullable<ReturnType<typeof wallTimeline>>["rows"][number],
+  state: StepState | null,
+): TimelineChartRow {
+  const { step } = row;
+  return {
+    id: step.stepId,
+    label: step.stepId,
+    detail: (
+      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+        {stepTypeLabel(step.stepType)}
+        {state && state !== "completed" && (
+          <StepStateBadge
+            state={state}
+            appearance="dot"
+            className="px-2 py-0 text-xs"
+          />
+        )}
+      </span>
+    ),
+    startShare: row.startShare,
+    segments: row.segments,
+    open: row.open,
+    failed: state === "failed" || state === "cancelled",
+    value:
+      row.wallSeconds === null ? (
+        <span className="font-normal text-ink-muted">Running</span>
+      ) : (
+        duration(row.wallSeconds)
+      ),
+    description: `${stepTypeLabel(step.stepType)}, ${state ?? step.state}${row.wallSeconds === null ? ", in progress" : ""}`,
+  };
+}
+
+/** Steps on the producer's wall clock beside the selected step's applied state. */
+export function LiveTimelineView({ run }: { run: LiveFeedRun }) {
+  const timeline = useMemo(() => wallTimeline(run.wallSteps), [run.wallSteps]);
+  const steps = run.view.steps;
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected =
+    steps.find((step) => step.stepId === selectedId) ??
+    steps.find((step) => step.state === "running") ??
+    steps.at(-1);
+  const charted = new Set(timeline?.rows.map((row) => row.step.stepId));
+  const notStarted = steps.filter((step) => !charted.has(step.stepId));
+  const stateOf = (stepId: string) =>
+    steps.find((step) => step.stepId === stepId)?.state ?? null;
+
+  return (
+    <div className={cn(TAB_GRID, WIDE_MAIN, "fit:h-full")}>
+      <GlassPanel
+        as="section"
+        aria-labelledby="live-timeline"
+        className={FILL_PANEL}
       >
-        <Database className="mt-0.5 size-4 shrink-0" aria-hidden />
-        <p>
-          <strong className="font-semibold tracking-wide uppercase">
-            Live API
-          </strong>{" "}
-          — recorded runs read from <code>/v1/live/runs</code> while this page
-          is open. Polling pauses while the tab is hidden.
+        <PanelHeader
+          titleId="live-timeline"
+          icon={Waypoints}
+          title="Steps over time"
+          description={
+            timeline
+              ? `${timeline.rows.length} steps in a ${duration(timeline.spanSeconds)} window`
+              : "No step has started yet."
+          }
+          className="fit:shrink-0"
+        />
+        <div className={PANEL_SCROLL}>
+          {timeline ? (
+            <TimelineChart
+              rows={timeline.rows.map((row) =>
+                stepRow(row, stateOf(row.step.stepId)),
+              )}
+              ticks={timeline.ticks}
+              label="Live steps in start order"
+              selectedId={selected?.stepId}
+              onSelect={setSelectedId}
+            />
+          ) : (
+            <EmptyState
+              title="Nothing to chart yet"
+              detail="Steps appear here once the producer reports them running."
+            />
+          )}
+          {notStarted.length > 0 && (
+            <p className="mt-3 px-3 text-sm text-ink-muted [overflow-wrap:anywhere]">
+              Not on the chart (no running event yet):{" "}
+              {notStarted.map((step) => step.stepId).join(", ")}
+            </p>
+          )}
+        </div>
+        <p className="mt-3 flex items-start gap-2 text-xs text-ink-muted fit:shrink-0">
+          <Timer className="mt-px size-4 shrink-0" aria-hidden />
+          Bars use the producer&apos;s wall clock (observed_at) and are
+          approximate. The step details use the runner&apos;s monotonic ticks.
+        </p>
+      </GlassPanel>
+      <GlassPanel
+        as="section"
+        aria-labelledby="live-step-detail"
+        aria-live="polite"
+        className={FILL_PANEL}
+      >
+        <PanelHeader
+          titleId="live-step-detail"
+          icon={FileSearch}
+          title="Selected step"
+          description={
+            <span className="[overflow-wrap:anywhere]">
+              {selected?.stepId ?? "No step reported"}
+            </span>
+          }
+          className="fit:shrink-0"
+          actions={selected && <StepStateBadge state={selected.state} />}
+        />
+        {selected ? (
+          <div
+            tabIndex={0}
+            role="group"
+            aria-label={`Applied state of ${selected.stepId}`}
+            className={cn(PANEL_SCROLL, "space-y-3")}
+          >
+            <InsetCard>
+              <KeyValueList items={liveStepItems(selected)} dense />
+            </InsetCard>
+            {selected.reason && (
+              <p className="rounded-2xl border border-danger-line bg-danger-soft px-4 py-3 text-sm break-words text-danger">
+                Reason: {selected.reason}
+              </p>
+            )}
+            <p className="text-xs text-ink-muted">
+              Running steps show their start time only; elapsed time is not
+              computed across clocks.
+            </p>
+          </div>
+        ) : (
+          <EmptyState
+            title="No step reported"
+            detail="No step has an applied state yet."
+          />
+        )}
+      </GlassPanel>
+    </div>
+  );
+}
+
+/** "Range 35.1%–42.0% · mean 40.6%": the chart's values as text. */
+function rangeText(series: MetricSeries) {
+  const summary = summarizeSeries(series);
+  if (!summary) return "No measured values.";
+  const f = (value: number) => formatSignal(value, series.unit);
+  return `Range ${f(summary.min)}–${f(summary.max)} · mean ${f(summary.mean)}`;
+}
+
+function measuredText(series: MetricSeries) {
+  const measured = series.points.filter((p) => p.value !== null).length;
+  const missing = series.notMeasured
+    ? Object.entries(series.notMeasured).map(
+        ([state, { count }]) => ` · ${count} ${state}`,
+      )
+    : series.unavailable > 0
+      ? [` · ${series.unavailable} unavailable`]
+      : [];
+  return `${measured} measured${missing.join("")}`;
+}
+
+function MetricChart({
+  series,
+  timeline,
+  modelCalls,
+}: {
+  series: MetricSeries;
+  timeline: NonNullable<ReturnType<typeof wallTimeline>>;
+  modelCalls: SignalBand[];
+}) {
+  const { window } = timeline;
+  return (
+    <SignalChart
+      title={series.label}
+      unit={series.unit}
+      color={seriesColors[series.metric] ?? CPU_SERIES_COLOR}
+      spanSeconds={timeline.spanSeconds}
+      ticks={timeline.ticks}
+      points={series.points.map((p) => ({
+        seconds: wallSecondsInto(p.atMs, window),
+        value: p.value,
+      }))}
+      bands={modelCalls}
+      bandLabel="Model calls"
+      meta={`${series.unit} · ${measuredText(series)}`}
+      footer={
+        <>
+          <p className="mt-2 text-xs text-ink-muted">{rangeText(series)}</p>
+          {series.notMeasured &&
+            Object.entries(series.notMeasured).map(([state, { reason }]) => (
+              <p
+                key={state}
+                className="mt-1 text-xs break-words text-ink-muted"
+              >
+                Not measured ({state}){reason ? `: ${reason}` : ""}. Shown as
+                gaps, never as zero.
+              </p>
+            ))}
+        </>
+      }
+    />
+  );
+}
+
+/** Charts from one resource and service (or one diagnostic source) sit under one heading. */
+function groupByResource(series: readonly MetricSeries[]) {
+  const groups = new Map<string, { title: string; series: MetricSeries[] }>();
+  for (const entry of series) {
+    const key = entry.resource
+      ? `${entry.resource.resourceId}|${entry.resource.serviceId}`
+      : entry.source;
+    const title = entry.resource
+      ? `${entry.resource.resourceId} · ${entry.resource.serviceId} · ${entry.source}`
+      : entry.source;
+    const group = groups.get(key) ?? { title, series: [] };
+    group.series.push(entry);
+    groups.set(key, group);
+  }
+  return [...groups.entries()].map(([key, group]) => ({ key, ...group }));
+}
+
+/** Every live sample a registered resource reported, aligned to the run's wall clock. */
+export function LiveResourcesView({ run }: { run: LiveFeedRun }) {
+  const timeline = useMemo(() => wallTimeline(run.wallSteps), [run.wallSteps]);
+  const modelCalls: SignalBand[] = timeline
+    ? run.wallSteps
+        .filter((s) => s.stepType === "model_call")
+        .map((call) => ({
+          id: call.stepId,
+          from: wallSecondsInto(call.startMs, timeline.window),
+          to: wallSecondsInto(
+            call.endMs ?? timeline.window.endMs,
+            timeline.window,
+          ),
+        }))
+    : [];
+  const gpu = run.gpu && "series" in run.gpu ? run.gpu : null;
+  const liveGpu = run.liveSeries.some((s) => s.metric.startsWith("gpu."));
+  const charts = [
+    ...(gpu?.series.filter((s) => s.key !== "gpu.mem") ?? []),
+    ...run.liveSeries,
+  ];
+  return (
+    <GlassPanel
+      as="section"
+      aria-labelledby="live-resources"
+      className={cn(FILL_PANEL, "fit:h-full")}
+    >
+      <PanelHeader
+        titleId="live-resources"
+        icon={Activity}
+        title="Resource signals"
+        description="Whole-host or whole-device samples, not one step's, on the step timeline's clock."
+        className="fit:shrink-0"
+        actions={
+          modelCalls.length > 0 && (
+            <span className="flex items-center gap-2 text-sm text-ink">
+              <i
+                aria-hidden
+                className="h-1.5 w-5 rounded-full"
+                style={{ background: BAND_COLOR }}
+              />
+              Model calls (lane under each chart)
+            </span>
+          )
+        }
+      />
+      <div
+        tabIndex={0}
+        role="group"
+        aria-label="Resource signal charts"
+        className={cn(PANEL_SCROLL, "space-y-3")}
+      >
+        {timeline && charts.length > 0 ? (
+          groupByResource(charts).map((group) => (
+            <section key={group.key} aria-label={group.title}>
+              <h3
+                className="mb-2 truncate font-mono text-xs text-ink-muted"
+                title={group.title}
+              >
+                {group.title}
+              </h3>
+              <div className="grid grid-cols-1 gap-3 @container lg:grid-cols-2">
+                {group.series.map((s) => (
+                  <MetricChart
+                    key={s.key}
+                    series={s}
+                    timeline={timeline}
+                    modelCalls={modelCalls}
+                  />
+                ))}
+              </div>
+            </section>
+          ))
+        ) : (
+          <UnavailableState
+            title="No resource samples yet"
+            reason={
+              timeline
+                ? "No registered resource has reported a live sample for this run."
+                : "Signals are aligned to the steps' wall clock, and no step has started yet."
+            }
+          />
+        )}
+        {run.gpu && "missing" in run.gpu && !liveGpu && (
+          <p className="text-sm text-ink-muted">
+            GPU: not measured for this run. {run.gpu.missing}
+          </p>
+        )}
+        <p className="text-xs break-words text-ink-muted">
+          Registered resources:{" "}
+          {run.resources.length
+            ? run.resources
+                .map((r) => `${r.resourceClass} (${r.resourceId})`)
+                .join(", ")
+            : "none"}
+          . Retrieval has no registered live metric yet. Signals labeled
+          nvidia-smi come from the A01 diagnostic, which is not ingested and is
+          aligned only by wall clock.
         </p>
       </div>
-      <RunPicker runs={runs} list={list} current={selectedId} />
-      {!requestedValid ? (
-        <EmptyState
-          title="Not a live run ID"
-          detail={`“${requested}” is not a live run UUID. Choose a run above.`}
-          alert
+    </GlassPanel>
+  );
+}
+
+/** What can be downloaded for a live run, and why there is no saved-run file. */
+export function LiveEvidenceView({
+  runId,
+  run,
+}: {
+  runId: string;
+  run: LiveFeedRun;
+}) {
+  return (
+    <div className={cn(TAB_GRID, "fit:h-full")}>
+      <GlassPanel
+        as="section"
+        aria-labelledby="live-evidence"
+        className={FILL_PANEL}
+      >
+        <PanelHeader
+          titleId="live-evidence"
+          icon={FolderArchive}
+          title="Live records"
+          description={`${run.recordCount} record${run.recordCount === 1 ? "" : "s"} received for this run.`}
+          className="fit:shrink-0"
         />
-      ) : feed ? (
-        <SelectedRun feed={feed} onReadAgain={readAgain} />
+        <div className={cn(PANEL_SCROLL, "space-y-3")}>
+          <InsetCard className="space-y-3">
+            <p className="text-sm text-ink-muted">
+              Every record the live API holds for run{" "}
+              <span className="font-mono break-all text-ink">{runId}</span>,
+              read page by page with its gaps and pending or expired records
+              unchanged. Run state, steps and gaps are as of the time of
+              reading.
+            </p>
+            <Button asChild variant="brand-soft" size="pill">
+              <a href={routes.liveExport(runId)}>
+                <Download aria-hidden />
+                Download live records (JSON)
+              </a>
+            </Button>
+          </InsetCard>
+          <LiveGaps view={run.view} />
+        </div>
+      </GlassPanel>
+      <GlassPanel
+        as="section"
+        aria-labelledby="live-saved-evidence"
+        className={FILL_PANEL}
+      >
+        <PanelHeader
+          titleId="live-saved-evidence"
+          icon={FileSearch}
+          title="Saved evidence"
+          description="Not available for live runs."
+          className="fit:shrink-0"
+        />
+        <InsetCard>
+          <p className="text-sm text-ink-muted">
+            Live records are kept separately from saved run history, and agent
+            runs report only to the live API, so this run has no results.json,
+            spans.jsonl or samples.jsonl.
+          </p>
+        </InsetCard>
+      </GlassPanel>
+    </div>
+  );
+}
+
+/** The Status tab: connection, state tiles, totals and policy. */
+export function LiveStatusView({ live }: { live: LiveRunState }) {
+  const { feed, run, readAgain } = live;
+  if (!feed || !run) return null;
+  return (
+    <LiveRunStatus
+      runId={feed.runId}
+      run={run.run}
+      view={run.view}
+      receipt={feed.receipt}
+      connection={<ConnectionBanner feed={feed} onReadAgain={readAgain} />}
+    />
+  );
+}
+
+/** The content of a live run's Status, Timeline, Resources and Evidence tabs; null without data. */
+export function liveRunTabs(live: LiveRunState) {
+  const { feed, run } = live;
+  if (!feed || !run) return null;
+  return {
+    status: <LiveStatusView live={live} />,
+    timeline: <LiveTimelineView run={run} />,
+    resources: <LiveResourcesView run={run} />,
+    evidence: <LiveEvidenceView runId={feed.runId} run={run} />,
+  };
+}
+
+/**
+ * One live run's status, timeline, resources and evidence stacked, read by UUID. For views
+ * without tabs; the Live and Run pages show the same panels as tabs.
+ */
+export function LiveRunDetail({ runId }: { runId: string }) {
+  const live = useLiveRun(runId);
+  const tabs = liveRunTabs(live);
+  return (
+    <div className="space-y-4">
+      {tabs ? (
+        <>
+          {tabs.status}
+          {tabs.timeline}
+          {tabs.resources}
+          {tabs.evidence}
+        </>
       ) : (
-        list.connection.status === "connected" && (
+        <LiveRunNotice live={live} />
+      )}
+    </div>
+  );
+}
+
+function ListStatus({ list, count }: { list: RunListFeed; count: number }) {
+  const { connection } = list;
+  return (
+    <span role="status" aria-live="polite">
+      {connection.status === "connecting"
+        ? "Loading live runs…"
+        : `Newest ${count} from the live API.`}
+      {connection.status === "retrying" &&
+        ` The list could not be refreshed (${connection.message}); retrying in ${seconds(connection.retryInMs)}.`}
+      {connection.status === "stopped" &&
+        ` The list could not be read: ${connection.message}`}
+    </span>
+  );
+}
+
+function RunList({
+  runs,
+  list,
+  current,
+}: {
+  runs: LiveRunSummary[];
+  list: RunListFeed;
+  current: string | null;
+}) {
+  return (
+    <GlassPanel
+      as="section"
+      aria-labelledby="live-run-list"
+      className={cn(FILL_PANEL, "fit:h-full")}
+    >
+      <PanelHeader
+        titleId="live-run-list"
+        icon={RadioTower}
+        title="Recent live runs"
+        description={<ListStatus list={list} count={runs.length} />}
+        className="fit:shrink-0"
+      />
+      {runs.length > 0 ? (
+        <nav aria-labelledby="live-run-list" className={PANEL_SCROLL}>
+          <ul className="space-y-1">
+            {runs.map((run) => {
+              const selected = run.runId === current;
+              const tone = RUN_STATE_TONES[run.state] ?? "info";
+              return (
+                <li key={run.runId}>
+                  <Link
+                    href={routes.live(run.runId)}
+                    aria-current={selected ? "page" : undefined}
+                    className={cn(
+                      "grid min-h-11 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 rounded-xl border border-transparent px-3 py-2 text-ink outline-none transition-colors hover:bg-glass-strong focus-visible:ring-[3px] focus-visible:ring-brand/40",
+                      selected &&
+                        "border-success-line bg-brand-soft shadow-glow",
+                    )}
+                  >
+                    <i
+                      aria-hidden
+                      className={cn("size-2.5 rounded-full", TONE_DOT[tone])}
+                    />
+                    <span className="min-w-0" title={run.runId}>
+                      <span className="block truncate font-mono text-sm font-medium">
+                        {run.runId.slice(0, 8)}
+                      </span>
+                      <span className="block truncate text-xs text-ink-muted">
+                        {run.taskId}
+                      </span>
+                    </span>
+                    <span className="text-right text-xs text-ink-muted">
+                      <span className="block capitalize">{run.state}</span>
+                      <time dateTime={run.createdAt} suppressHydrationWarning>
+                        {new Date(run.createdAt).toLocaleTimeString()}
+                      </time>
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+      ) : (
+        list.connection.status !== "connecting" && (
           <EmptyState
             title="No live runs yet"
             detail="Start one with make agent-run; it appears here while it runs."
           />
         )
       )}
-      {list.connection.status !== "connected" && !feed && requestedValid && (
-        <EmptyState
-          title={
-            list.connection.status === "connecting"
-              ? "Connecting to the live API"
-              : "Live API unavailable"
-          }
-          detail={
-            list.connection.status === "connecting"
-              ? "Reading the newest live runs…"
-              : "No run is selected and the run list cannot be read yet. It is retried automatically."
-          }
-          alert={list.connection.status !== "connecting"}
-        />
-      )}
+    </GlassPanel>
+  );
+}
+
+function SelectedRun({ runId }: { runId: string }) {
+  const live = useLiveRun(runId);
+  const tabs = liveRunTabs(live);
+  const state = live.run?.run?.state ?? null;
+  return (
+    <TabbedView
+      label="Live run views"
+      param="tab"
+      header={
+        <div className="flex flex-wrap items-center gap-2">
+          <CopyChip value={runId} label="run ID" />
+          {state && <StepStateBadge state={state} />}
+          {live.run && (
+            <span className="text-sm text-ink-muted">{live.run.title}</span>
+          )}
+          <Button asChild variant="glass" size="pill" className="ml-auto">
+            <Link href={routes.run(runId)}>
+              <ExternalLink aria-hidden />
+              Open run page
+            </Link>
+          </Button>
+        </div>
+      }
+      tabs={
+        tabs
+          ? [
+              { id: "status", label: "Status", content: tabs.status },
+              { id: "timeline", label: "Timeline", content: tabs.timeline },
+              // Charts measure their container, so they render only while visible.
+              {
+                id: "resources",
+                label: "Resources",
+                content: tabs.resources,
+                lazy: true,
+              },
+              { id: "evidence", label: "Evidence", content: tabs.evidence },
+            ]
+          : [
+              {
+                id: "status",
+                label: "Status",
+                content: <LiveRunNotice live={live} />,
+              },
+            ]
+      }
+    />
+  );
+}
+
+/**
+ * The Live runs page body: the newest runs beside the selected run's tabs. `requested` is
+ * the `?liveRun=` UUID, or null to follow the newest run when the list first loads.
+ */
+export function LiveFeed({ requested }: { requested: string | null }) {
+  const { list, firstNewest } = useRunList();
+  const requestedValid = requested === null || isLiveRunId(requested);
+  // An explicit selection is read directly by UUID, so it need not be on the newest page.
+  const selectedId = requested ?? firstNewest;
+  const runs = useMemo(
+    () => (list.page ? liveRunSummaries(list.page) : []),
+    [list.page],
+  );
+  return (
+    <div className="grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)] fit:h-full fit:min-h-0 fit:grid-rows-[minmax(0,1fr)]">
+      <RunList runs={runs} list={list} current={selectedId} />
+      <div className="min-w-0 fit:min-h-0">
+        {!requestedValid ? (
+          <ErrorState
+            title="Not a live run ID"
+            detail={`“${requested}” is not a live run UUID. Choose a run from the list.`}
+          />
+        ) : selectedId ? (
+          // Keyed so a new selection starts with fresh tab state and no previous data.
+          <SelectedRun key={selectedId} runId={selectedId} />
+        ) : list.connection.status === "connected" ? (
+          <EmptyState
+            title="No live run selected"
+            detail="Start one with make agent-run, then choose it from the list."
+          />
+        ) : (
+          <UnavailableState
+            title={
+              list.connection.status === "connecting"
+                ? "Connecting to the live API"
+                : "Live API unavailable"
+            }
+            reason={
+              list.connection.status === "connecting"
+                ? "Reading the newest live runs…"
+                : "No run is selected and the run list cannot be read yet. It is retried automatically."
+            }
+          />
+        )}
+      </div>
     </div>
   );
 }

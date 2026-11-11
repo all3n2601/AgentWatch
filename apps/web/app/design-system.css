@@ -1,0 +1,268 @@
+/*
+ * AgentWatch glass design system: tokens and surface utilities for the
+ * approved screens (docs/design-system.md). Imported by globals.css after
+ * Tailwind so `@theme` and `@utility` are processed in the same pass.
+ *
+ * Tokens are prefixed `--aw-` so they sit beside the existing shadcn tokens
+ * without changing pages that have not moved to the new system yet.
+ */
+
+/*
+ * `fit:` — the one-screen desktop layout of the approved design: the shell
+ * fills the viewport and pages lay out inside it. Below it, pages stack and
+ * the document scrolls.
+ */
+@custom-variant fit (@media (min-width: 80rem) and (min-height: 47.5rem));
+
+/* Settings → Density: compact scales the rem-based interface down a step. */
+:root[data-density="compact"] {
+  font-size: 93.75%;
+}
+
+@theme inline {
+  --color-canvas: var(--aw-canvas);
+  --color-glass: var(--aw-glass);
+  --color-glass-strong: var(--aw-glass-strong);
+  --color-glass-inset: var(--aw-glass-inset);
+  --color-surface: var(--aw-surface);
+  --color-line: var(--aw-line);
+  --color-ink: var(--aw-ink);
+  --color-ink-muted: var(--aw-ink-muted);
+  --color-ink-subtle: var(--aw-ink-subtle);
+  --color-brand: var(--aw-brand);
+  --color-brand-strong: var(--aw-brand-strong);
+  --color-brand-soft: var(--aw-brand-soft);
+  --color-brand-ink: var(--aw-brand-ink);
+  --color-bar: var(--aw-bar);
+  --color-bar-track: var(--aw-bar-track);
+
+  --color-success: var(--aw-success);
+  --color-success-soft: var(--aw-success-soft);
+  --color-success-line: var(--aw-success-line);
+  --color-success-solid: var(--aw-success-solid);
+  --color-warning: var(--aw-warning);
+  --color-warning-soft: var(--aw-warning-soft);
+  --color-warning-line: var(--aw-warning-line);
+  --color-warning-solid: var(--aw-warning-solid);
+  --color-caution: var(--aw-caution);
+  --color-caution-soft: var(--aw-caution-soft);
+  --color-caution-line: var(--aw-caution-line);
+  --color-caution-solid: var(--aw-caution-solid);
+  --color-danger: var(--aw-danger);
+  --color-danger-soft: var(--aw-danger-soft);
+  --color-danger-line: var(--aw-danger-line);
+  --color-danger-solid: var(--aw-danger-solid);
+  --color-info: var(--aw-info);
+  --color-info-soft: var(--aw-info-soft);
+  --color-info-line: var(--aw-info-line);
+  --color-info-solid: var(--aw-info-solid);
+
+  --radius-panel: 24px;
+  --radius-inset: 16px;
+  --shadow-panel: var(--aw-shadow-panel);
+  --shadow-raised: var(--aw-shadow-raised);
+  --shadow-glow: var(--aw-shadow-glow);
+}
+
+:root {
+  --aw-canvas: #eef1ee;
+  --aw-canvas-image:
+    radial-gradient(circle at 8% 0%, rgb(105 225 76 / 0.09), transparent 28rem),
+    radial-gradient(
+      circle at 92% 100%,
+      rgb(120 160 140 / 0.08),
+      transparent 32rem
+    ),
+    linear-gradient(145deg, #f6f8f5 0%, #ebefeb 100%);
+  --aw-glass: rgb(255 255 255 / 0.62);
+  --aw-glass-strong: rgb(255 255 255 / 0.88);
+  --aw-glass-inset: rgb(255 255 255 / 0.58);
+  --aw-glass-edge: rgb(255 255 255 / 0.95);
+  /* Opaque card surface, for popovers that sit over busy content. */
+  --aw-surface: #fbfcfb;
+  --aw-line: rgb(22 32 26 / 0.09);
+  --aw-ink: #131815;
+  --aw-ink-muted: #56605a;
+  --aw-ink-subtle: #6b746f;
+
+  --aw-brand: #4ec72e;
+  /* Filled brand surfaces carry white text, so they use the darker green (5.3:1). */
+  --aw-brand-strong: #247b1a;
+  --aw-brand-soft: #e6f7df;
+  --aw-brand-ink: #1d6a15;
+  --aw-bar: #7f8782;
+  --aw-bar-track: rgb(22 32 26 / 0.07);
+  --aw-hatch-line: rgb(22 32 26 / 0.22);
+  --aw-hatch-bg: rgb(22 32 26 / 0.04);
+
+  --aw-success: #1f6f17;
+  --aw-success-soft: #e5f6de;
+  --aw-success-line: #bfe4b1;
+  --aw-success-solid: #4ec72e;
+  --aw-warning: #7a5200;
+  --aw-warning-soft: #fdf4d5;
+  --aw-warning-line: #f1dc8f;
+  --aw-warning-solid: #f1c62b;
+  --aw-caution: #9a4500;
+  --aw-caution-soft: #fde9d3;
+  --aw-caution-line: #f6c99a;
+  --aw-caution-solid: #ed8b20;
+  --aw-danger: #ae2119;
+  --aw-danger-soft: #fde3e0;
+  --aw-danger-line: #f4b9b3;
+  --aw-danger-solid: #e75248;
+  --aw-info: #46525c;
+  --aw-info-soft: #edf0f2;
+  --aw-info-line: #d4dadf;
+  --aw-info-solid: #8a949c;
+
+  --aw-shadow-panel:
+    inset 0 1px 0 var(--aw-glass-edge), 0 1px 2px rgb(30 44 34 / 0.04),
+    0 22px 48px -28px rgb(30 44 34 / 0.24);
+  --aw-shadow-raised:
+    inset 0 1px 0 var(--aw-glass-edge), 0 1px 2px rgb(30 44 34 / 0.06),
+    0 10px 24px -14px rgb(30 44 34 / 0.28);
+  --aw-shadow-glow:
+    0 0 0 1px rgb(78 199 46 / 0.28), 0 6px 22px -6px rgb(78 199 46 / 0.55);
+
+  /* 3D campus materials (read by components/widgets/campus-canvas.tsx). */
+  --aw-scene-structure: #e4e9e6;
+  --aw-scene-shade: #ccd3cf;
+  --aw-scene-recess: #6c7772;
+  --aw-scene-glass: #56656b;
+  --aw-scene-road: #c3cac6;
+  --aw-scene-ground: #e6ebe7;
+  --aw-scene-bead: #fcfdfc;
+}
+
+:root.dark {
+  --aw-canvas: #0b1014;
+  --aw-canvas-image:
+    radial-gradient(circle at 8% 0%, rgb(78 199 46 / 0.08), transparent 28rem),
+    radial-gradient(
+      circle at 92% 100%,
+      rgb(60 110 130 / 0.1),
+      transparent 32rem
+    ),
+    linear-gradient(145deg, #0e141a 0%, #090d11 100%);
+  --aw-glass: rgb(24 32 40 / 0.62);
+  --aw-glass-strong: rgb(28 37 46 / 0.9);
+  --aw-glass-inset: rgb(255 255 255 / 0.035);
+  --aw-glass-edge: rgb(255 255 255 / 0.06);
+  --aw-surface: #19212a;
+  --aw-line: rgb(255 255 255 / 0.08);
+  --aw-ink: #e8eef1;
+  --aw-ink-muted: #a0aab1;
+  --aw-ink-subtle: #7d8890;
+
+  --aw-brand: #5fd63d;
+  --aw-brand-strong: #247b1a;
+  --aw-brand-soft: rgb(95 214 61 / 0.13);
+  --aw-brand-ink: #93e776;
+  --aw-bar: #8b959c;
+  --aw-bar-track: rgb(255 255 255 / 0.07);
+  --aw-hatch-line: rgb(255 255 255 / 0.24);
+  --aw-hatch-bg: rgb(255 255 255 / 0.03);
+
+  --aw-success: #8fe274;
+  --aw-success-soft: rgb(95 214 61 / 0.13);
+  --aw-success-line: rgb(95 214 61 / 0.32);
+  --aw-success-solid: #5fd63d;
+  --aw-warning: #f6d86a;
+  --aw-warning-soft: rgb(241 198 43 / 0.13);
+  --aw-warning-line: rgb(241 198 43 / 0.32);
+  --aw-warning-solid: #f1c62b;
+  --aw-caution: #f8b06a;
+  --aw-caution-soft: rgb(237 139 32 / 0.14);
+  --aw-caution-line: rgb(237 139 32 / 0.34);
+  --aw-caution-solid: #ed8b20;
+  --aw-danger: #ff9890;
+  --aw-danger-soft: rgb(231 82 72 / 0.15);
+  --aw-danger-line: rgb(231 82 72 / 0.36);
+  --aw-danger-solid: #ef6a60;
+  --aw-info: #b6c0c7;
+  --aw-info-soft: rgb(255 255 255 / 0.06);
+  --aw-info-line: rgb(255 255 255 / 0.12);
+  --aw-info-solid: #8a949c;
+
+  --aw-shadow-panel:
+    inset 0 1px 0 var(--aw-glass-edge), 0 1px 2px rgb(0 0 0 / 0.3),
+    0 24px 52px -28px rgb(0 0 0 / 0.7);
+  --aw-shadow-raised:
+    inset 0 1px 0 var(--aw-glass-edge), 0 10px 24px -14px rgb(0 0 0 / 0.6);
+  --aw-shadow-glow:
+    0 0 0 1px rgb(95 214 61 / 0.3), 0 6px 22px -6px rgb(95 214 61 / 0.45);
+
+  --aw-scene-structure: #2b343c;
+  --aw-scene-shade: #212930;
+  --aw-scene-recess: #0f1418;
+  --aw-scene-glass: #1b262d;
+  --aw-scene-road: #333d45;
+  --aw-scene-ground: #151c22;
+  --aw-scene-bead: #b3bdc3;
+}
+
+/* The page backdrop behind glass. Panels need something to blur over. */
+@utility aw-canvas {
+  background-color: var(--aw-canvas);
+  background-image: var(--aw-canvas-image);
+  background-attachment: fixed;
+  color: var(--aw-ink);
+}
+
+/* Primary container: frosted panel with a lit top edge. */
+@utility glass-panel {
+  background: var(--aw-glass);
+  border: 1px solid var(--aw-line);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--aw-shadow-panel);
+  backdrop-filter: blur(18px) saturate(1.3);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+}
+
+/* Nested surface inside a panel; no blur, so stacking stays cheap. */
+@utility glass-inset {
+  background: var(--aw-glass-inset);
+  border: 1px solid var(--aw-line);
+  border-radius: var(--radius-inset);
+}
+
+/* Small raised controls: chips, icon buttons, filter triggers. */
+@utility glass-raised {
+  background: var(--aw-glass-strong);
+  border: 1px solid var(--aw-line);
+  box-shadow: var(--aw-shadow-raised);
+}
+
+/*
+ * Hatched fill marks waiting time everywhere (work is solid, wait is hatched),
+ * so the distinction survives greyscale printing and colour-vision deficiency.
+ */
+@utility hatch {
+  background-color: var(--aw-hatch-bg);
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--aw-hatch-line) 0 1.5px,
+    transparent 1.5px 6px
+  );
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  :root {
+    --aw-glass: rgb(255 255 255 / 0.92);
+  }
+  :root.dark {
+    --aw-glass: rgb(24 32 40 / 0.95);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --aw-glass: #ffffff;
+    --aw-glass-inset: #f7f9f7;
+  }
+  :root.dark {
+    --aw-glass: #182028;
+    --aw-glass-inset: #1d262e;
+  }
+}
