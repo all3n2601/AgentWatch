@@ -114,6 +114,7 @@ from agentwatch_agent.sweep import (
 from agentwatch_agent.sweep_offline import ANALYSIS_FILE, SweepFolderError, analyse_sweep_folder
 from agentwatch_agent.sweep_protocol import (
     CONFIGURATIONS,
+    INJECTOR_BOUND_MARGIN_SECONDS,
     INJECTOR_CONCURRENCY,
     INJECTOR_PROMPT_TOKENS,
     SAMPLING_INTERVAL_SECONDS,
@@ -1052,7 +1053,8 @@ def capacity_sweep_command(args: argparse.Namespace) -> int:
         # Validates the runners and the injector settings; nothing is created or started.
         every_source = tuple(range(len(sources)))
         make_batch(Batch("ramp", len(sources), 0, every_source, False), Path(), MonotonicClock())
-        make_injectors(MonotonicClock(), limits.run_timeout_seconds)
+        # With the bound the sweep gives the flood, so a too-long run limit is refused here.
+        make_injectors(MonotonicClock(), limits.run_timeout_seconds + INJECTOR_BOUND_MARGIN_SECONDS)
     except ValueError as error:
         print(f"error: cannot run the sweep: {error}", file=sys.stderr)
         return EXIT_USAGE

@@ -812,3 +812,11 @@ def test_code_revision_without_git_is_unavailable(monkeypatch):
     monkeypatch.setattr(cli.subprocess, "run", run)
     revision = cli.code_revision()
     assert revision["status"] == "unavailable" and "FileNotFoundError" in revision["reason"]
+
+
+def test_a_run_timeout_beyond_the_injector_bound_is_refused_before_anything_runs(
+    tmp_path, sweep_stubs, capsys
+):
+    # 1790 s fits a run, but its flood bound, 1790 + 32 s, exceeds the injector's 1800 s cap.
+    code = cli.main(sweep_argv(tmp_path, "--run-timeout", "1790"))
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "max_duration_seconds")
