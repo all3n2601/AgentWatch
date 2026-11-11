@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { aggregate, matchingWorkload, scopedRuns } from "../lib/dashboard-data";
+import {
+  aggregate,
+  duration,
+  matchingWorkload,
+  scopedRuns,
+} from "../lib/dashboard-data";
 import type { Experiment } from "../lib/experiment-schema";
 function run(id: string, time: number): Experiment {
   const step = {
@@ -96,4 +101,14 @@ test("matching comparisons require identical output and capacity settings", () =
   b.experiment.worker_capacity = 1;
   b.clean = { ...b.clean, checksum: "different" };
   assert.equal(matchingWorkload(a, b), false);
+});
+
+test("duration picks its unit after rounding, so boundary readings do not overflow", () => {
+  assert.equal(duration(0), "0 ms");
+  assert.equal(duration(0.00023), "230 μs");
+  // 1 ms computed from millisecond wall timestamps lands just below 0.001.
+  assert.equal(duration((1_001 - 1_000) / 1000 - 1e-12), "1 ms");
+  assert.equal(duration(0.9996), "1.00 s");
+  assert.equal(duration(0.281), "281 ms");
+  assert.equal(duration(2.4), "2.40 s");
 });

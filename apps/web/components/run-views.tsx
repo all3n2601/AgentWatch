@@ -18,7 +18,7 @@ import {
   YAxis,
   Tooltip,
 } from "recharts";
-import { z } from "zod";
+import { chartTooltipStyle } from "@/components/chart-kit";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import type { Experiment, Step } from "@/lib/experiment-schema";
+import { sampleSchema, type HostSample } from "@/lib/run-samples";
 import { duration, percent, evidenceUrl, stepsOf } from "@/lib/dashboard-data";
 
 export function Status({ passed }: { passed: boolean }) {
@@ -60,7 +61,7 @@ export function PanelHeading({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
         {detail && (
@@ -85,7 +86,7 @@ export function TraceExplorer({ run }: { run: Experiment }) {
   const end = Math.max(...steps.map((s) => s.finished_ns));
   return (
     <div className="space-y-5">
-      <Card className="gap-0 p-5 sm:p-6">
+      <Card className="gap-0 p-5">
         <PanelHeading
           title="Worker trace"
           detail={`${steps.length} recorded spans · ${duration((end - start) / 1e9)} run window`}
@@ -111,9 +112,9 @@ export function TraceExplorer({ run }: { run: Experiment }) {
               <span className="truncate text-muted-foreground">
                 {s.step_id.replaceAll("-", " ")}
               </span>
-              <span className="trace-grid relative h-10 rounded bg-background/40">
+              <span className="trace-grid relative h-8 rounded bg-background/40">
                 <span
-                  className="absolute top-2 flex h-6 min-w-px overflow-hidden rounded"
+                  className="absolute top-1.5 flex h-5 min-w-px overflow-hidden rounded"
                   style={{
                     left: `${((s.submitted_ns - start) / (end - start)) * 100}%`,
                     width: `${((s.finished_ns - s.submitted_ns) / (end - start)) * 100}%`,
@@ -137,7 +138,7 @@ export function TraceExplorer({ run }: { run: Experiment }) {
           after start.
         </p>
       </Card>
-      <Card className="gap-0 overflow-hidden">
+      <Card className="gap-0 overflow-hidden py-0">
         <div className="flex flex-wrap items-center justify-between gap-3 p-5">
           <PanelHeading
             title="Span inventory"
@@ -234,7 +235,7 @@ export function TraceExplorer({ run }: { run: Experiment }) {
             </SheetDescription>
           </SheetHeader>
           {selected && (
-            <div className="space-y-6 px-6 pb-6">
+            <div className="space-y-6 px-5 pb-5">
               <div className="grid grid-cols-2 gap-3">
                 {[
                   ["Total", selected.duration_seconds],
@@ -293,19 +294,9 @@ export function TraceExplorer({ run }: { run: Experiment }) {
   );
 }
 
-const sampleSchema = z.object({
-  timestamp_ns: z.number().finite().nonnegative(),
-  cpu_pressure: z
-    .record(z.string(), z.record(z.string(), z.number().finite().nonnegative()))
-    .nullable(),
-  cgroup_cpu_stat: z
-    .record(z.string(), z.number().finite().nonnegative())
-    .nullable(),
-  unavailable: z.array(z.string()),
-});
 export function Resources({ run }: { run: Experiment }) {
   const [state, setState] = useState<{
-    samples: z.infer<typeof sampleSchema>[];
+    samples: HostSample[];
     loading: boolean;
     error: string;
   }>({ samples: [], loading: true, error: "" });
@@ -338,8 +329,8 @@ export function Resources({ run }: { run: Experiment }) {
   }));
   const cgroup = state.samples.filter((s) => s.cgroup_cpu_stat);
   return (
-    <div className="space-y-5">
-      <div className="grid gap-4 sm:grid-cols-3">
+    <div className="space-y-4">
+      <Card className="grid gap-px overflow-hidden bg-border p-0 sm:grid-cols-3">
         {[
           [
             "Collected samples",
@@ -349,13 +340,16 @@ export function Resources({ run }: { run: Experiment }) {
           ["Valid PSI readings", readings.length, "CPU pressure on Linux"],
           ["cgroup readings", cgroup.length, "Container CPU accounting"],
         ].map(([label, value, detail]) => (
-          <Card key={String(label)} className="gap-2 p-5">
+          <div
+            key={String(label)}
+            className="flex flex-col gap-1.5 bg-card p-4"
+          >
             <span className="text-xs text-muted-foreground">{label}</span>
-            <strong className="text-2xl">{value}</strong>
+            <strong className="text-2xl leading-none">{value}</strong>
             <span className="text-[11px] text-muted-foreground">{detail}</span>
-          </Card>
+          </div>
         ))}
-      </div>
+      </Card>
       {state.error && (
         <p
           role="alert"
@@ -364,7 +358,7 @@ export function Resources({ run }: { run: Experiment }) {
           {state.error}
         </p>
       )}
-      <Card className="gap-0 p-6">
+      <Card className="gap-0 p-5">
         <PanelHeading
           title="CPU pressure"
           detail="PSI avg10 · percentage of time waiting for CPU · host-wide signal"
@@ -380,20 +374,14 @@ export function Resources({ run }: { run: Experiment }) {
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chart}>
-                <CartesianGrid vertical={false} stroke="#28313c" />
+                <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
                 <XAxis dataKey="time" />
                 <YAxis unit="%" />
-                <Tooltip
-                  contentStyle={{
-                    background: "#171d27",
-                    border: "1px solid #303948",
-                    borderRadius: 8,
-                  }}
-                />
+                <Tooltip contentStyle={chartTooltipStyle} />
                 <Area
                   dataKey="pressure"
-                  stroke="#7dd3fc"
-                  fill="#7dd3fc"
+                  stroke="var(--series-sky)"
+                  fill="var(--series-sky)"
                   fillOpacity={0.12}
                   isAnimationActive={false}
                 />
@@ -415,7 +403,7 @@ export function Resources({ run }: { run: Experiment }) {
           </div>
         )}
       </Card>
-      <Card className="gap-0 p-6">
+      <Card className="gap-0 p-5">
         <PanelHeading
           title="Evaluation coverage"
           detail="Samples within each measured step window"
@@ -450,7 +438,7 @@ export function Resources({ run }: { run: Experiment }) {
           ))}
         </div>
       </Card>
-      <Card className="gap-0 p-6">
+      <Card className="gap-0 p-5">
         <PanelHeading
           title="Experiment checks"
           detail="Acceptance checks for this saved run"
@@ -469,7 +457,7 @@ export function Resources({ run }: { run: Experiment }) {
             ))}
         </div>
       </Card>
-      <Card className="gap-0 p-6">
+      <Card className="gap-0 p-5">
         <PanelHeading title="Evidence & measurement limits" />
         <ul className="space-y-3 text-xs leading-6 text-muted-foreground">
           {run.limitations.map((item, i) => (

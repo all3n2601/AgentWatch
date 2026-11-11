@@ -24,5 +24,7 @@ test("the former replay parameter no longer serves synthetic data", async ({
 }) => {
   await page.goto("/live?replay=active-steps");
   await expect(page.getByText("Development replay")).toHaveCount(0);
-  await expect(page.getByRole("note")).toContainText("Live API");
+  await expect(
+    page.getByText("Read from the live API while this page is open"),
+  ).toBeVisible();
 });

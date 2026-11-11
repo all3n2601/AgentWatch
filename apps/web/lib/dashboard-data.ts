@@ -1,14 +1,13 @@
 import type { Experiment } from "./experiment-schema";
 export const pages = [
   "overview",
-  "live",
   "runs",
-  "traces",
-  "agents",
-  "resources",
+  "experiments",
   "compare",
+  "quality",
   "controls",
   "settings",
+  "live",
 ] as const;
 export type Page = (typeof pages)[number];
 export const stepsOf = (run: Experiment) => [
@@ -24,14 +23,18 @@ export const queueOf = (run: Experiment) =>
   stepsOf(run).reduce((n, s) => n + s.queue_seconds, 0);
 export const executionOf = (run: Experiment) =>
   stepsOf(run).reduce((n, s) => n + s.execution_seconds, 0);
-export const duration = (n: number) =>
-  n === 0
-    ? "0 ms"
-    : n < 0.001
-      ? `${(n * 1e6).toFixed(0)} μs`
-      : n < 1
-        ? `${(n * 1000).toFixed(0)} ms`
-        : `${n.toFixed(2)} s`;
+/**
+ * Seconds in μs, ms or s. The unit is chosen after rounding, so a reading just under a
+ * boundary (0.000999…, from subtracting millisecond timestamps) reads "1 ms", not "1000 μs".
+ */
+export function duration(n: number) {
+  if (n === 0) return "0 ms";
+  const micros = Math.round(n * 1e6);
+  if (micros < 1000) return `${micros} μs`;
+  const millis = Math.round(n * 1000);
+  if (millis < 1000) return `${millis} ms`;
+  return `${n.toFixed(2)} s`;
+}
 export const percent = (n: number) => `${(n * 100).toFixed(1)}%`;
 export function scopedRuns(
   runs: Experiment[],
