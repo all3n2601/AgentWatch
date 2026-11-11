@@ -147,7 +147,10 @@ class RequestProfile(Protocol):
     def payload(self, worker: int, sequence: int) -> dict: ...
 
     def measure(self, result: object) -> int | None:
-        """The reply's measurement, `None` when it carries none; raise `GenerateRejected` if unusable."""
+        """The reply's measurement, `None` when it carries none.
+
+        Raise `GenerateRejected` if the reply is unusable.
+        """
         ...
 
     def summarize(self, measurements: list[int], unmeasured: int) -> dict: ...
@@ -244,7 +247,7 @@ def request_flood(
     for index in range(concurrency):
         # Daemon threads: a request blocked on its socket must not keep the child alive.
         threading.Thread(
-            target=worker, args=(index,), name=f"competing-request-{index}", daemon=True
+            target=worker, args=(index,), name=f"injector-request-{index}", daemon=True
         ).start()
     while not stop_event.wait(STATUS_POLL_SECONDS):
         if time.monotonic() >= deadline:

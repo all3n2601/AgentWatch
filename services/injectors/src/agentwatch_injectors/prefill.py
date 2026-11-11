@@ -4,8 +4,12 @@ A child process keeps `concurrency` non-streaming chat requests in flight, each 
 about `prompt_tokens` tokens and `max_tokens=1`. The server spends its time prefilling long
 prompts rather than decoding, which is the opposite of `CompetingInferenceInjector`'s
 generation-heavy load, so the two are different injection methods. Each prompt starts with a
-nonce line unique to the injector run, worker and request, so vLLM's prefix cache cannot reuse
-the prefill of an earlier request, including one from an earlier run against the same server. Only loopback endpoints are accepted, as for the competing injector.
+nonce line unique to the worker, request and injector run, so vLLM's prefix cache cannot reuse
+the prefill of an earlier request, including one from an earlier run against the same server.
+The per-request digits come first: vLLM caches whole 16-token blocks, and the chat template, the
+word "request" and a leading run token would fill block 0 with text shared by every request of
+a run (measured on 2026-11-10 against vLLM v0.32, see ADR 0011). Only loopback endpoints are
+accepted, as for the competing injector.
 
 The prompt size is an estimate from `FILLER_TOKENS_PER_LINE`; the server's reported
 `usage.prompt_tokens` is what the log records. Prompts are fixed, non-sensitive text and are
@@ -27,6 +31,7 @@ from agentwatch_injectors.base import (
 )
 from agentwatch_injectors.inference import (
     MAX_REQUEST_TIMEOUT_SECONDS,
+    SERVERS,
     GenerateRejected,
     loopback_url,
     request_flood,
@@ -39,9 +44,11 @@ from agentwatch_injectors.processes import (
 )
 
 PREFILL_METHOD = "prefill-flood-openai-chat-v1"
-CHAT_PATH = "/v1/chat/completions"
+CHAT_PATH = SERVERS["vllm"][0]
 MAX_PREFILL_CONCURRENCY = 4
 MAX_PROMPT_TOKENS = 3072
+# Changing FILLER_LINE or FILLER_TOKENS_PER_LINE changes the load, so it needs a new method
+# version (`prefill-flood-openai-chat-v2`).
 # Measured 2026-11-10 with vLLM's /tokenize for Qwen/Qwen3-1.7B (ADR 0011): every filler line
 # below is 19 tokens. It is an estimate for other tokenizers and chat templates.
 FILLER_TOKENS_PER_LINE = 19
@@ -55,7 +62,7 @@ class PrefillRejected(GenerateRejected):
 def filler_prompt(run_token: str, worker: int, sequence: int, prompt_tokens: int) -> str:
     """A nonce line, then enough fixed numbered lines for about `prompt_tokens` tokens."""
     line_count = math.ceil(prompt_tokens / FILLER_TOKENS_PER_LINE)
-    lines = [f"request {run_token}-{worker}-{sequence}"]
+    lines = [f"request {worker}-{sequence}-{run_token}"]
     lines.extend(FILLER_LINE.format(number=number) for number in range(1, line_count + 1))
     return "\n".join(lines) + "\n"
 
@@ -102,7 +109,8 @@ class PrefillProfile:
             raise PrefillRejected("model server returned no finished choice")
         usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
         count = usage.get("prompt_tokens")
-        return count if isinstance(count, int) and not isinstance(count, bool) else None
+        is_count = isinstance(count, int) and not isinstance(count, bool) and count > 0
+        return count if is_count else None
 
     def summarize(self, measurements: list[int], unmeasured: int) -> dict:
         reported = (
@@ -156,6 +164,7 @@ class PrefillFloodInjector(BoundedInjector):
         return {
             "concurrency": self.concurrency,
             "prompt_tokens": self.prompt_tokens,
+            "filler_lines": math.ceil(self.prompt_tokens / FILLER_TOKENS_PER_LINE),
             "max_tokens": 1,
             "request_timeout_seconds": self.request_timeout_seconds,
             "backstop_seconds": self._backstop_seconds(),

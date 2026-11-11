@@ -22,7 +22,12 @@ from agentwatch_injectors.inference import (
     loopback_url,
 )
 from agentwatch_injectors.injection_set import InjectionCancelled, InjectionSet
-from agentwatch_injectors.prefill import FILLER_TOKENS_PER_LINE, PrefillFloodInjector
+from agentwatch_injectors.prefill import (
+    FILLER_TOKENS_PER_LINE,
+    PrefillFloodInjector,
+    PrefillProfile,
+    PrefillRejected,
+)
 from agentwatch_injectors.processes import halt_children, new_group, start_children
 from agentwatch_injectors.retrieval import IndexQueryFloodInjector
 from injector_test_targets import FakeOllama, TestClock, ignore_stop, never_ready, wait_until
@@ -657,9 +662,9 @@ def test_prompts_are_never_logged(clock):
     with FakeOllama(reply=PREFILL_COMPLETION) as server:
         log = run_prefill(clock, server, prompt_tokens=19)
     nonce = server.payloads[0]["messages"][0]["content"].splitlines()[0]
-    assert nonce.startswith("request ") and nonce.endswith("-0-0")
+    assert nonce.startswith("request 0-0-")
     assert nonce not in json.dumps(log)
-    assert nonce.split("-")[0].removeprefix("request ") not in json.dumps(log)
+    assert nonce.split("-")[2] not in json.dumps(log)  # the run token
     assert "quick brown fox" not in json.dumps(log)
 
 
@@ -711,6 +716,7 @@ def test_an_unreachable_server_fails_the_prefill_start(clock, monkeypatch):
     log = injector.log()
     assert log["stop_reason"] == "failure"
     assert log["cleanup"]["confirmed"] is True
+    assert len(log["cleanup"]["children"]) == 1
     assert log["activity"].get("requests_sent", 0) == 0
 
 
@@ -736,3 +742,38 @@ def test_prefill_and_competing_injectors_share_a_set(clock):
     )
     InjectionSet(clock, [prefill, competing])
     assert (prefill.kind, competing.kind) == ("prefill", "inference")
+
+
+FINISHED_CHOICE = {"message": {"content": "x"}, "finish_reason": "length"}
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        ({"prompt_tokens": 2050}, 2050),
+        ({"prompt_tokens": 0}, None),
+        ({"prompt_tokens": -3}, None),
+        ({"prompt_tokens": True}, None),
+        ({"prompt_tokens": "2050"}, None),
+        ({}, None),
+        (None, None),
+    ],
+)
+def test_prefill_measure_accepts_only_positive_integer_prompt_token_counts(usage, expected):
+    result = {"choices": [FINISHED_CHOICE]} | ({} if usage is None else {"usage": usage})
+    assert PrefillProfile("m", 256, "run").measure(result) == expected
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"error": "overloaded", "choices": [FINISHED_CHOICE]},
+        ["not", "a", "dict"],
+        {"choices": "none"},
+        {"choices": []},
+        {"choices": [{"message": {}, "finish_reason": None}]},
+    ],
+)
+def test_prefill_measure_rejects_unusable_replies(result):
+    with pytest.raises(PrefillRejected):
+        PrefillProfile("m", 256, "run").measure(result)
