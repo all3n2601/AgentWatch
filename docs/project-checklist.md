@@ -436,7 +436,8 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   concurrency 2 completed 104 and 104 requests with 0 failures and zero prefix-cache hits
   with the per-request nonce digits first (1,680 of 220,778 and 1,648 of 216,612 queried tokens
   hit when the run token came first). A formal hold-out needs `split-v3`, accepted by Rohit and
-  Akshay. Open until review and merge.
+  Akshay; no evidence using this method may enter a dataset release before `split-v3` lists it in
+  `held_out_injection_methods` (Akshay, review of PR #64). Open until review and merge.
 
 **Exit test:** Known isolated workloads exercise each resource and a clean control. Measurements
 and attribution identify the affected class. Real GPU validation uses real inference hardware;

@@ -107,7 +107,11 @@ value is a new protocol version.
 - **Admission:** `--no-policy`, recorded as `admission.status: not_configured`.
 - **Held-out status:** every natural-overload and injected run is held-out test evidence.
   It must never be used for training, calibration, threshold selection or tuning. Whether
-  `split-v3` holds them out formally is Rohit and Akshay's decision.
+  `split-v3` holds them out formally is Rohit and Akshay's decision. Release prerequisite
+  (Akshay, review of PR #64): no sweep evidence enters a dataset release until `split-v3`
+  holds it out. That covers `prefill-flood-openai-chat-v1` in `held_out_injection_methods`, and
+  also the natural-overload replays, which carry no injection method, so the hold-out must
+  also match them by their sweep protocol (`natural-overload-sweep-v1`), not by method alone.
 
 ## PR 1: prefill-flood injector
 
