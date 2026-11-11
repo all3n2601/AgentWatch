@@ -45,7 +45,10 @@ export function runPolicyText(result: PolicyResult<RunPolicyView> | null) {
   if (!result.data.applicable) return "Not an agent run";
   if (result.data.versions.length === 0)
     return "No recorded policy (registered before policy tracking)";
-  return `Policy while open: ${result.data.versions.map((v) => `v${v.version} (${versionLimitsText(v)})`).join(" → ")}`;
+  // The caller labels this text, so it lists the versions alone.
+  return result.data.versions
+    .map((v) => `v${v.version} (${versionLimitsText(v)})`)
+    .join(" → ");
 }
 
 /**

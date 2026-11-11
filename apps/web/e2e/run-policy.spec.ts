@@ -101,8 +101,9 @@ test("a run shows its own linked versions, unknown applied limits and the curren
   });
   await page.goto(`/live?liveRun=${runId}`);
   await expect(policy(page)).toContainText(
-    "Policy while open: v1 (Inference: 1 · Tests: no limit) → v2 (Inference: 1 · Tests: 2)",
+    "v1 (Inference: 1 · Tests: no limit) → v2 (Inference: 1 · Tests: 2)",
   );
+  await expect(policy(page)).not.toContainText("Policy while open");
   await expect(policy(page)).toContainText(
     "Not available from the API. Each agent runner records the limits it applied",
   );
@@ -166,10 +167,10 @@ test("a late answer for the previous run never replaces the selected run's polic
     .filter({ hasText: second.slice(0, 8) })
     .click();
   await expect(page).toHaveURL(new RegExp(`liveRun=${second}`));
-  await expect(policy(page)).toContainText("Policy while open: v2 ");
+  await expect(policy(page)).toContainText("v2 (Inference: 1 · Tests: 2)");
 
   release();
   await expect.poll(() => answered).toContain(first);
-  await expect(policy(page)).toContainText("Policy while open: v2 ");
+  await expect(policy(page)).toContainText("v2 (Inference: 1 · Tests: 2)");
   await expect(policy(page)).not.toContainText("v1 (");
 });

@@ -312,7 +312,7 @@ test("run policy is read by UUID and summarised", async () => {
   assert.equal(requested[0].pathname, `/v1/live/runs/${RUN_ID}/policy`);
   assert.equal(
     runPolicyText(result),
-    "Policy while open: v0 (No limits (baseline)) → v1 (Inference: no limit · Tests: 2)",
+    "v0 (No limits (baseline)) → v1 (Inference: no limit · Tests: 2)",
   );
 
   assert.equal(
