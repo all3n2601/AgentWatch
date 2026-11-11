@@ -162,7 +162,16 @@ Reuse request identity joins and timing definitions from
 [GPU measurement record](gpu-measurement-access.md). vLLM request spans provide queue,
 prefill, decode and token counts in local agent evidence after run closure; live StepEvents
 currently do not carry that breakdown. Server-wide metrics cannot substitute for a request's
-own wait. Ollama queue time remains unavailable.
+own wait. Ollama reports load, prompt-evaluation and generation durations; its queue time
+remains unavailable. Model-load duration comes from Ollama evidence, not vLLM request spans.
+
+Extend the existing identity join in
+[`vllm_traces.py`](../services/agent/src/agentwatch_agent/vllm_traces.py), rather than creating
+another trace matcher. PR #65's `services/agent/src/agentwatch_agent/sweep_labels.py` and
+`sweep_analysis.py` implement matched N = 1 step baselines, declared noise thresholds and
+measured-span exclusions. Extend that baseline/analysis logic after its acceptance instead of
+building a second baseline or threshold implementation for G01/G02. Keep the existing sweep
+protocol frozen; any additional phase-comparison rules need their own versioned contract.
 
 Build on the [natural-overload capacity-sweep PR #65](https://github.com/all3n2601/AgentWatch/pull/65)
 for compatible concurrency experiments once its protocol and artifacts are accepted. Coordinate
@@ -174,27 +183,44 @@ committed here.
 ### Sequenced milestones
 
 1. **G01 — Persist and expose request-phase evidence.** Define versioned API/SDK/storage
-   contracts for queue, prefill, decode, token counts, model loading where measured, and runner
-   stream timing, keyed to the selected run/step. Preserve existing local evidence. Verify
+   contracts for vLLM queue, prefill, decode and token counts; Ollama load, prompt-evaluation
+   and generation durations; and runner stream timing, keyed to the selected run/step. Record
+   the shared-interface decision in a new ADR under `docs/adr/` before implementation, including
+   backend availability, schema evolution and affected consumers. Preserve existing local
+   evidence and extend `vllm_traces.py` for identity joins. Verify
    exact identity joins, late traces, missing/duplicate/mismatched spans, retries, rollback and
    historical UUID selection. Mark evidence pending until received; post-run traces do not
-   establish live phase diagnosis. Unsupported Ollama phases stay unavailable.
-2. **G02 — Compare matched baselines.** Record backend, model/weights, quantization, hardware,
-   token counts, concurrency, cache state and warm/cold state. Declare matching rules, repeat
+   establish live phase diagnosis. Ollama queue time remains unavailable; do not infer a
+   vLLM load phase from its request spans.
+2. **G02 — Compare matched baselines.** Extend PR #65's `sweep_labels.py` / `sweep_analysis.py`
+   baseline and threshold logic, preserving measured-span exclusions and omitted-baseline
+   counts. Record backend, model/weights, quantization, hardware, token counts, concurrency,
+   cache state and warm/cold state. Declare matching rules, repeat
    count, variability statistic and slowdown thresholds before evaluation. Compare phase
    durations and token throughput only where compatible; expose configuration differences and
    abstain without a suitable baseline. Keep clock domains separate and do not sum overlapping
    phases or subtract incompatible clocks.
 3. **G03 — Explain likely causes with rules.** Distinguish increased queueing, longer prompt
    processing, more generated output and slower generation. Correlate with running/waiting
-   requests, KV-cache use, preemptions and GPU compute/DRAM activity. Add temperature, clocks,
-   power limits and throttle reasons only where support is verified. Require source records,
-   units, baseline, method version, coverage, alternatives and limitations for each explanation.
+   requests, KV-cache use, preemptions and GPU compute/DRAM activity. Reuse existing NVML SM
+   clock (`gpu.nvml.clock.sm_mhz.v1`) and power draw (`gpu.nvml.power.usage_watts.v1`), and DCGM
+   temperature (`gpu.dcgm.temperature.gpu_c.v1`), preserving their availability. Power limits
+   and throttle/clock-event reasons are new instrumentation, gated on verified host support.
+   Require source records, units, baseline, method version, coverage, alternatives and
+   limitations for each explanation.
    Test clean, mixed and ambiguous cases. Device-wide metrics are context, memory allocation
    does not prove bandwidth pressure, and low clocks alone do not prove thermal throttling.
-4. **G04 — Confirm through controlled experiments.** Reuse bounded paired experiment controls
-   to change one factor, such as concurrency, prompt length or cache state. Preregister order,
-   repetitions and acceptance criteria; preserve failures and inconclusive evidence. Validate
+4. **G04 — Confirm through controlled experiments.** Reuse O04's paired-run manifests and
+   comparison validation from [optimization evidence](optimization-evidence.md), implemented in
+   [`optimization_manifest.py`](../pipelines/data/src/agentwatch_data/optimization_manifest.py),
+   [`optimization_batches.py`](../pipelines/data/src/agentwatch_data/optimization_batches.py) and
+   [`optimization_comparison.py`](../pipelines/data/src/agentwatch_data/optimization_comparison.py).
+   Reuse the bounded `competing-openai-chat-v1` injector and `prefill-flood-openai-chat-v1`
+   ([ADR 0011](adr/0011-prefill-flood-held-out-injection-method.md)); preserve the latter's
+   held-out status and keep its runs out of training, calibration and threshold tuning.
+   Coordinate GPU sessions with O06 on Benoy's single laptop. Change one factor, such as
+   concurrency, prompt length or cache state. Preregister order, repetitions and acceptance
+   criteria; preserve failures and inconclusive evidence. Validate
    against measured request phases on designated capacity. Uncontrolled comparisons report
    observed differences without causal claims.
 5. **G05 — Present diagnosis in the app.** Show phase deltas, supporting signals, alternatives,

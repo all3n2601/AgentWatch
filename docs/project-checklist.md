@@ -908,6 +908,33 @@ Prove cancellation/permit cleanup, missing-evidence handling and disable/restore
 gates proposed until O01 accepts them, preserve the existing CPU noise gate, and do not claim
 improvement or enable adaptive control from an uncontrolled/inconclusive comparison.
 
+### Deeper diagnosis and investigation planning — 2026-11-11
+
+Planning only: [PR #67](https://github.com/all3n2601/AgentWatch/pull/67) adds the
+[diagnosis milestones](implementation-plan.md#7-deeper-inference-and-gpu-diagnosis) and
+[investigation workflow](implementation-plan.md#8-investigation-and-improvement-workflow).
+All remain open; this entry records scope, not implementation or hardware verification.
+Assign owners before implementation. Reuse the existing trace join, PR #65's baseline logic
+after acceptance, and O04's paired evidence; coordinate GPU sessions with O06.
+
+- [ ] G01 — Persist/expose backend-specific request phases; extend identity joins and record the shared-interface ADR.
+- [ ] G02 — Extend matched-baseline and threshold logic with compatible request-phase comparisons.
+- [ ] G03 — Explain likely causes with existing signals and evidence-gated new instrumentation.
+- [ ] G04 — Confirm hypotheses using O04 paired evidence and bounded injectors on coordinated test capacity.
+- [ ] G05 — Present selected-run diagnosis, alternatives, evidence quality and next experiments.
+- [ ] G06 — Optional targeted GPU profiling after support and overhead verification.
+- [ ] U01 — Expose comparison context and telemetry health.
+- [ ] U02 — Guide investigation of additional run latency without double-counting parallel/nested steps.
+- [ ] U03 — Suggest bounded experiments and verify repeated before/after results, including task success.
+- [ ] U04 — Detect regressions automatically after the manual investigation workflow is accepted.
+- [ ] U05 — Present measured capacity trade-offs from accepted sweep evidence.
+- [ ] U06 — Investigate failures, retries, timeouts and cancellation with correlated attempts.
+- [ ] U07 — Export shareable, redacted investigations with source lineage and reproduction settings.
+- [ ] U08 — Extend the existing SDK for instrumentation beyond the fixed agent workload.
+
+Acceptance gates and dependencies are in the implementation plan. Add dated test and real
+artifact references here as milestones are verified; keep failed/inconclusive work open.
+
 ### Core acceptance targets
 
 These are project targets, not achievements inferred from the current demo.
