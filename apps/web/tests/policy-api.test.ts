@@ -6,6 +6,10 @@ import {
   policyFailureStatus,
 } from "../lib/policy-api";
 import {
+  conflictCause,
+  controlsConsistent,
+  formFromLimits,
+  limitChanges,
   limitsFromForm,
   limitsText,
   policyStatusText,
@@ -246,6 +250,50 @@ test("form limits omit empty inputs and reject values outside 1–1024", () => {
   const empty = limitsFromForm({ inference: "", tests: "" });
   assert.equal(empty.ok, false);
   assert.match(!empty.ok ? empty.message : "", /Disable/);
+});
+
+test("the form starts from the active limits so unchanged controls are kept", () => {
+  assert.deepEqual(formFromLimits({}), { inference: "", tests: "" });
+  assert.deepEqual(formFromLimits({ test_jobs: 2 }), {
+    inference: "",
+    tests: "2",
+  });
+  const form = { ...formFromLimits({ test_jobs: 2 }), inference: "8" };
+  assert.deepEqual(limitsFromForm(form), {
+    ok: true,
+    limits: { inference_requests: 8, test_jobs: 2 },
+  });
+});
+
+test("limit changes list only the controls that differ", () => {
+  assert.deepEqual(limitChanges({ test_jobs: 2 }, { test_jobs: 2 }), []);
+  assert.deepEqual(limitChanges({ test_jobs: 2 }, { inference_requests: 1 }), [
+    { control: "Inference requests", active: "no limit", proposed: "1" },
+    { control: "Test jobs", active: "2", proposed: "no limit" },
+  ]);
+});
+
+test("conflicts are told apart by the service's detail text", () => {
+  assert.equal(
+    conflictCause("Policy changed: expected version 2, active version is 3"),
+    "stale_version",
+  );
+  assert.equal(
+    conflictCause("Policy request reused with a different body"),
+    "request_reused",
+  );
+  assert.equal(conflictCause("Policy is at version 3, not 2"), "unknown");
+});
+
+test("a read whose history does not start at the active version is inconsistent", () => {
+  const read = (active: number, newest: number[]) => ({
+    active: { version: active },
+    history: { versions: newest.map((version) => ({ version })) },
+  });
+  assert.equal(controlsConsistent(read(2, [2, 1, 0])), true);
+  assert.equal(controlsConsistent(read(2, [3, 2, 1, 0])), false);
+  assert.equal(controlsConsistent(read(3, [2, 1, 0])), false);
+  assert.equal(controlsConsistent(read(0, [])), false);
 });
 
 test("run policy is read by UUID and summarised", async () => {

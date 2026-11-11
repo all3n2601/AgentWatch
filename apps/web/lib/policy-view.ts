@@ -48,6 +48,73 @@ export function runPolicyText(result: PolicyResult<RunPolicyView> | null) {
   return `Policy while open: ${result.data.versions.map((v) => `v${v.version}`).join(" → ")}`;
 }
 
+/** Form inputs holding a version's limits, so a `set` keeps controls the operator left alone. */
+export function formFromLimits(limits: PolicyLimitsView) {
+  return {
+    inference: limits.inference_requests?.toString() ?? "",
+    tests: limits.test_jobs?.toString() ?? "",
+  };
+}
+
+const CONTROL_LABELS = {
+  inference_requests: "Inference requests",
+  test_jobs: "Test jobs",
+} as const;
+
+export type LimitChange = {
+  control: string;
+  active: string;
+  proposed: string;
+};
+
+/** Controls whose limit differs between the active version and a proposed one. */
+export function limitChanges(
+  active: PolicyLimitsView,
+  proposed: PolicyLimitsView,
+): LimitChange[] {
+  return (
+    Object.keys(CONTROL_LABELS) as (keyof typeof CONTROL_LABELS)[]
+  ).flatMap((control) =>
+    active[control] === proposed[control]
+      ? []
+      : [
+          {
+            control: CONTROL_LABELS[control],
+            active: active[control]?.toString() ?? "no limit",
+            proposed: proposed[control]?.toString() ?? "no limit",
+          },
+        ],
+  );
+}
+
+/**
+ * Which of the two 409 causes a conflict is. The service has no machine-readable code yet, so
+ * this matches its detail text (policy_store.py); anything else is reported as unknown.
+ */
+export function conflictCause(
+  message: string,
+): "stale_version" | "request_reused" | "unknown" {
+  if (message.startsWith("Policy changed:")) return "stale_version";
+  if (message.startsWith("Policy request reused")) return "request_reused";
+  return "unknown";
+}
+
+/**
+ * Whether one read of the controls is self-consistent. The route reads the active version and
+ * the first history page separately, so a change stored between them leaves them disagreeing;
+ * changes made against such a read could target a version the operator never saw.
+ */
+export function controlsConsistent(controls: {
+  active: { version: number };
+  history: { versions: { version: number }[] };
+}) {
+  return controls.history.versions[0]?.version === controls.active.version;
+}
+
+/** Shown wherever limits appear: no API reports which limits a runner actually applied. */
+export const EFFECTIVE_LIMITS_UNAVAILABLE =
+  "Not available from the API. Each agent runner records the limits it applied in its own local evidence, which this dashboard cannot read. A stored or linked version does not show that any work was limited.";
+
 /** Strict whole numbers only: "1.5", "1e2" and " " are not limits. */
 const WHOLE_NUMBER = /^\d+$/;
 
