@@ -15,7 +15,11 @@ from agentwatch_injectors.base import (
     InjectorError,
 )
 from agentwatch_injectors.cpu import CpuSpinInjector, _spin, available_cpus
-from agentwatch_injectors.inference import CompetingInferenceInjector, loopback_url
+from agentwatch_injectors.inference import (
+    CompetingChatProfile,
+    CompetingInferenceInjector,
+    loopback_url,
+)
 from agentwatch_injectors.injection_set import InjectionCancelled, InjectionSet
 from agentwatch_injectors.processes import halt_children, new_group, start_children
 from agentwatch_injectors.retrieval import IndexQueryFloodInjector
@@ -579,3 +583,12 @@ def test_stop_reasons_are_validated(clock):
         injector.stop("whenever")
     assert injector.stop()["stop_reason"] == "requested"
     assert base.STOP_REASONS == ("requested", "duration_bound", "failure", "cancelled")
+
+
+def test_competing_profile_payloads_do_not_vary_by_request():
+    profile = CompetingChatProfile(
+        server="vllm", payload_template={"model": "m", "max_tokens": 128}
+    )
+    assert profile.payload(0, 0) == profile.payload(3, 41) == {"model": "m", "max_tokens": 128}
+    assert profile.path == "/v1/chat/completions"
+    assert profile.summarize([5, 7], unmeasured=1) == {"generated_tokens": 12}
