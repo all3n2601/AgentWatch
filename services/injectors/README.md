@@ -9,6 +9,7 @@ It has no dependency on the agent or the live API.
 | --- | --- | --- | --- | --- |
 | `CpuSpinInjector` | `cpu-spin-processes-v1` | host CPUs (`cpu_sandbox`) | busy SHA-256 child processes | workers ≤ CPUs available to the process |
 | `CompetingInferenceInjector` | `competing-ollama-generate-v1` | the run's model server (`inference`) | non-streaming `/api/generate` requests from one child process | loopback URL only; concurrency ≤ 4; `num_predict` ≤ 256; request timeout ≤ 120 s |
+| `PrefillFloodInjector` | `prefill-flood-openai-chat-v1` | vLLM (`inference`) | non-streaming chat requests with a per-request nonce (worker, sequence and a random per-run token) and about `prompt_tokens` of fixed filler, `max_tokens=1`, from one child process | loopback only; concurrency ≤ 4; prompt_tokens ≤ 3,072; request timeout ≤ 120 s |
 | `IndexQueryFloodInjector` | `in-process-index-query-flood-v1` | the runner process's interpreter, via an identical retrieval index (`retrieval`) | searches from threads in the runner's process | threads ≤ 4; 1–64 queries of ≤ 200 characters |
 
 Every injector also has `max_duration_seconds` (at most 1,800 s).
@@ -22,6 +23,7 @@ Every injector also has `max_duration_seconds` (at most 1,800 s).
   - Inference: every worker has sent its first request, so an unreachable model server fails
     the start (`requests_sent` counts sent requests; a non-200 or unusable reply is a
     `GenerateRejected` failure).
+  - Prefill: every worker has sent its first request.
   - Retrieval: every flood thread has completed a search; a search error fails the start.
 - A watchdog stops the injector `max_duration_seconds` after `active_tick_ns`
   (`stop_reason: duration_bound`), even if the caller never does.
@@ -60,6 +62,11 @@ Injection logs are labeling metadata. They must never become model features.
 - Inference contention shares Ollama's request slots and the device. Ollama reports no queue
   wait, so the waiting itself is not observed directly. Stopping closes the child's
   connections; requests in flight are counted as abandoned.
+- Prefill filler size is an estimate from `FILLER_TOKENS_PER_LINE`; the log records the
+  server-reported `prompt_tokens` (min, `median_low` and max: a count the server actually
+  reported). A non-200 or unfinished/unusable completion is a `PrefillRejected` failure; an
+  unparseable body is counted under its own error type (`JSONDecodeError`). The load shares
+  the device with the agents.
 - Retrieval is an in-process BM25 index, not a networked service. Its contention slows every
   thread of the runner's process (sampling, delivery and dispatch too), so it is not
   retrieval-exclusive.

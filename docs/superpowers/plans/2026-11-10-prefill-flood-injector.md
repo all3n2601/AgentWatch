@@ -30,6 +30,9 @@ reviewers see the design.
   = bound + `BACKSTOP_GRACE_SECONDS`.
 - Every request starts with a unique nonce (worker index and sequence number) before the
   filler, so vLLM's prefix cache cannot reuse an earlier prefill.
+- Final-review ruling: the nonce is `request {worker}-{sequence}-{run_token}`, where
+  `run_token` is random per injector instance, so `filler_prompt` and `PrefillProfile` take
+  `run_token`. The per-request digits come first because vLLM caches 16-token blocks.
 - Prompts are never logged. The log holds counts and token sizes only.
 - Unreported activity is `{"report": "missing"}`, never zeros.
 - `CompetingInferenceInjector`'s payloads and report keys stay byte-for-byte as today; every
