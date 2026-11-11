@@ -24,8 +24,10 @@ import time
 import urllib.parse
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from multiprocessing.synchronize import Event, Semaphore
+from typing import Protocol
 
 from agentwatch_injectors.base import (
     BACKSTOP_GRACE_SECONDS,
@@ -69,6 +71,12 @@ def loopback_url(value: str) -> str:
     host = parsed.hostname
     if parsed.scheme not in ("http", "https") or not host:
         raise ValueError(f"expected an http(s) model server URL, got {value!r}")
+    try:
+        # Reading the port raises for a non-numeric or out-of-range one; refuse it here rather
+        # than when the injector starts.
+        _ = parsed.port
+    except ValueError:
+        raise ValueError(f"the model server URL has an invalid port: {value!r}") from None
     if host not in LOOPBACK_NAMES:
         try:
             loopback = ipaddress.ip_address(host).is_loopback
@@ -131,14 +139,69 @@ def _generate(
     return json.loads(body)
 
 
-def _compete(
+class RequestProfile(Protocol):
+    """What one request flood sends and how it reads each reply.
+
+    The profile is pickled into the child process, so implementations are module-level frozen
+    dataclasses holding plain data.
+    """
+
+    path: str
+    # Error class counted in `failures_by_type` for a non-200 or unusable reply.
+    rejection: type[GenerateRejected]
+
+    def payload(self, worker: int, sequence: int) -> dict: ...
+
+    def measure(self, result: object) -> int | None:
+        """The reply's measurement, `None` when it carries none.
+
+        Raise `GenerateRejected` if the reply is unusable.
+        """
+        ...
+
+    def measure_secondary(self, result: object) -> int | None:
+        """A second per-reply count (`None` when absent), collected for completed replies."""
+        ...
+
+    def summarize(
+        self, measurements: list[int], unmeasured: int, secondary: list[int | None]
+    ) -> dict: ...
+
+
+@dataclass(frozen=True)
+class CompetingChatProfile:
+    """The same generation request every time; the measurement is the tokens generated."""
+
+    server: str
+    payload_template: dict
+    rejection = GenerateRejected
+
+    @property
+    def path(self) -> str:
+        return SERVERS[self.server][0]
+
+    def payload(self, worker: int, sequence: int) -> dict:
+        return self.payload_template
+
+    def measure(self, result: object) -> int | None:
+        return generated_tokens(self.server, result)
+
+    def measure_secondary(self, result: object) -> int | None:
+        return None
+
+    def summarize(
+        self, measurements: list[int], unmeasured: int, secondary: list[int | None]
+    ) -> dict:
+        return {"generated_tokens": sum(measurements)}
+
+
+def request_flood(
     stop_event: Event,
     ready: Semaphore,
     reports: Connection,
     backstop_seconds: float,
     url: str,
-    server: str,
-    payload: dict,
+    profile: RequestProfile,
     concurrency: int,
     request_timeout_seconds: float,
 ) -> None:
@@ -146,7 +209,8 @@ def _compete(
     lock = threading.Lock()
     counts: Counter = Counter()
     failures: Counter = Counter()
-    eval_counts: list[int] = []
+    measurements: list[int] = []
+    secondary: list[int | None] = []
     workers_sent: set[int] = set()
 
     def sent(index: int) -> None:
@@ -159,6 +223,7 @@ def _compete(
                 ready.release()
 
     def worker(index: int) -> None:
+        sequence = 0
         while not finished(stop_event, deadline):
             timeout = min(request_timeout_seconds, deadline - time.monotonic())
             if timeout <= 0:
@@ -167,25 +232,42 @@ def _compete(
                 counts["started"] += 1
                 counts["in_flight"] += 1
             try:
-                result = _generate(url, SERVERS[server][0], payload, timeout, lambda: sent(index))
-                tokens = generated_tokens(server, result)
+                result = _generate(
+                    url,
+                    profile.path,
+                    profile.payload(index, sequence),
+                    timeout,
+                    lambda: sent(index),
+                )
+                measurement = profile.measure(result)
+                secondary_measurement = profile.measure_secondary(result)
             except (OSError, http.client.HTTPException, ValueError) as error:
+                failure_name = (
+                    profile.rejection.__name__
+                    if isinstance(error, GenerateRejected)
+                    else type(error).__name__
+                )
                 with lock:
                     counts["failed"] += 1
-                    failures[type(error).__name__] += 1
+                    failures[failure_name] += 1
                     counts["in_flight"] -= 1
+                sequence += 1
                 stop_event.wait(FAILURE_BACKOFF_SECONDS)
                 continue
+            sequence += 1
             with lock:
                 counts["completed"] += 1
                 counts["in_flight"] -= 1
-                if tokens is not None:
-                    eval_counts.append(tokens)
+                secondary.append(secondary_measurement)
+                if measurement is None:
+                    counts["unmeasured"] += 1
+                else:
+                    measurements.append(measurement)
 
     for index in range(concurrency):
         # Daemon threads: a request blocked on its socket must not keep the child alive.
         threading.Thread(
-            target=worker, args=(index,), name=f"competing-request-{index}", daemon=True
+            target=worker, args=(index,), name=f"injector-request-{index}", daemon=True
         ).start()
     while not stop_event.wait(STATUS_POLL_SECONDS):
         if time.monotonic() >= deadline:
@@ -199,9 +281,9 @@ def _compete(
                 "requests_failed": counts["failed"],
                 "failures_by_type": dict(failures),
                 "requests_abandoned_in_flight": counts["in_flight"],
-                "generated_tokens": sum(eval_counts),
                 "stopped_by_backstop": not stop_event.is_set(),
             }
+            | profile.summarize(measurements, counts["unmeasured"], secondary)
         )
     reports.close()
 
@@ -291,12 +373,11 @@ class CompetingInferenceInjector(BoundedInjector):
         self._group = new_group()
         start_children(
             self._group,
-            _compete,
+            request_flood,
             [
                 (
                     self.url,
-                    self.server,
-                    self.payload(),
+                    CompetingChatProfile(self.server, self.payload()),
                     self.concurrency,
                     self.request_timeout_seconds,
                 )
