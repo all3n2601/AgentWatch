@@ -19,6 +19,10 @@ Planning addition, 2026-11-11: [deeper inference and GPU diagnosis](#7-deeper-in
 adds request-phase explanations, evidence-backed hypotheses and controlled confirmation.
 This is planned scope, not implemented diagnosis or a commitment to additional calendar weeks.
 
+Planning addition, 2026-11-11: the [investigation and improvement workflow](#8-investigation-and-improvement-workflow)
+connects regression detection, diagnosis, suggested experiments and before/after verification.
+These product milestones are future scope; existing components must be reused where available.
+
 ## 1. Architecture
 
 AgentWatch is a resource-bottleneck profiler with an MLOps lifecycle for its attribution model.
@@ -129,6 +133,8 @@ operational integration. Current completed work, remaining features, and test ga
   controlled evaluation and restore controls; gate any adaptive follow-up on measured results.
 - Add deeper inference and GPU diagnosis through section 7, starting with request phases and
   matched baselines before optional kernel profiling.
+- Add the investigation and improvement workflow in section 8, beginning with manually selected
+  comparable runs before automatic regression detection and broader agent integrations.
 
 ## 6. Main risks and fallback
 
@@ -221,3 +227,51 @@ migrations together when needed, preserving history and idempotency.
 - Gate each explanation on evidence availability and retain existing views when analysis abstains.
   Record completed milestones, verification and real artifact references in
   [the project checklist](project-checklist.md); keep unverified work open.
+
+## 8. Investigation and improvement workflow
+
+Product goal: help an operator decide what to change, test it and determine whether it helped.
+The first usable milestone is **select comparable runs → locate the extra delay → inspect the
+explanation → choose one bounded experiment → verify the result**. Start with manual selection
+and deterministic explanations; automatic detection follows once that workflow is validated.
+All tasks below are planned extensions, not claims that these workflows already exist.
+
+### Prioritized product milestones
+
+| Task | User outcome and planned scope | Acceptance checkpoint |
+| --- | --- | --- |
+| U01 — Run context and telemetry health | Understand whether runs can be compared. Expose code revision, workload/model versions, hardware, configuration, cache/warm state, sampling coverage and missing/stale signals alongside existing run identity. | Version the comparison contract; distinguish unknown context from matches. Explain rejected comparisons and evidence gaps without silently choosing a different run or treating missing samples as zero. |
+| U02 — Guided investigation | Select compatible runs and rank the delays that account for additional run wall time. Link each finding to its steps, phase evidence and baseline. | Reuse G01–G03 and existing run views. Account for parallel and nested steps without adding overlapping durations; report unattributed time and avoid claiming every slow step lies on the critical path. Browser checks cover mixed evidence and historical UUIDs. |
+| U03 — Suggested experiment and verification | Propose one bounded change with a hypothesis, expected observation and measurable acceptance criteria; compare repeated before/after runs for latency, throughput, task success and failures. | Reuse G04/G05 and the accepted optimization controls/contracts. Operator initiates the experiment; record effective policy versions, repetitions, variability and restore settings. A faster failed run cannot count as an improvement, and an untested suggestion cannot be presented as a proven fix. |
+| U04 — Automatic regression detection | Identify slower workloads against compatible baselines and open an investigation with affected steps, rather than requiring manual discovery. | Follow U01–U03. Preregister baseline windows, minimum samples, thresholds and repeat-notification rules. Test stable workloads, noisy timings, configuration changes, missing data and recovery; measure false positives on held-out evidence. Start with in-app findings; external delivery is separately configured. |
+| U05 — Capacity planning | Show the measured throughput/latency/failure trade-off at tested concurrency levels so an operator can choose a useful range. | Reuse PR #65's accepted sweep artifacts and optimization evaluation; do not create a competing sweep. Define workload success and latency targets before evaluation. Display variability, overload failures and configuration; do not extrapolate laptop results to untested hardware or recommend a limit outside measured capacity. |
+| U06 — Failure investigation | Explain retries, timeouts, failed tools, cancellation and repeated work alongside latency. | Correlate attempts to logical operations and preserve original failures. Distinguish useful completion from elapsed work and label estimates of retry cost. Test retry exhaustion, partial success and propagated tool errors without changing allowlists or execution isolation. |
+| U07 — Shareable investigations | Export selected run IDs, findings, source measurements, method versions, limitations and reproduction settings in a reviewable report. | Reuse UUID-correct evidence export. Redact secrets, prompts, code and tool arguments by default; show missing evidence explicitly. Verify historical selection, source lineage and that exported conclusions agree with the app. |
+| U08 — Easier agent instrumentation | Let developers instrument their own model, tool and retrieval calls through a small SDK integration beyond the fixed agent workload. | Extend the existing SDK and live contracts, with a documented minimal integration and an end-to-end supported example. Test identity, nesting, clocks, retries, failures and cancellation. Measure overhead and bounds; external agent code is never executed by the current trusted fixture as a shortcut. |
+
+First release order: U01 → U02 → U03. U04 follows that accepted manual workflow. U05 uses
+the existing capacity-sweep task; U06–U08 can be scoped separately after shared interfaces and
+owners are coordinated. G01–G05 supply deeper inference diagnosis where available; optional
+G06 profiling is not a prerequisite for a useful investigation. These identifiers organize
+future tasks and do not assign contributors or extend the original schedule with fixed dates.
+
+### Integration and product acceptance
+
+Reuse the current dashboard, run comparison, policy controls, SDK, evidence exports and
+[optimization plan](optimization-plan.md); inspect their current status in
+[the project checklist](project-checklist.md) before implementing each task. Keep one primary
+contributor and focused branch/PR per accepted task. Coordinate shared contracts and PR #65
+changes rather than duplicating their responsibilities.
+
+An acceptance scenario should let a user compare repeated compatible runs, observe that most
+additional latency occurred in the inference queue, test a lower concurrency on designated
+capacity, and see measured latency, throughput and task-success differences. The result may be
+improved, worse or inconclusive; preserve all three. Synthetic examples remain test fixtures,
+and recorded acceptance evidence must come from actual runs.
+
+Before release, verify that a user can follow the complete investigation without reading raw
+JSON, trace every finding to selected-run evidence, understand unavailable diagnosis, and
+restore the prior experiment settings. Declare investigation latency, instrumentation overhead,
+regression false-positive and comparison-quality gates before evaluation; run affected checks,
+PostgreSQL integration tests for storage changes, and browser acceptance flows. Record actual
+verification and remaining gaps in the project checklist as implementation progresses.
