@@ -71,6 +71,12 @@ def loopback_url(value: str) -> str:
     host = parsed.hostname
     if parsed.scheme not in ("http", "https") or not host:
         raise ValueError(f"expected an http(s) model server URL, got {value!r}")
+    try:
+        # Reading the port raises for a non-numeric or out-of-range one; refuse it here rather
+        # than when the injector starts.
+        _ = parsed.port
+    except ValueError:
+        raise ValueError(f"the model server URL has an invalid port: {value!r}") from None
     if host not in LOOPBACK_NAMES:
         try:
             loopback = ipaddress.ip_address(host).is_loopback
@@ -153,7 +159,13 @@ class RequestProfile(Protocol):
         """
         ...
 
-    def summarize(self, measurements: list[int], unmeasured: int) -> dict: ...
+    def measure_secondary(self, result: object) -> int | None:
+        """A second per-reply count (`None` when absent), collected for completed replies."""
+        ...
+
+    def summarize(
+        self, measurements: list[int], unmeasured: int, secondary: list[int | None]
+    ) -> dict: ...
 
 
 @dataclass(frozen=True)
@@ -174,7 +186,12 @@ class CompetingChatProfile:
     def measure(self, result: object) -> int | None:
         return generated_tokens(self.server, result)
 
-    def summarize(self, measurements: list[int], unmeasured: int) -> dict:
+    def measure_secondary(self, result: object) -> int | None:
+        return None
+
+    def summarize(
+        self, measurements: list[int], unmeasured: int, secondary: list[int | None]
+    ) -> dict:
         return {"generated_tokens": sum(measurements)}
 
 
@@ -193,6 +210,7 @@ def request_flood(
     counts: Counter = Counter()
     failures: Counter = Counter()
     measurements: list[int] = []
+    secondary: list[int | None] = []
     workers_sent: set[int] = set()
 
     def sent(index: int) -> None:
@@ -222,6 +240,7 @@ def request_flood(
                     lambda: sent(index),
                 )
                 measurement = profile.measure(result)
+                secondary_measurement = profile.measure_secondary(result)
             except (OSError, http.client.HTTPException, ValueError) as error:
                 failure_name = (
                     profile.rejection.__name__
@@ -239,6 +258,7 @@ def request_flood(
             with lock:
                 counts["completed"] += 1
                 counts["in_flight"] -= 1
+                secondary.append(secondary_measurement)
                 if measurement is None:
                     counts["unmeasured"] += 1
                 else:
@@ -263,7 +283,7 @@ def request_flood(
                 "requests_abandoned_in_flight": counts["in_flight"],
                 "stopped_by_backstop": not stop_event.is_set(),
             }
-            | profile.summarize(measurements, counts["unmeasured"])
+            | profile.summarize(measurements, counts["unmeasured"], secondary)
         )
     reports.close()
 

@@ -24,14 +24,18 @@ barely runs.
   logged.
 - Bounds: loopback endpoints only; concurrency at most 4; `prompt_tokens` at most 3,072;
   request timeout at most 120 s; the usual `max_duration_seconds` and backstop. The log's bounds
-  also record `filler_lines`. Changing the filler line or `FILLER_TOKENS_PER_LINE` changes the
-  load and needs a new method version (`prefill-flood-openai-chat-v2`).
+  also record `filler_lines`. Changing the filler line, `FILLER_TOKENS_PER_LINE` or the nonce
+  format changes the load and needs a new method version (`prefill-flood-openai-chat-v2`).
 - Prompts are fixed, non-sensitive text and are never logged. The log records the target
   `prompt_tokens`, the server-reported `usage.prompt_tokens` (count, minimum, `median_low`,
   maximum) and the number of completions that reported none (or a non-positive or non-integer
   count), which is kept apart from a measured count. `median_low` is always a count the server
-  actually reported. A non-200 reply, or an unfinished or unusable completion, is counted as
-  `PrefillRejected` in `failures_by_type`; an unparseable body is counted under its own error
+  actually reported. The log also records the measured `usage.completion_tokens` (`completion_tokens`:
+  count, minimum, `median_low`, maximum, or null), `completions_not_one_token` (completed replies
+  whose count is not 1) and `completions_without_completion_tokens` (replies that reported none,
+  never treated as 1), so the one-output-token premise is measured rather than assumed. A
+  non-200 reply, an unusable completion, or a `finish_reason` other than `stop` or `length` is
+  counted as `PrefillRejected` in `failures_by_type`; an unparseable body is counted under its own error
   type (`JSONDecodeError`), as for competing chat.
 - The filler size is an estimate: `FILLER_TOKENS_PER_LINE` records the first measurement below,
   and vLLM's reported `usage.prompt_tokens` is what the log records.
@@ -76,6 +80,11 @@ measured. With the per-request digits first there were no hits in either
 run. The reported prompt is 30 to 31 tokens longer than the 2,052 filler tokens, which is the
 chat template and the nonce line. These are two short runs on one laptop GPU, not a
 characterisation of the method's effect on other workloads or servers.
+
+The rows with the run-token-first nonce (`request {run_token}-{worker}-{sequence}`) were taken
+during development under the same method name. That nonce format was changed before release, so
+those rows are superseded and are not evidence for `prefill-flood-openai-chat-v1` as released;
+only the per-request-digits-first rows describe the released nonce.
 
 **Consequences.** The method is new and labeled `prefill`, a different injector kind from
 `inference`, so a set can contain both. A formal hold-out of this method needs a new frozen

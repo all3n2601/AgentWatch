@@ -249,6 +249,23 @@ def test_loopback_servers_are_accepted(url):
 
 
 @pytest.mark.parametrize(
+    "url",
+    ["http://127.0.0.1:abc", "http://127.0.0.1:99999", "http://localhost:-1", "http://[::1]:70000"],
+)
+def test_loopback_urls_with_an_invalid_port_are_refused(url):
+    with pytest.raises(ValueError, match="port"):
+        loopback_url(url)
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:abc", "http://127.0.0.1:99999"])
+def test_both_injectors_refuse_an_invalid_port_at_construction(clock, url):
+    with pytest.raises(ValueError, match="port"):
+        PrefillFloodInjector(clock, 5, url=url, model="m")
+    with pytest.raises(ValueError, match="port"):
+        CompetingInferenceInjector(clock, 5, url=url, model="m", num_ctx=None, server="vllm")
+
+
+@pytest.mark.parametrize(
     ("setting", "value"),
     [("concurrency", 5), ("num_predict", 257), ("request_timeout_seconds", 121), ("num_ctx", 0)],
 )
@@ -598,7 +615,9 @@ def test_competing_profile_payloads_do_not_vary_by_request():
     )
     assert profile.payload(0, 0) == profile.payload(3, 41) == {"model": "m", "max_tokens": 128}
     assert profile.path == "/v1/chat/completions"
-    assert profile.summarize([5, 7], unmeasured=1) == {"generated_tokens": 12}
+    assert profile.summarize([5, 7], unmeasured=1, secondary=[None, None]) == {
+        "generated_tokens": 12
+    }
 
 
 PREFILL_COMPLETION = {
@@ -717,7 +736,9 @@ def test_an_unreachable_server_fails_the_prefill_start(clock, monkeypatch):
     assert log["stop_reason"] == "failure"
     assert log["cleanup"]["confirmed"] is True
     assert len(log["cleanup"]["children"]) == 1
-    assert log["activity"].get("requests_sent", 0) == 0
+    # The child reports even when it never reached the server, so zero sends is measured.
+    assert log["activity"]["report"] == "received"
+    assert log["activity"]["requests_sent"] == 0
 
 
 def test_prefill_activity_is_missing_when_the_child_never_reported(clock, monkeypatch):
@@ -777,3 +798,61 @@ def test_prefill_measure_accepts_only_positive_integer_prompt_token_counts(usage
 def test_prefill_measure_rejects_unusable_replies(result):
     with pytest.raises(PrefillRejected):
         PrefillProfile("m", 256, "run").measure(result)
+
+
+def prefill_reply(finish_reason="length", completion_tokens=1):
+    usage = {"prompt_tokens": 2050}
+    if completion_tokens is not None:
+        usage["completion_tokens"] = completion_tokens
+    return {"choices": [{"message": {}, "finish_reason": finish_reason}], "usage": usage}
+
+
+@pytest.mark.parametrize("finish_reason", ["abort", "error", "", "tool_calls", 1])
+def test_prefill_measure_rejects_finish_reasons_other_than_stop_or_length(finish_reason):
+    with pytest.raises(PrefillRejected):
+        PrefillProfile("m", 256, "run").measure(prefill_reply(finish_reason))
+
+
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+def test_prefill_measure_accepts_stop_and_length(finish_reason):
+    assert PrefillProfile("m", 256, "run").measure(prefill_reply(finish_reason)) == 2050
+
+
+def test_prefill_completion_tokens_are_measured_not_assumed():
+    profile = PrefillProfile("m", 256, "run")
+    assert profile.measure_secondary(prefill_reply(completion_tokens=1)) == 1
+    assert profile.measure_secondary(prefill_reply(completion_tokens=3)) == 3
+    assert profile.measure_secondary(prefill_reply(completion_tokens=None)) is None
+    assert profile.measure_secondary(prefill_reply(completion_tokens=True)) is None
+    summary = profile.summarize([2050] * 4, 0, [1, 3, None, 2])
+    assert summary["completion_tokens"] == {
+        "count": 3,
+        "min": 1,
+        "median_low": 2,
+        "max": 3,
+    }
+    # A missing count is not a one-token reply and not a mismatch either.
+    assert summary["completions_not_one_token"] == 2
+    assert summary["completions_without_completion_tokens"] == 1
+
+
+def test_prefill_summary_without_completion_tokens_has_no_stats():
+    summary = PrefillProfile("m", 256, "run").summarize([], 2, [None, None])
+    assert summary["completion_tokens"] is None
+    assert summary["completions_not_one_token"] == 0
+    assert summary["completions_without_completion_tokens"] == 2
+
+
+def test_prefill_log_reports_measured_completion_tokens(clock):
+    with FakeOllama(reply=prefill_reply(completion_tokens=2)) as server:
+        log = run_prefill(clock, server, prompt_tokens=19)
+    activity = log["activity"]
+    assert activity["requests_completed"] > 0
+    assert activity["completion_tokens"]["median_low"] == 2
+    assert activity["completions_not_one_token"] == activity["requests_completed"]
+
+
+def test_competing_chat_report_keys_are_unchanged():
+    profile = CompetingChatProfile(server="vllm", payload_template={})
+    assert profile.measure_secondary({"usage": {"completion_tokens": 9}}) is None
+    assert profile.summarize([5, 7], 1, [None, None]) == {"generated_tokens": 12}
