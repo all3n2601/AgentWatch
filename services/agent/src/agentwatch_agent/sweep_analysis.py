@@ -19,7 +19,11 @@ from pathlib import Path
 
 from agentwatch_agent.coverage import CoverageError, coverage_report
 from agentwatch_agent.experiment import step_timings, variability
-from agentwatch_agent.runner import VERIFICATION_FAILED, is_agent_decision_failure
+from agentwatch_agent.runner import (
+    LIVE_API_UNAVAILABLE_AT_START,
+    VERIFICATION_FAILED,
+    is_agent_decision_failure,
+)
 from agentwatch_agent.sweep_protocol import (
     MAX_P90_FRACTION_OF_RUN_LIMIT,
     MAX_PASS_RATE_DROP,
@@ -67,14 +71,46 @@ OUTSIDE_SERVER_METHOD = (
 )
 
 
-def classify_run(entry: dict) -> str:
-    """`passed`, `task_failure`, `agent_failure` or `infrastructure_failure` for a batch.json run.
+LIVE_API_FAILURE = "live_api_failure"
 
-    A task failure is a wrong patch; an agent failure is the agent's own decision ending the
-    run (a model-call or tool-call limit, or a reply with neither a tool call nor an answer,
-    matched against the runner's declared reasons). Both count against the pass rate; neither
-    is a hard stop. Every other failure, and any incomplete delivery, is infrastructure.
+
+def live_api_problem(entry: dict) -> str | None:
+    """Why a batch.json run's problem is the AgentWatch live API, or None.
+
+    Owner decision 2026-11-11: live-API problems never count against vLLM's capacity. This is
+    the one place that decides which runs they are: incomplete delivery or a needed `resend`,
+    records or completion the API refused, a run the API never registered or started, and the
+    runner's declared reason for an API it could not reach at the start of the run. A run whose
+    delivery status is simply unknown, with none of these signals, is not attributed to the API.
     """
+    records_refused = entry.get("records_refused")
+    if entry.get("resend_needed") is True:
+        return "resend needed"
+    if entry.get("delivery_complete") is False:
+        return "delivery incomplete"
+    if _is_number(records_refused) and records_refused > 0:
+        return f"{records_refused:g} records refused"
+    if entry.get("completion_refused") is True:
+        return "completion refused"
+    if entry.get("state") == "not_started" or entry.get("not_started") is not None:
+        return "not started"
+    if entry.get("reason") == LIVE_API_UNAVAILABLE_AT_START:
+        return LIVE_API_UNAVAILABLE_AT_START
+    return None
+
+
+def classify_run(entry: dict) -> str:
+    """`passed`, `task_failure`, `agent_failure`, `live_api_failure` or `infrastructure_failure`.
+
+    For a batch.json run. A live-API failure (`live_api_problem`) outranks the rest: such a run
+    says nothing about vLLM and is never a hard stop. A task failure is a wrong patch; an agent
+    failure is the agent's own decision ending the run (a model-call or tool-call limit, or a
+    reply with neither a tool call nor an answer, matched against the runner's declared
+    reasons). Both count against the pass rate; neither is a hard stop. Every other failure,
+    including a run whose delivery status is unknown, is infrastructure.
+    """
+    if live_api_problem(entry) is not None:
+        return LIVE_API_FAILURE
     if entry.get("delivery_complete") is not True:
         return "infrastructure_failure"
     state, reason = entry.get("state"), entry.get("reason")
@@ -118,23 +154,26 @@ def _is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _resolve_run_dir(batch_dir: Path, output_dir: object) -> tuple[Path | None, str | None]:
+def _resolve_run_dir(
+    batch_dir: Path, output_dir: object, *, confine_to_batch: bool = False
+) -> tuple[Path | None, str | None]:
     """The run's folder and how it was found.
 
     `BatchRun.evidence()` records `str(runner.output_dir)`: absolute, or relative to the
-    working directory the sweep ran in. `recorded` is that path as given (a relative one is
-    read from the current directory); `batch_relative` is `batch_dir/runs/<name>`, for a sweep
-    copied elsewhere or analysed from another directory. Never joined onto `batch_dir` whole,
-    which would double a relative path.
+    working directory the sweep ran in. `batch_relative`, `batch_dir/runs/<name>`, is tried
+    first, so a copied sweep reads its own runs even while the original still exists;
+    `recorded` is the path as given (a relative one read from the current directory), and is
+    never used when `confine_to_batch` (the offline analysis, which reads nothing outside its
+    folder). Never joined onto `batch_dir` whole, which would double a relative path.
     """
     if not isinstance(output_dir, str) or not output_dir:
         return None, None
     recorded = Path(output_dir)
-    if recorded.is_dir():
+    beside = batch_dir / "runs" / recorded.name
+    if recorded.name not in ("", "..") and beside.is_dir():
+        return beside, "batch_relative"
+    if not confine_to_batch and recorded.is_dir():
         return recorded, "recorded"
-    fallback = batch_dir / "runs" / recorded.name
-    if fallback.is_dir():
-        return fallback, "batch_relative"
     return None, None
 
 
@@ -145,11 +184,22 @@ def _read_json(path: Path) -> dict:
     return document
 
 
+def _model_calls(evidence: dict) -> list | None:
+    """The run's recorded model calls; None when the evidence has no list of them.
+
+    The runner always records `model_calls` as a list, so a missing or non-list value is
+    missing evidence, never a run with zero calls.
+    """
+    calls = evidence.get("model_calls")
+    return calls if isinstance(calls, list) else None
+
+
 def _span_values(evidence: dict) -> tuple[dict[str, int], dict[str, list[float]]]:
+    """Span counts by status and measured values; the caller checks `_model_calls` first."""
     counts = {status: 0 for status in SPAN_STATUSES}
     counts["not_recorded"] = 0
     values: dict[str, list[float]] = {field: [] for field in SPAN_FIELDS}
-    for call in evidence.get("model_calls") or []:
+    for call in _model_calls(evidence) or []:
         timing = call.get("timing") if isinstance(call, dict) else None
         status = timing.get("status") if isinstance(timing, dict) else None
         # `joined_vllm_timing` reports "reported" when the span was measured; the span's own
@@ -173,10 +223,13 @@ def _span_values(evidence: dict) -> tuple[dict[str, int], dict[str, list[float]]
 
 
 def _outside_server_values(evidence: dict) -> tuple[list[float], int]:
-    """Each model call's recorded time outside the server, and how many calls have none."""
+    """Each model call's recorded time outside the server, and how many calls have none.
+
+    The caller checks `_model_calls` first: a run without its calls is missing, not zero.
+    """
     values: list[float] = []
     unavailable = 0
-    for call in evidence.get("model_calls") or []:
+    for call in _model_calls(evidence) or []:
         timing = call.get("timing") if isinstance(call, dict) else None
         value = timing.get(OUTSIDE_SERVER_FIELD) if isinstance(timing, dict) else None
         if _is_number(value) and math.isfinite(value):
@@ -280,11 +333,13 @@ def _unreadable(error: str) -> dict:
     return {"status": "unreadable", "error": error}
 
 
-def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
+def batch_metrics(
+    batch_dir: Path, run_timeout_seconds: float, *, confine_to_batch: bool = False
+) -> dict:
     """One batch's counts, throughput, durations, span statistics and device statistics.
 
     `run_timeout_seconds` is recorded so the result carries the limit its durations were
-    judged against.
+    judged against. `confine_to_batch` reads run folders only under `batch_dir` (offline).
     """
     try:
         batch = _read_json(batch_dir / "batch.json")
@@ -314,7 +369,9 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
     device_runs: list[dict] = []
     run_dirs: list[dict] = []
     for entry in entries:
-        run_dir, found_by = _resolve_run_dir(batch_dir, entry.get("output_dir"))
+        run_dir, found_by = _resolve_run_dir(
+            batch_dir, entry.get("output_dir"), confine_to_batch=confine_to_batch
+        )
         run_dirs.append({"index": entry.get("index"), "found_by": found_by})
         if run_dir is None:
             durations_missing += 1
@@ -337,6 +394,9 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
         except (OSError, ValueError, TypeError):
             without_evidence += 1
             continue
+        if _model_calls(evidence) is None:
+            without_evidence += 1
+            continue
         counts, values = _span_values(evidence)
         for status, count in counts.items():
             span_counts[status] += count
@@ -357,6 +417,7 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
         "task_failures": classes.count("task_failure"),
         "agent_failures": classes.count("agent_failure"),
         "infrastructure_failures": classes.count("infrastructure_failure"),
+        "live_api_failures": classes.count(LIVE_API_FAILURE),
         "wall_seconds": wall_seconds,
         "throughput_per_minute": throughput,
         "run_durations": durations,
@@ -375,7 +436,9 @@ ANALYSIS_ERROR = "analysis_error"
 MAX_ERROR_TEXT = 1000
 
 
-def batch_metrics_or_error(batch_dir: Path, run_timeout_seconds: float) -> dict:
+def batch_metrics_or_error(
+    batch_dir: Path, run_timeout_seconds: float, *, confine_to_batch: bool = False
+) -> dict:
     """`batch_metrics`, or status `analysis_error` with the error when the analysis raises.
 
     Unreadable files are already reported `unreadable`; this keeps a bug in the analysis of one
@@ -383,7 +446,7 @@ def batch_metrics_or_error(batch_dir: Path, run_timeout_seconds: float) -> dict:
     then fails its level's `readable` criterion, and the folder can be analysed again offline.
     """
     try:
-        return batch_metrics(batch_dir, run_timeout_seconds)
+        return batch_metrics(batch_dir, run_timeout_seconds, confine_to_batch=confine_to_batch)
     # Any analysis bug: recorded on the batch (see the docstring), never dropped.
     except Exception as error:  # noqa: BLE001
         return {
@@ -416,8 +479,14 @@ def server_changes(before: dict, after: dict) -> dict:
     return changes | {"prefix_cache_hit_ratio": ratio}
 
 
-def _sum_server_changes(changes: list[dict]) -> dict:
-    """Sum per counter; any unknown or reset batch makes that counter's total unknown."""
+def _sum_server_changes(changes: list[dict | None]) -> dict:
+    """Sum per counter; any unknown or reset batch makes that counter's total unknown.
+
+    A batch without server changes (None: no reading after it) makes every total unknown,
+    never a sum over the other batches.
+    """
+    if any(change is None for change in changes):
+        return {name: None for name in SERVER_COUNTERS} | {"prefix_cache_hit_ratio": None}
     summed: dict[str, float | str | None] = {}
     for name in SERVER_COUNTERS:
         values = [change.get(name) for change in changes]
@@ -431,8 +500,12 @@ def _sum_server_changes(changes: list[dict]) -> dict:
 
 
 def level_summary(batches: list[dict], baseline_sm_clock_mhz: float | None = None) -> dict:
-    """One level's batches combined. Each batch is a `batch_metrics` result, optionally with a
-    `server_changes` result under `server`.
+    """One level's batches combined. Each batch is a `batch_metrics` result with its
+    `server_changes` result under `server` (absent or None when it has none).
+
+    Server counters are summed over every batch, readable or not (they are vLLM's own
+    readings); `batches_without_server_changes` counts the batches without them, and any such
+    batch makes the level's sums unknown.
 
     Statistics are the mean across batches with sample stdev and CV. Run durations pool every
     run. `sm_clock_drift_mhz` is the level's mean SM clock minus `baseline_sm_clock_mhz`
@@ -499,8 +572,9 @@ def level_summary(batches: list[dict], baseline_sm_clock_mhz: float | None = Non
             sum(batch[OUTSIDE_SERVER_FIELD]["unavailable"] for batch in readable),
         ),
         "device": device,
-        "server_changes": _sum_server_changes(
-            [batch["server"] for batch in readable if "server" in batch]
+        "server_changes": _sum_server_changes([batch.get("server") for batch in batches]),
+        "batches_without_server_changes": sum(
+            1 for batch in batches if batch.get("server") is None
         ),
         "sm_clock_drift_mhz": drift,
     }
@@ -711,6 +785,12 @@ def capacity_decision(
         if first_failing is not None
         else []
     )
+    # Why the first failing level failed, so a knee from a hard stop reads as one.
+    first_failing_reasons = (
+        {"hard_stops": list(hard_stops.get(first_failing, [])), "failed_criteria": failed}
+        if first_failing is not None
+        else None
+    )
     if first_failing is None and incomplete_reason is not None:
         result, capacity = "incomplete", previous_level
     elif first_failing is None and len(criteria) < len(RAMP_LEVELS):
@@ -733,6 +813,7 @@ def capacity_decision(
         "capacity": capacity,
         "result": result,
         "first_failing_level": first_failing,
+        "first_failing_reasons": first_failing_reasons,
         "incomplete_reason": incomplete_reason,
         "batch_counts": batch_counts,
         "criteria": criteria,
@@ -746,10 +827,11 @@ BATCH_NOT_FINISHED = "batch_not_finished"
 def split_ramp_entries(entries: list[dict]) -> tuple[list[dict], list[dict]]:
     """`sweep.json` ramp batch entries usable for level metrics, and the excluded ones.
 
-    The driver marks a batch `metrics_exclusion` when the sweep stopped for a cause that is not
-    a hard stop (cancellation, runs not started, resend needed, a runner error): its runs were
-    cut short by the stop, so they say nothing about the level. A batch without its `server`
-    reading was never finished. Each exclusion keeps its level, sequence and causes.
+    The driver marks a batch `metrics_exclusion` when it has a live-API failure or the sweep
+    stopped for a cause that is not a hard stop (cancellation, runs not started, resend needed,
+    an unreadable server, a runner error): its runs say nothing about the level. A batch
+    without its `server` reading was never finished. Each exclusion keeps its level, sequence
+    and causes.
     """
     usable, excluded = [], []
     for entry in entries:
@@ -785,8 +867,7 @@ def ramp_analysis(
         excluded_by_level[int(item["level"])] = excluded_by_level.get(int(item["level"]), 0) + 1
     by_level: dict[int, list[dict]] = {}
     for entry in usable:
-        changes = entry["server"].get("changes")
-        server = {"server": changes} if changes is not None else {}
+        server = {"server": entry["server"].get("changes")}
         by_level.setdefault(int(entry["level"]), []).append(metrics_of(entry) | server)
     summaries: dict[int, dict] = {}
     baseline_clock = None

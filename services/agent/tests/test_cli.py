@@ -22,8 +22,11 @@ from agentwatch_agent.sweep_protocol import (
     INJECTOR_CONCURRENCY,
     INJECTOR_PROMPT_TOKENS,
     SAMPLING_INTERVAL_SECONDS,
+    TRACE_WAIT_SECONDS,
     Batch,
+    sweep_run_limits,
 )
+from agentwatch_agent.vllm_launch import DEFAULT_VLLM_CONTAINER
 from agentwatch_worker.nvml import GpuIdentity, NvmlUnavailable
 
 
@@ -631,6 +634,8 @@ def test_no_start_attempts_are_recorded_when_none_are_given(tmp_path, sweep_stub
         ("stopped_warmup_failed", 1),
         ("stopped_server_busy_after_idle_wait", 1),
         ("stopped_server_state_unavailable", 1),
+        ("stopped_live_api_failure", 1),
+        ("stopped_injector_start_failed", 1),
         ("cancelled", 1),
         ("failed", 1),
     ],
@@ -712,17 +717,52 @@ def test_replay_batches_use_each_runs_source_one_clock_and_no_policy(tmp_path, s
     assert len({id(model) for model in models}) == 3  # one model client per run
 
 
-def test_live_batches_alternate_the_two_tasks(tmp_path, sweep_stubs):
+def test_live_batches_run_the_tasks_of_their_declared_sources(tmp_path, sweep_stubs):
     cli.main(sweep_argv(tmp_path))
+    # The second live repeat at capacity 3 rotates: window, mean, window.
+    batch = Batch("live", 3, 1, (1, 0, 1), False)
     built = sweep_stubs.instances[0].kwargs["make_live_batch"](
-        3, tmp_path / "live", cli.MonotonicClock()
+        batch, tmp_path / "live", cli.MonotonicClock()
     )
     assert [(runner.kind, runner.task.name) for runner in built.runners] == [
-        ("live", "fix-mean-empty"),
         ("live", "fix-window-count"),
         ("live", "fix-mean-empty"),
+        ("live", "fix-window-count"),
+    ]
+    assert [runner.output_dir.name for runner in built.runners] == [
+        "01-fix-window-count",
+        "02-fix-mean-empty",
+        "03-fix-window-count",
     ]
     assert all(runner.admission is None for runner in built.runners)
+
+
+def test_every_sweep_runner_gets_the_declared_limits_and_trace_wait(tmp_path, sweep_stubs):
+    cli.main(sweep_argv(tmp_path, "--run-timeout", "300"))
+    kwargs = sweep_stubs.instances[0].kwargs
+    clock = cli.MonotonicClock()
+    replay = kwargs["make_batch"](Batch("ramp", 2, 0, (0, 1), False), tmp_path / "r", clock)
+    live = kwargs["make_live_batch"](Batch("live", 2, 0, (0, 1), False), tmp_path / "l", clock)
+    for runner in [*replay.runners, *live.runners]:
+        assert runner.limits == sweep_run_limits(300.0)
+        assert runner.trace_wait_seconds == TRACE_WAIT_SECONDS
+
+
+def test_the_vllm_container_is_inspected_for_its_launch_arguments(
+    tmp_path, sweep_stubs, monkeypatch
+):
+    inspected = []
+    monkeypatch.setattr(
+        cli,
+        "read_launch_arguments",
+        lambda container: inspected.append(container) or {"status": "read"},
+    )
+    cli.main(sweep_argv(tmp_path))
+    assert sweep_stubs.instances[0].kwargs["read_launch"]() == {"status": "read"}
+    assert inspected == [DEFAULT_VLLM_CONTAINER]
+    cli.main(sweep_argv(tmp_path, "--vllm-container", "other-vllm"))
+    sweep_stubs.instances[1].kwargs["read_launch"]()
+    assert inspected == [DEFAULT_VLLM_CONTAINER, "other-vllm"]
 
 
 def test_the_injector_is_a_prefill_flood_on_the_served_model(tmp_path, sweep_stubs):

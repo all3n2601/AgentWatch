@@ -388,10 +388,13 @@ def max_running_check(runs: list[Path], max_num_seqs: int) -> dict:
     }
 
 
-def ramp_run_dirs(output_dir: Path, entries: list[dict]) -> tuple[dict[int, list[Path]], int]:
+def ramp_run_dirs(
+    output_dir: Path, entries: list[dict], *, confine_to_batch: bool = False
+) -> tuple[dict[int, list[Path]], int]:
     """Run folders of the usable ramp batches by level, and how many runs had no evidence.
 
     Batches excluded from level metrics (`split_ramp_entries`) are excluded here too.
+    `confine_to_batch` reads only folders under each batch (the offline analysis).
     """
     usable, _excluded = split_ramp_entries(entries)
     runs: dict[int, list[Path]] = {}
@@ -399,7 +402,9 @@ def ramp_run_dirs(output_dir: Path, entries: list[dict]) -> tuple[dict[int, list
     for entry in usable:
         batch_dir = output_dir / entry["folder"]
         for run in entry["runs"]:
-            run_dir, _found_by = _resolve_run_dir(batch_dir, run.get("output_dir"))
+            run_dir, _found_by = _resolve_run_dir(
+                batch_dir, run.get("output_dir"), confine_to_batch=confine_to_batch
+            )
             files = ("agent-evidence.json", JOURNAL_FILE)
             if run_dir is None or not all((run_dir / name).is_file() for name in files):
                 without_evidence += 1
@@ -412,13 +417,15 @@ def _unreadable(error: BaseException) -> dict:
     return {"status": "unreadable", "error": f"{type(error).__name__}: {error}"[:MAX_ERROR_TEXT]}
 
 
-def ramp_label_results(output_dir: Path, entries: list[dict], max_num_seqs: int) -> dict:
+def ramp_label_results(
+    output_dir: Path, entries: list[dict], max_num_seqs: int, *, confine_to_batch: bool = False
+) -> dict:
     """Label validation of N >= 2 ramp runs against the N = 1 baselines, and the running check.
 
     `entries` are `sweep.json` batch entries under `output_dir`. Level keys stay ints so N = 1
     is never validated against itself. Unreadable evidence is recorded as such.
     """
-    runs, without_evidence = ramp_run_dirs(output_dir, entries)
+    runs, without_evidence = ramp_run_dirs(output_dir, entries, confine_to_batch=confine_to_batch)
     results: dict = {}
     try:
         reference = baselines(runs.get(BASELINE_LEVEL, []))

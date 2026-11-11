@@ -119,11 +119,14 @@ from agentwatch_agent.sweep_protocol import (
     INJECTOR_PROMPT_TOKENS,
     SAMPLING_INTERVAL_SECONDS,
     SOURCE_COUNT,
+    TRACE_WAIT_SECONDS,
     Batch,
     VllmConfiguration,
+    sweep_run_limits,
 )
 from agentwatch_agent.tasks import Task, TaskDefinitionError, load_task, task_names
 from agentwatch_agent.vllm import vllm_models
+from agentwatch_agent.vllm_launch import DEFAULT_VLLM_CONTAINER, read_launch_arguments
 from agentwatch_agent.vllm_server import SERVED_MODEL_NAME, read_server_state
 
 EXIT_PASSED, EXIT_FAILED, EXIT_INCOMPLETE_DELIVERY, EXIT_LIVE_UNAVAILABLE = 0, 1, 3, 4
@@ -468,6 +471,12 @@ def parser() -> argparse.ArgumentParser:
         metavar="UTIL:OUTCOME",
         help="An attempt to start vLLM, e.g. '0.8:failed: CUDA out of memory' then "
         "'0.75:started'; repeatable, the last must be 'started'",
+    )
+    sweep.add_argument(
+        "--vllm-container",
+        default=DEFAULT_VLLM_CONTAINER,
+        help="Docker container whose launch arguments verify max_num_seqs and the memory "
+        "utilization (not verified when Docker is unreachable)",
     )
 
     analyse = commands.add_parser(
@@ -995,7 +1004,8 @@ def capacity_sweep_command(args: argparse.Namespace) -> int:
         if args.model_backend != "vllm":
             raise ValueError("the capacity sweep measures vLLM; use --model-backend vllm")
         start_attempts = parse_start_attempts(args.start_attempt, configuration)
-        limits = RunLimits(run_timeout_seconds=args.run_timeout)
+        # The protocol's declared limits, which it hashes, with this sweep's run timeout.
+        limits = sweep_run_limits(args.run_timeout)
         model = build_model(args)
         if model.name != SERVED_MODEL_NAME:
             raise ValueError(f"the sweep's declared model is {SERVED_MODEL_NAME}, not {model.name}")
@@ -1017,7 +1027,9 @@ def capacity_sweep_command(args: argparse.Namespace) -> int:
             "limits": limits,
             "clock": clock,
             "open_gpu": NvmlDevice.open,
+            # The protocol's declared values, passed explicitly.
             "sampling_interval_seconds": SAMPLING_INTERVAL_SECONDS,
+            "trace_wait_seconds": TRACE_WAIT_SECONDS,
             **evidence,
         }
 
@@ -1029,10 +1041,11 @@ def capacity_sweep_command(args: argparse.Namespace) -> int:
             runners.append(ReplayRunner(plan=plan, task=task, **runner_settings(directory, clock)))
         return AgentBatch(runners, None, path)
 
-    def make_live_batch(count: int, path: Path, clock: MonotonicClock) -> AgentBatch:
+    def make_live_batch(batch: Batch, path: Path, clock: MonotonicClock) -> AgentBatch:
+        # Free agents on the tasks of the batch's declared sources, alternating as declared.
         runners = []
-        for index in range(1, count + 1):
-            task, _plan = sources[(index - 1) % len(sources)]
+        for index, source in enumerate(batch.sources, 1):
+            task, _plan = sources[source]
             directory = path / "runs" / f"{index:02d}-{task.name}"
             runners.append(AgentRunner(task=task, **runner_settings(directory, clock)))
         return AgentBatch(runners, None, path)
@@ -1070,6 +1083,7 @@ def capacity_sweep_command(args: argparse.Namespace) -> int:
         make_injectors=make_injectors,
         read_state=functools.partial(read_server_state, metrics_url),
         models=functools.partial(vllm_models, model.endpoint),
+        read_launch=functools.partial(read_launch_arguments, args.vllm_container),
         host=host_record(),
         start_attempts=start_attempts,
         code_revision=code_revision(),

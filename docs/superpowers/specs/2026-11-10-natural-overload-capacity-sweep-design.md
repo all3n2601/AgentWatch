@@ -59,7 +59,8 @@ Out of scope: policy-limit evaluation (O06; the sweep runs `--no-policy`), chang
 ## Declared protocol `natural-overload-sweep-v1`
 
 Fixed in code (`sweep.py`) and hashed into `sweep.json` before any GPU session. Changing any
-value is a new protocol version.
+value is a new protocol version. The version freezes at the first GPU session: no evidence
+exists under v1 yet, so its values may still change under it until then (Ruling 20).
 
 - **Model:** vLLM v0.32.0 (`deploy/compose/compose.yaml` image digest), `Qwen/Qwen3-1.7B` BF16
   at revision `70d244cc86cc`, `max-model-len=4096`, default prefix caching.
@@ -78,13 +79,19 @@ value is a new protocol version.
 - **Pacing:** after each batch, wait until vLLM reports 0 running and 0 waiting requests (at
   most 30 s), then pause a fixed 10 s.
 - **Hard stop** — the ramp ends at the first level with any of:
-  - a run that fails for an infrastructure reason: out of memory, a server error or refused
-    request, the 900 s run limit, or incomplete delivery;
+  - a run that fails for an infrastructure reason: out of memory, a model-server error or
+    refused request, or the 900 s run limit;
   - unconfirmed cleanup: vLLM still busy after the 30 s idle wait, or injector cleanup not
     confirmed;
   - a vLLM restart (its `process_start_time_seconds` changed).
 
-  Task failures (a wrong patch) do not stop the ramp; they are recorded.
+  Task failures (a wrong patch) do not stop the ramp; they are recorded. Live-API problems
+  (incomplete delivery or a needed `resend`, refused records or completion, a run never
+  started, the API unreachable at a run's start) stop the sweep or exclude the batch but never
+  count against vLLM's capacity (owner decision 2026-11-11): such a run is
+  `live_api_failure`, its batch is excluded and counted, and its level's result is
+  `incomplete`. A vLLM state that cannot be read within the declared retries is not a hard stop
+  either (Ruling 18): the sweep stops with `stopped_server_state_unavailable`.
 - **Capacity:** levels are checked in order; capacity is the level before the first level
   that fails any criterion:
   - no hard-stop event in any of its batches;
@@ -178,7 +185,9 @@ Output: `.data/capacity-sweeps/<configuration>-<UTC time>-<id>/`.
    A declared setting vLLM contradicts refuses the sweep (exit 2). vLLM v0.32 reports
    `gpu_memory_utilization`, `enable_prefix_caching`, `block_size`, `num_gpu_blocks`,
    `kv_cache_size_tokens` and `kv_cache_max_concurrency`, but not `max_num_seqs`, which is
-   recorded as `declared_not_verified`; the analysis also checks that no sampled
+   read from the vLLM container's launch arguments (`docker inspect`, bounded, no shell) when
+   Docker is reachable, a contradiction refusing the sweep, and is otherwise recorded as
+   `declared_not_verified`; the analysis also checks that no sampled
    `vllm:num_requests_running` exceeded it, and a higher reading is reported as a
    contradiction. `kv_cache_size_tokens` is recorded as the measured KV-cache capacity
    (7,376 tokens at 0.6 in the 2026-10-27 evidence).

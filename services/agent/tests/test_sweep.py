@@ -6,27 +6,36 @@ folders, server readings and injector activity are synthetic fixtures, never swe
 
 import json
 import urllib.error
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 from agentwatch_agent import sweep, sweep_analysis
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.replay import ReplayPlan, canonical_sha256
-from agentwatch_agent.runner import MODEL_CALL_LIMIT_REASON, VERIFICATION_FAILED
+from agentwatch_agent.runner import (
+    LIVE_API_UNAVAILABLE_AT_START,
+    MODEL_CALL_LIMIT_REASON,
+    VERIFICATION_FAILED,
+)
 from agentwatch_agent.sweep import SWEEP_FILE, CapacitySweep
 from agentwatch_agent.sweep_protocol import (
     CONFIGURATIONS,
+    IDLE_POLL_SECONDS,
     IDLE_WAIT_SECONDS,
     INJECTOR_BOUND_MARGIN_SECONDS,
     MODEL_ID,
     MODEL_REVISION,
     PACING_SECONDS,
     RAMP_LEVELS,
+    STATE_READ_ATTEMPTS,
+    STATE_READ_RETRY_PAUSE_SECONDS,
 )
+from agentwatch_agent.vllm_launch import read_launch_arguments
 from agentwatch_agent.vllm_server import ServerState, ServerStateUnavailable
-from agentwatch_injectors.base import BoundedInjector
+from agentwatch_injectors.base import BoundedInjector, InjectorError
 from test_sweep_analysis import write_run
+from test_vllm_launch import inspect_runner
 
 RUN_LIMIT_SECONDS = 900.0
 SERVED = f"{MODEL_ID}@{MODEL_REVISION}"
@@ -77,6 +86,10 @@ class FakeServer:
     def fail_read(self, after):
         """Make the read `after` reads from now fail (1 is the next read)."""
         self.fail_at.add(self.reads + after)
+
+    def fail_reads(self, after, count):
+        """Make `count` consecutive reads fail, the first `after` reads from now."""
+        self.fail_at.update(range(self.reads + after, self.reads + after + count))
 
     def __call__(self):
         self.reads += 1
@@ -185,9 +198,10 @@ class FakeInjector(BoundedInjector):
     method = "test-double"
     resource_class = "inference"
 
-    def __init__(self, clock, bound_seconds, confirm=True):
+    def __init__(self, clock, bound_seconds, confirm=True, start_error=None):
         super().__init__(clock, bound_seconds)
         self.confirm = confirm
+        self.start_error = start_error
 
     def bounds(self):
         return {}
@@ -196,7 +210,8 @@ class FakeInjector(BoundedInjector):
         return {}
 
     def _launch(self):
-        pass
+        if self.start_error is not None:
+            raise self.start_error
 
     def _halt(self):
         activity = {
@@ -223,6 +238,7 @@ class Harness:
         self.injector_calls = []
         self.sweep_json_batches = []
         self.confirm_cleanup = True
+        self.injector_start_error = None
         self.on_make_batch = {}  # batch name -> called inside make_batch
         self.on_make_injectors = None
         self.models = lambda: {"data": [{"id": SERVED, "root": MODEL_ID, "max_model_len": 4096}]}
@@ -263,16 +279,22 @@ class Harness:
             self.on_make_batch[name]()
         return self._stub(name, batch.level, batch_dir, clock)
 
-    def make_live_batch(self, level, batch_dir, clock):
-        self.calls.append(("live", level, None, None))
-        repeat = sum(1 for call in self.calls if call[0] == "live") - 1
-        return self._stub(f"live-n{level}-r{repeat}", level, batch_dir, clock)
+    def make_live_batch(self, batch, batch_dir, clock):
+        self.calls.append((batch.phase, batch.level, batch.repeat, batch.sources))
+        return self._stub(f"live-n{batch.level}-r{batch.repeat}", batch.level, batch_dir, clock)
 
     def make_injectors(self, clock, bound_seconds):
         self.injector_calls.append((clock, bound_seconds))
         if self.on_make_injectors is not None:
             self.on_make_injectors()
-        return [FakeInjector(clock, bound_seconds, confirm=self.confirm_cleanup)]
+        return [
+            FakeInjector(
+                clock,
+                bound_seconds,
+                confirm=self.confirm_cleanup,
+                start_error=self.injector_start_error,
+            )
+        ]
 
     def run(self):
         return self.sweep.run()
@@ -401,39 +423,25 @@ def test_a_relative_sweep_folder_resolves_every_run_folder(tmp_path, monkeypatch
         if "metrics" in entry
         for folder in entry["metrics"]["run_folders"]
     ]
-    assert found and set(found) == {"recorded"}
+    # Each is the batch's own runs/ folder, which is read first.
+    assert found and set(found) == {"batch_relative"}
     assert record["level_summaries"][1]["run_duration_seconds"]["missing"] == 0
     assert record["capacity_decision"]["result"] == "measured"
     assert record["capacity_decision"]["capacity"] == 2
     assert record["label_validation"]["runs_without_evidence"] == 0
 
 
-HARD_STOP_HOOKS = {
-    "infrastructure_failure": set_runs(state="failed", reason="run_timeout"),
-    "delivery_incomplete": set_runs(delivery_complete=False),
-}
-
-
-@pytest.mark.parametrize(
-    "code",
-    [
-        "infrastructure_failure",
-        "delivery_incomplete",
-        "server_busy_after_idle_wait",
-        "server_state_unavailable",
-    ],
-)
+# Neither a live-API problem (owner decision 2026-11-11) nor an unreadable server (Ruling 18)
+# is a capacity hard stop: each has its own tests below.
+@pytest.mark.parametrize("code", ["infrastructure_failure", "server_busy_after_idle_wait"])
 def test_each_hard_stop_ends_the_ramp(tmp_path, code):
     harness = Harness(tmp_path)
 
     def trigger(stub, entries, wall):
-        if code in HARD_STOP_HOOKS:
-            return HARD_STOP_HOOKS[code](stub, entries, wall)
-        if code == "server_busy_after_idle_wait":
-            # Busy beyond the idle wait, then idle again before the live phase.
-            harness.server.busy_until = harness.time.now + IDLE_WAIT_SECONDS + 15
-        else:
-            harness.server.fail_read(after=1)  # the reading right after the batch
+        if code == "infrastructure_failure":
+            return set_runs(state="failed", reason="run_timeout")(stub, entries, wall)
+        # Busy beyond the idle wait, then idle again before the live phase.
+        harness.server.busy_until = harness.time.now + IDLE_WAIT_SECONDS + 15
         return None
 
     harness.hooks["ramp-n3-r0"] = trigger
@@ -483,40 +491,138 @@ def test_unconfirmed_injector_cleanup_stops_the_sweep(tmp_path):
     assert last["runs"][0]["state"] == "completed"
 
 
-def test_unreadable_server_state_is_a_hard_stop(tmp_path):
+@pytest.fixture
+def flat_wall(monkeypatch):
+    """Every batch takes 60 s, so throughput rises with N and no level is a throughput knee."""
+    monkeypatch.setitem(globals(), "default_wall_seconds", lambda _level: 60.0)
+
+
+# Reads after a batch: the reading after it (1) and one idle poll (2); the next batch's
+# reading before it is read 3, with its retries after it.
+NEXT_BEFORE_READ = 3
+
+
+def test_a_server_unreadable_before_a_batch_stops_the_sweep_without_a_hard_stop(
+    tmp_path, flat_wall
+):
+    """The bug hunt's probe: a failed read before ramp-n4-r0 was a measured knee at capacity 3."""
     harness = Harness(tmp_path)
-
-    def fail_before_level_three(_stub, _entries, _wall):
-        # After this batch: the reading after it, one idle poll, then the reading before
-        # the next batch, which is level 3's first and fails.
-        harness.server.fail_read(after=3)
-
-    harness.hooks["ramp-n2-r2"] = fail_before_level_three
-    record = harness.run()
-    assert record["state"] == "completed" and record["ramp_end"] == "hard_stop"
-    # Level 3 never ran: the unreadable server stopped the ramp before its first batch.
-    assert harness.phases_run() == [*expected_ramp(2), *post_ramp(2, 1)]
-    assert [(h["code"], h["level"], h["batch"]) for h in record["hard_stops"]] == [
-        ("server_state_unavailable", 3, None)
-    ]
-    criteria = record["capacity_decision"]["criteria"][3]
-    assert criteria["summary_present"]["passed"] is False
-    assert record["capacity_decision"]["capacity"] == 2
-
-
-def test_unreadable_server_state_after_the_ramp_stops_the_sweep(tmp_path):
-    harness = Harness(tmp_path)
-
-    def fail_before_live(_stub, _entries, _wall):
-        harness.server.fail_read(after=3)  # after, idle poll, then before the first live batch
-
-    harness.hooks["ramp-n16-r2"] = fail_before_live
+    harness.hooks["ramp-n3-r2"] = lambda *_: harness.server.fail_reads(
+        after=NEXT_BEFORE_READ, count=STATE_READ_ATTEMPTS
+    )
     record = harness.run()
     assert record["state"] == "stopped_server_state_unavailable"
-    assert record["ramp_end"] == "ceiling"
-    assert record["capacity_decision"]["capacity"] == 2
-    assert not any(call[0] == "live" for call in harness.calls)
-    assert record["hard_stops"][-1]["phase"] == "live"
+    assert record["ramp_end"] == "stopped"
+    # Never a capacity hard stop: the read failure says nothing about the configuration.
+    assert record["hard_stops"] == []
+    assert harness.phases_run()[-1] == ("ramp", 3)
+    decision = record["capacity_decision"]
+    assert decision["result"] == "incomplete" and decision["capacity"] == 3
+    assert decision["first_failing_level"] is None
+    (failure,) = record["server"]["read_failures"]
+    assert (failure["phase"], failure["level"], failure["reading"]) == ("ramp", 4, "before")
+    assert failure["attempts"] == STATE_READ_ATTEMPTS
+    assert record["phases"]["live"]["status"] == "not_run"
+    assert record["analysis_scope"] == "partial_ramp"
+
+
+def test_a_server_unreadable_before_the_first_baseline_is_incomplete_not_below_1(
+    tmp_path, flat_wall
+):
+    harness = Harness(tmp_path)
+    harness.hooks["warmup-n1-r0"] = lambda *_: harness.server.fail_reads(
+        after=NEXT_BEFORE_READ, count=STATE_READ_ATTEMPTS
+    )
+    record = harness.run()
+    assert record["state"] == "stopped_server_state_unavailable"
+    assert record["hard_stops"] == []
+    decision = record["capacity_decision"]
+    assert decision["result"] == "incomplete" and decision["capacity"] is None
+
+
+def test_a_transient_read_failure_within_the_retry_bound_changes_nothing(tmp_path, flat_wall):
+    harness = Harness(tmp_path)
+    harness.hooks["ramp-n3-r2"] = lambda *_: harness.server.fail_reads(
+        after=NEXT_BEFORE_READ, count=STATE_READ_ATTEMPTS - 1
+    )
+    record = harness.run()
+    assert record["state"] == "completed" and record["ramp_end"] == "ceiling"
+    assert record["hard_stops"] == [] and record["server"]["read_failures"] == []
+    assert record["capacity_decision"]["result"] == "at_least_ceiling"
+    # Each failed attempt is followed by the declared pause.
+    after = harness.events.index(("batch", "ramp-n3-r2"))
+    following = harness.events[after + 1 : harness.events.index(("batch", "ramp-n4-r0"))]
+    assert following.count(("sleep", STATE_READ_RETRY_PAUSE_SECONDS)) == STATE_READ_ATTEMPTS - 1
+
+
+def test_a_server_unreadable_after_a_batch_excludes_that_batch(tmp_path, flat_wall):
+    harness = Harness(tmp_path)
+    harness.hooks["ramp-n3-r1"] = lambda *_: harness.server.fail_reads(
+        after=1, count=STATE_READ_ATTEMPTS
+    )
+    record = harness.run()
+    assert record["state"] == "stopped_server_state_unavailable"
+    assert record["hard_stops"] == []
+    last = record["batches"][-1]
+    assert (last["level"], last["repeat"]) == (3, 1)
+    assert last["server"]["after"] is None and last["server"]["changes"] is None
+    (excluded,) = record["excluded_batches"]
+    assert (excluded["sequence"], excluded["level"]) == (last["sequence"], 3)
+    assert [cause["state"] for cause in excluded["causes"]] == ["stopped_server_state_unavailable"]
+    decision = record["capacity_decision"]
+    assert decision["result"] == "incomplete" and decision["capacity"] == 2
+    assert decision["batch_counts"][3] == {"usable": 1, "declared": 3, "excluded": 1}
+
+
+def test_the_idle_wait_keeps_polling_through_failed_reads(tmp_path, flat_wall):
+    harness = Harness(tmp_path)
+    # The first five idle polls after this batch fail; the sixth reads an idle server.
+    harness.hooks["ramp-n3-r1"] = lambda *_: harness.server.fail_reads(after=2, count=5)
+    record = harness.run()
+    assert record["state"] == "completed" and record["hard_stops"] == []
+    after = harness.events.index(("batch", "ramp-n3-r1"))
+    following = harness.events[after + 1 : harness.events.index(("batch", "ramp-n3-r2"))]
+    assert following == [("sleep", IDLE_POLL_SECONDS)] * 5 + [("sleep", PACING_SECONDS)]
+
+
+@pytest.mark.parametrize("hook", ["ramp-n3-r1", "live-n16-r0"])
+def test_an_idle_wait_that_never_reads_the_server_stops_the_sweep(tmp_path, flat_wall, hook):
+    harness = Harness(tmp_path)
+    harness.hooks[hook] = lambda *_: harness.server.fail_reads(after=2, count=10_000)
+    record = harness.run()
+    assert record["state"] == "stopped_server_state_unavailable"
+    assert record["hard_stops"] == []
+    # The batch was read before and after it, so it is evidence; only the next cannot run.
+    assert record["excluded_batches"] == []
+    assert record["batches"][-1]["server"]["after"] is not None
+    (failure,) = record["server"]["read_failures"]
+    assert failure["reading"] == "idle_wait" and failure["phase"] == hook.split("-")[0]
+    # Polled until the idle-wait deadline, no longer, and no pacing pause followed.
+    after = harness.events.index(("batch", hook))
+    sleeps = [seconds for kind, seconds in harness.events[after + 1 :] if kind == "sleep"]
+    assert sum(sleeps) == IDLE_WAIT_SECONDS and PACING_SECONDS not in sleeps
+
+
+def test_an_idle_poll_without_running_and_waiting_counts_is_not_idle(tmp_path, flat_wall):
+    harness = Harness(tmp_path)
+    read = harness.server.__call__
+    unreported_at = []
+
+    def unreported():
+        state = read()
+        return replace(state, running=None) if harness.server.reads in unreported_at else state
+
+    harness.sweep.read_state = unreported
+    # The first idle poll after this batch reports no running count.
+    harness.hooks["ramp-n3-r1"] = lambda *_: unreported_at.append(harness.server.reads + 2)
+    record = harness.run()
+    # One unusable poll, polled again until vLLM reports idle; never a hard stop.
+    assert record["state"] == "completed" and record["hard_stops"] == []
+    after = harness.events.index(("batch", "ramp-n3-r1"))
+    assert harness.events[after + 1 : after + 3] == [
+        ("sleep", IDLE_POLL_SECONDS),
+        ("sleep", PACING_SECONDS),
+    ]
 
 
 @pytest.mark.parametrize("how", ["runs_not_started", "batch_raises"])
@@ -686,7 +792,82 @@ def test_a_resend_needed_run_stops_the_sweep(tmp_path):
     record = harness.run()
     assert record["state"] == "stopped_resend_needed" and record["ramp_end"] == "stopped"
     assert harness.phases_run()[-1] == ("ramp", 2)
-    assert [h["code"] for h in record["hard_stops"]] == ["delivery_incomplete"]
+    # A live-API problem never counts against vLLM's capacity (owner decision 2026-11-11).
+    assert record["hard_stops"] == []
+
+
+def test_a_resend_needed_batch_leaves_capacity_incomplete_not_measured(tmp_path, flat_wall):
+    harness = Harness(tmp_path)
+
+    def resend_needed(_stub, entries, wall):
+        entries[0] |= {"delivery_complete": False, "resend_needed": True}
+        return wall, [None] * len(entries)
+
+    harness.hooks["ramp-n4-r0"] = resend_needed
+    record = harness.run()
+    assert record["state"] == "stopped_resend_needed"
+    assert record["hard_stops"] == []
+    last = record["batches"][-1]
+    classes = [run["classification"] for run in last["runs"]]
+    assert classes == ["live_api_failure", "passed", "passed", "passed"]
+    (excluded,) = record["excluded_batches"]
+    assert (excluded["sequence"], excluded["level"]) == (13, 4)
+    assert [cause["state"] for cause in excluded["causes"]] == ["live_api", "stopped_resend_needed"]
+    decision = record["capacity_decision"]
+    assert decision["result"] == "incomplete" and decision["capacity"] == 3
+    assert decision["batch_counts"][4] == {"usable": 0, "declared": 3, "excluded": 1}
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"state": "failed", "reason": LIVE_API_UNAVAILABLE_AT_START, "task_passed": None},
+        {"records_refused": 2},
+        {"completion_refused": True},
+    ],
+)
+def test_a_live_api_failure_excludes_its_batch_and_stops_the_sweep(tmp_path, flat_wall, fields):
+    harness = Harness(tmp_path)
+
+    def live_api_failure(_stub, entries, wall):
+        entries[0] |= fields
+        return wall, [None] * len(entries)
+
+    harness.hooks["ramp-n3-r0"] = live_api_failure
+    record = harness.run()
+    assert record["state"] == "stopped_live_api_failure"
+    assert record["hard_stops"] == []
+    assert record["batches"][-1]["runs"][0]["classification"] == "live_api_failure"
+    (excluded,) = record["excluded_batches"]
+    assert [cause["state"] for cause in excluded["causes"]] == [
+        "live_api",
+        "stopped_live_api_failure",
+    ]
+    assert [cause["state"] for cause in record["stop_causes"]] == ["stopped_live_api_failure"]
+    decision = record["capacity_decision"]
+    assert decision["result"] == "incomplete" and decision["capacity"] == 2
+
+
+def test_an_infrastructure_failure_beside_a_stop_cause_is_still_a_hard_stop(tmp_path):
+    """Re-review: a batch with a sweep-stop cause lost its genuine infrastructure failure."""
+    harness = Harness(tmp_path)
+
+    def every_kind(_stub, entries, wall):
+        entries[0] |= {"state": "failed", "reason": "Model server error", "task_passed": None}
+        entries[1] |= {"delivery_complete": False, "resend_needed": True}
+        entries[2] |= {"state": "cancelled", "reason": "Cancelled"}
+        cancel_sweep(harness)
+        return wall, [None] * len(entries)
+
+    harness.hooks["ramp-n3-r0"] = every_kind
+    record = harness.run()
+    assert record["state"] == "stopped_resend_needed"
+    # Recorded once, for the genuine failure only: never for the cancelled or live-API runs.
+    assert [(h["code"], h["level"], h["detail"]) for h in record["hard_stops"]] == [
+        ("infrastructure_failure", 3, "runs [1]")
+    ]
+    assert record["batches"][-1]["hard_stop_events"] == ["infrastructure_failure"]
+    assert record["capacity_decision"]["criteria"][3]["no_hard_stop"]["passed"] is False
 
 
 def test_an_unexpected_error_is_recorded_and_re_raised(tmp_path):
@@ -767,8 +948,8 @@ def test_a_sweep_stopped_mid_ramp_still_analyses_the_recorded_ramp(tmp_path, how
     assert [entry["sequence"] for entry in record["excluded_batches"]] == excluded
     assert record["level_summaries"][2]["batches"] == 2 - len(excluded)
     assert record["level_summaries"][2]["excluded_batches"] == len(excluded)
-    # A hard stop (restart, or the resend run's incomplete delivery) is a measured knee.
-    expected = "incomplete" if how in ("runs_not_started", "cancelled") else "measured"
+    # Only the restart is a hard stop, so a measured knee; a live-API problem never is.
+    expected = "measured" if how == "vllm_restart" else "incomplete"
     assert record["capacity_decision"]["result"] == expected
     assert record["analysis_scope"] == "partial_ramp"
     assert record["state"] in record["analysis_note"]
@@ -809,9 +990,10 @@ def test_a_ramp_stopped_without_a_hard_stop_reports_no_measured_knee(tmp_path, h
     assert decision["batch_counts"][2] == {"usable": 1, "declared": 3, "excluded": 1}
     # The stopped batch is excluded and counted with its cause, never zero throughput.
     (excluded,) = record["excluded_batches"]
-    state = "stopped_run_not_started" if how == "not_started" else "cancelled"
+    # Runs that never started are a live-API problem as well as the stop's cause.
+    states = ["live_api", "stopped_run_not_started"] if how == "not_started" else ["cancelled"]
     assert (excluded["sequence"], excluded["level"]) == (8, 2)
-    assert [cause["state"] for cause in excluded["causes"]] == [state]
+    assert [cause["state"] for cause in excluded["causes"]] == states
     assert record["batches"][-1]["metrics_exclusion"]["causes"] == excluded["causes"]
     assert record["level_summaries"][2]["throughput_per_minute"]["count"] == 1
     assert record["hard_stops"] == []
@@ -969,7 +1151,7 @@ def test_resend_needed_outranks_cancellation_and_restart(tmp_path):
         "cancelled",
         "stopped_resend_needed",
     ]
-    assert {h["code"] for h in record["hard_stops"]} == {"vllm_restart", "delivery_incomplete"}
+    assert [h["code"] for h in record["hard_stops"]] == ["vllm_restart"]
 
 
 def test_a_server_without_a_start_time_is_refused(tmp_path):
@@ -1059,10 +1241,10 @@ def test_an_analysis_error_in_one_batch_costs_no_phase(tmp_path, monkeypatch):
     harness = Harness(tmp_path)
     real = sweep_analysis.batch_metrics
 
-    def broken_for_one_batch(batch_dir, run_timeout_seconds):
+    def broken_for_one_batch(batch_dir, run_timeout_seconds, **options):
         if batch_dir.name == "07-ramp-n2-r0":
             raise ZeroDivisionError("fixture: analysis bug")
-        return real(batch_dir, run_timeout_seconds)
+        return real(batch_dir, run_timeout_seconds, **options)
 
     monkeypatch.setattr(sweep_analysis, "batch_metrics", broken_for_one_batch)
     record = harness.run()
@@ -1119,3 +1301,99 @@ def test_a_failed_capacity_decision_skips_the_later_phases_and_says_why(tmp_path
     assert not any(call[0] in ("live", "injected") for call in harness.calls)
     # Label validation still ran.
     assert record["label_validation"]["levels_skipped"] == []
+
+
+def test_an_injector_that_fails_to_start_is_a_recorded_stop(tmp_path):
+    """Bug hunt: a flood that failed to start escaped as an unexpected error, unanalysed."""
+    harness = Harness(tmp_path)
+    harness.injector_start_error = InjectorError("fixture: workers did not start")
+    record = harness.run()
+    assert record["state"] == "stopped_injector_start_failed"
+    assert "workers did not start" in record["stop_reason"]
+    last = record["batches"][-1]
+    assert last["phase"] == "injected" and last["runs"] == []
+    assert harness.batches[-1].ran is False
+    assert "workers did not start" in last["injection_error"]
+    # The injection log is written: the failed start was halted and its cleanup confirmed.
+    log = read(harness.output_dir / last["injection_log"])
+    assert log["cleanup_confirmed"] is True and log["ramp_completed_tick_ns"] is None
+    assert record["injection_logs"] == [last["injection_log"]]
+    assert record["hard_stops"] == []
+    assert record["phases"]["injected"]["status"] == "stopped"
+    # The recorded ramp is still analysed.
+    assert record["capacity_decision"]["capacity"] == 2
+    assert record["label_validation"]["levels_skipped"] == []
+
+
+def test_live_batches_replay_their_declared_sources_at_an_odd_capacity(tmp_path, monkeypatch):
+    # Throughput rises to N = 3 and is flat after: capacity 3.
+    monkeypatch.setitem(globals(), "default_wall_seconds", lambda level: 60.0 * max(1, level / 3))
+    harness = Harness(tmp_path)
+    record = harness.run()
+    assert record["capacity_decision"]["capacity"] == 3
+    live = [call for call in harness.calls if call[0] == "live"]
+    # Sources alternate within a batch and rotate between repeats, as declared.
+    assert live == [
+        ("live", 3, 0, (0, 1, 0)),
+        ("live", 3, 1, (1, 0, 1)),
+        ("live", 3, 2, (0, 1, 0)),
+    ]
+    entries = [entry for entry in record["batches"] if entry["phase"] == "live"]
+    assert [[source["index"] for source in entry["sources"]] for entry in entries] == [
+        [0, 1, 0],
+        [1, 0, 1],
+        [0, 1, 0],
+    ]
+    assert entries[1]["sources"][0]["task_id"] == "fix-window-count"
+
+
+def launch_reader(**flags):
+    """The real reader over a fake `docker inspect` of a container launched with `flags`."""
+    run, _calls = inspect_runner(flags)
+    return lambda: read_launch_arguments("agentwatch-vllm-1", run=run)
+
+
+def test_launch_arguments_verify_max_num_seqs(tmp_path):
+    harness = Harness(tmp_path, read_launch=launch_reader(max_num_seqs="2", utilization="0.6"))
+    record = harness.run()
+    assert record["state"] == "completed"
+    configuration = record["configuration"]
+    settings = configuration["verified"]["settings"]
+    assert settings["max_num_seqs"]["status"] == "verified"
+    assert settings["max_num_seqs"]["reported"] == 2
+    assert "docker inspect" in settings["max_num_seqs"]["source"]
+    assert settings["launch_gpu_memory_utilization"]["status"] == "verified"
+    launch = configuration["launch"]
+    assert launch["status"] == "read" and launch["container"] == "agentwatch-vllm-1"
+    assert "--max-num-seqs=2" in launch["arguments"]
+
+
+@pytest.mark.parametrize(
+    ("flags", "setting"),
+    [
+        ({"max_num_seqs": "16", "utilization": "0.6"}, "max_num_seqs"),
+        ({"max_num_seqs": "2", "utilization": "0.8"}, "launch_gpu_memory_utilization"),
+    ],
+)
+def test_contradicting_launch_arguments_refuse_the_sweep(tmp_path, flags, setting):
+    harness = Harness(tmp_path, read_launch=launch_reader(**flags))
+    record = harness.run()
+    assert record["state"] == "refused_configuration"
+    assert setting in record["stop_reason"]
+    assert record["configuration"]["verified"]["contradicted"] == [setting]
+    assert harness.calls == []
+
+
+def test_unreadable_launch_arguments_leave_max_num_seqs_declared_not_verified(tmp_path):
+    def no_docker(command, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory", command[0])
+
+    harness = Harness(
+        tmp_path, read_launch=lambda: read_launch_arguments("agentwatch-vllm-1", run=no_docker)
+    )
+    record = harness.run()
+    assert record["state"] == "completed"
+    setting = record["configuration"]["verified"]["settings"]["max_num_seqs"]
+    assert setting["status"] == "declared_not_verified"
+    assert "docker.exe" in setting["reason"]
+    assert record["configuration"]["launch"]["status"] == "unavailable"

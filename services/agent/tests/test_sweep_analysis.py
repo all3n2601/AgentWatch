@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from agentwatch_agent.model import joined_vllm_timing
 from agentwatch_agent.runner import (
+    LIVE_API_UNAVAILABLE_AT_START,
     MODEL_CALL_LIMIT_REASON,
     NO_TOOL_CALL_OR_ANSWER,
     TOOL_CALL_LIMIT_REASON,
@@ -18,7 +19,9 @@ from agentwatch_agent.sweep_analysis import (
     capacity_decision,
     classify_run,
     level_summary,
+    live_api_problem,
     p90,
+    ramp_analysis,
     server_changes,
 )
 from agentwatch_agent.sweep_protocol import RAMP_LEVELS, declared_batches
@@ -180,9 +183,34 @@ def test_task_failures_are_not_infrastructure_failures():
     assert classify_run(run_entry(state="failed", reason="Server error")) == (
         "infrastructure_failure"
     )
-    assert classify_run(run_entry(delivery_complete=False)) == "infrastructure_failure"
+    # Delivery status unknown without any live-API signal: not attributed to the API.
     assert classify_run(run_entry(delivery_complete=None)) == "infrastructure_failure"
     assert classify_run(run_entry(task_passed=False)) == "infrastructure_failure"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"delivery_complete": False},
+        {"delivery_complete": False, "resend_needed": True},
+        {"records_refused": 3},
+        {"completion_refused": True},
+        {"state": "not_started", "delivery_complete": None, "task_passed": None},
+        {"not_started": {"stage": "registration", "error": "fixture"}},
+        {"state": "failed", "reason": LIVE_API_UNAVAILABLE_AT_START, "task_passed": None},
+        # A live-API problem outranks what the run itself did.
+        {"state": "failed", "reason": "Server error", "resend_needed": True},
+    ],
+)
+def test_live_api_problems_are_never_infrastructure_failures(fields):
+    """Owner decision 2026-11-11: live-API problems never count against vLLM's capacity."""
+    assert classify_run(run_entry(**fields)) == "live_api_failure"
+    assert live_api_problem(run_entry(**fields)) is not None
+
+
+def test_a_run_without_live_api_signals_has_no_live_api_problem():
+    assert live_api_problem(run_entry(records_refused=0, completion_refused=False)) is None
+    assert live_api_problem(run_entry(state="failed", reason="Server error")) is None
 
 
 @pytest.mark.parametrize(
@@ -202,7 +230,7 @@ def test_agent_decision_failures_are_neither_passes_nor_infrastructure(reason):
         "infrastructure_failure"
     )
     assert classify_run(run_entry(state="failed", reason=reason, delivery_complete=False)) == (
-        "infrastructure_failure"
+        "live_api_failure"
     )
 
 
@@ -303,6 +331,8 @@ def write_run(run_dir: Path, duration_seconds: float | None, samples=(), evidenc
         "task": {"task_id": "fixture-r1"},
         "configuration": {"sampling_interval_seconds": 1.0},
         "resource_sampling": {"resources": [{"resource_id": "gpu-1", "scope": "device"}]},
+        # The runner always records its model calls, as a list (empty when it made none).
+        "model_calls": [],
     } | (evidence_extra or {})
     (run_dir / "agent-evidence.json").write_text(json.dumps(evidence))
     records = []
@@ -439,7 +469,54 @@ def test_a_run_folder_recorded_relative_to_the_working_directory_is_found(tmp_pa
     write_batch(batch_dir, [run_entry(output_dir=recorded(batch_dir, "01-fix-mean-empty"))])
     metrics = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)
     assert metrics["run_durations"] == [5.0]
-    assert metrics["run_folders"] == [{"index": 0, "found_by": "recorded"}]
+    # The recorded path is the batch's own runs/ folder, which is tried first.
+    assert metrics["run_folders"] == [{"index": 0, "found_by": "batch_relative"}]
+
+
+def test_the_batch_relative_folder_is_read_before_the_recorded_one(tmp_path):
+    """Bug hunt: a copied sweep read the original's run folders while they still existed."""
+    original = tmp_path / "original" / "batches" / "01-ramp-n1-r0"
+    copied = tmp_path / "copied" / "batches" / "01-ramp-n1-r0"
+    write_run(original / "runs" / "01-a", 5.0)
+    write_run(copied / "runs" / "01-a", 7.0)
+    write_batch(copied, [run_entry(output_dir=recorded(original, "01-a"))])
+    metrics = batch_metrics(copied, RUN_LIMIT_SECONDS)
+    assert metrics["run_durations"] == [7.0]
+    assert metrics["run_folders"] == [{"index": 0, "found_by": "batch_relative"}]
+
+
+def test_a_confined_analysis_never_reads_a_recorded_folder_outside_the_batch(tmp_path):
+    original = tmp_path / "original" / "batches" / "01-ramp-n1-r0"
+    copied = tmp_path / "copied" / "batches" / "01-ramp-n1-r0"
+    write_run(original / "runs" / "01-a", 5.0)
+    write_batch(copied, [run_entry(output_dir=recorded(original, "01-a"))])
+    # Unconfined (the driver), the recorded folder is used; confined (offline), never.
+    assert batch_metrics(copied, RUN_LIMIT_SECONDS)["run_folders"][0]["found_by"] == "recorded"
+    confined = batch_metrics(copied, RUN_LIMIT_SECONDS, confine_to_batch=True)
+    assert confined["run_folders"] == [{"index": 0, "found_by": None}]
+    assert confined["run_durations_missing"] == 1 and confined["runs_without_evidence"] == 1
+
+
+def test_a_run_folder_whose_evidence_has_no_model_calls_is_missing_not_zero_calls(tmp_path):
+    """Re-review: a missing `model_calls` key counted as a run with 0 model calls."""
+    batch_dir = tmp_path / "batch"
+    write_run(batch_dir / "runs" / "00-a", 5.0)
+    write_run(batch_dir / "runs" / "01-b", 5.0)
+    evidence = batch_dir / "runs" / "01-b" / "agent-evidence.json"
+    document = json.loads(evidence.read_text())
+    del document["model_calls"]
+    evidence.write_text(json.dumps(document))
+    entries = [
+        run_entry(index=0, output_dir=recorded(batch_dir, "00-a")),
+        run_entry(index=1, output_dir=recorded(batch_dir, "01-b")),
+    ]
+    write_batch(batch_dir, entries)
+    metrics = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)
+    # An empty list is measured zero calls; a missing one is a run without evidence.
+    assert metrics["runs_without_evidence"] == 1
+    assert sum(metrics["spans"]["calls_by_status"].values()) == 0
+    outside = metrics["client_outside_server_seconds"]
+    assert (outside["count"], outside["unavailable"]) == (0, 0)
 
 
 def test_a_relative_run_folder_from_another_directory_is_found_beside_its_batch(
@@ -729,3 +806,55 @@ def test_a_summary_without_its_evidence_counts_fails_evidence_complete(missing):
     ]
     assert criterion["passed"] is False
     assert criterion["reason"] == "evidence counts missing"
+
+
+SERVER_CHANGE = {
+    "prefix_cache_queries": 10.0,
+    "prefix_cache_hits": 5.0,
+    "preemptions": 7.0,
+    "request_successes": 1.0,
+    "prefix_cache_hit_ratio": 0.5,
+}
+
+
+def test_a_level_sum_of_server_changes_is_unknown_when_a_batch_has_none():
+    """Bug hunt: a batch without an after-reading was dropped from the sum, not counted."""
+    complete = [readable_batch(1.0, [10.0], server=SERVER_CHANGE) for _ in range(2)]
+    summary = level_summary([*complete, readable_batch(1.0, [10.0])])
+    assert summary["batches_without_server_changes"] == 1
+    changes = summary["server_changes"]
+    assert all(changes[name] is None for name in ("preemptions", "prefix_cache_queries"))
+    assert changes["prefix_cache_hit_ratio"] is None
+    full = level_summary(complete)
+    assert full["batches_without_server_changes"] == 0
+    assert full["server_changes"]["preemptions"] == 14.0
+
+
+def test_ramp_analysis_counts_ramp_batches_without_server_changes():
+    entries = [
+        {
+            "phase": "ramp",
+            "level": 1,
+            "sequence": sequence,
+            "server": {"after": None, "changes": None}
+            if sequence == 3
+            else {"after": {}, "changes": SERVER_CHANGE},
+            "metrics": readable_batch(1.0, [10.0]),
+        }
+        for sequence in range(declared_batches(1))
+    ]
+    summary = ramp_analysis(entries, [], RUN_LIMIT_SECONDS, lambda e: e["metrics"])[
+        "level_summaries"
+    ][1]
+    assert summary["batches_without_server_changes"] == 1
+    assert summary["server_changes"]["preemptions"] is None
+
+
+def test_the_decision_names_why_the_first_failing_level_failed():
+    decision = capacity_decision(ramp(1.0, 2.0, 2.5), {3: ["vllm_restart"]}, RUN_LIMIT_SECONDS)
+    assert decision["first_failing_level"] == 3
+    assert decision["first_failing_reasons"] == {
+        "hard_stops": ["vllm_restart"],
+        "failed_criteria": ["no_hard_stop"],
+    }
+    assert capacity_decision(ramp(1.0, 2.0), {}, RUN_LIMIT_SECONDS)["first_failing_reasons"] is None

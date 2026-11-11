@@ -153,6 +153,9 @@ NO_ADMISSION = {
 # is neither a runner bug nor a task failure. The error itself goes into failure_detail.
 POLICY_FAILED = "Concurrency policy became unusable during the run; admission stopped"
 VERIFICATION_FAILED = "Agent finished, but the runner's verification tests did not pass"
+# The live API could not record the run's start; declared once so the capacity sweep can tell
+# a live-API problem from a model-server one.
+LIVE_API_UNAVAILABLE_AT_START = "Live API unavailable when starting the run"
 # Runs that fail on the agent's own decisions, not on the model server or the runner. Declared
 # once so a classifier matches exactly what the runner records; `{limit}` is the configured
 # limit, rendered as an integer.
@@ -473,7 +476,7 @@ class AgentRunner:
                     raise
                 # Recoverable: the closure is deferred and `resend` replays both changes.
                 raise RunFailure(
-                    "Live API unavailable when starting the run",
+                    LIVE_API_UNAVAILABLE_AT_START,
                     f"{type(error).__name__}: {error}",
                 ) from error
             if started_state != "running":

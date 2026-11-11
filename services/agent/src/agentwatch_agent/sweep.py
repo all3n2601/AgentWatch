@@ -4,16 +4,18 @@ Phases, in order: the configuration check, a warm-up batch (recorded, never anal
 ramp until a hard stop or the ceiling, the capacity decision, live confirmation at capacity
 and the injected condition at `injected_level(capacity)`. Each batch is one `AgentBatch` with
 its own `MonotonicClock`, shared by its runners and, when injected, its injection set. vLLM's
-state is read before and after every batch; after each batch the driver waits until vLLM is
-idle and then pauses `PACING_SECONDS`.
+state is read before and after every batch, each reading retried `STATE_READ_ATTEMPTS`
+times; after each batch the driver waits until vLLM is idle and then pauses `PACING_SECONDS`.
 
 A hard stop in the ramp ends the ramp only; the later phases still run when capacity is at
-least 1. A hard stop in the warm-up, a vLLM restart, unconfirmed injector cleanup, runs that
-never started, a run needing `resend` (which outranks the others), cancellation, or a server
-that is busy or unreadable outside the ramp stop the whole sweep. A stopped sweep still
-analyses the ramp batches it recorded (`analysis_scope: partial_ramp`). `sweep.json` is
-rewritten after every batch, so a stopped or crashed sweep keeps what it recorded. There is
-no resume.
+least 1. A hard stop in the warm-up, a vLLM restart, unconfirmed injector cleanup, an injector
+that failed to start, a live-API failure (runs never started, a run needing `resend`, which
+outranks the others, or refused records), cancellation, a server whose state cannot be read,
+or a server that is busy outside the ramp stop the whole sweep. Neither a live-API failure nor
+an unreadable server is a capacity hard stop: the batch it affects is excluded from level
+metrics, counted. A stopped sweep still analyses the ramp batches it recorded
+(`analysis_scope: partial_ramp`). `sweep.json` is rewritten after every batch, so a stopped or
+crashed sweep keeps what it recorded. There is no resume.
 """
 
 import http.client
@@ -27,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from agentwatch_injectors.base import BoundedInjector, InjectorCleanupError
+from agentwatch_injectors.base import BoundedInjector, InjectorCleanupError, InjectorError
 from agentwatch_injectors.injection_set import InjectionCancelled, InjectionSet
 
 from agentwatch_agent.batch import AgentBatch, BatchRun
@@ -38,19 +40,24 @@ from agentwatch_agent.replay import ReplayPlan, canonical_sha256
 from agentwatch_agent.runner import write_json_atomic
 from agentwatch_agent.session import CancellationState
 from agentwatch_agent.sweep_analysis import (
+    LIVE_API_FAILURE,
     batch_metrics_or_error,
     classify_run,
+    live_api_problem,
     ramp_analysis,
     server_changes,
 )
 from agentwatch_agent.sweep_labels import ramp_label_results
 from agentwatch_agent.sweep_protocol import (
+    IDLE_POLL_SECONDS,
     IDLE_WAIT_SECONDS,
     INJECTOR_BOUND_MARGIN_SECONDS,
     INJECTOR_RAMP_SECONDS,
     PACING_SECONDS,
     RAMP_LEVELS,
     SOURCE_COUNT,
+    STATE_READ_ATTEMPTS,
+    STATE_READ_RETRY_PAUSE_SECONDS,
     WARMUP_BATCH,
     Batch,
     VllmConfiguration,
@@ -61,7 +68,12 @@ from agentwatch_agent.sweep_protocol import (
     protocol_sha256,
     ramp_batches,
 )
-from agentwatch_agent.vllm_server import ServerState, ServerStateUnavailable, verify_configuration
+from agentwatch_agent.vllm_server import (
+    NOT_INSPECTED,
+    ServerState,
+    ServerStateUnavailable,
+    verify_configuration,
+)
 
 SWEEP_FILE = "sweep.json"
 SWEEP_PROCESS_SCOPE = (
@@ -69,18 +81,18 @@ SWEEP_PROCESS_SCOPE = (
     "(every runner thread, sampler and the driver), not one run"
 )
 SWEEP_METHOD = "capacity-sweep-v1"
-IDLE_POLL_SECONDS = 1.0  # between idle-wait readings; the wait itself is IDLE_WAIT_SECONDS
 MAX_ERROR_TEXT = 1000
 
-# Hard-stop codes.
+# Capacity hard-stop codes. A live-API problem is never one (owner decision 2026-11-11), nor
+# is a server whose state cannot be read (Ruling 18): both stop the sweep instead.
 INFRASTRUCTURE_FAILURE = "infrastructure_failure"
-DELIVERY_INCOMPLETE = "delivery_incomplete"
 SERVER_BUSY = "server_busy_after_idle_wait"
 VLLM_RESTART = "vllm_restart"
-SERVER_STATE_UNAVAILABLE = "server_state_unavailable"
 INJECTOR_CLEANUP_UNCONFIRMED = "injector_cleanup_unconfirmed"
-# The server's own state: these stop the sweep in every phase after the ramp.
-SERVER_EVENTS = (SERVER_BUSY, SERVER_STATE_UNAVAILABLE)
+# The server's own state: a busy server stops the sweep in every phase after the ramp.
+SERVER_EVENTS = (SERVER_BUSY,)
+# vLLM's /metrics could not be read within the declared retries: a stop cause, not a hard stop.
+SERVER_STATE_UNAVAILABLE = "server_state_unavailable"
 
 # Sweep states. Exit codes (mapped by the CLI): completed 0, refused_configuration 2,
 # stopped_resend_needed 3, every other state 1.
@@ -90,17 +102,29 @@ STOPPED_VLLM_RESTART = "stopped_vllm_restart"
 STOPPED_INJECTOR_CLEANUP = "stopped_injector_cleanup_unconfirmed"
 STOPPED_RUN_NOT_STARTED = "stopped_run_not_started"
 STOPPED_RESEND_NEEDED = "stopped_resend_needed"
+# Records or completion refused, or the API unreachable at a run's start.
+STOPPED_LIVE_API_FAILURE = "stopped_live_api_failure"
+STOPPED_INJECTOR_START_FAILED = "stopped_injector_start_failed"
 # A hard stop in the warm-up: the ramp never started, so nothing about capacity was measured.
 STOPPED_WARMUP_FAILED = "stopped_warmup_failed"
-# Outside the ramp a busy or unreadable server stops the sweep: the next batch would start on
-# a server whose state is unknown or still loaded.
+# A busy server outside the ramp, or an unreadable one anywhere, stops the sweep: the next
+# batch would start on a server whose state is unknown or still loaded.
 STOPPED_SERVER_BUSY = f"stopped_{SERVER_BUSY}"
 STOPPED_SERVER_STATE_UNAVAILABLE = f"stopped_{SERVER_STATE_UNAVAILABLE}"
 CANCELLED = "cancelled"
 FAILED = "failed"
-# Stops caused by the operator or the live API, not by the server under test: a batch they cut
-# short is excluded from level metrics (counted) instead of read as a slow or failing level.
-NOT_HARD_STOP_STATES = (CANCELLED, STOPPED_RUN_NOT_STARTED, STOPPED_RESEND_NEEDED)
+# Stops caused by the operator, the live API or an unreadable server, not by the server under
+# test: a batch they affect is excluded from level metrics (counted) instead of read as a slow
+# or failing level.
+NOT_HARD_STOP_STATES = (
+    CANCELLED,
+    STOPPED_RUN_NOT_STARTED,
+    STOPPED_RESEND_NEEDED,
+    STOPPED_LIVE_API_FAILURE,
+    STOPPED_SERVER_STATE_UNAVAILABLE,
+)
+# The exclusion cause of a batch with a `live_api_failure` run.
+LIVE_API_EXCLUSION = "live_api"
 
 # How the ramp ended, recorded separately from the sweep state.
 RAMP_HARD_STOP = "hard_stop"
@@ -118,10 +142,22 @@ ANALYSIS_FAILED = "analysis_error"  # the capacity_decision phase status when it
 
 PHASES = ("configuration_check", "warmup", "ramp", "capacity_decision", "live", "injected")
 RAMP_PHASES = ("warmup", "ramp")
+# Runs in these states were cut short by the sweep's own stop, so they are no hard stop.
+STOPPED_RUN_STATES = (CANCELLED, "not_started")
 
 BatchFactory = Callable[[Batch, Path, MonotonicClock], AgentBatch]
-LiveBatchFactory = Callable[[int, Path, MonotonicClock], AgentBatch]
 InjectorFactory = Callable[[MonotonicClock, float], list[BoundedInjector]]
+
+
+def analysis_scope(record: dict) -> str:
+    """What an analysis of this `sweep.json` record covers; offline uses the same mapping.
+
+    `none` when no batch ran, `full_ramp` when the ramp ended at a hard stop or the ceiling,
+    otherwise `partial_ramp` (the sweep stopped during the warm-up or ramp).
+    """
+    if record["phases"]["warmup"]["status"] == "not_run":
+        return NO_ANALYSIS
+    return FULL_RAMP if record.get("ramp_end") in (RAMP_CEILING, RAMP_HARD_STOP) else PARTIAL_RAMP
 
 
 class _SweepStop(Exception):
@@ -138,6 +174,8 @@ class _Executed:
     runs: list[BatchRun] = field(default_factory=list)
     not_started: RunNotStarted | None = None
     cleanup_error: InjectorCleanupError | None = None
+    # The flood failed to start (its own cleanup confirmed); the batch never ran.
+    start_error: InjectorError | None = None
     cancelled: bool = False
 
 
@@ -154,11 +192,12 @@ class CapacitySweep:
         output_dir: Path,
         run_timeout_seconds: float,
         make_batch: BatchFactory,
-        make_live_batch: LiveBatchFactory,
+        make_live_batch: BatchFactory,
         make_injectors: InjectorFactory,
         read_state: Callable[[], ServerState],
         models: Callable[[], dict],
         host: dict,
+        read_launch: Callable[[], dict] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         process_time: Callable[[], float] = time.process_time,
@@ -178,6 +217,8 @@ class CapacitySweep:
         self.make_injectors = make_injectors
         self.read_state = read_state
         self.models = models
+        # The vLLM container's launch arguments (`vllm_launch`); never raises.
+        self.read_launch = read_launch
         self.host = host
         self.sleep = sleep
         self.monotonic = monotonic
@@ -248,7 +289,11 @@ class CapacitySweep:
             "workload_sha256": canonical_sha256([plan.sha256() for plan in self.sources]),
             # Held-out test evidence: never for training, calibration or threshold tuning.
             "held_out": True,
-            "configuration": {"declared": document["configuration"], "verified": None},
+            "configuration": {
+                "declared": document["configuration"],
+                "verified": None,
+                "launch": None,
+            },
             "start_attempts": self.start_attempts,
             "host": self.host,
             "sources": [
@@ -262,7 +307,9 @@ class CapacitySweep:
                 for index, plan in enumerate(self.sources)
             ],
             "admission": {"status": "not_configured"},
-            "server": {"initial_state": None},
+            # Readings that failed within their declared retries: {reading, phase, level,
+            # batch, attempts, error}.
+            "server": {"initial_state": None, "read_failures": []},
             "phases": {phase: {"status": "not_run"} for phase in PHASES},
             "batches": [],
             "injection_logs": [],
@@ -321,7 +368,9 @@ class CapacitySweep:
     def _sweep(self) -> None:
         self._check_configuration()
         self._ramp()
-        decided = self._try_analysis(CAPACITY_DECISION, lambda: self._decide_capacity(FULL_RAMP))
+        decided = self._try_analysis(
+            CAPACITY_DECISION, lambda: self._decide_capacity(analysis_scope(self.record))
+        )
         decision = self.record["capacity_decision"] if decided else None
         capacity = decision["capacity"] if decision is not None else None
         if capacity is None or capacity < 1:
@@ -336,9 +385,7 @@ class CapacitySweep:
         self._begin("live", level=capacity)
         self._ensure_idle("live", capacity)
         for batch in live_batches(capacity):
-            self._post_ramp_batch(
-                batch, lambda path, clock: self.make_live_batch(capacity, path, clock)
-            )
+            self._post_ramp_batch(batch, self._factory(self.make_live_batch, batch))
         self._complete("live")
         level = injected_level(capacity)
         self._begin("injected", level=level)
@@ -350,7 +397,7 @@ class CapacitySweep:
     def _check_configuration(self) -> None:
         self._begin("configuration_check")
         try:
-            state = self.read_state()
+            state = self._read_state("configuration_check", "configuration_check", None, None)
         except ServerStateUnavailable as error:
             raise _SweepStop(STOPPED_SERVER_STATE_UNAVAILABLE, str(error)) from error
         try:
@@ -362,7 +409,9 @@ class CapacitySweep:
                 STOPPED_SERVER_STATE_UNAVAILABLE, f"vLLM /v1/models unavailable: {_text(error)}"
             ) from error
         self._start_time_seconds = state.start_time_seconds
-        verified = verify_configuration(self.configuration, models, state)
+        launch = self.read_launch() if self.read_launch is not None else NOT_INSPECTED
+        self.record["configuration"]["launch"] = launch
+        verified = verify_configuration(self.configuration, models, state, launch)
         self.record["server"]["initial_state"] = asdict(state)
         self.record["configuration"]["verified"] = verified
         problems = []
@@ -440,7 +489,9 @@ class CapacitySweep:
             self.record["analysis_note"] = (
                 f"ramp incomplete, {self.record['state']}: {self.record['stop_reason']}"
             )
-            self._try_analysis(CAPACITY_DECISION, lambda: self._decide_capacity(PARTIAL_RAMP))
+            self._try_analysis(
+                CAPACITY_DECISION, lambda: self._decide_capacity(analysis_scope(self.record))
+            )
         self._try_analysis(LABEL_VALIDATION, self._validate_labels)
         self._save()
 
@@ -487,7 +538,11 @@ class CapacitySweep:
     # Batches
 
     def _replay_factory(self, batch: Batch) -> Callable[[Path, MonotonicClock], AgentBatch]:
-        return lambda path, clock: self.make_batch(batch, path, clock)
+        return self._factory(self.make_batch, batch)
+
+    @staticmethod
+    def _factory(make: BatchFactory, batch: Batch) -> Callable[[Path, MonotonicClock], AgentBatch]:
+        return lambda path, clock: make(batch, path, clock)
 
     def _post_ramp_batch(
         self, batch: Batch, make: Callable[[Path, MonotonicClock], AgentBatch]
@@ -495,7 +550,7 @@ class CapacitySweep:
         """Run a live, injected or control batch; a server event stops the sweep.
 
         Infrastructure failures there are evidence of the condition, recorded on the batch;
-        `_run_batch` records the server events as hard stops.
+        `_run_batch` records a busy server as a hard stop.
         """
         events = self._run_batch(batch, make)
         for event in events:
@@ -506,9 +561,11 @@ class CapacitySweep:
         """Before a phase after the ramp: the server must be idle and paced, as between batches."""
         if self._idle_confirmed:
             return
-        result = self._wait_until_idle()
+        result = self._wait_until_idle(phase, level, None)
         if result is not None:
             code, detail = result
+            if code == SERVER_STATE_UNAVAILABLE:
+                raise _SweepStop(STOPPED_SERVER_STATE_UNAVAILABLE, detail)
             event = self._event(code, phase, level, None, detail)
             self.record["hard_stops"].append(event)
             raise _SweepStop(
@@ -520,12 +577,50 @@ class CapacitySweep:
     def _event(self, code: str, phase: str, level: int, sequence: int | None, detail: str) -> dict:
         return {"code": code, "phase": phase, "level": level, "batch": sequence, "detail": detail}
 
+    def _read_failed(
+        self,
+        reading: str,
+        phase: str,
+        level: int | None,
+        sequence: int | None,
+        attempts: int,
+        error: str,
+    ) -> None:
+        self.record["server"]["read_failures"].append(
+            {
+                "reading": reading,
+                "phase": phase,
+                "level": level,
+                "batch": sequence,
+                "attempts": attempts,
+                "error": error[:MAX_ERROR_TEXT],
+            }
+        )
+
+    def _read_state(
+        self, reading: str, phase: str, level: int | None, sequence: int | None
+    ) -> ServerState:
+        """One reading, tried `STATE_READ_ATTEMPTS` times with the declared pause between.
+
+        Raises the last `ServerStateUnavailable` once every attempt failed, recorded in
+        `server.read_failures`. Bounded: each read has the `/metrics` timeout.
+        """
+        for attempt in range(1, STATE_READ_ATTEMPTS + 1):
+            try:
+                return self.read_state()
+            except ServerStateUnavailable as error:
+                last = error
+                if attempt < STATE_READ_ATTEMPTS:
+                    self.sleep(STATE_READ_RETRY_PAUSE_SECONDS)
+        self._read_failed(reading, phase, level, sequence, STATE_READ_ATTEMPTS, str(last))
+        raise last
+
     def _record_hard_stops(self, batch: Batch, events: list[dict]) -> None:
         """Add a batch's hard-stop events to `hard_stops`, once.
 
         In the warm-up and ramp every event is a hard stop. After the ramp, a run's
         infrastructure failure is evidence of the condition (kept on the batch only); a busy
-        or unreadable server stops the sweep and is recorded.
+        server stops the sweep and is recorded.
         """
         self.record["hard_stops"].extend(
             event
@@ -555,19 +650,18 @@ class CapacitySweep:
         """Run one batch between server readings; return its hard-stop events.
 
         Raises `_SweepStop` for a condition that stops the sweep, and re-raises a runner's
-        unexpected error, each once the batch is recorded in `sweep.json`.
+        unexpected error, each once the batch is recorded in `sweep.json`. A reading that fails
+        every retry stops the sweep and is never a hard stop: before the batch, nothing ran;
+        after it, the batch is excluded from level metrics.
         """
         self._check_cancelled()
         try:
-            before = self.read_state()
+            before = self._read_state("before", batch.phase, batch.level, None)
         except ServerStateUnavailable as error:
-            # Idle must be confirmed again before anything else runs on this server.
-            self._idle_confirmed = False
-            event = self._event(
-                SERVER_STATE_UNAVAILABLE, batch.phase, batch.level, None, str(error)
-            )
-            self._record_hard_stops(batch, [event])
-            return [event]
+            raise _SweepStop(
+                STOPPED_SERVER_STATE_UNAVAILABLE,
+                f"vLLM state unreadable before a {batch.phase} batch at N = {batch.level}: {error}",
+            ) from error
         restart = self._restart_detail(before)
         if restart is not None:
             event = self._event(VLLM_RESTART, batch.phase, batch.level, None, restart)
@@ -599,7 +693,9 @@ class CapacitySweep:
             }
         self._idle_confirmed = False
         try:
-            after: ServerState | None = self.read_state()
+            after: ServerState | None = self._read_state(
+                "after", batch.phase, batch.level, sequence
+            )
             after_error = None
         except ServerStateUnavailable as error:
             after, after_error = None, str(error)
@@ -620,16 +716,27 @@ class CapacitySweep:
                 "stage": executed.not_started.stage,
                 "error": str(executed.not_started)[:MAX_ERROR_TEXT],
             }
-        causes = self._stop_causes(batch, sequence, executed, runs, after)
-        # Recorded before a runner error is re-raised, so unconfirmed cleanup is never lost.
-        for cause in causes:
-            if cause["event"] is not None:
-                self.record["hard_stops"].append(cause["event"])
+        causes = self._stop_causes(batch, sequence, executed, runs, after, after_error)
+        # Genuine infrastructure failures are hard stops whatever else stopped the sweep; the
+        # causes' own events (cleanup, restart) are recorded in every phase. Both are recorded
+        # before a runner error is re-raised, so unconfirmed cleanup is never lost, and before
+        # the idle wait, which can stop the sweep without returning.
+        events = self._run_events(batch, sequence, runs)
+        cause_events = [cause["event"] for cause in causes if cause["event"] is not None]
+        entry["hard_stop_events"] = [event["code"] for event in cause_events + events]
+        self.record["hard_stops"].extend(cause_events)
+        self._record_hard_stops(batch, events)
         self._save()
 
         errors = [run.error for run in executed.runs if run.error is not None]
-        # A batch cut short by a stop that is not a hard stop says nothing about its level.
-        excluding = [{"state": FAILED, "reason": _text(error)} for error in errors[:1]] + [
+        live_api = [run.get("index") for run in runs if run["classification"] == LIVE_API_FAILURE]
+        # A batch with a live-API failure, or cut short by a stop that is not a hard stop, says
+        # nothing about its level.
+        excluding = [{"state": FAILED, "reason": _text(error)} for error in errors[:1]]
+        if live_api:
+            reason = f"runs {live_api} failed on the live API"
+            excluding.append({"state": LIVE_API_EXCLUSION, "reason": reason})
+        excluding += [
             {"state": cause["state"], "reason": cause["reason"]}
             for cause in causes
             if cause["state"] in NOT_HARD_STOP_STATES
@@ -646,21 +753,12 @@ class CapacitySweep:
                 {"state": cause["state"], "reason": cause["reason"]} for cause in causes
             ]
             raise _SweepStop(chosen["state"], chosen["reason"])
-        events = self._run_events(batch, sequence, runs)
-        if after is None:
-            events.append(
-                self._event(
-                    SERVER_STATE_UNAVAILABLE, batch.phase, batch.level, sequence, after_error
-                )
-            )
-        # Recorded before the idle wait, which can stop the sweep (a restart or cancellation)
-        # without returning; the batch's own events must survive that.
-        entry["hard_stop_events"] = [event["code"] for event in events]
-        self._record_hard_stops(batch, events)
-        self._save()
-        idle = self._wait_until_idle()
+        idle = self._wait_until_idle(batch.phase, batch.level, sequence)
         if idle is not None:
             code, detail = idle
+            if code == SERVER_STATE_UNAVAILABLE:
+                # The batch was read before and after it, so it stays evidence.
+                raise _SweepStop(STOPPED_SERVER_STATE_UNAVAILABLE, detail)
             event = self._event(code, batch.phase, batch.level, sequence, detail)
             entry["hard_stop_events"].append(code)
             if code == VLLM_RESTART:
@@ -681,19 +779,16 @@ class CapacitySweep:
         agent_batch: AgentBatch,
         clock: MonotonicClock,
     ) -> dict:
-        # Live runs are free agents chosen by the live factory, not replays of a source.
-        replayed = batch.phase != "live"
         return {
             "sequence": sequence,
             "phase": batch.phase,
             "level": batch.level,
             "repeat": batch.repeat,
             "injected": batch.injected,
+            # Per run, the source it replays; a live run is a free agent on that source's task.
             "sources": [
                 {"index": index, "task_id": self.sources[index].task_id} for index in batch.sources
-            ]
-            if replayed
-            else None,
+            ],
             "folder": f"batches/{name}",
             "batch_id": agent_batch.batch_id,
             "clock_id": clock.clock_id,
@@ -734,6 +829,13 @@ class CapacitySweep:
             # Contention may still be running: the caller stops the sweep once this is saved.
             executed.cleanup_error = error
             entry["injection_error"] = str(error)[:MAX_ERROR_TEXT]
+        except InjectorError as error:
+            # Only a flood that failed to start (its cleanup confirmed, else the error above);
+            # anything else from inside the batch is unexpected.
+            if invoked:
+                raise
+            executed.start_error = error
+            entry["injection_error"] = str(error)[:MAX_ERROR_TEXT]
         finally:
             if invoked and not executed.runs:
                 # run() raised: the batch's own runs keep whatever evidence they have.
@@ -762,11 +864,12 @@ class CapacitySweep:
         executed: _Executed,
         runs: list[dict],
         after: ServerState | None,
+        after_error: str | None,
     ) -> list[dict]:
         """Every condition of this batch that stops the sweep, in rank order after resend.
 
         Each cause has the sweep `state`, a `reason` and the hard-stop `event` it records (or
-        None).
+        None). `after_error` is why the reading after the batch failed, or None.
         """
 
         def cause(state: str, reason: str, code: str | None = None) -> dict:
@@ -780,6 +883,9 @@ class CapacitySweep:
         restart = self._restart_detail(after) if after is not None else None
         if restart is not None:
             causes.append(cause(STOPPED_VLLM_RESTART, restart, VLLM_RESTART))
+        if executed.start_error is not None:
+            detail = f"the injector failed to start: {_text(executed.start_error)}"
+            causes.append(cause(STOPPED_INJECTOR_START_FAILED, detail))
         if (
             executed.cancelled
             or self.cancellation.event.is_set()
@@ -789,6 +895,9 @@ class CapacitySweep:
             causes.append(
                 cause(CANCELLED, request.reason if request else f"batch {sequence:02d} cancelled")
             )
+        if after_error is not None:
+            detail = f"vLLM state unreadable after batch {sequence:02d}: {after_error}"
+            causes.append(cause(STOPPED_SERVER_STATE_UNAVAILABLE, detail))
         not_started = [run["index"] for run in runs if run.get("state") == "not_started"]
         if executed.not_started is not None or not_started:
             stage = f" ({executed.not_started.stage})" if executed.not_started else ""
@@ -801,46 +910,76 @@ class CapacitySweep:
         resend = [run["index"] for run in runs if run.get("resend_needed") is True]
         if resend:
             detail = f"batch {sequence:02d}: runs {resend} need resend"
-            causes.append(cause(STOPPED_RESEND_NEEDED, detail, DELIVERY_INCOMPLETE))
+            causes.append(cause(STOPPED_RESEND_NEEDED, detail))
+        # Every other live-API failure: refused records or completion, an API unreachable at
+        # the run's start, or delivery incomplete without a pending resend.
+        other = {
+            run["index"]: live_api_problem(run)
+            for run in runs
+            if run["classification"] == LIVE_API_FAILURE
+            and run["index"] not in resend
+            and run["index"] not in not_started
+        }
+        if other:
+            problems = ", ".join(f"run {index}: {problem}" for index, problem in other.items())
+            detail = f"batch {sequence:02d}: live API failures ({problems})"
+            causes.append(cause(STOPPED_LIVE_API_FAILURE, detail))
         return causes
 
     def _run_events(self, batch: Batch, sequence: int, runs: list[dict]) -> list[dict]:
-        """One event per code for runs that failed for an infrastructure reason."""
-        by_code: dict[str, list[object]] = {}
-        for run in runs:
-            if run["classification"] != "infrastructure_failure":
-                continue
-            code = (
-                DELIVERY_INCOMPLETE
-                if run.get("delivery_complete") is not True
-                else (INFRASTRUCTURE_FAILURE)
-            )
-            by_code.setdefault(code, []).append(run.get("index"))
+        """The batch's genuine infrastructure failures as one event, or none.
+
+        A run cancelled or never started by the sweep's own stop, or one whose problem is the
+        live API (classified `live_api_failure`), is never a hard stop.
+        """
+        failed = [
+            run.get("index")
+            for run in runs
+            if run["classification"] == "infrastructure_failure"
+            and run.get("state") not in STOPPED_RUN_STATES
+        ]
+        if not failed:
+            return []
         return [
-            self._event(code, batch.phase, batch.level, sequence, f"runs {indexes}")
-            for code, indexes in by_code.items()
+            self._event(
+                INFRASTRUCTURE_FAILURE, batch.phase, batch.level, sequence, f"runs {failed}"
+            )
         ]
 
-    def _wait_until_idle(self) -> tuple[str, str] | None:
+    def _wait_until_idle(
+        self, phase: str, level: int, sequence: int | None
+    ) -> tuple[str, str] | None:
         """Poll until vLLM reports 0 running and 0 waiting, at most `IDLE_WAIT_SECONDS`.
 
-        Returns None when idle, else the hard-stop code and detail. An unreported count is
-        unknown, never idle.
+        Returns None when idle, else a code and detail: a restart, a server still busy at the
+        deadline, or `SERVER_STATE_UNAVAILABLE` when the last poll before the deadline could
+        not be read (recorded in `server.read_failures`). A failed read or an unreported count
+        is unknown, never idle, and is polled again until the deadline.
         """
         deadline = self.monotonic() + IDLE_WAIT_SECONDS
+        failed_polls = 0
         while True:
+            problem = None
             try:
                 state = self.read_state()
             except ServerStateUnavailable as error:
-                return SERVER_STATE_UNAVAILABLE, str(error)
-            restart = self._restart_detail(state)
-            if restart is not None:
-                return VLLM_RESTART, restart
-            if state.running is None or state.waiting is None:
-                return SERVER_STATE_UNAVAILABLE, "vLLM did not report running and waiting requests"
-            if state.running == 0 and state.waiting == 0:
-                return None
+                state, problem = None, str(error)
+            if state is not None:
+                restart = self._restart_detail(state)
+                if restart is not None:
+                    return VLLM_RESTART, restart
+                if state.running is None or state.waiting is None:
+                    problem = "vLLM did not report running and waiting requests"
+                elif state.running == 0 and state.waiting == 0:
+                    return None
+            failed_polls += problem is not None
             if self.monotonic() >= deadline:
+                if problem is not None:
+                    self._read_failed("idle_wait", phase, level, sequence, failed_polls, problem)
+                    return SERVER_STATE_UNAVAILABLE, (
+                        f"vLLM state unreadable at the end of the {IDLE_WAIT_SECONDS:g} s idle "
+                        f"wait: {problem}"
+                    )
                 return SERVER_BUSY, (
                     f"{state.running:g} running and {state.waiting:g} waiting requests after "
                     f"{IDLE_WAIT_SECONDS:g} s"

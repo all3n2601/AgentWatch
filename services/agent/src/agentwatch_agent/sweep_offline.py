@@ -5,6 +5,10 @@ batch's metrics from disk, then the level summaries, the capacity decision (excl
 batches the driver marked, as the sweep itself does) and label validation, and writes
 `DIR/analysis.json`. `sweep.json` is never modified, so the recorded and the offline analysis
 can be compared. Use it when a sweep failed before or during its analysis, or to re-check one.
+
+Every run folder is read under `DIR` only, never from the path a runner recorded, so a copied
+sweep is analysed from its own files. A record whose fields the analysis reads are malformed is
+refused with `SweepFolderError` (the command exits 2), never a traceback.
 """
 
 import json
@@ -13,14 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agentwatch_agent.runner import write_json_atomic
-from agentwatch_agent.sweep import (
-    FULL_RAMP,
-    PARTIAL_RAMP,
-    RAMP_CEILING,
-    RAMP_HARD_STOP,
-    SWEEP_FILE,
-    SWEEP_METHOD,
-)
+from agentwatch_agent.sweep import SWEEP_FILE, SWEEP_METHOD, analysis_scope
 from agentwatch_agent.sweep_analysis import _is_number, batch_metrics_or_error, ramp_analysis
 from agentwatch_agent.sweep_labels import ramp_label_results
 from agentwatch_agent.sweep_protocol import protocol_sha256
@@ -31,6 +28,41 @@ OFFLINE_METHOD = "capacity-sweep-offline-analysis-v1"
 
 class SweepFolderError(ValueError):
     """The folder holds no `sweep.json` that can be analysed."""
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _ramp_entry_problem(entry: dict) -> str | None:
+    """What is malformed in a ramp batch entry the analysis reads, or None."""
+    folder, runs = entry.get("folder"), entry.get("runs")
+    if not (
+        isinstance(folder, str)
+        and _is_int(entry.get("level"))
+        and _is_int(entry.get("sequence"))
+        and isinstance(runs, list)
+        and all(isinstance(run, dict) for run in runs)
+    ):
+        return "a ramp batch entry without its folder, level, sequence or runs"
+    # Folders are recorded relative to the sweep folder; never read outside it.
+    if Path(folder).is_absolute() or ".." in Path(folder).parts:
+        return f"a batch folder outside the sweep: {folder}"
+    # An unfinished batch has no `server` key; a finished one has its readings as an object.
+    if "server" in entry:
+        server = entry["server"]
+        if not isinstance(server, dict):
+            return f"batch {entry['sequence']}: server is not an object"
+        if not isinstance(server.get("changes"), (dict, type(None))):
+            return f"batch {entry['sequence']}: server changes are not an object"
+    exclusion = entry.get("metrics_exclusion")
+    if exclusion:
+        causes = exclusion.get("causes") if isinstance(exclusion, dict) else None
+        if not isinstance(causes, list) or not all(
+            isinstance(cause, dict) and isinstance(cause.get("state"), str) for cause in causes
+        ):
+            return f"batch {entry['sequence']}: metrics_exclusion has no list of causes"
+    return None
 
 
 def _read_record(sweep_dir: Path) -> dict:
@@ -54,25 +86,23 @@ def _read_record(sweep_dir: Path) -> dict:
     if not isinstance(batches, list) or not all(isinstance(entry, dict) for entry in batches):
         raise SweepFolderError(f"{path} has no list of batch entries")
     if not isinstance(hard_stops, list) or not all(
-        isinstance(event, dict) and isinstance(event.get("level"), int) for event in hard_stops
+        isinstance(event, dict)
+        and _is_int(event.get("level"))
+        and isinstance(event.get("code"), str)
+        and isinstance(event.get("phase"), str)
+        for event in hard_stops
     ):
-        raise SweepFolderError(f"{path} has no list of hard-stop events with levels")
+        raise SweepFolderError(f"{path} has no list of hard-stop events with levels and codes")
+    phases = record.get("phases")
+    warmup = phases.get("warmup") if isinstance(phases, dict) else None
+    if not isinstance(warmup, dict) or not isinstance(warmup.get("status"), str):
+        raise SweepFolderError(f"{path} records no warm-up phase status")
     for entry in batches:
         if entry.get("phase") != "ramp":
             continue
-        folder, level, sequence = entry.get("folder"), entry.get("level"), entry.get("sequence")
-        runs = entry.get("runs")
-        if not (
-            isinstance(folder, str)
-            and isinstance(level, int)
-            and isinstance(sequence, int)
-            and isinstance(runs, list)
-            and all(isinstance(run, dict) for run in runs)
-        ):
-            raise SweepFolderError(f"{path} has a ramp batch entry without its folder or level")
-        # Folders are recorded relative to the sweep folder; never read outside it.
-        if Path(folder).is_absolute() or ".." in Path(folder).parts:
-            raise SweepFolderError(f"{path} names a batch folder outside the sweep: {folder}")
+        problem = _ramp_entry_problem(entry)
+        if problem is not None:
+            raise SweepFolderError(f"{path} has {problem}")
     return record
 
 
@@ -85,10 +115,15 @@ def analyse_sweep_folder(sweep_dir: Path) -> dict:
         record["batches"],
         record["hard_stops"],
         run_timeout_seconds,
-        lambda entry: batch_metrics_or_error(sweep_dir / entry["folder"], run_timeout_seconds),
+        lambda entry: batch_metrics_or_error(
+            sweep_dir / entry["folder"], run_timeout_seconds, confine_to_batch=True
+        ),
     )
     labels = ramp_label_results(
-        sweep_dir, record["batches"], protocol["configuration"]["max_num_seqs"]
+        sweep_dir,
+        record["batches"],
+        protocol["configuration"]["max_num_seqs"],
+        confine_to_batch=True,
     )
     ramp_end = record.get("ramp_end")
     document = {
@@ -101,7 +136,8 @@ def analyse_sweep_folder(sweep_dir: Path) -> dict:
         "protocol_sha256": record.get("protocol_sha256"),
         # False when sweep.json's protocol was edited after it was recorded.
         "protocol_sha256_matches": protocol_sha256(protocol) == record.get("protocol_sha256"),
-        "analysis_scope": FULL_RAMP if ramp_end in (RAMP_CEILING, RAMP_HARD_STOP) else PARTIAL_RAMP,
+        # The driver's own mapping: `none` for a sweep that never ran a batch.
+        "analysis_scope": analysis_scope(record),
         **analysis,
         **labels,
     }

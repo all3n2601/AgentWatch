@@ -7,6 +7,7 @@ injector is the stub flood from `test_sweep`. Everything recorded here is synthe
 """
 
 import functools
+import itertools
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,11 @@ from agentwatch_agent.sweep import CapacitySweep
 from agentwatch_agent.sweep_offline import analyse_sweep_folder
 from agentwatch_agent.sweep_protocol import CONFIGURATIONS, declared_batches
 from agentwatch_agent.tasks import load_task
-from agentwatch_agent.vllm_server import SERVED_MODEL_NAME, read_server_state
+from agentwatch_agent.vllm_server import (
+    SERVED_MODEL_NAME,
+    ServerStateUnavailable,
+    read_server_state,
+)
 from test_runner_vllm import SOLVE_MEAN_VLLM
 from test_sweep import FakeInjector
 from test_vllm_server import exposition, models
@@ -71,6 +76,18 @@ def settings(server, fake, output_dir: Path, traces: Path, clock=None) -> dict:
     }
 
 
+def flaky_once(read, failing_read=5):
+    """`read`, except that its `failing_read`-th call fails as an unreachable /metrics would."""
+    calls = itertools.count(1)
+
+    def reading():
+        if next(calls) == failing_read:
+            raise ServerStateUnavailable("fixture: one failed /metrics read")
+        return read()
+
+    return reading
+
+
 def record_source(server, tmp_path, task, replies) -> Path:
     traces = tmp_path / "source-traces.jsonl"
     source = tmp_path / "sources" / task.name
@@ -109,10 +126,10 @@ def test_a_sweep_over_real_batches_resolves_and_analyses_every_run(
                 )
             return AgentBatch(runners, None, path)
 
-        def make_live_batch(count, path, clock):
+        def make_live_batch(batch, path, clock):
             runners = []
-            for index in range(1, count + 1):
-                task = tasks[(index - 1) % len(tasks)]
+            for index, source in enumerate(batch.sources, 1):
+                task = tasks[source]
                 folder = path / "runs" / f"{index:02d}-{task.name}"
                 runners.append(
                     AgentRunner(task=task, **settings(server, fake, folder, traces, clock))
@@ -127,7 +144,7 @@ def test_a_sweep_over_real_batches_resolves_and_analyses_every_run(
             make_batch=make_batch,
             make_live_batch=make_live_batch,
             make_injectors=lambda clock, bound: [FakeInjector(clock, bound)],
-            read_state=functools.partial(read_server_state, fake.url + "/metrics"),
+            read_state=flaky_once(functools.partial(read_server_state, fake.url + "/metrics")),
             # The fake serves its own model name; the configuration check reads the declared one.
             models=models,
             host={"gpu": "fake"},
@@ -139,11 +156,13 @@ def test_a_sweep_over_real_batches_resolves_and_analyses_every_run(
     ramp = [entry for entry in record["batches"] if entry["phase"] == "ramp"]
     assert [entry["level"] for entry in ramp] == [1] * declared_batches(1) + [2] * 3
     for entry in ramp:
-        # Run folders resolve as recorded: absolute, from the real runners' output_dir.
-        assert all(Path(run["output_dir"]).is_absolute() for run in entry["runs"])
+        # The real runners record absolute folders: the batch's own runs/ folders, which the
+        # analysis reads first.
+        batch_runs = (capacity_sweep.output_dir / entry["folder"] / "runs").resolve()
+        assert all(Path(run["output_dir"]).parent == batch_runs for run in entry["runs"])
         metrics = entry["metrics"]
         assert metrics["status"] == "readable"
-        assert {folder["found_by"] for folder in metrics["run_folders"]} == {"recorded"}
+        assert {folder["found_by"] for folder in metrics["run_folders"]} == {"batch_relative"}
         assert metrics["run_durations_missing"] == 0 and metrics["runs_without_evidence"] == 0
         assert metrics["passed"] == metrics["runs"]
         assert entry["sweep_process"]["wall_seconds"] > 0
@@ -163,6 +182,13 @@ def test_a_sweep_over_real_batches_resolves_and_analyses_every_run(
     assert decision["result"] in ("measured", "at_least_ceiling")
     assert decision["capacity"] >= 1
     assert record["phases"]["live"]["status"] == "completed"
+    # One failed /metrics read was retried within the declared bound, never a hard stop.
+    assert record["hard_stops"] == [] and record["server"]["read_failures"] == []
+    # Live batches run the tasks of their declared sources, recorded on each batch.
+    live = [entry for entry in record["batches"] if entry["phase"] == "live"]
+    for entry in live:
+        tasks_run = [run["task_id"] for run in entry["runs"]]
+        assert tasks_run == [source["task_id"] for source in entry["sources"]]
     assert record["phases"]["injected"]["status"] == "completed"
     labels = record["label_validation"]
     assert labels["runs_without_evidence"] == 0 and set(labels["levels"]) == {2}
