@@ -48,7 +48,7 @@ Three PRs, merged in this order:
    the injected condition.
 3. **Later, a new branch from `main`** — score `rules-v1`, the M2 inference rule and the
    learned candidates on the same frozen evidence. Rohit's #61 (calibration and abstention,
-   `746ec26`) and #62 (`mixed-scoring-v1`, `64c4e2c`) merged on 2026-11-11; PR 3 still waits
+   `746ec26`) and #62 (`mixed-scoring-v1`, `64c4e2c`) merged on 2026-11-10 (00:48 and 00:59 UTC on 2026-11-11); PR 3 still waits
    for the M2 PR 4 inference features and rule, and records the versions it scores with.
 
 Out of scope: policy-limit evaluation (O06; the sweep runs `--no-policy`), changing
@@ -117,7 +117,8 @@ instead of two copies.
 - `PrefillFloodInjector(BoundedInjector)`, method `prefill-flood-openai-chat-v1`,
   `resource_class = "inference"`, vLLM's `/v1/chat/completions` only.
 - One child process runs `concurrency` workers. Each loops: a non-streaming chat request
-  whose user message is a unique nonce (worker index and sequence number) followed by fixed,
+  whose user message is a unique nonce, `request {worker}-{sequence}-{run_token}` (a random
+  token per injector run), followed by fixed,
   non-sensitive filler text sized to `prompt_tokens`, with `max_tokens=1`. Almost all the
   work is prefill and KV-cache allocation. The nonce comes first so the prefix cache cannot
   reuse an earlier request's prefill.
@@ -133,7 +134,9 @@ instead of two copies.
 - Start succeeds once every worker has sent its first request; an unreachable server fails
   the start and halts what it started. A non-200 or unusable reply is a `PrefillRejected`
   failure followed by the existing 0.5 s backoff.
-- `injectors_active` for this method: at least one completed request, no failed request.
+- `injectors_active` for this method (at least one completed request, no failed request) is
+  implemented in PR 2 (capacity-sweep plan Task 1); until then `experiment._sustained` does
+  not accept kind "prefill".
 - ADR 0011 records why it is the GPU held-out method, how it differs from competing chat
   (prefill-heavy versus decode-heavy), the prefix-cache defence, and that formal hold-out
   needs `split-v3`.

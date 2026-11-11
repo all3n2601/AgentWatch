@@ -429,6 +429,14 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   median instead of 0.25 s), so it is not retrieval-exclusive. Open until review and merge.
   2026-10-27 (M2): the inference injector also loads a loopback vLLM server
   (`competing-openai-chat-v1`, same bounds); one real contended replay confirmed its cleanup.
+  2026-11-10 (branch `feature/prefill-flood-injector`, not yet merged,
+  [ADR 0011](adr/0011-prefill-flood-held-out-injection-method.md)): `PrefillFloodInjector`
+  (`prefill-flood-openai-chat-v1`, long prompts with `max_tokens=1`) is added as a candidate
+  held-out GPU method (92 injector tests). Against real vLLM v0.32, two 20 s runs at
+  concurrency 2 completed 104 and 104 requests with 0 failures and zero prefix-cache hits
+  with the per-request nonce digits first (1,680 and 1,648 hits per ~215,000 queried tokens
+  when the run token came first). A formal hold-out needs `split-v3`, accepted by Rohit and
+  Akshay. Open until review and merge.
 
 **Exit test:** Known isolated workloads exercise each resource and a clean control. Measurements
 and attribution identify the affected class. Real GPU validation uses real inference hardware;
