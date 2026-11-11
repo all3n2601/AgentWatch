@@ -402,6 +402,25 @@ def test_batch_metrics_counts_throughput_durations_spans_and_device(tmp_path):
     assert metrics["device"]["runs_readable"] == 2
 
 
+def test_runner_time_outside_vllm_is_reported_per_level_from_each_calls_timing(tmp_path):
+    batch_dir = tmp_path / "batch"
+    # The producer derives it: client wall 2.0 s minus the span's e2e.
+    calls = [vllm_call("measured", e2e_seconds=1.5), vllm_call("measured", e2e_seconds=1.0)]
+    calls.append(vllm_call("unavailable"))
+    assert [c["timing"]["client_outside_server_seconds"] for c in calls] == [0.5, 1.0, None]
+    write_run(batch_dir / "runs" / "00-a", 5.0, evidence_extra={"model_calls": calls})
+    write_batch(batch_dir, [run_entry(output_dir=recorded(batch_dir, "00-a"))])
+    outside = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)["client_outside_server_seconds"]
+    assert (outside["count"], outside["unavailable"], outside["values"]) == (2, 1, [0.5, 1.0])
+    assert outside["mean"] == 0.75 and outside["max"] == 1.0
+    # Never computed here across clocks: the runner's own field, labelled as an estimate.
+    assert "estimate" in outside["method"]
+    pooled = level_summary([batch_metrics(batch_dir, RUN_LIMIT_SECONDS)] * 2)
+    assert pooled["client_outside_server_seconds"]["count"] == 4
+    assert pooled["client_outside_server_seconds"]["unavailable"] == 2
+    assert pooled["client_outside_server_seconds"]["p90"] == 1.0
+
+
 def test_a_run_folder_is_found_after_the_sweep_is_copied(tmp_path):
     batch_dir = tmp_path / "copied"
     write_run(batch_dir / "runs" / "00-a", 5.0)
@@ -523,6 +542,7 @@ def readable_batch(throughput, durations, clock_mean=None, server=None):
                 )
             },
         },
+        "client_outside_server_seconds": {"count": 0, "unavailable": 2, "values": []},
         "device": {"runs_readable": 1, "runs_unreadable": [], "metrics": _all_metrics(overrides)},
     } | ({"server": server} if server else {})
 

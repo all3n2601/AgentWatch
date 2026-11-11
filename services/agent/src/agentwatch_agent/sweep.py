@@ -34,7 +34,7 @@ from agentwatch_agent.batch import AgentBatch, BatchRun
 from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.experiment import injection_active
-from agentwatch_agent.replay import ReplayPlan
+from agentwatch_agent.replay import ReplayPlan, canonical_sha256
 from agentwatch_agent.runner import write_json_atomic
 from agentwatch_agent.session import CancellationState
 from agentwatch_agent.sweep_analysis import (
@@ -64,6 +64,10 @@ from agentwatch_agent.sweep_protocol import (
 from agentwatch_agent.vllm_server import ServerState, ServerStateUnavailable, verify_configuration
 
 SWEEP_FILE = "sweep.json"
+SWEEP_PROCESS_SCOPE = (
+    "time.process_time and time.monotonic around the batch's run: the whole sweep process "
+    "(every runner thread, sampler and the driver), not one run"
+)
 SWEEP_METHOD = "capacity-sweep-v1"
 IDLE_POLL_SECONDS = 1.0  # between idle-wait readings; the wait itself is IDLE_WAIT_SECONDS
 MAX_ERROR_TEXT = 1000
@@ -157,7 +161,9 @@ class CapacitySweep:
         host: dict,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
+        process_time: Callable[[], float] = time.process_time,
         start_attempts: list[dict] | None = None,
+        code_revision: dict | None = None,
     ):
         if len(sources) != SOURCE_COUNT:
             raise ValueError(f"A sweep replays exactly {SOURCE_COUNT} sources")
@@ -175,7 +181,9 @@ class CapacitySweep:
         self.host = host
         self.sleep = sleep
         self.monotonic = monotonic
+        self.process_time = process_time
         self.start_attempts = start_attempts
+        self.code_revision = code_revision
         self.cancellation = CancellationState()
         self.record: dict = {}
         self._current: AgentBatch | None = None
@@ -235,6 +243,9 @@ class CapacitySweep:
             "finished_at": None,
             "protocol": document,
             "protocol_sha256": protocol_sha256(document),
+            # Recorded, not hashed: which code ran, and the exact replay plans it ran.
+            "code_revision": self.code_revision or {"status": "not_recorded"},
+            "workload_sha256": canonical_sha256([plan.sha256() for plan in self.sources]),
             # Held-out test evidence: never for training, calibration or threshold tuning.
             "held_out": True,
             "configuration": {"declared": document["configuration"], "verified": None},
@@ -577,7 +588,15 @@ class CapacitySweep:
         entry = self._batch_entry(batch, sequence, name, agent_batch, clock)
         self.record["batches"].append(entry)
         self._save()
-        executed = self._execute(agent_batch, batch, clock, entry, sequence)
+        cpu_before, wall_before = self.process_time(), self.monotonic()
+        try:
+            executed = self._execute(agent_batch, batch, clock, entry, sequence)
+        finally:
+            entry["sweep_process"] = {
+                "cpu_seconds": self.process_time() - cpu_before,
+                "wall_seconds": self.monotonic() - wall_before,
+                "scope": SWEEP_PROCESS_SCOPE,
+            }
         self._idle_confirmed = False
         try:
             after: ServerState | None = self.read_state()

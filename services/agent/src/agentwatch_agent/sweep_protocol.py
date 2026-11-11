@@ -7,11 +7,21 @@ only compared under identical declared settings.
 
 from dataclasses import dataclass
 
+from agentwatch_agent.config import DEFAULT_SAMPLING_INTERVAL_SECONDS
+from agentwatch_agent.experiment import PREFILL_PROMPT_TOKENS_TOLERANCE
 from agentwatch_agent.replay import canonical_sha256
 
 PROTOCOL_VERSION = "natural-overload-sweep-v1"
 
 VLLM_VERSION = "v0.32.0"
+# The Compose service's pinned image (deploy/compose/compose.yaml); a test keeps them equal.
+VLLM_IMAGE = (
+    "vllm/vllm-openai@sha256:6ee133356d49ed24cee03dd0cda3d3980279a11c107ce3e752c89e76540f41c9"
+)
+# Every sweep runner samples resources at this interval; the CLI passes it explicitly.
+SAMPLING_INTERVAL_SECONDS = DEFAULT_SAMPLING_INTERVAL_SECONDS
+# How every p90 in the analysis is taken (`sweep_analysis.p90`).
+P90_RULE = "sorted element at round(0.9 * (n - 1))"
 MODEL_ID = "Qwen/Qwen3-1.7B"
 MODEL_REVISION = "70d244cc86cc"
 MAX_MODEL_LEN_TOKENS = 4096
@@ -130,6 +140,7 @@ def protocol(configuration: VllmConfiguration, run_timeout_seconds: float) -> di
     return {
         "version": PROTOCOL_VERSION,
         "vllm_version": VLLM_VERSION,
+        "vllm_image": VLLM_IMAGE,
         "model": {"id": MODEL_ID, "revision": MODEL_REVISION},
         "configuration": {
             "name": configuration.name,
@@ -139,6 +150,8 @@ def protocol(configuration: VllmConfiguration, run_timeout_seconds: float) -> di
             "enable_prefix_caching": configuration.enable_prefix_caching,
         },
         "run_timeout_seconds": run_timeout_seconds,
+        "sampling_interval_seconds": SAMPLING_INTERVAL_SECONDS,
+        "p90_rule": P90_RULE,
         "ramp_levels": list(RAMP_LEVELS),
         "warmup_batches": WARMUP_BATCHES,
         "batches_per_level": BATCHES_PER_LEVEL,
@@ -162,6 +175,8 @@ def protocol(configuration: VllmConfiguration, run_timeout_seconds: float) -> di
             "prompt_tokens": INJECTOR_PROMPT_TOKENS,
             "ramp_seconds": INJECTOR_RAMP_SECONDS,
             "bound_seconds": run_timeout_seconds + INJECTOR_BOUND_MARGIN_SECONDS,
+            # A flood counts as active only when its median prompt is this close to the target.
+            "prompt_tokens_tolerance": PREFILL_PROMPT_TOKENS_TOLERANCE,
         },
         "label_rule": {
             "contended_when": "duration - baseline_mean > max(floor_seconds, "

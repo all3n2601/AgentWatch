@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from agentwatch_agent import sweep, sweep_analysis
 from agentwatch_agent.errors import RunNotStarted
-from agentwatch_agent.replay import ReplayPlan
+from agentwatch_agent.replay import ReplayPlan, canonical_sha256
 from agentwatch_agent.runner import MODEL_CALL_LIMIT_REASON, VERIFICATION_FAILED
 from agentwatch_agent.sweep import SWEEP_FILE, CapacitySweep
 from agentwatch_agent.sweep_protocol import (
@@ -226,6 +226,7 @@ class Harness:
         self.on_make_batch = {}  # batch name -> called inside make_batch
         self.on_make_injectors = None
         self.models = lambda: {"data": [{"id": SERVED, "root": MODEL_ID, "max_model_len": 4096}]}
+        self.cpu_seconds = 0.0  # the sweep process's CPU time, advanced by hooks
         self.output_dir = tmp_path / "sweep" if output_dir is None else output_dir
         self.sweep_file = self.output_dir / SWEEP_FILE
         self.sweep = CapacitySweep(
@@ -241,6 +242,8 @@ class Harness:
             sleep=self.time.sleep,
             monotonic=self.time.monotonic,
             host={"gpu": "fixture"},
+            code_revision={"status": "recorded", "commit": "fixture", "dirty": False},
+            process_time=lambda: self.cpu_seconds,
             # The shape `cli.parse_start_attempts` produces.
             **(
                 {"start_attempts": [{"gpu_memory_utilization": 0.6, "outcome": "started"}]}
@@ -367,6 +370,11 @@ def test_phases_run_in_declared_order(tmp_path):
     assert first_ramp["server"]["before"]["counters"]["vllm:request_success_total"] == 1.0
     assert record["held_out"] is True
     assert record["protocol_sha256"] == sweep.protocol_sha256(record["protocol"])
+    # Recorded, not hashed: the code and the workload the protocol ran.
+    assert record["code_revision"] == {"status": "recorded", "commit": "fixture", "dirty": False}
+    assert record["workload_sha256"] == canonical_sha256(
+        [plan(task).sha256() for task in SOURCE_TASKS]
+    )
     assert record["start_attempts"] == [{"gpu_memory_utilization": 0.6, "outcome": "started"}]
     assert record["sources"][1]["plan_sha256"] == plan("fix-window-count").sha256()
     assert record["admission"] == {"status": "not_configured"}
@@ -578,6 +586,23 @@ def test_pacing_pauses_ten_seconds_after_the_server_is_idle(tmp_path):
     ]
     # Every later batch follows an idle server and a 10 s pause.
     assert harness.events[second + 1 : third] == [("sleep", PACING_SECONDS)]
+
+
+def test_each_batch_records_the_sweep_processs_cpu_and_wall_time(tmp_path):
+    harness = Harness(tmp_path)
+
+    def busy(_stub, _entries, _wall):
+        harness.cpu_seconds += 1.5
+        harness.time.now += 40.0
+
+    harness.hooks["ramp-n2-r0"] = busy
+    record = harness.run()
+    entry = next(entry for entry in record["batches"] if entry["sequence"] == 7)
+    assert entry["sweep_process"]["cpu_seconds"] == 1.5
+    assert entry["sweep_process"]["wall_seconds"] == 40.0
+    assert "every runner thread" in entry["sweep_process"]["scope"]
+    other = record["batches"][1]["sweep_process"]
+    assert (other["cpu_seconds"], other["wall_seconds"]) == (0.0, 0.0)
 
 
 def test_sweep_json_is_rewritten_after_every_batch(tmp_path):

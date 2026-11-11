@@ -35,6 +35,7 @@ import json
 import os
 import platform
 import signal
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -115,6 +116,7 @@ from agentwatch_agent.sweep_protocol import (
     CONFIGURATIONS,
     INJECTOR_CONCURRENCY,
     INJECTOR_PROMPT_TOKENS,
+    SAMPLING_INTERVAL_SECONDS,
     SOURCE_COUNT,
     Batch,
     VllmConfiguration,
@@ -136,6 +138,7 @@ DEFAULT_VLLM_TRACES_FILE = ".data/otel/vllm-traces.jsonl"
 DEFAULT_SWEEP_DIR = ".data/capacity-sweeps"
 START_ATTEMPT_STARTED = "started"
 LIVE_TIMEOUT_SECONDS = 10
+GIT_TIMEOUT_SECONDS = 5
 
 
 def http_url(value: str) -> str:
@@ -962,6 +965,29 @@ def host_record() -> dict:
     }
 
 
+def code_revision() -> dict:
+    """The git commit of this code and whether tracked files had local changes, or why not."""
+    here = Path(__file__).resolve().parent
+
+    def git(*arguments: str) -> str:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=here,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=True,
+        ).stdout
+
+    try:
+        commit = git("rev-parse", "HEAD").strip()
+        changes = git("status", "--porcelain", "--untracked-files=no")
+    # CalledProcessError and TimeoutExpired are SubprocessErrors; a missing git is an OSError.
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"status": "unavailable", "reason": f"{type(error).__name__}: {error}"[:500]}
+    return {"status": "recorded", "commit": commit, "dirty": bool(changes.strip())}
+
+
 def capacity_sweep_command(args: argparse.Namespace) -> int:
     configuration = CONFIGURATIONS[args.configuration]
     try:
@@ -990,6 +1016,7 @@ def capacity_sweep_command(args: argparse.Namespace) -> int:
             "limits": limits,
             "clock": clock,
             "open_gpu": NvmlDevice.open,
+            "sampling_interval_seconds": SAMPLING_INTERVAL_SECONDS,
             **evidence,
         }
 
@@ -1043,6 +1070,7 @@ def capacity_sweep_command(args: argparse.Namespace) -> int:
         models=functools.partial(vllm_models, model.endpoint),
         host=host_record(),
         start_attempts=start_attempts,
+        code_revision=code_revision(),
     )
 
     def handle_signal(number: int, _frame: FrameType | None) -> None:

@@ -58,6 +58,13 @@ SERVER_COUNTERS = {
     "request_successes": "vllm:request_success_total",
 }
 RESET = "reset"
+# Each model call's runner time outside vLLM's request span, as the runner records it.
+OUTSIDE_SERVER_FIELD = "client_outside_server_seconds"
+OUTSIDE_SERVER_METHOD = (
+    "the runner's client_outside_server_seconds per model call (model.joined_vllm_timing): "
+    "runner client wall time minus the vLLM span's e2e, two durations on two clocks, so an "
+    "estimate; calls without a measured span are counted unavailable"
+)
 
 
 def classify_run(entry: dict) -> str:
@@ -163,6 +170,33 @@ def _span_values(evidence: dict) -> tuple[dict[str, int], dict[str, list[float]]
             if _is_number(value):
                 values[field].append(float(value))
     return counts, values
+
+
+def _outside_server_values(evidence: dict) -> tuple[list[float], int]:
+    """Each model call's recorded time outside the server, and how many calls have none."""
+    values: list[float] = []
+    unavailable = 0
+    for call in evidence.get("model_calls") or []:
+        timing = call.get("timing") if isinstance(call, dict) else None
+        value = timing.get(OUTSIDE_SERVER_FIELD) if isinstance(timing, dict) else None
+        if _is_number(value) and math.isfinite(value):
+            values.append(float(value))
+        else:
+            unavailable += 1
+    return values, unavailable
+
+
+def _outside_server_stats(values: list[float], unavailable: int) -> dict:
+    return {
+        "method": OUTSIDE_SERVER_METHOD,
+        "count": len(values),
+        "unavailable": unavailable,
+        "mean": statistics.fmean(values) if values else None,
+        "p50": _p50(values),
+        "p90": p90(values),
+        "max": max(values) if values else None,
+        "values": values,
+    }
 
 
 def _reply_matches(evidence: dict) -> tuple[int, int]:
@@ -275,6 +309,8 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
     # Runs whose agent-evidence.json is missing or unreadable: their spans and replies are
     # absent from the counts below, never zero.
     without_evidence = 0
+    outside: list[float] = []
+    outside_unavailable = 0
     device_runs: list[dict] = []
     run_dirs: list[dict] = []
     for entry in entries:
@@ -306,6 +342,9 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
             span_counts[status] += count
         for field in SPAN_FIELDS:
             span_values[field].extend(values[field])
+        run_outside, run_unavailable = _outside_server_values(evidence)
+        outside.extend(run_outside)
+        outside_unavailable += run_unavailable
         run_matched, run_replies = _reply_matches(evidence)
         matched += run_matched
         replies += run_replies
@@ -326,6 +365,7 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
         "reply_matches": {"matched": matched, "compared": replies},
         "runs_without_evidence": without_evidence,
         "spans": _span_stats(span_counts, span_values),
+        OUTSIDE_SERVER_FIELD: _outside_server_stats(outside, outside_unavailable),
         "device": _combine_device(device_runs),
         "run_folders": run_dirs,
     }
@@ -454,6 +494,10 @@ def level_summary(batches: list[dict], baseline_sm_clock_mhz: float | None = Non
             "max": max(durations) if durations else None,
         },
         "spans": _span_stats(span_counts, pooled),
+        OUTSIDE_SERVER_FIELD: _outside_server_stats(
+            [value for batch in readable for value in batch[OUTSIDE_SERVER_FIELD]["values"]],
+            sum(batch[OUTSIDE_SERVER_FIELD]["unavailable"] for batch in readable),
+        ),
         "device": device,
         "server_changes": _sum_server_changes(
             [batch["server"] for batch in readable if "server" in batch]

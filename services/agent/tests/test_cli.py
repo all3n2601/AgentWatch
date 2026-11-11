@@ -18,7 +18,12 @@ from agent_test_doubles import (
 )
 from agentwatch_agent import cli
 from agentwatch_agent.config import RunConfiguration, RunLimits
-from agentwatch_agent.sweep_protocol import INJECTOR_CONCURRENCY, INJECTOR_PROMPT_TOKENS, Batch
+from agentwatch_agent.sweep_protocol import (
+    INJECTOR_CONCURRENCY,
+    INJECTOR_PROMPT_TOKENS,
+    SAMPLING_INTERVAL_SECONDS,
+    Batch,
+)
 from agentwatch_worker.nvml import GpuIdentity, NvmlUnavailable
 
 
@@ -504,6 +509,7 @@ def sweep_stubs(monkeypatch):
     )
     monkeypatch.setattr(cli, "CapacitySweep", StubSweep)
     monkeypatch.setattr(cli, "host_record", lambda: {"gpu": {"status": "unavailable"}})
+    monkeypatch.setattr(cli, "code_revision", lambda: {"status": "recorded", "commit": "c0ffee"})
     return StubSweep
 
 
@@ -697,6 +703,11 @@ def test_replay_batches_use_each_runs_source_one_clock_and_no_policy(tmp_path, s
     ]
     assert all(runner.output_dir.parent == tmp_path / "batch" / "runs" for runner in built.runners)
     assert all(runner.clock is clock and runner.admission is None for runner in built.runners)
+    # The protocol's declared sampling interval, passed explicitly.
+    assert {runner.sampling_interval_seconds for runner in built.runners} == {
+        SAMPLING_INTERVAL_SECONDS
+    }
+    assert kwargs["code_revision"] == {"status": "recorded", "commit": "c0ffee"}
     models = [runner.model for runner in built.runners]
     assert len({id(model) for model in models}) == 3  # one model client per run
 
@@ -781,3 +792,23 @@ def test_a_completed_sweep_whose_analysis_failed_does_not_exit_0(tmp_path, sweep
     }
     assert cli.main(sweep_argv(tmp_path)) == cli.EXIT_FAILED
     assert "sweep-analyse" in capsys.readouterr().err
+
+
+def test_code_revision_records_the_commit_and_local_changes(monkeypatch):
+    outputs = {"rev-parse": "abc123\n", "status": " M services/agent/x.py\n"}
+
+    def run(command, **kwargs):
+        assert kwargs["timeout"] > 0 and kwargs["check"] is True
+        return SimpleNamespace(stdout=outputs[command[1]])
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    assert cli.code_revision() == {"status": "recorded", "commit": "abc123", "dirty": True}
+
+
+def test_code_revision_without_git_is_unavailable(monkeypatch):
+    def run(command, **_kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    revision = cli.code_revision()
+    assert revision["status"] == "unavailable" and "FileNotFoundError" in revision["reason"]

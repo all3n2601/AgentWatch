@@ -1,8 +1,15 @@
 """The declared natural-overload sweep protocol: schedules and the hashed declaration."""
 
+from pathlib import Path
+
 import pytest
+from agentwatch_agent import sweep_protocol
+from agentwatch_agent.config import DEFAULT_SAMPLING_INTERVAL_SECONDS
+from agentwatch_agent.experiment import PREFILL_PROMPT_TOKENS_TOLERANCE
 from agentwatch_agent.sweep_protocol import (
     CONFIGURATIONS,
+    P90_RULE,
+    VLLM_IMAGE,
     Batch,
     injected_batches,
     injected_level,
@@ -70,5 +77,26 @@ def test_configurations_and_injector_are_declared():
         "prompt_tokens": 2048,
         "ramp_seconds": 2.0,
         "bound_seconds": 932.0,
+        "prompt_tokens_tolerance": PREFILL_PROMPT_TOKENS_TOLERANCE,
     }
     assert document["max_p90_run_seconds"] == 450.0
+
+
+COMPOSE_FILE = Path(__file__).resolve().parents[3] / "deploy" / "compose" / "compose.yaml"
+
+
+def test_the_measurement_settings_are_hashed_into_the_protocol(monkeypatch):
+    document = protocol(CONFIGURATIONS["cfg-default"], 900.0)
+    assert document["sampling_interval_seconds"] == DEFAULT_SAMPLING_INTERVAL_SECONDS
+    assert document["vllm_image"] == VLLM_IMAGE
+    assert document["p90_rule"] == P90_RULE
+    before = protocol_sha256(document)
+    monkeypatch.setattr(sweep_protocol, "SAMPLING_INTERVAL_SECONDS", 0.5)
+    assert protocol_sha256(protocol(CONFIGURATIONS["cfg-default"], 900.0)) != before
+
+
+def test_the_declared_vllm_image_is_the_compose_services_digest():
+    lines = COMPOSE_FILE.read_text(encoding="utf-8").splitlines()
+    service = lines.index("  vllm:")
+    image = next(line for line in lines[service:] if line.strip().startswith("image:"))
+    assert image.split("image:", 1)[1].strip() == VLLM_IMAGE
