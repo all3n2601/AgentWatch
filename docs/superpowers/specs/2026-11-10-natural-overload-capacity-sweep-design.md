@@ -109,8 +109,10 @@ value is a new protocol version.
 
 ## PR 1: prefill-flood injector
 
-New module `services/injectors/src/agentwatch_injectors/prefill.py`;
-`inference.py` is unchanged.
+New module `services/injectors/src/agentwatch_injectors/prefill.py`. The competing-chat
+child loop in `inference.py` is refactored, without changing its behavior or its report, into
+a request loop that takes a picklable request profile, so both injectors share one loop
+instead of two copies.
 
 - `PrefillFloodInjector(BoundedInjector)`, method `prefill-flood-openai-chat-v1`,
   `resource_class = "inference"`, vLLM's `/v1/chat/completions` only.
@@ -164,10 +166,13 @@ Output: `.data/capacity-sweeps/<configuration>-<UTC time>-<id>/`.
 
 1. **Configuration check.** Read `/v1/models` (`max_model_len`) and `/metrics`
    (`vllm:cache_config_info`: memory utilization, KV block count and size, prefix caching).
-   A declared setting vLLM contradicts refuses the sweep (exit 2). A declared setting vLLM
-   does not report (possibly `max_num_seqs`; confirmed on v0.32 during implementation) is
-   recorded as `declared_not_verified`. KV block count × block size is recorded as the
-   measured KV-cache capacity in tokens.
+   A declared setting vLLM contradicts refuses the sweep (exit 2). vLLM v0.32 reports
+   `gpu_memory_utilization`, `enable_prefix_caching`, `block_size`, `num_gpu_blocks`,
+   `kv_cache_size_tokens` and `kv_cache_max_concurrency`, but not `max_num_seqs`, which is
+   recorded as `declared_not_verified`; the analysis also checks that no sampled
+   `vllm:num_requests_running` exceeded it, and a higher reading is reported as a
+   contradiction. `kv_cache_size_tokens` is recorded as the measured KV-cache capacity
+   (7,376 tokens at 0.6 in the 2026-10-27 evidence).
 2. **Warm-up** batch (N = 1), recorded, never analysed.
 3. **Ramp**, as declared, until a hard stop or the ceiling.
 4. **Capacity decision** by `sweep_analysis` on the recorded ramp.
