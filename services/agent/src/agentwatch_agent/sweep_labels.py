@@ -7,7 +7,7 @@ durations in their own right and are never aligned with runner ticks or engine t
 
 Steps without a measured span are excluded and counted by status, never treated as queue 0.
 Tool and retrieval steps have no measured reference, so their label rate is reported as
-`unvalidated`. A baseline needs `MIN_BASELINE_VALUES` replays; fewer omits the key (counted).
+`unvalidated`. A baseline needs `BASELINE_BATCHES_PER_SOURCE` replays; fewer omits the key (counted).
 """
 
 import math
@@ -18,14 +18,15 @@ from agentwatch_agent.experiment import step_timings, variability
 from agentwatch_agent.runner import JOURNAL_FILE
 from agentwatch_agent.sweep_analysis import _is_number, _read_json, _span_values
 from agentwatch_agent.sweep_protocol import (
+    BASELINE_BATCHES_PER_SOURCE,
     LABEL_THRESHOLD_FLOOR_SECONDS,
     LABEL_THRESHOLD_STDEV_MULTIPLIER,
     VALIDATED_MIN_PRECISION,
     VALIDATED_MIN_RECALL,
 )
 
-MIN_BASELINE_VALUES = 3  # the N = 1 replays per source
 MIN_SPEARMAN_PAIRS = 3
+BASELINE_LEVEL = 1
 MODEL_STEP_TYPE = "model_call"
 TOOL_STEP_TYPES = ("tool", "retrieval")
 REQUESTS_RUNNING_METRIC = "inference.vllm.requests_running.v1"
@@ -34,9 +35,31 @@ BaselineKey = tuple[str, str]
 
 
 class Baselines(dict):
-    """`(plan_sha256, step_id)` -> baseline; `omitted` counts keys with too few values."""
+    """`(plan_sha256, step_id)` -> baseline, with the evidence that was left out.
+
+    `omitted` counts keys with too few values; `runs_without_plan` counts runs with no
+    `replay.plan_sha256`; `excluded_not_completed` counts model steps by final state;
+    `excluded_malformed` counts model steps with a non-finite or negative duration.
+    """
 
     omitted: int = 0
+    runs_without_plan: int = 0
+    excluded_malformed: int = 0
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.excluded_not_completed: dict[str, int] = {}
+
+
+def _valid_seconds(value: object) -> bool:
+    return _is_number(value) and math.isfinite(value) and value >= 0
+
+
+def _not_completed_state(timing: dict) -> str | None:
+    """The final state of a step that has no usable completed duration, else None."""
+    if timing["state"] != "completed":
+        return str(timing["state"])
+    return "completed_without_duration" if timing["total_seconds"] is None else None
 
 
 def noise_threshold(baseline: dict) -> float:
@@ -73,6 +96,12 @@ def _step_spans(evidence: dict) -> dict[str, dict]:
             if not all(values[f] for f in ("queue_seconds", "prefill_seconds", "decode_seconds")):
                 problem = "incomplete"
                 break
+            measured = (
+                values[f][0] for f in ("queue_seconds", "prefill_seconds", "decode_seconds")
+            )
+            if not all(_valid_seconds(v) for v in measured):
+                problem = "malformed"
+                break
             queue += values["queue_seconds"][0]
             service += values["prefill_seconds"][0] + values["decode_seconds"][0]
         steps[step_id] = (
@@ -92,26 +121,35 @@ def baselines(n1_runs: list[Path]) -> Baselines:
     """Per `(plan_sha256, step_id)`: `variability` of `total_seconds` over completed steps.
 
     Adds `service_mean_seconds`, the mean measured prefill + decode of the same step (None when
-    no replay measured one). Keys with fewer than `MIN_BASELINE_VALUES` durations are omitted
+    no replay measured one). Keys with fewer than `BASELINE_BATCHES_PER_SOURCE` durations are omitted
     and counted in `.omitted`. A run whose files cannot be read raises.
     """
+    result = Baselines()
     durations: dict[BaselineKey, list[float]] = {}
     services: dict[BaselineKey, list[float]] = {}
     for run_dir in n1_runs:
         plan, timings, spans = _read_run(run_dir)
         if plan is None:
+            result.runs_without_plan += 1
             continue
         for step_id, timing in timings.items():
             total = timing["total_seconds"]
-            if timing["state"] != "completed" or not _is_number(total):
+            state = _not_completed_state(timing)
+            if state is not None:
+                if timing["step_type"] == MODEL_STEP_TYPE:
+                    counts = result.excluded_not_completed
+                    counts[state] = counts.get(state, 0) + 1
+                continue
+            if not _valid_seconds(total):
+                if timing["step_type"] == MODEL_STEP_TYPE:
+                    result.excluded_malformed += 1
                 continue
             durations.setdefault((plan, step_id), []).append(float(total))
             span = spans.get(step_id)
             if span and span["status"] == "measured":
                 services.setdefault((plan, step_id), []).append(span["service_seconds"])
-    result = Baselines()
     for key, values in durations.items():
-        if len(values) < MIN_BASELINE_VALUES:
+        if len(values) < BASELINE_BATCHES_PER_SOURCE:
             result.omitted += 1
             continue
         service = services.get(key)
@@ -153,6 +191,8 @@ def _empty_tally() -> dict:
         "excess": [],
         "queue": [],
         "excluded": {},
+        "not_completed": {},
+        "runs_without_plan": 0,
         "no_baseline": 0,
         "explained": {"steps": 0, "excess_seconds": 0.0, "queue_seconds": 0.0},
         "service": {"steps": 0, "increase_seconds": 0.0, "without_baseline": 0},
@@ -160,11 +200,27 @@ def _empty_tally() -> dict:
     }
 
 
+def _count(tally: dict, group: str, key: str) -> None:
+    tally[group][key] = tally[group].get(key, 0) + 1
+
+
 def _tally_run(tally: dict, run_dir: Path, reference: dict) -> None:
     plan, timings, spans = _read_run(run_dir)
+    if plan is None:
+        tally["runs_without_plan"] += 1
+        return
     for step_id, timing in timings.items():
         total = timing["total_seconds"]
-        if timing["state"] != "completed" or not _is_number(total):
+        is_model = timing["step_type"] == MODEL_STEP_TYPE
+        state = _not_completed_state(timing)
+        if state is not None:
+            if is_model:
+                _count(tally, "not_completed", state)
+                _count(tally, "excluded", "not_completed")
+            continue
+        if not _valid_seconds(total):
+            if is_model:
+                _count(tally, "excluded", "malformed")
             continue
         baseline = reference.get((plan, step_id))
         if baseline is None:
@@ -181,8 +237,7 @@ def _tally_run(tally: dict, run_dir: Path, reference: dict) -> None:
             continue
         span = spans.get(step_id, {"status": "not_recorded"})
         if span["status"] != "measured":
-            excluded = tally["excluded"]
-            excluded[span["status"]] = excluded.get(span["status"], 0) + 1
+            _count(tally, "excluded", span["status"])
             continue
         queue = span["queue_seconds"]
         actual = queue > threshold
@@ -230,6 +285,8 @@ def _report(tally: dict) -> dict:
             "prefill_decode_without_baseline": tally["service"]["without_baseline"],
         },
         "excluded": dict(tally["excluded"]),
+        "excluded_not_completed": dict(tally["not_completed"]),
+        "runs_without_plan": tally["runs_without_plan"],
         "steps_without_baseline": tally["no_baseline"],
         "tool_steps": {
             "validation": "unvalidated",
@@ -242,11 +299,21 @@ def _report(tally: dict) -> dict:
 
 
 def label_validation(runs: list[Path] | dict[int, list[Path]], reference: Baselines) -> dict:
-    """Confusion, precision, recall and verdict, overall and (for a level mapping) per level."""
+    """Confusion, precision, recall and verdict, overall and (for a level mapping) per level.
+
+    Level 1 is the baseline level: a mapping's level 1 is skipped (listed in `levels_skipped`)
+    and a flat list must hold N >= 2 runs only. `reference` may be a plain dict, in which case
+    the omitted-baseline counts are reported as None (unknown), never 0.
+    """
     by_level = runs if isinstance(runs, dict) else {}
+    skipped = [level for level in by_level if level == BASELINE_LEVEL]
     overall = _empty_tally()
     levels: dict[int, dict] = {}
-    groups = by_level.items() if by_level else [(None, runs)]
+    groups = (
+        [(level, paths) for level, paths in by_level.items() if level != BASELINE_LEVEL]
+        if by_level
+        else [(None, runs)]
+    )
     for level, paths in groups:
         tally = _empty_tally()
         for run_dir in paths:
@@ -256,7 +323,11 @@ def label_validation(runs: list[Path] | dict[int, list[Path]], reference: Baseli
         _merge(overall, tally)
     return {
         "label_rule_baselines": len(reference),
-        "baselines_omitted": reference.omitted,
+        "baselines_omitted": getattr(reference, "omitted", None),
+        "baseline_runs_without_plan": getattr(reference, "runs_without_plan", None),
+        "baseline_steps_not_completed": getattr(reference, "excluded_not_completed", None),
+        "baseline_steps_malformed": getattr(reference, "excluded_malformed", None),
+        "levels_skipped": skipped,
         "overall": _report(overall),
         "levels": levels,
     }
@@ -267,8 +338,10 @@ def _merge(total: dict, part: dict) -> None:
         total["confusion"][key] += part["confusion"][key]
     total["excess"] += part["excess"]
     total["queue"] += part["queue"]
-    for status, count in part["excluded"].items():
-        total["excluded"][status] = total["excluded"].get(status, 0) + count
+    for group in ("excluded", "not_completed"):
+        for status, count in part[group].items():
+            total[group][status] = total[group].get(status, 0) + count
+    total["runs_without_plan"] += part["runs_without_plan"]
     total["no_baseline"] += part["no_baseline"]
     for group in ("explained", "service", "tool"):
         for key, value in part[group].items():

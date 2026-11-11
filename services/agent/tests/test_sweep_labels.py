@@ -38,7 +38,7 @@ def span_call(step_id, status="measured", queue=0.0, prefill=0.1, decode=0.2, st
     return {"step_id": step_id, "span_id": "p", "timing": joined_vllm_timing(runner_side, trace)}
 
 
-def event(step_id, step_type, sequence, state, submitted, started=None, finished=None):
+def event(step_id, step_type, sequence, state, submitted, started=None, finished=None, reason=None):
     return StepEvent(
         contract_version="live-contracts-v1",
         record_type="step_event",
@@ -61,7 +61,7 @@ def event(step_id, step_type, sequence, state, submitted, started=None, finished
         finished_tick_ns=finished,
         cpu_seconds=None,
         cpu_scope=None,
-        reason=None,
+        reason=reason,
     )
 
 
@@ -297,3 +297,120 @@ def test_no_running_samples_is_not_sampled_not_zero(tmp_path):
     check = max_running_check([run], max_num_seqs=2)
     assert check["status"] == "not_sampled"
     assert check["max_observed"] is None
+
+
+def write_failed_step_run(run_dir: Path, step_id, state="failed", plan=PLAN):
+    """A synthetic run whose model step ended without completing."""
+    run_dir.mkdir(parents=True)
+    evidence = {"run_id": str(RUN_ID), "model_calls": [], "replay": {"plan_sha256": plan}}
+    (run_dir / "agent-evidence.json").write_text(json.dumps(evidence))
+    records = [
+        event(step_id, "model_call", 0, "queued", 0),
+        event(step_id, "model_call", 1, "running", 0, 0),
+        event(step_id, "model_call", 2, state, 0, 0, SECOND_NS, reason="fixture: ended early"),
+    ]
+    lines = [json.dumps({"kind": "registration", "payload": {"clock_ids": [CLOCK]}})]
+    lines += [json.dumps({"kind": "record", "payload": r.model_dump(mode="json")}) for r in records]
+    (run_dir / "live-journal.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def test_model_steps_that_did_not_complete_are_counted_by_final_state(tmp_path):
+    reference = baselines(baseline_runs(tmp_path))
+    failed, cancelled = tmp_path / "f", tmp_path / "c"
+    write_failed_step_run(failed, MODEL_STEP, "failed")
+    write_failed_step_run(cancelled, MODEL_STEP, "cancelled")
+    overall = label_validation([failed, cancelled], reference)["overall"]
+    assert overall["excluded_not_completed"] == {"failed": 1, "cancelled": 1}
+    assert overall["excluded"]["not_completed"] == 2
+    assert overall["confusion"] == {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+    levels = label_validation({2: [failed]}, reference)["levels"][2]
+    assert levels["excluded_not_completed"] == {"failed": 1}
+
+
+def test_baselines_count_steps_that_did_not_complete(tmp_path):
+    runs = baseline_runs(tmp_path)
+    failed = tmp_path / "base-failed"
+    write_failed_step_run(failed, MODEL_STEP, "failed")
+    result = baselines([*runs, failed])
+    assert result.excluded_not_completed == {"failed": 1}
+    assert result[(PLAN, MODEL_STEP)]["count"] == 3
+
+
+def test_runs_without_a_plan_are_counted_separately_from_short_baselines(tmp_path):
+    runs = baseline_runs(tmp_path)
+    no_plan = tmp_path / "base-noplan"
+    write_run(no_plan, [(MODEL_STEP, "model_call", 1.0, span_call(MODEL_STEP))], plan=None)
+    result = baselines([*runs, no_plan])
+    assert result.runs_without_plan == 1
+    assert result.omitted == 0
+    level = tmp_path / "level-noplan"
+    write_run(level, [(MODEL_STEP, "model_call", 5.0, span_call(MODEL_STEP, queue=4.0))], plan=None)
+    report = label_validation([level], result)
+    assert report["baseline_runs_without_plan"] == 1
+    assert report["overall"]["runs_without_plan"] == 1
+    assert report["overall"]["steps_without_baseline"] == 0
+    assert report["overall"]["confusion"] == {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+
+
+def test_the_baseline_length_is_the_declared_replay_count():
+    import agentwatch_agent.sweep_labels as labels
+    from agentwatch_agent.sweep_protocol import BASELINE_BATCHES_PER_SOURCE
+
+    assert not hasattr(labels, "MIN_BASELINE_VALUES")
+    assert BASELINE_BATCHES_PER_SOURCE == 3
+
+
+def test_non_finite_or_negative_values_are_malformed_not_classified(tmp_path, monkeypatch):
+    reference = baselines(baseline_runs(tmp_path))
+    nan_run, negative_span = tmp_path / "nan", tmp_path / "negspan"
+    write_run(
+        nan_run, [(MODEL_STEP, "model_call", 1.31, span_call(MODEL_STEP, queue=float("nan")))]
+    )
+    write_run(
+        negative_span,
+        [(MODEL_STEP, "model_call", 1.31, span_call(MODEL_STEP, queue=0.31, prefill=-0.1))],
+    )
+    overall = label_validation([nan_run, negative_span], reference)["overall"]
+    assert overall["excluded"]["malformed"] == 2
+    assert overall["confusion"] == {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+
+    bad_duration = tmp_path / "negdur"
+    write_run(bad_duration, [(MODEL_STEP, "model_call", 1.0, span_call(MODEL_STEP))])
+    import agentwatch_agent.sweep_labels as labels
+
+    monkeypatch.setattr(
+        labels,
+        "step_timings",
+        lambda _run: {
+            MODEL_STEP: {
+                "step_type": "model_call",
+                "state": "completed",
+                "total_seconds": -1.0,
+            }
+        },
+    )
+    report = label_validation([bad_duration], reference)["overall"]
+    assert report["excluded"]["malformed"] == 1
+    assert report["confusion"] == {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+    assert baselines([bad_duration] * 3).excluded_malformed == 3
+
+
+def test_a_plain_dict_reference_reports_omitted_as_unknown(tmp_path):
+    reference = dict(baselines(baseline_runs(tmp_path)))
+    run = tmp_path / "level"
+    write_run(run, [(MODEL_STEP, "model_call", 1.31, span_call(MODEL_STEP, queue=0.31))])
+    report = label_validation([run], reference)
+    assert report["overall"]["confusion"]["tp"] == 1
+    assert report["baselines_omitted"] is None
+    assert report["baseline_runs_without_plan"] is None
+
+
+def test_level_one_never_enters_validation(tmp_path):
+    reference = baselines(baseline_runs(tmp_path))
+    one, two = tmp_path / "one", tmp_path / "two"
+    write_run(one, [(MODEL_STEP, "model_call", 1.31, span_call(MODEL_STEP, queue=0.31))])
+    write_run(two, [(MODEL_STEP, "model_call", 1.0, span_call(MODEL_STEP, queue=0.0))])
+    result = label_validation({1: [one], 2: [two]}, reference)
+    assert result["levels_skipped"] == [1]
+    assert 1 not in result["levels"]
+    assert result["overall"]["confusion"] == {"tp": 0, "fp": 0, "fn": 0, "tn": 1}
