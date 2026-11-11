@@ -750,6 +750,15 @@ frozen evaluation sets without tuning against them.
   evaluable release; open until one covering all four classes passes the leakage check.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
+  2026-11-10 (M04): `make calibrate` fits `calibration-v1` temperature scaling and the abstention
+  threshold on the validation split only, then reports test-split ECE, abstention rates, clean
+  and missing-feature slices and every contract gate, with abstentions counted as misses
+  ([calibration](model-calibration.md), `pipelines/model/tests`). Tested on synthetic fixtures
+  only. After the M02 merge (`mixed-scoring-v1`), mixed steps are scored by hit, joint-only steps
+  are never scored, the mixed-contention abstention scope and gain gate are measured, and the
+  threshold is chosen on single-class validation steps. Open: `split-v2` has an empty validation
+  split, so nothing is fitted yet, and showing uncertain results belongs to serving and the
+  dashboard.
 - [ ] Load a versioned registered model in the correlation service.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
 

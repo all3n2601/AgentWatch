@@ -256,32 +256,33 @@ def attempt(
     )
     records = prediction_records(scored, predictions, rule_labels, scored_split, evaluation)
     hashes = save_models(candidate, directory)
-    write_atomic(
-        directory / PREPROCESSING, json_text(serving_contract(candidate, model, report, hashes))
-    )
+    preprocessing = json_text(serving_contract(candidate, model, report, hashes))
+    write_atomic(directory / PREPROCESSING, preprocessing)
     write_atomic(directory / PREDICTIONS, records)
+    # Calibration (M04) reads these files, so the report binds each one by hash.
+    written = {
+        "predictions": file_identity(PREDICTIONS, records),
+        "preprocessing": file_identity(PREPROCESSING, preprocessing),
+    }
     if scored_split != "validation":
         # Probabilities for M04 calibration. Validation also drove early stopping, so
         # calibration fitted on it is slightly optimistic; M04 records that.
-        validation_predictions = predict(candidate, validation)
-        write_atomic(
-            directory / VALIDATION_PREDICTIONS,
-            prediction_records(
-                validation,
-                validation_predictions,
-                [rules.predict(row) for row in validation],
-                "validation",
-                evaluation,
-            ),
+        validation_records = prediction_records(
+            validation,
+            predict(candidate, validation),
+            [rules.predict(row) for row in validation],
+            "validation",
+            evaluation,
         )
-    return report | {
-        "scored_steps": len(scored),
-        "predictions": {
-            "file": PREDICTIONS,
-            "sha256": hashlib.sha256(records.encode()).hexdigest(),
-        },
-        "model_files": hashes,
-    }
+        write_atomic(directory / VALIDATION_PREDICTIONS, validation_records)
+        written["validation_predictions"] = file_identity(
+            VALIDATION_PREDICTIONS, validation_records
+        )
+    return report | written | {"scored_steps": len(scored), "model_files": hashes}
+
+
+def file_identity(name: str, text: str) -> dict:
+    return {"file": name, "sha256": hashlib.sha256(text.encode()).hexdigest()}
 
 
 def finish(report: dict, directory: Path, tracking_uri: str, artifact_root: Path) -> Outcome:

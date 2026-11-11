@@ -101,6 +101,14 @@ def test_preprocessing_contract_carries_what_serving_and_calibration_need(tmp_pa
     )
 
 
+def test_the_report_binds_every_file_calibration_reads_by_hash(tmp_path):
+    output = tmp_path / "out"
+    run(tmp_path / "split.json", output, loader=loader_for([], SPLITS), **tracking(tmp_path))
+    report = read(output / "report.json")
+    for key in ("predictions", "validation_predictions", "preprocessing"):
+        assert report[key]["sha256"] == file_sha256(output / report[key]["file"]), key
+
+
 def test_a_blocked_split_is_still_logged_and_trains_nothing(tmp_path):
     output = tmp_path / "out"
     outcome = run(tmp_path / "split.json", output, loader=blocked, **tracking(tmp_path))
