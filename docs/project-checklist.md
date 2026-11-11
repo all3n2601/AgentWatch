@@ -870,6 +870,37 @@ from M3 through M6 and do not renumber the implementation milestones above.
   `pipelines/data/tests/test_optimization_{manifest,batches,comparison}.py`. Open until O06
   records a real experiment in this format.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
+  Implemented 2026-11-10 on branch `feature/optimization-view` (not yet pushed or reviewed).
+  **Assumption pending Allen:** "selected saved UUIDs" is taken to mean the saved `/v1/runs`
+  experiments, not live coding-agent runs. Saved runs record no concurrency policy version, so
+  Compare shows policy as unknown and never counts it as a match: **every saved-run comparison
+  is currently blocked**, and only each run's own measurements are shown. Controls: the form
+  starts from the active limits, previews the change per control, refuses no-op sets, confirms
+  disable and restore, tells a stale `expected_version` from a reused `request_id` (by the
+  service's `detail` text; no error code exists), retries unconfirmed changes with the same
+  `request_id`, shows the last read time, and pauses changes after a read whose active version
+  is not the newest history entry. The live run view lists, per UUID, the versions active while
+  the run was open, the limits the runner applied, and the current policy. Compare
+  (`apps/web/components/compare-runs.tsx`, `apps/web/lib/run-comparison.ts`) shows exactly the
+  `?baseline=` and `?run=` UUIDs, never substitutes another run for a missing one, preselects
+  nothing, lists every setting as same/differs/unknown, and shows differences only when all are
+  recorded and equal. Not shown, because no API serves them: limits a runner actually applied
+  (admission records stay in local `agent-evidence.json`), O04 comparison records, batch
+  completion time, throughput and p95 task latency. No automatic actuation and no speedup claim.
+  Verified locally 2026-11-10: `make check` passed (98 web unit tests including
+  `apps/web/tests/run-comparison.test.ts` and `policy-api.test.ts`; 2,079 Python passed, 176
+  skipped for no test database, Docker or OpenMP; Go tests passed), and 47 Playwright tests passed
+  against the production build, including `e2e/concurrency-controls.spec.ts`,
+  `e2e/run-policy.spec.ts` and `e2e/compare-runs.spec.ts` (selected-UUID evidence, missing and
+  invalid UUIDs, unavailable history, blocked and cross-configuration pairs, keyboard selection,
+  conflicts, `422`/`503` errors, stale reads). Key behaviors were removed once each to confirm a
+  test fails. Viewports (Playwright, production build): Controls at 390, 768, 1280, 640 (1280 px at
+  200%) and 384 (768 px at 200%) CSS px; the run policy section at 390, 768, 1280 and 640;
+  Compare at 390, 768, 1280, 640 and 384. No page-level horizontal overflow; Compare's tables
+  scroll inside labeled regions on narrow screens. The existing time-range buttons are under
+  44 px tall (not changed here). Open: Allen's answer on which runs to compare, an API for
+  applied admission limits, saved-run policy or configuration linkage, a `409` error code and a
+  consistent active-plus-history read; owner browser check, PR review and CI.
 - [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
