@@ -45,9 +45,17 @@ followed by a newline, for line number `n`:
 ```
 
 This is 19 tokens for n = 1, 57, 999 and 3071, and 200 consecutive lines are 3,800 tokens
-(19.0 per line). The nonce line `request 3-104729` followed by a newline is 11 tokens. So
-`FILLER_TOKENS_PER_LINE = 19`, and a prompt has `ceil(prompt_tokens / 19)` filler lines plus
-the nonce line.
+(19.0 per line). So `FILLER_TOKENS_PER_LINE = 19`, and a prompt has
+`ceil(prompt_tokens / 19)` filler lines plus the nonce line.
+
+The nonce line was measured twice. In its earlier form, `request {worker}-{sequence}` (for
+example `request 3-104729`), it was 11 tokens. In the current form,
+`request {worker}-{sequence}-{run_token}`, it is 14 to 23 tokens (median 18) over 100 random
+samples (workers 0-3, sequences 0, 7, 57, 999 and 12345, five run tokens each), because the 12
+hex characters of the run token tokenize differently. The chat template adds 12 tokens: for
+`prompt_tokens` 2048 (108 filler lines) one prompt was 2,067 text tokens and 2,079 tokens as a
+chat request (vLLM `/tokenize` with `messages`, `add_generation_prompt` and thinking off,
+2026-11-11).
 
 **Measurement 2: real vLLM (2026-11-10).** The injector ran twice for 20 s each against the same
 vLLM v0.32 server (`--max-num-seqs 2`, model above) with concurrency 2 and `prompt_tokens` 2048
@@ -72,6 +80,11 @@ characterisation of the method's effect on other workloads or servers.
 **Consequences.** The method is new and labeled `prefill`, a different injector kind from
 `inference`, so a set can contain both. A formal hold-out of this method needs a new frozen
 split (`split-v3`) that keeps it out of training; until Rohit and Akshay accept that, runs
-that use it are held-out test evidence outside the contract gate. Nothing here claims the flood
+that use it are held-out test evidence outside the contract gate. **Release prerequisite:** no
+evidence that uses this method may enter a dataset release until `split-v3` lists
+`prefill-flood-openai-chat-v1` in `held_out_injection_methods`. `split-v2` holds out only
+`worker_queue_blocker`, and replay rows accept any method whose contended class is
+`inference`, so today such replays would be assigned to train or validation by hash. Akshay
+owns `split-v3`. Nothing here claims the flood
 isolates GPU prefill from the host: it shares the device with the agents, and its effect is
 observed through the server's measured timing, not assumed.
