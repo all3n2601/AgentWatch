@@ -549,6 +549,8 @@ def prefill_injection(**activity: object) -> dict:
             "requests_failed": 0,
             "requests_completed": 3,
             "requests_abandoned_in_flight": 0,
+            "prompt_tokens_target": 2048,
+            "prompt_tokens": {"count": 3, "min": 2082, "median": 2083, "max": 2083},
             **activity,
         },
     }
@@ -570,3 +572,42 @@ def test_a_sustained_prefill_flood_is_active():
 )
 def test_a_prefill_flood_with_gaps_is_not_active(change):
     assert injection_active({"injections": [prefill_injection(**change)]}) is False
+
+
+def test_a_prefill_flood_must_reach_its_declared_prompt_size():
+    ok = prefill_injection(
+        prompt_tokens_target=2048,
+        prompt_tokens={"count": 10, "min": 2080, "median": 2083, "max": 2083},
+    )
+    assert injection_active({"injections": [ok]}) is True
+
+
+@pytest.mark.parametrize(
+    "prompt_tokens,target",
+    [
+        (None, 2048),  # no completion reported a count
+        ({"count": 3, "min": 900, "median": 1000, "max": 1000}, 2048),  # truncated context
+        ({"count": 3, "min": 2400, "median": 2400, "max": 2400}, 2048),  # above +15%
+        ({"count": 3, "min": 2083, "max": 2083}, 2048),  # no median
+        ({"count": 3, "min": 2083, "median": None, "max": 2083}, 2048),
+        ({"count": 3, "min": 2083, "median": "2083", "max": 2083}, 2048),
+        ({"count": 3, "min": 2083, "median": float("nan"), "max": 2083}, 2048),
+        ({"count": 3, "min": 2083, "median": 2083, "max": 2083}, None),  # no target
+        ({"count": 3, "min": 2083, "median": 2083, "max": 2083}, 0),
+    ],
+)
+def test_a_prefill_flood_off_its_prompt_size_is_not_active(prompt_tokens, target):
+    injection = prefill_injection(prompt_tokens=prompt_tokens, prompt_tokens_target=target)
+    assert injection_active({"injections": [injection]}) is False
+
+
+@pytest.mark.parametrize(
+    "median,expected",
+    [(2355, True), (2356, False), (1741, True), (1740, False)],
+)
+def test_the_prompt_size_tolerance_boundary_is_inclusive(median, expected):
+    # 2048 * 1.15 = 2355.2 and 2048 * 0.85 = 1740.8
+    injection = prefill_injection(
+        prompt_tokens={"count": 3, "min": median, "median": median, "max": median}
+    )
+    assert injection_active({"injections": [injection]}) is expected

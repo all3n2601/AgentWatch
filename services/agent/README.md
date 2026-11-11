@@ -387,7 +387,10 @@ verification passed.
     it. No injector may stop at its duration bound or backstop. Every CPU worker must report
     and hash rounds must be above zero. The inference child must report no failed request,
     with at least one request completed or still generating at the stop. Retrieval needs
-    searches above zero and no thread that errored or ended early.
+    searches above zero and no thread that errored or ended early. The prefill flood needs at
+    least one completed request and no failed one, and the median prompt size the server
+    reported must be within 15% of the declared target (a server started with a context
+    limit below the prompt fails this); a missing size never counts.
   - `evidence_delivered`.
 
   A replay whose injector cleanup was not confirmed keeps the state

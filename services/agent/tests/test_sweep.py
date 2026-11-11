@@ -202,6 +202,8 @@ class FakeInjector(BoundedInjector):
             "stopped_by_backstop": False,
             "requests_failed": 0,
             "requests_completed": 1,
+            "prompt_tokens_target": 2048,
+            "prompt_tokens": {"count": 1, "min": 2083, "median": 2083, "max": 2083},
         }
         return activity, {"confirmed": self.confirm}
 

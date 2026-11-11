@@ -300,6 +300,29 @@ def compare_with_baseline(steps: dict[str, dict], baseline: dict[str, dict]) -> 
     return comparison
 
 
+# Declared before any sweep: the same +-15% bound PR #64's real-vLLM check used (measured
+# medians 2,082-2,083 against 2,048, +1.7%: chat template 12 tokens plus the nonce line).
+PREFILL_PROMPT_TOKENS_TOLERANCE = 0.15
+
+
+def _prompt_size_reached(activity: dict) -> bool:
+    """Whether the server-reported median prompt size is within tolerance of the target.
+
+    A server whose context limit is below the prompt passes the start check but never
+    prefills the declared size, so a missing target or median never counts as reached.
+    """
+    target = activity.get("prompt_tokens_target")
+    prompt_tokens = activity.get("prompt_tokens")
+    median = prompt_tokens.get("median") if isinstance(prompt_tokens, dict) else None
+    if not _is_number(target) or target <= 0 or not _is_number(median):
+        return False
+    return abs(median - target) <= PREFILL_PROMPT_TOKENS_TOLERANCE * target
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _sustained(injection: dict) -> bool:
     """Whether one injector measurably applied load until the replay asked it to stop.
 
@@ -338,6 +361,7 @@ def _sustained(injection: dict) -> bool:
             and activity.get("stopped_by_backstop") is False
             and activity.get("requests_failed") == 0
             and activity.get("requests_completed", 0) > 0
+            and _prompt_size_reached(activity)
         )
     if kind == "retrieval":
         started = activity.get("threads_started", 0)
