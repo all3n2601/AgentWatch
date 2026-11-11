@@ -48,7 +48,8 @@ Three PRs, merged in this order:
    the injected condition.
 3. **Later, a new branch from `main`** — score `rules-v1`, the M2 inference rule and the
    learned candidates on the same frozen evidence. Rohit's #61 (calibration and abstention,
-   `746ec26`) and #62 (`mixed-scoring-v1`, `64c4e2c`) merged on 2026-11-10 (00:48 and 00:59 UTC on 2026-11-11); PR 3 still waits
+   `746ec26`) and #62 (`mixed-scoring-v1`, `64c4e2c`) merged on 2026-11-10
+   (00:48 and 00:59 UTC on 2026-11-11); PR 3 still waits
    for the M2 PR 4 inference features and rule, and records the versions it scores with.
 
 Out of scope: policy-limit evaluation (O06; the sweep runs `--no-policy`), changing

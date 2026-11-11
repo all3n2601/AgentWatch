@@ -56,14 +56,15 @@ vLLM v0.32 server (`--max-num-seqs 2`, model above) with concurrency 2 and `prom
 
 | Nonce order | Run | Completed / failed | `usage.prompt_tokens` min / median / max | Cache hits / queries |
 | --- | --- | --- | --- | --- |
-| `request {run_token}-{worker}-{sequence}` | 1 | 104 / 0 | 2082 / 2083 / 2083 | 1,680 / 218,695 |
-| | 2 | 102 / 0 | 2082 / 2083 / 2083 | 1,648 / 212,446 |
+| `request {run_token}-{worker}-{sequence}` | 1 | 104 / 0 | 2082 / 2083 / 2083 | 1,680 / 220,778 |
+| | 2 | 102 / 0 | 2082 / 2083 / 2083 | 1,648 / 216,612 |
 | `request {worker}-{sequence}-{run_token}` | 1 | 104 / 0 | 2081 / 2082 / 2082 | 0 / 218,590 |
 | | 2 | 104 / 0 | 2082 / 2083 / 2083 | 0 / 218,695 |
 
-With the run token first, about 0.77% of queried tokens hit the cache, roughly 16 tokens per
-request: one KV block (the chat template, `request` and the run token filled block 0, which
-every request of a run shared). With the per-request digits first there were no hits in either
+With the run token first, about 0.76% of queried tokens hit the cache, roughly 16 tokens per
+request: one KV block. The token arithmetic suggests the chat template, `request` and the run
+token filled block 0, which every request of a run shared; that attribution is inferred, not
+measured. With the per-request digits first there were no hits in either
 run. The reported prompt is 30 to 31 tokens longer than the 2,052 filler tokens, which is the
 chat template and the nonce line. These are two short runs on one laptop GPU, not a
 characterisation of the method's effect on other workloads or servers.
