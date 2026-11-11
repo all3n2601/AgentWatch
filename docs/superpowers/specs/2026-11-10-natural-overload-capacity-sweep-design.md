@@ -92,6 +92,7 @@ value is a new protocol version.
     level's (N = 1 has no previous level and passes this criterion);
   - pass rate no more than 20 percentage points below N = 1's;
   - p90 run duration at most 50% of the run limit (450 s).
+  - N = 1 must have at least one passed run, otherwise capacity is "below 1".
 
   The ramp continues past the knee to a hard stop or the ceiling, so the whole curve is
   recorded. If N = 1 fails, capacity is "below 1"; if every level passes, it is "at least 16

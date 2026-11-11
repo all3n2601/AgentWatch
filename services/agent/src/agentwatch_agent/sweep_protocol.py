@@ -29,6 +29,7 @@ PACING_SECONDS = 10.0  # fixed pause after the server is idle
 MIN_THROUGHPUT_GAIN = 0.10  # over the previous level
 MAX_PASS_RATE_DROP = 0.20  # below the N = 1 pass rate
 MAX_P90_FRACTION_OF_RUN_LIMIT = 0.5
+MIN_PASSED_RUNS_AT_ONE_AGENT = 1  # N = 1 with fewer passed runs gives capacity "below 1"
 
 LIVE_CONFIRMATION_BATCHES = 3
 INJECTED_PAIRS = 3  # flood batches, each followed by a clean control
@@ -144,6 +145,7 @@ def protocol(configuration: VllmConfiguration, run_timeout_seconds: float) -> di
             "min_throughput_gain": MIN_THROUGHPUT_GAIN,
             "max_pass_rate_drop": MAX_PASS_RATE_DROP,
             "max_p90_fraction_of_run_limit": MAX_P90_FRACTION_OF_RUN_LIMIT,
+            "min_passed_runs_at_one_agent": MIN_PASSED_RUNS_AT_ONE_AGENT,
         },
         "max_p90_run_seconds": MAX_P90_FRACTION_OF_RUN_LIMIT * run_timeout_seconds,
         "live_confirmation_batches": LIVE_CONFIRMATION_BATCHES,

@@ -13,6 +13,7 @@ Units are seconds unless a name says otherwise; throughput is passed runs per mi
 """
 
 import json
+import math
 import statistics
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from agentwatch_agent.runner import VERIFICATION_FAILED
 from agentwatch_agent.sweep_protocol import (
     MAX_P90_FRACTION_OF_RUN_LIMIT,
     MAX_PASS_RATE_DROP,
+    MIN_PASSED_RUNS_AT_ONE_AGENT,
     MIN_THROUGHPUT_GAIN,
     RAMP_LEVELS,
 )
@@ -129,6 +131,13 @@ def _span_values(evidence: dict) -> tuple[dict[str, int], dict[str, list[float]]
     for call in evidence.get("model_calls") or []:
         timing = call.get("timing") if isinstance(call, dict) else None
         status = timing.get("status") if isinstance(timing, dict) else None
+        # `joined_vllm_timing` reports "reported" when the span was measured; the span's own
+        # durations are under `server_trace`.
+        trace = timing.get("server_trace") if isinstance(timing, dict) else None
+        if status == "reported" and isinstance(trace, dict) and trace.get("status") == "measured":
+            status = "measured"
+        elif status == "reported":
+            status = None
         if status not in SPAN_STATUSES:
             counts["not_recorded"] += 1
             continue
@@ -136,7 +145,7 @@ def _span_values(evidence: dict) -> tuple[dict[str, int], dict[str, list[float]]
         if status != "measured":
             continue
         for field in SPAN_FIELDS:
-            value = timing.get(field)
+            value = trace.get(field)
             if _is_number(value):
                 values[field].append(float(value))
     return counts, values
@@ -241,7 +250,7 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
     classes = [classify_run(entry) for entry in entries]
     passed = classes.count("passed")
     wall = batch.get("batch_wall_seconds")
-    wall_seconds = float(wall) if _is_number(wall) else None
+    wall_seconds = float(wall) if _is_number(wall) and math.isfinite(wall) else None
     throughput = passed / (wall_seconds / 60) if wall_seconds and wall_seconds > 0 else None
 
     durations: list[float] = []
@@ -377,6 +386,9 @@ def level_summary(batches: list[dict], baseline_sm_clock_mhz: float | None = Non
     return {
         "batches": len(batches),
         "readable_batches": len(readable),
+        "batches_without_throughput": sum(
+            1 for batch in readable if batch["throughput_per_minute"] is None
+        ),
         "unreadable_batches": [
             {"index": position, "error": batch["error"]}
             for position, batch in enumerate(batches)
@@ -448,6 +460,30 @@ def _level_criteria(
         "no_hard_stop": _criterion(list(hard_stops), [], not hard_stops),
     }
 
+    # Incomplete evidence must not read as a slow or failing level, nor as a passing one.
+    without_throughput = level.get("batches_without_throughput", 0)
+    missing_durations = level["run_duration_seconds"].get("missing", 0)
+    complete = without_throughput == 0 and missing_durations == 0
+    criteria["evidence_complete"] = _criterion(
+        {
+            "batches_without_throughput": without_throughput,
+            "runs_missing_duration": missing_durations,
+        },
+        {"batches_without_throughput": 0, "runs_missing_duration": 0},
+        complete,
+        **(
+            {}
+            if complete
+            else {"reason": "a batch has no usable throughput or a run has no agent-run duration"}
+        ),
+    )
+    if previous is None:
+        criteria["passed_runs"] = _criterion(
+            level.get("passed", 0),
+            MIN_PASSED_RUNS_AT_ONE_AGENT,
+            level.get("passed", 0) >= MIN_PASSED_RUNS_AT_ONE_AGENT,
+        )
+
     mean = (level["throughput_per_minute"] or {}).get("mean")
     if previous is None:
         # N = 1 has no previous level and passes this criterion.
@@ -470,7 +506,8 @@ def _level_criteria(
                 reason="previous level had zero throughput",
             )
         else:
-            gain = mean / previous_mean - 1
+            # Rounded like the pass-rate drop so exactly +10% passes.
+            gain = round(mean / previous_mean - 1, 9)
             criteria["throughput_gain"] = _criterion(
                 gain, MIN_THROUGHPUT_GAIN, gain >= MIN_THROUGHPUT_GAIN
             )
@@ -509,26 +546,36 @@ def capacity_decision(
     with no failure and short of the ceiling give result `incomplete` (capacity is the last
     level evaluated), never a claimed knee.
     """
+    # Levels reloaded from JSON have string keys.
+    levels = {int(key): value for key, value in levels.items()}
+    hard_stops = {int(key): value for key, value in hard_stops.items()}
     criteria: dict[int, dict] = {}
     previous = baseline = None
     previous_level: int | None = None  # the last level before the first failure
     first_failing: int | None = None
     for level in RAMP_LEVELS:
         summary = levels.get(level)
-        if summary is None:
+        if summary is None and not hard_stops.get(level):
             break
-        if level == RAMP_LEVELS[0]:
-            baseline = summary
-        criteria[level] = _level_criteria(
-            summary, previous, baseline, hard_stops.get(level, []), run_timeout_seconds
-        )
+        if summary is None:
+            # A hard stop ended the ramp before this level produced a summary.
+            criteria[level] = {
+                "no_hard_stop": _criterion(list(hard_stops[level]), [], False),
+                "summary_present": _criterion(False, True, False),
+            }
+        else:
+            if level == RAMP_LEVELS[0]:
+                baseline = summary
+            criteria[level] = _level_criteria(
+                summary, previous, baseline, hard_stops.get(level, []), run_timeout_seconds
+            )
         # Levels past the first failure are still evaluated so the whole curve is recorded.
         if first_failing is None:
             if all(criterion["passed"] for criterion in criteria[level].values()):
                 previous_level = level
             else:
                 first_failing = level
-        previous = summary
+        previous = summary or previous
     if first_failing is None and len(criteria) < len(RAMP_LEVELS):
         # The ramp ended with no failing level and short of the ceiling: no knee was found.
         result, capacity = "incomplete", previous_level

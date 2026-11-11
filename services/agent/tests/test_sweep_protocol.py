@@ -52,6 +52,7 @@ def test_the_protocol_hash_changes_with_any_declared_value():
         "min_throughput_gain": 0.10,
         "max_pass_rate_drop": 0.20,
         "max_p90_fraction_of_run_limit": 0.5,
+        "min_passed_runs_at_one_agent": 1,
     }
     assert a["ramp_levels"] == [1, 2, 3, 4, 6, 8, 12, 16]
     assert a["held_out"] is True

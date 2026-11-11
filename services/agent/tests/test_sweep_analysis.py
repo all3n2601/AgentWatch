@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from agentwatch_agent.model import joined_vllm_timing
 from agentwatch_agent.runner import VERIFICATION_FAILED
 from agentwatch_agent.sweep_analysis import (
     DEVICE_METRICS,
@@ -38,13 +39,23 @@ def run_entry(**fields):
     } | fields
 
 
-def level(throughput, pass_rate=1.0, p90_seconds=100.0, unreadable=0):
+def level(
+    throughput,
+    pass_rate=1.0,
+    p90_seconds=100.0,
+    unreadable=0,
+    passed=3,
+    without_throughput=0,
+    missing_durations=0,
+):
     """A minimal level summary in the shape `level_summary` returns."""
     return {
+        "passed": passed,
+        "batches_without_throughput": without_throughput,
         "unreadable_batches": [{"index": i, "error": "x"} for i in range(unreadable)],
         "throughput_per_minute": None if throughput is None else {"mean": throughput},
         "pass_rate": {"pooled": pass_rate},
-        "run_duration_seconds": {"p90": p90_seconds},
+        "run_duration_seconds": {"p90": p90_seconds, "missing": missing_durations},
     }
 
 
@@ -222,7 +233,12 @@ def write_batch(batch_dir: Path, entries, wall_seconds=60.0):
 
 
 def vllm_call(status, **fields):
-    return {"step_id": "s", "span_id": "p", "timing": {"status": status, **fields}}
+    """A model call whose timing is built by the producer, from a synthetic span."""
+    runner_side = {"method": "fixture", "client_wall_seconds": 2.0, "status": "pending_trace"}
+    trace = {"status": status, **fields}
+    if status != "measured":
+        trace["problems"] = ["fixture: no usable span"]
+    return {"step_id": "s", "span_id": "p", "timing": joined_vllm_timing(runner_side, trace)}
 
 
 def test_batch_metrics_counts_throughput_durations_spans_and_device(tmp_path):
@@ -453,3 +469,74 @@ def test_server_changes_keep_missing_reset_and_zero_distinct():
     assert changes["prefix_cache_hit_ratio"] is None
     del before["counters"]["vllm:prefix_cache_hits_total"]
     assert server_changes(before, after)["prefix_cache_hits"] is None
+
+
+def test_a_measured_call_contributes_values_and_an_unavailable_one_is_only_counted(tmp_path):
+    batch_dir = tmp_path / "batch"
+    measured = vllm_call("measured", queue_seconds=0.5, e2e_seconds=1.5)
+    assert measured["timing"]["status"] == "reported"
+    evidence = {"model_calls": [measured, vllm_call("unavailable"), vllm_call("malformed")]}
+    write_run(batch_dir / "runs" / "00-a", 5.0, evidence_extra=evidence)
+    write_batch(batch_dir, [run_entry(output_dir="runs/00-a")])
+    spans = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)["spans"]
+    assert spans["calls_by_status"] == {
+        "measured": 1,
+        "unavailable": 1,
+        "malformed": 1,
+        "not_recorded": 0,
+    }
+    assert spans["fields"]["queue_seconds"]["values"] == [0.5]
+    assert spans["fields"]["e2e_seconds"]["values"] == [1.5]
+    assert spans["fields"]["prefill_seconds"]["values"] == []
+
+
+@pytest.mark.parametrize("wall", [None, 0.0, -5.0, float("inf"), float("nan")])
+def test_a_batch_without_usable_wall_time_has_no_throughput_and_fails_evidence(tmp_path, wall):
+    batch_dir = tmp_path / "batch"
+    write_run(batch_dir / "runs" / "00-a", 5.0)
+    write_batch(batch_dir, [run_entry(output_dir="runs/00-a")], wall_seconds=wall)
+    batch = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)
+    assert batch["throughput_per_minute"] is None
+    summary = level_summary([batch])
+    assert summary["batches_without_throughput"] == 1
+    criteria = capacity_decision({1: summary}, {}, RUN_LIMIT_SECONDS)["criteria"][1]
+    assert criteria["evidence_complete"]["passed"] is False
+    assert "reason" in criteria["evidence_complete"]
+
+
+def test_a_run_without_an_agent_run_duration_fails_evidence_complete(tmp_path):
+    batch_dir = tmp_path / "batch"
+    write_run(batch_dir / "runs" / "00-a", None)
+    write_batch(batch_dir, [run_entry(output_dir="runs/00-a")])
+    summary = level_summary([batch_metrics(batch_dir, RUN_LIMIT_SECONDS)])
+    assert summary["run_duration_seconds"]["missing"] == 1
+    decision = capacity_decision({1: summary}, {}, RUN_LIMIT_SECONDS)
+    assert decision["criteria"][1]["evidence_complete"]["value"]["runs_missing_duration"] == 1
+    assert decision["result"] == "below_1"
+
+
+def test_n1_needs_a_passed_run():
+    levels = {1: level(0.0, passed=0), 2: level(1.0)}
+    decision = capacity_decision(levels, {}, RUN_LIMIT_SECONDS)
+    assert decision["result"] == "below_1" and decision["capacity"] is None
+    assert decision["criteria"][1]["passed_runs"]["passed"] is False
+
+
+def test_a_hard_stop_on_a_level_without_a_summary_fails_that_level():
+    decision = capacity_decision(ramp(1.0, 2.0), {3: ["unconfirmed_cleanup"]}, RUN_LIMIT_SECONDS)
+    assert decision["result"] == "measured"
+    assert decision["capacity"] == 2 and decision["first_failing_level"] == 3
+    assert decision["criteria"][3]["no_hard_stop"]["passed"] is False
+
+
+def test_exactly_ten_percent_gain_passes():
+    decision = capacity_decision(ramp(3.0, 3.3), {}, RUN_LIMIT_SECONDS)
+    assert decision["criteria"][2]["throughput_gain"]["passed"] is True
+    below = capacity_decision(ramp(3.0, 3.29), {}, RUN_LIMIT_SECONDS)
+    assert below["criteria"][2]["throughput_gain"]["passed"] is False
+
+
+def test_levels_reloaded_from_json_have_string_keys():
+    levels = {str(n): value for n, value in ramp(1.0, 1.8, 1.9).items()}
+    decision = capacity_decision(levels, {"3": ["x"]}, RUN_LIMIT_SECONDS)
+    assert decision["capacity"] == 2 and decision["first_failing_level"] == 3
