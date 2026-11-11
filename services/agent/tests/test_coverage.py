@@ -370,6 +370,102 @@ def test_queue_is_kept_apart_from_service_time(tmp_path):
     assert model["outside_service_seconds"] == pytest.approx(0.01)
 
 
+def admission_record(
+    step_id, arrived, admitted, *, clock_id=CLOCK, outcome="admitted", span_id="b" * 16
+):
+    return {
+        "method": "runner-admission-v1",
+        "step_id": step_id,
+        "span_id": span_id,
+        "clock_id": clock_id,
+        "outcome": outcome,
+        "arrived_tick_ns": arrived,
+        "admitted_tick_ns": admitted,
+        "policy_version": 7,
+        "limit": 1,
+        "enforced": True,
+    }
+
+
+def admission_timing(tmp_path, admissions, configured=True, required=("model-call-1",)):
+    records = executed("model-call-1", 0, 40 * MS, 90 * MS)
+    extra = {
+        "model_calls": [{"step_id": step_id} for step_id in required],
+        "admissions": admissions,
+    }
+    if configured is not None:
+        extra["admission"] = {"status": "configured" if configured else "not_configured"}
+    report = coverage_report(write_run(tmp_path, records, evidence_extra=extra))
+    return steps_by_id(report)["model-call-1"]["timing"]
+
+
+def test_the_queue_splits_into_admission_wait_and_dispatch(tmp_path):
+    timing = admission_timing(tmp_path, [admission_record("model-call-1", 1 * MS, 31 * MS)])
+    assert timing["admission"] == "admitted"
+    assert timing["queue_seconds"] == pytest.approx(0.04)
+    assert timing["admission_wait_seconds"] == pytest.approx(0.03)
+    assert timing["dispatch_queue_seconds"] == pytest.approx(0.01)
+    assert (timing["admission_policy_version"], timing["admission_limit"]) == (7, 1)
+
+
+@pytest.mark.parametrize(
+    ("record", "configured", "admission", "dispatch"),
+    [
+        # Before agent-runner-v4 no admission existed: the whole queue is dispatch.
+        (None, None, "not_recorded", 0.04),
+        (None, False, "not_configured", 0.04),
+        # A step that needed a permit has no record: unknown, never a zero wait.
+        (None, True, "missing", None),
+        # Ticks of another clock, or an impossible order, are never subtracted.
+        (
+            admission_record("model-call-1", 1 * MS, 2 * MS, clock_id="other"),
+            True,
+            "inconsistent",
+            None,
+        ),
+        (admission_record("model-call-1", 30 * MS, 50 * MS), True, "inconsistent", None),
+        # The step ID matches but the record belongs to another span: never joined.
+        (
+            admission_record("model-call-1", 1 * MS, 31 * MS, span_id="c" * 16),
+            True,
+            "inconsistent",
+            None,
+        ),
+        (
+            admission_record("model-call-1", 1 * MS, 2 * MS, outcome="cancelled"),
+            True,
+            "inconsistent",
+            None,
+        ),
+    ],
+)
+def test_admission_evidence_that_cannot_split_the_queue_says_why(
+    tmp_path, record, configured, admission, dispatch
+):
+    timing = admission_timing(tmp_path, [record] if record else [], configured)
+    assert (timing["admission"], timing["admission_wait_seconds"]) == (admission, None)
+    assert timing["dispatch_queue_seconds"] == (
+        pytest.approx(dispatch) if dispatch is not None else None
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_conflicting_admission_records_for_one_step_are_unusable_in_either_order(tmp_path, reverse):
+    records = [
+        admission_record("model-call-1", 1 * MS, 31 * MS),
+        admission_record("model-call-1", 2 * MS, 10 * MS),
+    ]
+    timing = admission_timing(tmp_path, records[::-1] if reverse else records)
+    assert (timing["admission"], timing["admission_wait_seconds"]) == ("inconsistent", None)
+    assert timing["dispatch_queue_seconds"] is None
+
+
+def test_a_step_that_needs_no_permit_keeps_its_whole_queue_as_dispatch(tmp_path):
+    timing = admission_timing(tmp_path, [], required=())
+    assert timing["admission"] == "not_required"
+    assert timing["dispatch_queue_seconds"] == pytest.approx(0.04)
+
+
 def test_run_level_intervals_and_unusable_lines(tmp_path):
     ticks = [0, 100, 200, 500, 600]
     records = [sample(t * MS, GPU_UTIL, 1) for t in ticks]
@@ -424,7 +520,7 @@ def test_report_covers_a_test_double_runner_run(mean_task, server, tmp_path):
         open_gpu=FakeGpu,
     ).run()
     report = coverage_report(outcome.evidence_path.parent)
-    assert report["method"] == "coverage-v3"
+    assert report["method"] == "coverage-v4"
     assert report["run_id"] == str(outcome.run_id)
     registered = server.only_run().registration.resources
     sampled_services = {"agentwatch-agent-runner", "nvidia-nvml"}

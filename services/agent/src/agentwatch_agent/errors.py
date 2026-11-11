@@ -24,9 +24,10 @@ class RunFailure(Exception):
 
 
 class RunNotStarted(Exception):
-    """No task work started: local setup or live-run registration failed.
+    """No task work started: local setup, the policy read or live-run registration failed.
 
-    `stage` is "setup" for local failures before the live API is contacted, and
+    `stage` is "setup" for local failures before the live API is contacted, "policy" when the
+    concurrency policy could not be read or applied (before registration), and
     "registration" when the live API could not register the run.
     """
 

@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset optimization-schedule compare-optimization rule-baseline train-candidates freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset optimization-schedule compare-optimization rule-baseline train-candidates freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -195,6 +195,9 @@ agent-tasks: ## List the instrumented agent's fixed tasks
 
 agent-run: ## Run one fixed task with the real model, reporting live steps (AGENT_TASK=name)
 	uv run --package agentwatch-agent python -m agentwatch_agent run --task $(AGENT_TASK)
+
+agent-batch: ## Run tasks concurrently under the active concurrency policy (AGENT_TASK=name, REPEAT=copies)
+	uv run --package agentwatch-agent python -m agentwatch_agent batch --task $(AGENT_TASK) --repeat $(or $(REPEAT),2)
 
 agent-resend: ## Resend a run journal after a live API outage (JOURNAL=path)
 	uv run --package agentwatch-agent python -m agentwatch_agent resend $(JOURNAL)
