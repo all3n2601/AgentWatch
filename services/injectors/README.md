@@ -64,7 +64,10 @@ Injection logs are labeling metadata. They must never become model features.
   connections; requests in flight are counted as abandoned.
 - Prefill filler size is an estimate from `FILLER_TOKENS_PER_LINE`; the log records the
   server-reported `prompt_tokens` (min, `median_low` and max: a count the server actually
-  reported). A non-200 or unfinished/unusable completion is a `PrefillRejected` failure; an
+  reported). The log also records the measured `usage.completion_tokens` (`completion_tokens`
+  stats, `completions_not_one_token`, and `completions_without_completion_tokens` for replies
+  that reported none). A non-200 reply, an unusable completion, or a `finish_reason` other
+  than `stop` or `length` is a `PrefillRejected` failure; an
   unparseable body is counted under its own error type (`JSONDecodeError`). The load shares
   the device with the agents.
 - Retrieval is an in-process BM25 index, not a networked service. Its contention slows every

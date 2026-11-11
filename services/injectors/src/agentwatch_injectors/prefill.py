@@ -47,8 +47,11 @@ PREFILL_METHOD = "prefill-flood-openai-chat-v1"
 CHAT_PATH = SERVERS["vllm"][0]
 MAX_PREFILL_CONCURRENCY = 4
 MAX_PROMPT_TOKENS = 3072
-# Changing FILLER_LINE or FILLER_TOKENS_PER_LINE changes the load, so it needs a new method
-# version (`prefill-flood-openai-chat-v2`).
+# "length" is the normal end of a `max_tokens=1` reply; anything else (abort, error, ...) is not
+# a finished completion.
+FINISHED_REASONS = ("stop", "length")
+# Changing FILLER_LINE, FILLER_TOKENS_PER_LINE or the nonce format (`filler_prompt`) changes the
+# load, so it needs a new method version (`prefill-flood-openai-chat-v2`).
 # Measured 2026-11-10 with vLLM's /tokenize for Qwen/Qwen3-1.7B (ADR 0011): every filler line
 # below is 19 tokens. It is an estimate for other tokenizers and chat templates.
 FILLER_TOKENS_PER_LINE = 19
@@ -65,6 +68,18 @@ def filler_prompt(run_token: str, worker: int, sequence: int, prompt_tokens: int
     lines = [f"request {worker}-{sequence}-{run_token}"]
     lines.extend(FILLER_LINE.format(number=number) for number in range(1, line_count + 1))
     return "\n".join(lines) + "\n"
+
+
+def _count_stats(counts: list[int], median_key: str) -> dict | None:
+    if not counts:
+        return None
+    return {
+        "count": len(counts),
+        "min": min(counts),
+        # median_low keeps the median an integer token count that was really reported.
+        median_key: statistics.median_low(counts),
+        "max": max(counts),
+    }
 
 
 @dataclass(frozen=True)
@@ -104,7 +119,7 @@ class PrefillProfile:
             not isinstance(choices, list)
             or not choices
             or not isinstance(choices[0], dict)
-            or choices[0].get("finish_reason") is None
+            or choices[0].get("finish_reason") not in FINISHED_REASONS
         ):
             raise PrefillRejected("model server returned no finished choice")
         usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
@@ -112,22 +127,25 @@ class PrefillProfile:
         is_count = isinstance(count, int) and not isinstance(count, bool) and count > 0
         return count if is_count else None
 
-    def summarize(self, measurements: list[int], unmeasured: int) -> dict:
-        reported = (
-            {
-                "count": len(measurements),
-                "min": min(measurements),
-                # median_low keeps the median an integer token count that was really reported.
-                "median": statistics.median_low(measurements),
-                "max": max(measurements),
-            }
-            if measurements
-            else None
-        )
+    def measure_secondary(self, result: object) -> int | None:
+        """The reply's `usage.completion_tokens`, `None` when it is missing or not a count."""
+        usage = result.get("usage") if isinstance(result, dict) else None
+        count = usage.get("completion_tokens") if isinstance(usage, dict) else None
+        is_count = isinstance(count, int) and not isinstance(count, bool) and count >= 0
+        return count if is_count else None
+
+    def summarize(
+        self, measurements: list[int], unmeasured: int, secondary: list[int | None]
+    ) -> dict:
+        completion_tokens = [count for count in secondary if count is not None]
         return {
             "prompt_tokens_target": self.prompt_tokens,
-            "prompt_tokens": reported,
+            "prompt_tokens": _count_stats(measurements, "median"),
             "completions_without_prompt_tokens": unmeasured,
+            "completion_tokens": _count_stats(completion_tokens, "median_low"),
+            # A reply that reported no count is counted apart, never as one token.
+            "completions_not_one_token": sum(1 for count in completion_tokens if count != 1),
+            "completions_without_completion_tokens": len(secondary) - len(completion_tokens),
         }
 
 
