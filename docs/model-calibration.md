@@ -68,13 +68,21 @@ the model's best guess for inspection only.
 
 ## Report and gates
 
-- Calibration: top-label ECE over all test steps before abstention, 10 equal-width bins, before
-  and after calibration; at most 0.05 passes.
-- Abstention: rates overall and per true class, at most 20% each. The contract's mixed-contention
-  scope is unmeasured until M02 scores mixed steps, so the gate is at best inconclusive; any
-  measured rate above the limit fails it.
+- Mixed steps follow `mixed-scoring-v1` ([rule baseline](rule-baseline.md)): a prediction on a
+  `mixed` step is correct when it names any resource in `label_resources`; steps with basis
+  `mixed_joint_only` are never scored, and the report counts them apart
+  (`joint_only_steps_not_scored`, `slices.mixed_contention.joint_only`). The four-class metrics
+  cover single-class steps only. The abstention threshold is chosen on single-class validation
+  steps, as the classifier's fit is, so mixed validation steps do not move it.
+- Calibration: top-label ECE over all scored test steps before abstention, 10 equal-width bins,
+  before and after calibration; at most 0.05 passes. A hit on a mixed step counts as correct.
+- Abstention: rates overall (every scored step), per true class and for the mixed-contention
+  scope (scored mixed steps), at most 20% each. A rate is judged only on at least the
+  contract's minimum steps (per class, or the minimum mixed steps); a measured rate above the
+  limit fails the gate, and a mixed scope below the minimum leaves it inconclusive.
 - Model per-class scores and macro F1 with abstentions counted as misses, beside the rules'.
-- Clean-step `none` rates and the gain over rules, recomputed with abstentions as misses.
+- Clean-step `none` rates, the gain over rules and the mixed-contention gain, recomputed with
+  abstentions as misses.
 - The regression error and every other gate calibration cannot change, carried from the
   candidates report with their reasons.
 - Slices: by experiment condition, and steps with any missing feature against complete steps,

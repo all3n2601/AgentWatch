@@ -1,10 +1,11 @@
 # AgentWatch evaluation contract
 
-Status: `eval-contract-v2` (frozen identifier `9b55506c`) records accepted metadata,
-based on reported verbal acceptance on 2026-11-05. Rohit's written confirmation is still
-required before PR #59 may merge; it is not yet an acceptance record. It adopts items 1, 3 and 4 of [the v2 proposal](evaluation-contract-v2-proposal.md);
-item 2, the multi-resource metric and the rule for scoring a `mixed` step, is not encoded and
-remains Rohit's M02 decision. Thresholds live in `pipelines/model/evaluation-contract.toml`.
+Status: `eval-contract-v2` (frozen identifier `9b55506c`), accepted. Rohit confirmed it in
+writing on 2026-11-10 by [approving PR #59](https://github.com/all3n2601/AgentWatch/pull/59#pullrequestreview-5846813656). It adopts items 1, 3 and 4 of
+[the v2 proposal](evaluation-contract-v2-proposal.md). Item 2, the multi-resource metric and the
+rule for scoring a `mixed` step, is Rohit's M02 decision from the same approval, implemented in
+code as `mixed-scoring-v1` ([the rule baseline](rule-baseline.md)) rather than in the contract
+file, so the frozen identifier and the published split identities do not change. Thresholds live in `pipelines/model/evaluation-contract.toml`.
 `eval-contract-v1` (identifier `3022770b`) is kept unchanged as
 `pipelines/model/evaluation-contract-v1.toml`, so splits and results made under it still rebuild.
 No model or rule baseline has been evaluated yet.
@@ -67,7 +68,7 @@ Some gates cannot be evaluated yet and are reported as not evaluated until their
 |---|---|
 | Unseen tasks, and task-grouped bootstrap intervals | More than one task per split: dataset v1 has one training task group, an empty validation split, and an interim `task_id` on CPU and coding rows |
 | Held-out injection method, as a model gate | A model evaluated on a split where it is held out; `split-v2` holds out `worker_queue_blocker` and records the check, but no model or rule evaluation has run |
-| Mixed-contention gain, and any score on `mixed` steps | The `mixed` scoring rule (proposal item 2, Rohit's M02 decision); until then `make rule-baseline` and `make train-candidates` refuse a split with `mixed` labels |
+| Mixed-contention gain | At least 30 scored mixed test steps in a split whose test rows share one feature definition; dataset v1's test split mixes two, so evaluation refuses it |
 | Calibration, abstention, and validation-dependent gates | A non-empty validation split; dataset v1 has none, so these are inconclusive |
 
 ## Promotion
@@ -112,6 +113,6 @@ that the written merge condition has been satisfied. That condition remains open
 The test split crosses feature definitions: 350 CPU/coding rows use `steps-v1.2`,
 while replay rows use `step-features-v1`. Model and rule evaluation now refuse a
 combined population with differing feature versions (including present versus
-missing identity), even after M02 defines mixed-label scoring. A future versioned
+missing identity), with or without mixed-label scoring. A future versioned
 split/report design must evaluate compatible populations separately. Model and
 serving metadata retain the full label-version set beside the legacy singular field.

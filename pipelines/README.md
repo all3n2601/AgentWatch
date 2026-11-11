@@ -224,7 +224,8 @@ v1 files (below).
 rejections), the gate passes with drift not compared, and `make split-dataset` writes
 `split-v2+febe942a2b59` (train 2,028, validation 0, test 3,925; class balance met; leakage
 passed at 0.974242 against the 0.98 bound). `make rule-baseline` and `make train-candidates` on
-that split stop because `mixed` has no scoring rule until M02. To rerun the `steps-v1.2` work,
+that split stop because its test rows use two feature definitions, which evaluation refuses;
+`mixed` steps themselves are scored by `mixed-scoring-v1`. To rerun the `steps-v1.2` work,
 pass the v1 contract and schema. The split targets always take the newest release, so split
 `steps-v1.2` directly:
 

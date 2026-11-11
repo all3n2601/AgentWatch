@@ -3,8 +3,9 @@
 Status: `rules-v1`, implemented and tested; not yet evaluated on a dataset that can be evaluated.
 On the interim `steps-v1.2+5954f97ef8b2` split (2026-10-26) the report is **blocked** by the
 leakage check, with no metrics. On dataset v1 (`steps-v1.3+aafae73eb211`, split
-`split-v2+febe942a2b59`) it stops before scoring, because that split holds steps labeled
-`mixed` and no scoring rule for them exists until M02 (see below).
+`split-v2+febe942a2b59`) it stops before scoring because the test split mixes two feature
+definitions (`steps-v1.2` and `step-features-v1`), which evaluation refuses. Steps labeled
+`mixed` are scored by `mixed-scoring-v1` (see below).
 
 The rule baseline is the transparent reference a learned model must beat. It names the resource
 a step waited on from measured features, and is scored against
@@ -45,13 +46,27 @@ make rule-baseline SPLIT=data/datasets/splits/steps-v1.2+5954f97ef8b2/split-v1+5
   VALIDATION_SCHEMA=pipelines/validation/schema/steps.pbtxt
 ```
 
-**A split with `mixed` labels is refused.** `mixed` is a `labels-v2` label value outside the
-four classes, and how a four-class prediction is scored on a `mixed` step is Rohit's M02
-decision (item 2 of [the v2 proposal](evaluation-contract-v2-proposal.md)). Until it is
-defined, a row labeled `mixed` is an unusable row: the command exits 2 with
-"`<split> row <n> is labeled 'mixed', which has no scoring rule until M02 defines one`" and
-writes no report. Every `split-v2` split of dataset v1 holds `mixed` steps (93 in test, 53 in
-train), so the rule baseline cannot run on it yet. Its `steps-v1.2` behavior is unchanged.
+**Mixed steps.** `mixed-scoring-v1` (`pipelines/model/src/agentwatch_model/mixed.py`) is Rohit's rule for
+item 2 of [the v2 proposal](evaluation-contract-v2-proposal.md), fixed before any evaluation: a
+four-class prediction on a step labeled `mixed` is correct (a hit) when it names any resource
+in its `label_resources`. Steps with basis `mixed_joint_only` are reported apart (`joint_only`:
+steps, and how many predictions named a member) and never scored, for classification or
+regression. Every score uses the recorded labels as fixed truth, never the prediction, so the
+model and the rules are measured against the same answer:
+
+- the four-class confusion matrix, per-class scores, macro F1 and their minimums cover
+  single-class steps only, as a mixed step has no single class;
+- mixed steps are scored by their hit rate;
+- per-resource scores (`multi_resource`) are one-vs-rest on `label_resources` over every scored
+  step: a step is a positive for every confirmed resource, so a single prediction on a mixed
+  step leaves its other members as misses and per-resource recall on mixed steps stays below 1;
+- the mixed-contention macro F1 is the mean per-resource F1 on scored mixed steps over the
+  resources confirmed on at least one of them, a set fixed by the labels. Naming one resource on
+  every step can reach a high hit rate but scores zero for the other resources.
+
+A `mixed` row must name two or more known resources and a known mixed basis
+(`mixed_confirmed`, `mixed_partial`, `mixed_joint_only`); otherwise it is an unusable row.
+Its `steps-v1.2` behavior is unchanged.
 
 The command writes to `.data/rule-baseline/`:
 
@@ -93,8 +108,12 @@ exits with code 2 and an error message instead of a report. `make rule-baseline`
   has fewer test steps than the contract's minimum. The defined-class value has a 95%
   percentile bootstrap interval that resamples whole tasks (2,000 resamples, recorded seed,
   valid resamples counted); with fewer than 5 tasks (proposed) the interval is null.
-- Slices: a confusion matrix per experiment condition, and the mixed-contention slice reported
-  as unavailable, with its reason, until labels define mixed contention.
+- Per-resource scores on `label_resources` (`multi_resource`) beside macro F1, as described
+  under Mixed steps.
+- Slices: a confusion matrix per experiment condition over single-class steps, and the
+  mixed-contention slice: scored mixed steps, their `hit_rate`, per-resource scores and macro F1
+  with the resources it covers, and the joint-only steps apart; inconclusive below the
+  contract's 30 mixed steps.
 - Clean-step gates: at least 95% of `clean` steps, and of `baseline` and `clean` steps
   together, predicted `none`; inconclusive below the contract's minimum clean steps. Each gate
   records the steps its rate covers (`steps`) and, separately, the clean steps sufficiency is
@@ -105,6 +124,6 @@ exits with code 2 and an error message instead of a report. `make rule-baseline`
 - A summary counting each gate outcome, with all four counts present (zeros on a blocked
   report). Any outcome other than pass blocks promotion.
 - Every other contract gate as `not_evaluated`, with the reason: the rules are the reference
-  for gain over rules, mixed contention is undefined in `labels-v1.1`, the rules give no
+  for gain over rules and mixed-contention gain, the rules give no
   confidence or abstention, task identity is interim, only one injection method exists, and
   overhead and latency are measured on live runs.

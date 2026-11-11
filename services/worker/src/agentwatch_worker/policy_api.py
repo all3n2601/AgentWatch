@@ -49,14 +49,19 @@ def store(request: Request) -> PolicyStore:
     return PolicyStore(request.app.state.store)
 
 
-NOT_ENFORCED = "Policy is stored and versioned only; nothing enforces these limits yet."
+# The service enforces nothing itself; agent runners do, per process (O03, ADR 0010).
+ENFORCEMENT_NOTE = (
+    "The service stores and versions policy only. Agent runner processes that read it limit "
+    "their own model requests and test jobs (per process, not globally); a stored version or "
+    "run link is not evidence that any work was limited."
+)
 
 
 @router.get(
     "/{target}",
     response_model=PolicyVersion,
     responses=UNSUPPORTED_TARGET,
-    description=f"The active policy version; version 0 is the no-limit baseline. {NOT_ENFORCED}",
+    description=f"The active policy version; version 0 is the no-limit baseline. {ENFORCEMENT_NOTE}",
 )
 def get_active_policy(target: str, request: Request):
     try:
@@ -69,7 +74,7 @@ def get_active_policy(target: str, request: Request):
     "/{target}/versions",
     response_model=PolicyPage,
     responses=UNSUPPORTED_TARGET,
-    description=f"Policy history newest first, ending with the version 0 baseline. {NOT_ENFORCED}",
+    description=f"Policy history newest first, ending with the version 0 baseline. {ENFORCEMENT_NOTE}",
 )
 def list_policy_versions(
     target: str,
@@ -89,7 +94,7 @@ def list_policy_versions(
     response_model=PolicyChangeResult,
     responses={**WRITE_ERRORS, **UNSUPPORTED_TARGET, 200: {"model": PolicyChangeResult}},
     description="Append a set, disable or restore version and link it to open coding-agent "
-    f"runs; an identical retry returns 200. {NOT_ENFORCED}",
+    f"runs; an identical retry returns 200. {ENFORCEMENT_NOTE}",
 )
 def change_policy(target: str, change: PolicyChange, request: Request, response: Response):
     try:

@@ -266,8 +266,8 @@ export function ConcurrencyControls() {
         <div>
           <h2 className="text-sm font-semibold">Active policy</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Target coding-agent · Scope: runner process · recorded only, not
-            enforced until O03
+            Target coding-agent · Scope: runner process · enforced by each agent
+            runner process for its own work, not globally
           </p>
         </div>
         <p role="status" className="text-lg font-semibold">

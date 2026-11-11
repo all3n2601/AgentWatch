@@ -1,5 +1,11 @@
 """Command line: `run` a task, list `tasks`, measure `overhead`, or `resend` a run's journal.
 
+`run` and `batch` apply the active concurrency policy (O03): model requests and test jobs wait
+for this process's admission permits. If the policy cannot be read, nothing runs (exit 4);
+`--no-policy` runs without admission limits and records that. `batch` runs several tasks at
+once in this process; it exits with the most severe of its runs' codes, in the order 3, 5, 4,
+1, 0.
+
 `sampling-overhead` measures resource sampling's effect on a real model request; it exits 1
 if the measurement did not complete (its partial evidence is kept). `coverage` reports how a
 recorded run's samples cover its steps; it exits 2 if the run directory cannot support one.
@@ -26,7 +32,9 @@ import json
 import os
 import signal
 import sys
+import time
 import urllib.parse
+from contextlib import ExitStack
 from pathlib import Path
 from types import FrameType
 from uuid import uuid4
@@ -38,6 +46,17 @@ from agentwatch_sdk.live import ResourceRegistration
 from agentwatch_worker.nvml import NvmlDevice
 from agentwatch_worker.ollama import ollama_base_url
 
+from agentwatch_agent.admission import (
+    DEFAULT_MAX_QUEUE_LENGTH,
+    DEFAULT_MAX_WAIT_SECONDS,
+    DEFAULT_POLICY_POLL_SECONDS,
+    AdmissionController,
+    AdmissionSettings,
+    PolicyWatcher,
+    QueueBounds,
+    RunnerAdmission,
+)
+from agentwatch_agent.batch import MAX_BATCH_RUNS, AgentBatch, BatchRun
 from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.config import (
     DEFAULT_CHAT_OPTIONS,
@@ -46,7 +65,11 @@ from agentwatch_agent.config import (
     RunLimits,
 )
 from agentwatch_agent.coverage import CoverageError, coverage_report
-from agentwatch_agent.delivery import LiveRejectedError, is_retryable, replay_journal
+from agentwatch_agent.delivery import (
+    LiveRejectedError,
+    is_retryable,
+    replay_journal,
+)
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.experiment import (
     CONDITIONS,
@@ -205,6 +228,46 @@ def add_server_evidence_arguments(command: argparse.ArgumentParser) -> None:
     add_gpu_device_arguments(command)
 
 
+def add_admission_arguments(command: argparse.ArgumentParser) -> None:
+    """Concurrency policy enforcement (O03): queue bounds are declared before the run."""
+    group = command.add_argument_group("admission")
+    group.add_argument(
+        "--no-policy",
+        action="store_true",
+        help="Do not read the concurrency policy: no admission limits apply, as evidence records",
+    )
+    group.add_argument(
+        "--policy-poll",
+        type=positive_seconds,
+        default=DEFAULT_POLICY_POLL_SECONDS,
+        help="Seconds between reads of the active policy; a new version applies to new admissions",
+    )
+    for flag, label in (("inference", "model requests"), ("test", "test jobs")):
+        group.add_argument(
+            f"--{flag}-max-queue",
+            type=nonnegative_int,
+            default=DEFAULT_MAX_QUEUE_LENGTH,
+            help=f"Most {label} waiting for a permit; 0 refuses instead of queueing",
+        )
+        group.add_argument(
+            f"--{flag}-max-wait",
+            type=positive_seconds,
+            default=DEFAULT_MAX_WAIT_SECONDS,
+            help=f"Longest wait in seconds for a {label} permit before the run fails",
+        )
+
+
+def admission_controller(args: argparse.Namespace, model: ChatModel) -> AdmissionController | None:
+    """The process's controller from the declared queue bounds; None with --no-policy."""
+    if args.no_policy:
+        return None
+    settings = AdmissionSettings(
+        inference_requests=QueueBounds(args.inference_max_queue, args.inference_max_wait),
+        test_jobs=QueueBounds(args.test_max_queue, args.test_max_wait),
+    )
+    return AdmissionController(settings, inference_service_id=model.service_id)
+
+
 def build_model(args: argparse.Namespace) -> ChatModel:
     if args.model_backend == "vllm":
         name = args.model or os.environ.get("VLLM_MODEL", DEFAULT_VLLM_MODEL)
@@ -240,6 +303,36 @@ def parser() -> argparse.ArgumentParser:
         default=RunLimits().run_timeout_seconds,
         help="Total run time limit in seconds",
     )
+    add_admission_arguments(run)
+
+    batch = commands.add_parser(
+        "batch", help="Run several tasks at once in this process, under one admission controller"
+    )
+    batch.add_argument(
+        "--task",
+        action="append",
+        required=True,
+        help="Task name; repeat for several tasks (see the `tasks` command)",
+    )
+    batch.add_argument(
+        "--repeat",
+        type=positive_int,
+        default=1,
+        help=f"Copies of each task in the batch (at most {MAX_BATCH_RUNS} runs in all)",
+    )
+    add_model_arguments(batch)
+    add_server_evidence_arguments(batch)
+    batch.add_argument(
+        "--api-url", type=http_url, default=os.environ.get("AGENTWATCH_API_URL", DEFAULT_API_URL)
+    )
+    batch.add_argument("--output-dir", type=Path, default=Path(".data/agent-batches"))
+    batch.add_argument(
+        "--run-timeout",
+        type=positive_seconds,
+        default=RunLimits().run_timeout_seconds,
+        help="Time limit of each run in seconds",
+    )
+    add_admission_arguments(batch)
 
     commands.add_parser("tasks", help="List runnable tasks and their identities")
 
@@ -350,15 +443,26 @@ def run_command(args: argparse.Namespace) -> int:
     except TaskDefinitionError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
+    transport = LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS)
     try:
+        model = build_model(args)
+        controller = admission_controller(args, model)
+        watcher = (
+            PolicyWatcher(transport, controller, args.policy_poll)
+            if controller is not None
+            else None
+        )
         runner = AgentRunner(
             task=task,
-            model=build_model(args),
-            transport=LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS),
+            model=model,
+            transport=transport,
             output_dir=default_output_dir(args.output_dir, task),
             limits=RunLimits(run_timeout_seconds=args.run_timeout),
             # A host without NVML records every GPU metric as unsupported, never as zero.
             open_gpu=NvmlDevice.open,
+            admission=(
+                RunnerAdmission(controller, transport, watcher) if controller is not None else None
+            ),
             **server_evidence(args),
         )
     except ValueError as error:
@@ -373,7 +477,10 @@ def run_command(args: argparse.Namespace) -> int:
 
     previous = {sig: signal.signal(sig, handle_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        outcome = runner.run()
+        with ExitStack() as policy:
+            if watcher is not None:
+                policy.enter_context(watcher)
+            outcome = runner.run()
     except RunNotStarted as error:
         return not_started_exit(error, args.api_url, runner.output_dir / "live-journal.jsonl")
     finally:
@@ -395,8 +502,118 @@ def run_command(args: argparse.Namespace) -> int:
     return EXIT_PASSED if outcome.state == "completed" and outcome.task_passed else EXIT_FAILED
 
 
+def batch_command(args: argparse.Namespace) -> int:
+    try:
+        tasks = [load_task(name) for name in args.task]
+    except TaskDefinitionError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    count = len(tasks) * args.repeat
+    if count > MAX_BATCH_RUNS:
+        print(f"error: a batch has at most {MAX_BATCH_RUNS} runs, not {count}", file=sys.stderr)
+        return 2
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    batch_dir = args.output_dir / f"batch-{stamp}-{uuid4().hex[:6]}"
+    transport = LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS)
+    # One clock domain for this process, so every run's ticks (and admission waits) compare.
+    clock = MonotonicClock()
+    try:
+        # One model client per run, so no request state is shared between threads.
+        models = [build_model(args) for _ in range(count)]
+        controller = admission_controller(args, models[0])
+        watcher = (
+            PolicyWatcher(transport, controller, args.policy_poll)
+            if controller is not None
+            else None
+        )
+        admission = (
+            RunnerAdmission(controller, transport, watcher) if controller is not None else None
+        )
+        batch_tasks = [task for task in tasks for _ in range(args.repeat)]
+        runners = [
+            AgentRunner(
+                task=task,
+                model=model,
+                transport=transport,
+                output_dir=batch_dir / "runs" / f"{index:02d}-{task.name}",
+                limits=RunLimits(run_timeout_seconds=args.run_timeout),
+                clock=clock,
+                open_gpu=NvmlDevice.open,
+                admission=admission,
+                **server_evidence(args),
+            )
+            for index, (task, model) in enumerate(zip(batch_tasks, models, strict=True), 1)
+        ]
+        batch = AgentBatch(runners, controller, batch_dir, watcher=watcher)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+    def handle_signal(number: int, _frame: FrameType | None) -> None:
+        name = signal.Signals(number).name
+        batch.request_cancel_from_signal("signal", f"Cancelled by operator signal {name}")
+
+    previous = {sig: signal.signal(sig, handle_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        with ExitStack() as policy:
+            if watcher is not None:
+                policy.enter_context(watcher)
+            runs = batch.run()
+    except RunNotStarted as error:
+        print(f"Batch {batch.batch_id}: {batch.path}")
+        return not_started_exit(error, args.api_url, batch.path)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    print(f"Batch {batch.batch_id}: {batch.path}")
+    return batch_exit(runs, args.api_url)
+
+
+def batch_exit(runs: list[BatchRun], api_url: str) -> int:
+    """The most severe run's exit code; a runner error is re-raised once all are recorded."""
+    errors = [run.error for run in runs if run.error is not None]
+    if errors:
+        raise errors[0]
+    codes = []
+    for run in runs:
+        journal = run.runner.output_dir / "live-journal.jsonl"
+        if run.not_started is not None:
+            print(f"Run {run.index} ({run.runner.task.task_id}): not started")
+            codes.append(not_started_exit(run.not_started, api_url, journal))
+            continue
+        outcome = run.outcome
+        print(
+            f"Run {run.index} {outcome.run_id}: {outcome.state}"
+            + (f" ({outcome.reason})" if outcome.reason else "")
+        )
+        code = delivery_exit(
+            outcome.resend_needed,
+            outcome.records_refused,
+            outcome.journal_path,
+            completion_refused=outcome.completion_refused,
+        )
+        if code is None:
+            passed = outcome.state == "completed" and outcome.task_passed
+            code = EXIT_PASSED if passed else EXIT_FAILED
+        codes.append(code)
+    for code in (
+        EXIT_INCOMPLETE_DELIVERY,
+        EXIT_RECORDS_REFUSED,
+        EXIT_LIVE_UNAVAILABLE,
+        EXIT_FAILED,
+    ):
+        if code in codes:
+            return code
+    return EXIT_PASSED
+
+
 def not_started_exit(error: RunNotStarted, api_url: str, journal: Path) -> int:
-    if error.stage != "registration":
+    if error.stage == "policy":
+        cause = (
+            f"the concurrency policy at {api_url} could not be read or applied ({error}). "
+            "Use --no-policy to run without admission limits."
+        )
+    elif error.stage != "registration":
         cause = f"local setup failed before contacting the live API ({error})."
     elif error.closure_journaled:
         cause = (
@@ -793,6 +1010,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.command == "run":
         return run_command(args)
+    if args.command == "batch":
+        return batch_command(args)
     if args.command == "tasks":
         return tasks_command()
     if args.command == "experiment":

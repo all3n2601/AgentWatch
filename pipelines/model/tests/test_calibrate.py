@@ -17,6 +17,7 @@ from calibration_fixtures import (
     unsure,
     write_candidates,
 )
+from training_fixtures import featured_row
 
 VALIDATION = steps(30, "valid")
 TEST = steps(30, "test")
@@ -34,6 +35,36 @@ def mistakes_unsure(row: dict, index: int) -> dict[str, float]:
 def always_unsure_and_wrong(row: dict, index: int) -> dict[str, float]:
     wrong = COLUMNS[(COLUMNS.index(row["label_resource"]) + 1) % len(COLUMNS)]
     return {name: 0.4 if name == wrong else 0.2 for name in COLUMNS}
+
+
+def mixed_steps(
+    count: int, members: str = "cpu_sandbox,inference", basis: str = "mixed_confirmed", prefix="mix"
+) -> list[dict]:
+    """Synthetic mixed-contention steps, confirmed on `members`, for mixed-scoring-v1 tests."""
+    return [
+        featured_row("cpu_sandbox", index, task_id=f"{prefix}-{index % 5}")
+        | {
+            "label_resource": "mixed",
+            "label_resources": members,
+            "label_basis": basis,
+            "condition": "mixed",
+            "label_excess_fraction": 0.7,
+        }
+        for index in range(count)
+    ]
+
+
+def names_cpu_sandbox(row: dict, index: int) -> dict[str, float]:
+    """Sure of cpu_sandbox on a mixed step (a hit when cpu_sandbox is a confirmed member)."""
+    if row["label_resource"] == "mixed":
+        return {name: 0.97 if name == "cpu_sandbox" else 0.01 for name in COLUMNS}
+    return overconfident(row, index)
+
+
+def unsure_on_mixed(row: dict, index: int) -> dict[str, float]:
+    if row["label_resource"] == "mixed":
+        return {name: 0.4 if name == "cpu_sandbox" else 0.2 for name in COLUMNS}
+    return mistakes_unsure(row, index)
 
 
 def prepare(tmp_path, validation=VALIDATION, test=TEST, **options):
@@ -172,8 +203,8 @@ def test_low_confidence_steps_abstain_and_count_as_misses_on_clean_steps(tmp_pat
     assert report["gates"]["clean_none_rate"]["value"] == pytest.approx(0.8)
     abstention = report["gates"]["abstention"]
     assert abstention["value"] == pytest.approx(0.2)
-    assert abstention["scopes"]["mixed_contention"]["status"] == "unavailable"
-    # Overall and per-class rates are within the limit, but mixed contention is unmeasured.
+    assert abstention["scopes"]["mixed_contention"] == {"steps": 0, "abstained": 0, "rate": None}
+    # Overall and per-class rates are within the limit, but no mixed step was scored.
     assert abstention["outcome"] == "inconclusive"
     assert "mixed" in abstention["reason"].lower()
 
@@ -388,3 +419,55 @@ def test_main_exits_two_without_a_candidates_report(tmp_path, capsys):
     args = ["--split", str(tmp_path / "split.json"), "--candidates", str(tmp_path / "missing")]
     assert main(args) == 2
     assert "make train-candidates" in capsys.readouterr().err
+
+
+def test_mixed_steps_are_scored_by_hit_and_joint_only_steps_are_not_scored(tmp_path):
+    joint = mixed_steps(4, "cpu_sandbox,retrieval", "mixed_joint_only", "joint")
+    test = TEST + mixed_steps(32) + joint
+    split, candidates = prepare(tmp_path, test=test, test_scorer=names_cpu_sandbox)
+    calibrate(tmp_path, split, candidates, {"validation": VALIDATION, "test": test})
+    report = read(tmp_path / "out" / "report.json")
+    assert report["scored_steps"] == len(TEST) + 32
+    assert report["joint_only_steps_not_scored"] == 4
+    mixed = report["metrics"]["slices"]["mixed_contention"]
+    # Naming a confirmed resource is a hit; an abstention counts as a miss.
+    assert mixed["steps"] == 32
+    assert mixed["hit_rate"] == pytest.approx(1 - mixed["abstention_rate"])
+    assert mixed["joint_only"]["steps"] == 4 and mixed["joint_only"]["scored"] is False
+    assert mixed["joint_only"]["named_a_member"] + mixed["joint_only"]["abstained"] == 4
+    # ECE counts the 32 hits as correct and leaves the joint-only steps out: (84 + 32) / 152.
+    calibration = report["metrics"]["calibration"]
+    assert calibration["accuracy_before_abstention"] == pytest.approx(116 / 152)
+    assert report["gates"]["abstention"]["scopes"]["mixed_contention"]["steps"] == 32
+    # The four-class metrics cover single-class steps only: mixed steps change none of them.
+    base_path = tmp_path / "base"
+    base_split, base_candidates = prepare(base_path, test_scorer=names_cpu_sandbox)
+    calibrate(base_path, base_split, base_candidates)
+    base = read(base_path / "out" / "report.json")
+    assert report["metrics"]["model"]["class_scores"] == base["metrics"]["model"]["class_scores"]
+
+
+def test_abstaining_on_mixed_steps_above_the_limit_fails_the_abstention_gate(tmp_path):
+    test = TEST + mixed_steps(32)
+    split, candidates = prepare(
+        tmp_path, test=test, validation_scorer=mistakes_unsure, test_scorer=unsure_on_mixed
+    )
+    calibrate(tmp_path, split, candidates, {"validation": VALIDATION, "test": test})
+    abstention = read(tmp_path / "out" / "report.json")["gates"]["abstention"]
+    assert abstention["scopes"]["mixed_contention"]["rate"] == 1.0
+    assert abstention["outcome"] == "fail"
+    assert "mixed_contention" in abstention["reason"]
+
+
+def test_mixed_validation_steps_do_not_change_the_fit(tmp_path):
+    base_split, base_candidates = prepare(tmp_path / "base", validation_scorer=mistakes_unsure)
+    calibrate(tmp_path / "base", base_split, base_candidates)
+    validation = VALIDATION + mixed_steps(20)
+    split, candidates = prepare(
+        tmp_path / "mixed", validation=validation, validation_scorer=unsure_on_mixed
+    )
+    calibrate(tmp_path / "mixed", split, candidates, {"validation": validation, "test": TEST})
+    fit = read(tmp_path / "mixed" / "out" / "report.json")["calibration"]
+    base = read(tmp_path / "base" / "out" / "report.json")["calibration"]
+    assert fit["temperature"] == pytest.approx(base["temperature"])
+    assert fit["abstention_threshold"] == pytest.approx(base["abstention_threshold"])

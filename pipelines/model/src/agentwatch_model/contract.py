@@ -40,6 +40,7 @@ class Contract:
     max_ece: float
     max_abstention_rate: float
     abstention_rate_scopes: tuple[str, ...]
+    min_gain_over_rules_mixed: float
 
 
 def section(parsed: dict, name: str) -> dict:
@@ -133,4 +134,5 @@ def load_contract(path: Path = DEFAULT_CONTRACT) -> Contract:
         max_ece=share(parsed, "calibration", "max_ece"),
         max_abstention_rate=share(parsed, "calibration", "max_abstention_rate"),
         abstention_rate_scopes=abstention_scopes(parsed),
+        min_gain_over_rules_mixed=share(parsed, "classification", "min_gain_over_rules_mixed"),
     )

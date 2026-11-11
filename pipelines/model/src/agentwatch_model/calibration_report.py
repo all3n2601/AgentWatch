@@ -3,22 +3,28 @@
 The temperature and abstention threshold come from validation only (calibration.py). Gates
 calibration cannot change, such as the regression error, are carried from the M03 candidates
 report, so this report holds every contract gate for promotion checks. An abstention counts as
-a miss everywhere the contract scores predictions.
+a miss everywhere the contract scores predictions. Mixed steps follow mixed-scoring-v1: a
+prediction is correct when it names any confirmed resource, the four-class metrics cover
+single-class steps only, and joint-only steps are reported apart and never scored.
 """
 
 from dataclasses import dataclass
+
+from agentwatch_data.splits import is_member
 
 from agentwatch_model.calibration import (
     CalibrationConfig,
     abstaining_scores,
     abstention_rates,
+    rate,
     top_label_ece,
 )
-from agentwatch_model.comparison import gain_gate
+from agentwatch_model.comparison import gain_gate, mixed_gain_gate
 from agentwatch_model.contract import Contract
 from agentwatch_model.features import FEATURES
 from agentwatch_model.metrics import class_scores, confusion_matrix, macro_f1, macro_f1_all_classes
-from agentwatch_model.report import MIXED_CONTENTION_REASON, clean_gates, summary
+from agentwatch_model.mixed import is_joint_only, is_mixed, mixed_summary
+from agentwatch_model.report import clean_gates, summary
 
 METHOD = "temperature_scaling"
 # Stands in for an abstained step's prediction in the clean gates, where it counts as a miss.
@@ -34,6 +40,7 @@ COMPUTED_GATES = (
     "clean_none_rate",
     "baseline_and_clean_none_rate",
     "gain_over_rules",
+    "mixed_contention_gain",
 )
 
 
@@ -67,10 +74,36 @@ class Scored:
     calibrated: bool
 
     def correct(self) -> list[bool]:
+        """Whether each prediction hit: the recorded class, or any confirmed resource if mixed."""
         return [
-            record["prediction"] == row["label_resource"]
+            is_member(row, record["prediction"])
+            if is_mixed(row)
+            else record["prediction"] == row["label_resource"]
             for row, record in zip(self.rows, self.records, strict=True)
         ]
+
+    def abstained_predictions(self) -> list[str | None]:
+        return [
+            None if abstained else record["prediction"]
+            for record, abstained in zip(self.records, self.abstained, strict=True)
+        ]
+
+    def without_joint_only(self) -> "Scored":
+        """The steps mixed-scoring-v1 scores: every step except the joint-only ones."""
+        keep = [not is_joint_only(row) for row in self.rows]
+
+        def pick(items: list) -> list:
+            return [item for item, kept in zip(items, keep, strict=True) if kept]
+
+        return Scored(
+            rows=pick(self.rows),
+            records=pick(self.records),
+            raw_confidences=pick(self.raw_confidences),
+            confidences=pick(self.confidences),
+            abstained=pick(self.abstained),
+            probabilities=pick(self.probabilities),
+            calibrated=self.calibrated,
+        )
 
 
 def contract_identity(contract: Contract) -> dict:
@@ -94,31 +127,54 @@ def group_summary(scored: Scored, indices: list[int], bins: int) -> dict:
     }
 
 
-def slices(contract: Contract, scored: Scored) -> dict:
-    """By condition, by whether any feature was missing, and mixed contention (unavailable)."""
+def mixed_slice(contract: Contract, scored: Scored, scorable: Scored) -> dict:
+    """The mixed-contention slice with abstentions as misses; joint-only steps reported apart.
+
+    `scored` holds every test step, `scorable` the ones mixed-scoring-v1 scores.
+    """
+    predictions = [
+        ABSTAINED if prediction is None else prediction
+        for prediction in scored.abstained_predictions()
+    ]
+    block = mixed_summary(scored.rows, predictions, contract)
+    mixed = [i for i, row in enumerate(scorable.rows) if is_mixed(row)]
+    joint_abstained = sum(
+        abstained for row, abstained in zip(scored.rows, scored.abstained) if is_joint_only(row)
+    )
+    calibration = group_summary(scorable, mixed, contract.ece_bins)
+    return block | {
+        "abstention_rate": calibration["abstention_rate"],
+        "ece_uncalibrated": calibration["ece_uncalibrated"],
+        "ece_calibrated": calibration["ece_calibrated"],
+        "joint_only": block["joint_only"] | {"abstained": joint_abstained},
+    }
+
+
+def slices(contract: Contract, scored: Scored, scorable: Scored) -> dict:
+    """By condition, by whether any feature was missing, and mixed contention.
+
+    `scored` is every test step; `scorable` excludes the joint-only steps, which are never scored.
+    """
     bins = contract.ece_bins
-    indices = range(len(scored.rows))
-    missing = {i for i in indices if any(scored.rows[i][name] is None for name in FEATURES)}
-    conditions = sorted({row["condition"] for row in scored.rows})
+    rows = scorable.rows
+    indices = range(len(rows))
+    missing = {i for i in indices if any(rows[i][name] is None for name in FEATURES)}
+    conditions = sorted({row["condition"] for row in rows})
     return {
         "by_condition": {
             condition: group_summary(
-                scored, [i for i in indices if scored.rows[i]["condition"] == condition], bins
+                scorable, [i for i in indices if rows[i]["condition"] == condition], bins
             )
             for condition in conditions
         },
         "missing_features": {
-            "complete": group_summary(scored, [i for i in indices if i not in missing], bins),
-            "missing_any": group_summary(scored, sorted(missing), bins),
+            "complete": group_summary(scorable, [i for i in indices if i not in missing], bins),
+            "missing_any": group_summary(scorable, sorted(missing), bins),
             "steps_missing_each_feature": {
-                name: sum(1 for row in scored.rows if row[name] is None) for name in FEATURES
+                name: sum(1 for row in rows if row[name] is None) for name in FEATURES
             },
         },
-        "mixed_contention": {
-            "status": "unavailable",
-            "reason": MIXED_CONTENTION_REASON,
-            "min_steps": contract.min_mixed_steps,
-        },
+        "mixed_contention": mixed_slice(contract, scored, scorable),
     }
 
 
@@ -150,19 +206,27 @@ def abstention_scopes(rates: dict, contract: Contract) -> dict:
     available = {
         "overall": rates["overall"],
         "per_true_class": rates["per_true_class"],
-        "mixed_contention": {"status": "unavailable", "reason": MIXED_CONTENTION_REASON},
+        "mixed_contention": rates["mixed_contention"],
     }
     return {scope: available[scope] for scope in contract.abstention_rate_scopes}
 
 
-def measured_rates(scopes: dict, min_steps: int) -> dict[str, float]:
-    """Rates measured on enough steps to judge: overall, and classes at the contract minimum."""
+def measured_rates(scopes: dict, contract: Contract) -> dict[str, float]:
+    """Rates measured on enough steps to judge: overall, and each class or the mixed scope at
+    its contract minimum."""
     measured = {}
     if "overall" in scopes and scopes["overall"]["rate"] is not None:
         measured["overall"] = scopes["overall"]["rate"]
     for name, value in scopes.get("per_true_class", {}).items():
-        if value["rate"] is not None and value["steps"] >= min_steps:
+        if value["rate"] is not None and value["steps"] >= contract.min_test_steps_per_class:
             measured[name] = value["rate"]
+    mixed = scopes.get("mixed_contention")
+    if (
+        mixed is not None
+        and mixed["rate"] is not None
+        and mixed["steps"] >= contract.min_mixed_steps
+    ):
+        measured["mixed_contention"] = mixed["rate"]
     return measured
 
 
@@ -174,15 +238,19 @@ def abstention_gate(rates: dict, contract: Contract, fit: Fit, below: list[str])
     if not fit.fitted:
         return gate | {"outcome": "inconclusive", "reason": fit.reason}
     # A measured rate over the limit fails the gate even while another class lacks steps.
-    measured = measured_rates(scopes, contract.min_test_steps_per_class)
+    measured = measured_rates(scopes, contract)
     exceeded = [name for name, value in measured.items() if value > limit]
     if exceeded:
         reason = f"Abstention above the limit for: {', '.join(exceeded)}"
         return gate | {"outcome": "fail", "reason": reason}
     if below:
         return gate | {"outcome": "inconclusive", "reason": below_minimum_reason(below)}
-    if "mixed_contention" in scopes:
-        reason = f"Mixed-contention abstention is unmeasured: {MIXED_CONTENTION_REASON}"
+    mixed = scopes.get("mixed_contention")
+    if mixed is not None and mixed["steps"] < contract.min_mixed_steps:
+        reason = (
+            f"{mixed['steps']} scored mixed steps; the contract needs at least "
+            f"{contract.min_mixed_steps} to judge mixed-contention abstention"
+        )
         return gate | {"outcome": "inconclusive", "reason": reason}
     return gate | {"outcome": "pass"}
 
@@ -241,26 +309,38 @@ def build_calibration_report(
     scored: Scored,
     config: CalibrationConfig,
 ) -> dict:
-    """Calibration metrics on the test split, every contract gate, and the summary."""
-    labels = [row["label_resource"] for row in scored.rows]
-    kept = [
-        None if abstained else record["prediction"]
-        for record, abstained in zip(scored.records, scored.abstained, strict=True)
-    ]
-    scores = abstaining_scores(labels, kept, contract.classes)
+    """Calibration metrics on the test split, every contract gate, and the summary.
+
+    Joint-only mixed steps are never scored. The four-class metrics cover single-class steps;
+    mixed steps are scored by hit, and by the mixed-contention gate and slice.
+    """
+    full, scorable = scored, scored.without_joint_only()
+    kept = scorable.abstained_predictions()
+    scored_kept = [ABSTAINED if p is None else p for p in kept]
+    single = [i for i, row in enumerate(scorable.rows) if not is_mixed(row)]
+    mixed = [i for i, row in enumerate(scorable.rows) if is_mixed(row)]
+    labels = [scorable.rows[i]["label_resource"] for i in single]
+    scores = abstaining_scores(labels, [kept[i] for i in single], contract.classes)
     minimum = contract.min_test_steps_per_class
     below = [name for name in contract.classes if scores[name]["support"] < minimum]
-    rules = class_scores(confusion_matrix(labels, [r["rule_prediction"] for r in scored.records]))
+    rule_predictions = [record["rule_prediction"] for record in scorable.records]
+    rules = class_scores(confusion_matrix(labels, [rule_predictions[i] for i in single]))
     model_macro = macro_f1_all_classes(scores, contract.classes)
     rules_macro = macro_f1_all_classes(rules, contract.classes)
-    rates = abstention_rates(labels, scored.abstained, contract.classes)
-    metrics = calibration_metrics(contract, scored)
+    rates = abstention_rates(labels, [scorable.abstained[i] for i in single], contract.classes)
+    # Overall and mixed-contention rates cover every scored step, mixed ones included.
+    rates["overall"] = rate(scorable.abstained)
+    rates["mixed_contention"] = rate([scorable.abstained[i] for i in mixed])
+    metrics = calibration_metrics(contract, scorable)
     absent = tuple((candidates.get("model") or {}).get("classes_absent_from_train", ()))
     gates = carried_gates(candidates["gates"]) | {
         "calibration": calibration_gate(metrics["ece_calibrated"], contract, fit, below),
         "abstention": abstention_gate(rates, contract, fit, below),
-        **clean_gates(contract, scored.rows, [ABSTAINED if p is None else p for p in kept]),
+        **clean_gates(contract, scorable.rows, scored_kept),
         "gain_over_rules": gain_gate(model_macro, rules_macro, below, contract, absent),
+        "mixed_contention_gain": mixed_gain_gate(
+            contract, scorable.rows, scored_kept, rule_predictions, absent
+        ),
     }
     return {
         "rules": candidates["rules"],
@@ -270,7 +350,8 @@ def build_calibration_report(
         "dataset_version": candidates.get("dataset_version"),
         "split": candidates["split"],
         "scored_split": "test",
-        "scored_steps": len(scored.rows),
+        "scored_steps": len(scorable.rows),
+        "joint_only_steps_not_scored": len(full.rows) - len(scorable.rows),
         "candidates": candidates_identity,
         "model": candidates.get("model"),
         "calibration": calibration_summary(fit, config),
@@ -288,7 +369,7 @@ def build_calibration_report(
             },
             "rules": {"macro_f1": {"all_classes": rules_macro, "defined_classes": macro_f1(rules)}},
             "calibration": metrics,
-            "slices": slices(contract, scored),
+            "slices": slices(contract, full, scorable),
         },
         "gates": gates,
         "summary": summary(gates),

@@ -39,6 +39,7 @@ from agentwatch_model.calibration_report import (
 )
 from agentwatch_model.contract import DEFAULT_CONTRACT, Contract, ContractError, load_contract
 from agentwatch_model.metrics import CLASSES, is_number
+from agentwatch_model.mixed import is_mixed
 from agentwatch_model.report import dataset_version, summary
 from agentwatch_model.rule_baseline import (
     DEFAULT_SCHEMA,
@@ -246,10 +247,13 @@ def fit_on_validation(
     targets = np.array([columns.index(labels[index]) for index in usable])
     temperature = fit_temperature(matrix[usable], targets, config)
     confidences = scale(matrix, temperature).max(axis=1).tolist()
+    # A mixed step has no single class to score the threshold against, so, like the
+    # classifier's fit, the threshold is chosen on single-class validation steps.
+    single = [index for index, row in enumerate(rows) if not is_mixed(row)]
     selection = choose_threshold(
-        labels,
-        [record["prediction"] for record in records],
-        confidences,
+        [labels[index] for index in single],
+        [records[index]["prediction"] for index in single],
+        [confidences[index] for index in single],
         contract.classes,
         contract.max_abstention_rate,
     )

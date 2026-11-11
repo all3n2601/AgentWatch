@@ -1,6 +1,8 @@
 # 0009: Build one `steps-v1.3` release with two row kinds and split it with `split-v2`
 
-Date: November 6, 2026. Status: proposed for D03 review. Builds on
+Date: November 6, 2026. Status: proposed for D03 review. Later (November 10, 2026): M02's
+`mixed-scoring-v1` now scores `mixed` steps ([rule baseline](../rule-baseline.md)); dataset v1
+still stops evaluation because its test rows use two feature definitions. Builds on
 [ADR 0006](0006-bounded-injectors-and-agent-replay.md) (replay experiments) and
 [ADR 0007](0007-multi-resource-labels-and-frozen-hold-out.md) (`labels-v2`, `split-v2`).
 
