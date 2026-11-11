@@ -18,14 +18,23 @@ from agentwatch_model.metrics import (
     macro_f1_all_classes,
     none_rate,
 )
+from agentwatch_model.mixed import (
+    PER_RESOURCE_SEMANTICS,
+    mixed_summary,
+    per_resource_scores,
+    scored_rows,
+    single_class,
+)
+from agentwatch_model.mixed import VERSION as MIXED_SCORING
 from agentwatch_model.rules import Rules
 
 # Proposed. Fewer tasks than this give an interval too unstable to report.
 BOOTSTRAP_MIN_GROUPS = 5
-MIXED_CONTENTION_REASON = "Scoring mixed contention is not defined until M02; mixed rows are refused."
 NOT_EVALUATED_FOR_RULES = {
     "gain_over_rules": "The rules are the reference a learned model is compared against.",
-    "mixed_contention_gain": MIXED_CONTENTION_REASON,
+    "mixed_contention_gain": (
+        "The rules are the reference a learned model's mixed-contention gain is measured against."
+    ),
     "regression_error": (
         "rules-v1 names a resource, not an excess-latency fraction; the constant references "
         "are reported instead."
@@ -121,14 +130,21 @@ def macro_f1_block(
     }
 
 
-def slices(contract: Contract, rows: list[dict], predictions: list[str]) -> dict:
+def multi_resource(contract: Contract, rows: list[dict], predictions: list[str]) -> dict:
+    """Per-resource scores on label_resources over every scored step (mixed-scoring-v1)."""
     return {
-        "by_condition": condition_slices(rows, predictions),
-        "mixed_contention": {
-            "status": "unavailable",
-            "reason": MIXED_CONTENTION_REASON,
-            "min_steps": contract.min_mixed_steps,
-        },
+        "scoring": MIXED_SCORING,
+        "semantics": PER_RESOURCE_SEMANTICS,
+        "classes": per_resource_scores(rows, predictions, contract.classes),
+    }
+
+
+def slices(contract: Contract, rows: list[dict], predictions: list[str]) -> dict:
+    """By condition over single-class steps, and the mixed-contention slice."""
+    view, view_predictions = single_class(rows, predictions)
+    return {
+        "by_condition": condition_slices(view, view_predictions),
+        "mixed_contention": mixed_summary(rows, predictions, contract),
     }
 
 
@@ -152,9 +168,12 @@ def build_report(
     seed: int,
 ) -> dict:
     """Metrics for the rules' predictions on the scored split and each contract gate's outcome."""
-    matrix = confusion_matrix([row["label_resource"] for row in scored], predictions)
+    # Joint-only mixed steps are never scored; four-class metrics cover single-class steps.
+    kept, kept_predictions = scored_rows(scored, predictions)
+    view, view_predictions = single_class(kept, kept_predictions)
+    matrix = confusion_matrix([row["label_resource"] for row in view], view_predictions)
     scores = class_scores(matrix)
-    gates = clean_gates(contract, scored, predictions) | {
+    gates = clean_gates(contract, kept, kept_predictions) | {
         name: {"outcome": "not_evaluated", "reason": why}
         for name, why in NOT_EVALUATED_FOR_RULES.items()
     }
@@ -164,11 +183,13 @@ def build_report(
         "status": "evaluated" if evaluation else "exploratory",
         "evaluation": evaluation,
         "dataset_version": dataset_version(scored + train),
+        "mixed_scoring": MIXED_SCORING,
         "metrics": {
             "confusion_matrix": matrix,
             "class_scores": scores,
-            "macro_f1": macro_f1_block(contract, scores, scored, predictions, resamples, seed),
-            "constant_references": constant_reference_mae(train, scored)
+            "macro_f1": macro_f1_block(contract, scores, view, view_predictions, resamples, seed),
+            "multi_resource": multi_resource(contract, kept, kept_predictions),
+            "constant_references": constant_reference_mae(train, kept)
             | {"contract_max_mae": contract.max_mae},
             "slices": slices(contract, scored, predictions),
         },

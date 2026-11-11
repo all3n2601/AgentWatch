@@ -4,8 +4,8 @@ Status: `training-v1`, implemented and tested on synthetic rows; not yet trained
 release. The interim `steps-v1.2+5954f97ef8b2` split is blocked by the leakage check, so a run
 on it produces a blocked report and a blocked MLflow run, with no model. Dataset v1
 (`steps-v1.3+aafae73eb211`, split `split-v2+febe942a2b59`) passes the leakage check, but its
-rows include steps labeled `mixed`, which have no scoring rule until M02, so a run on it is a
-`failed` attempt with no model (see Running it).
+test split mixes two feature definitions, which evaluation refuses, so a run on it is a `failed`
+attempt with no model. Steps labeled `mixed` are scored by `mixed-scoring-v1` (see Running it).
 
 M03 trains two LightGBM candidates on CPU: a resource classifier and an excess-latency
 regressor. It scores them and [the rule baseline](rule-baseline.md) on identical rows against
@@ -23,8 +23,11 @@ reproducible on the same LightGBM version and platform; both versions are record
 | Classifier | `label_resource`, over the classes present in the training split | Multiclass log loss |
 | Regressor | `label_excess_fraction`, clipped to 0–1 at prediction | L1 (MAE) |
 
-- Both train on the training split only. The validation split is used only for early stopping;
-  without usable validation rows the fixed number of rounds is used and recorded.
+- Both train on the training split only. The validation split is used only for early stopping,
+  recorded per model: `early_stopping` for the classifier (single-class validation rows of
+  trained classes, with the rest counted in `validation_rows_dropped`) and
+  `regressor_early_stopping` for the regressor (every validation row). A model without
+  validation rows to stop on runs the fixed number of rounds, recorded as `not_used`.
 - Inputs are exactly the schema's feature columns. Missing readings (null in the dataset) go to
   LightGBM as NaN and are never imputed. A NaN or infinite value already stored in a feature is
   not treated as missing: it is a `FeatureError` and the attempt fails, since recorded data keeps
@@ -43,13 +46,12 @@ The defaults are the current contract (`eval-contract-v2`) and frozen schema
 `EVALUATION_CONTRACT=pipelines/model/evaluation-contract-v1.toml
 VALIDATION_SCHEMA=pipelines/validation/schema/steps.pbtxt`.
 
-**A split with `mixed` labels stops the attempt.** `mixed` is a `labels-v2` label value
-outside the four classes, and its scoring rule is Rohit's M02 decision (item 2 of
-[the v2 proposal](evaluation-contract-v2-proposal.md)). Until it is defined, a row labeled
-`mixed` is an unusable row: the attempt is recorded as `failed` (exit 1, tracked in MLflow) with
-the reason "`<split> row <n> is labeled 'mixed', which has no scoring rule until M02 defines
-one`", and no model is trained. Every split of dataset v1 holds `mixed` steps. Behavior on
-`steps-v1.2` splits is unchanged.
+**Mixed steps.** The model and the rules are scored on them alike, by the rule in
+[the rule baseline](rule-baseline.md) (`mixed-scoring-v1`). A mixed step has no single class to
+learn, so the classifier trains, and stops early, on single-class steps only, and the report
+counts the mixed training steps it skipped (`train_rows_not_classified`). The regressor trains
+and stops early on every step's excess fraction. A `mixed` row without two or more known
+`label_resources` or a known mixed basis makes the attempt `failed`. Behavior on `steps-v1.2` splits is unchanged.
 
 LightGBM needs OpenMP: `libgomp` on Linux (present on CI runners) and `libomp` on macOS. Without
 it the command exits with code 2 and says so, and the LightGBM tests skip with that reason.
@@ -87,10 +89,17 @@ A malformed contract, rules or training file exits with code 2 before any attemp
 - Regression error: MAE at most the contract limit and below both constant references;
   inconclusive while a class lacks test steps.
 - Coverage gaps are reported, not hidden: validation rows of classes unseen in training (which
-  cannot drive early stopping) and classes absent from training.
+  cannot drive the classifier's early stopping), mixed training steps the classifier skipped,
+  and classes absent from training.
+- Mixed-contention gain: the model's mixed-contention macro F1 (per-resource F1 on scored mixed
+  steps, over the resources confirmed there) at least 0.10 above the rules' on the same steps;
+  inconclusive below the contract's 30 mixed steps or when a confirmed resource is absent from
+  training.
+- Joint-only mixed steps are left out of every gate, including the regression error and its
+  constant references.
 - Calibration and abstention are left to M04; raw LightGBM probabilities are not calibrated
-  confidence. Mixed contention, unseen tasks, held-out injection methods, overhead and latency
-  are not evaluated, with the same reasons as the rule baseline.
+  confidence. Unseen tasks, held-out injection methods, overhead and latency are not evaluated,
+  with the same reasons as the rule baseline.
 
 ## Tracking
 
