@@ -1,11 +1,14 @@
 """The declared natural-overload sweep protocol: schedules and the hashed declaration."""
 
+import functools
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
-from agentwatch_agent import sweep_protocol
-from agentwatch_agent.config import DEFAULT_SAMPLING_INTERVAL_SECONDS
+from agentwatch_agent import sweep_protocol, vllm_server
+from agentwatch_agent.config import DEFAULT_SAMPLING_INTERVAL_SECONDS, RunLimits
 from agentwatch_agent.experiment import PREFILL_PROMPT_TOKENS_TOLERANCE
+from agentwatch_agent.runner import DEFAULT_TRACE_WAIT_SECONDS
 from agentwatch_agent.sweep_protocol import (
     CONFIGURATIONS,
     P90_RULE,
@@ -100,3 +103,40 @@ def test_the_declared_vllm_image_is_the_compose_services_digest():
     service = lines.index("  vllm:")
     image = next(line for line in lines[service:] if line.strip().startswith("image:"))
     assert image.split("image:", 1)[1].strip() == VLLM_IMAGE
+
+
+def test_the_sweeps_bounds_and_run_limits_are_hashed_into_the_protocol(monkeypatch):
+    """Bug hunt: waits, retries and run limits the sweep depends on were not declared."""
+    document = protocol(CONFIGURATIONS["cfg-default"], 900.0)
+    assert document["server_state"] == {
+        "metrics_read_timeout_seconds": vllm_server.DEFAULT_TIMEOUT_SECONDS,
+        "idle_poll_seconds": sweep_protocol.IDLE_POLL_SECONDS,
+        "read_attempts": sweep_protocol.STATE_READ_ATTEMPTS,
+        "read_retry_pause_seconds": sweep_protocol.STATE_READ_RETRY_PAUSE_SECONDS,
+    }
+    assert document["trace_wait_seconds"] == DEFAULT_TRACE_WAIT_SECONDS
+    # The limits every sweep runner gets: the declared ones with this sweep's run timeout.
+    assert document["run_limits"] == asdict(RunLimits(run_timeout_seconds=900.0))
+    assert sweep_protocol.sweep_run_limits(900.0) == RunLimits(run_timeout_seconds=900.0)
+    before = protocol_sha256(document)
+    for name, value in (
+        ("METRICS_READ_TIMEOUT_SECONDS", 5.0),
+        ("IDLE_POLL_SECONDS", 0.5),
+        ("STATE_READ_ATTEMPTS", 5),
+        ("STATE_READ_RETRY_PAUSE_SECONDS", 2.0),
+        ("TRACE_WAIT_SECONDS", 3.0),
+    ):
+        with monkeypatch.context() as patched:
+            patched.setattr(sweep_protocol, name, value)
+            changed = protocol_sha256(protocol(CONFIGURATIONS["cfg-default"], 900.0))
+        assert changed != before, name
+    with monkeypatch.context() as patched:
+        patched.setattr(sweep_protocol, "RunLimits", functools.partial(RunLimits, max_tool_calls=4))
+        assert protocol_sha256(protocol(CONFIGURATIONS["cfg-default"], 900.0)) != before
+
+
+def test_the_protocol_version_states_when_it_freezes():
+    source = Path(sweep_protocol.__file__).read_text(encoding="utf-8")
+    line = next(n for n, text in enumerate(source.splitlines()) if "PROTOCOL_VERSION =" in text)
+    nearby = "\n".join(source.splitlines()[max(0, line - 4) : line + 1])
+    assert "first GPU session" in nearby

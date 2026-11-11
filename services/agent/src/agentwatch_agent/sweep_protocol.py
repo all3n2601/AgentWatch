@@ -5,12 +5,15 @@ version: the hash of `protocol()` is recorded with every sweep so results are
 only compared under identical declared settings.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
-from agentwatch_agent.config import DEFAULT_SAMPLING_INTERVAL_SECONDS
+from agentwatch_agent.config import DEFAULT_SAMPLING_INTERVAL_SECONDS, RunLimits
 from agentwatch_agent.experiment import PREFILL_PROMPT_TOKENS_TOLERANCE
 from agentwatch_agent.replay import canonical_sha256
+from agentwatch_agent.runner import DEFAULT_TRACE_WAIT_SECONDS
 
+# The version freezes at the first GPU session: no evidence exists under v1 yet, so declared
+# values may still change under it until then (Ruling 20); after it, any change is a new version.
 PROTOCOL_VERSION = "natural-overload-sweep-v1"
 
 VLLM_VERSION = "v0.32.0"
@@ -34,7 +37,16 @@ BASELINE_BATCHES_PER_SOURCE = 3
 SOURCE_COUNT = 2
 
 IDLE_WAIT_SECONDS = 30.0  # wait for 0 running and 0 waiting requests, at most
+IDLE_POLL_SECONDS = 1.0  # between idle-wait readings; failed readings are polled again
 PACING_SECONDS = 10.0  # fixed pause after the server is idle
+# vLLM's state is read from /metrics, each read bounded by this timeout (vllm_server).
+METRICS_READ_TIMEOUT_SECONDS = 2.0
+# A reading before or after a batch is tried this many times, pausing between attempts, so one
+# transient failure never stops the sweep: at most 3 x 2 s + 2 x 1 s per reading.
+STATE_READ_ATTEMPTS = 3
+STATE_READ_RETRY_PAUSE_SECONDS = 1.0
+# Each sweep runner waits this long after its run for vLLM's request spans.
+TRACE_WAIT_SECONDS = DEFAULT_TRACE_WAIT_SECONDS
 
 MIN_THROUGHPUT_GAIN = 0.10  # over the previous level
 MAX_PASS_RATE_DROP = 0.20  # below the N = 1 pass rate
@@ -136,6 +148,11 @@ def injected_batches(level: int) -> list[Batch]:
     return batches
 
 
+def sweep_run_limits(run_timeout_seconds: float) -> RunLimits:
+    """The limits every sweep runner gets: the declared defaults with the sweep's run timeout."""
+    return RunLimits(run_timeout_seconds=run_timeout_seconds)
+
+
 def protocol(configuration: VllmConfiguration, run_timeout_seconds: float) -> dict:
     return {
         "version": PROTOCOL_VERSION,
@@ -150,6 +167,8 @@ def protocol(configuration: VllmConfiguration, run_timeout_seconds: float) -> di
             "enable_prefix_caching": configuration.enable_prefix_caching,
         },
         "run_timeout_seconds": run_timeout_seconds,
+        "run_limits": asdict(sweep_run_limits(run_timeout_seconds)),
+        "trace_wait_seconds": TRACE_WAIT_SECONDS,
         "sampling_interval_seconds": SAMPLING_INTERVAL_SECONDS,
         "p90_rule": P90_RULE,
         "ramp_levels": list(RAMP_LEVELS),
@@ -158,6 +177,12 @@ def protocol(configuration: VllmConfiguration, run_timeout_seconds: float) -> di
         "baseline_batches_per_source": BASELINE_BATCHES_PER_SOURCE,
         "idle_wait_seconds": IDLE_WAIT_SECONDS,
         "pacing_seconds": PACING_SECONDS,
+        "server_state": {
+            "metrics_read_timeout_seconds": METRICS_READ_TIMEOUT_SECONDS,
+            "idle_poll_seconds": IDLE_POLL_SECONDS,
+            "read_attempts": STATE_READ_ATTEMPTS,
+            "read_retry_pause_seconds": STATE_READ_RETRY_PAUSE_SECONDS,
+        },
         "policy": "none",
         "capacity_criteria": {
             "min_throughput_gain": MIN_THROUGHPUT_GAIN,
