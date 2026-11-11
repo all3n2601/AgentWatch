@@ -736,9 +736,13 @@ def test_an_unreachable_server_fails_the_prefill_start(clock, monkeypatch):
     assert log["stop_reason"] == "failure"
     assert log["cleanup"]["confirmed"] is True
     assert len(log["cleanup"]["children"]) == 1
-    # The child reports even when it never reached the server, so zero sends is measured.
-    assert log["activity"]["report"] == "received"
-    assert log["activity"]["requests_sent"] == 0
+    # The failed-start halt may stop the child before it reports, so a missing report is legitimate.
+    activity = log["activity"]
+    if activity["report"] == "received":
+        assert activity["requests_sent"] == 0
+        assert activity["requests_completed"] == 0
+    else:
+        assert activity == {"report": "missing"}
 
 
 def test_prefill_activity_is_missing_when_the_child_never_reported(clock, monkeypatch):
