@@ -15,6 +15,10 @@ It assigns O01–O07 across all six contributors, reserves GPU execution for Ben
 adaptive control as a gated stretch task. This is new scope, not implemented behavior or an
 extension of the original schedule with committed dates.
 
+Planning addition, 2026-11-11: [deeper inference and GPU diagnosis](#7-deeper-inference-and-gpu-diagnosis)
+adds request-phase explanations, evidence-backed hypotheses and controlled confirmation.
+This is planned scope, not implemented diagnosis or a commitment to additional calendar weeks.
+
 ## 1. Architecture
 
 AgentWatch is a resource-bottleneck profiler with an MLOps lifecycle for its attribution model.
@@ -123,6 +127,8 @@ operational integration. Current completed work, remaining features, and test ga
 - Add monitoring, isolated canary evaluation, retraining, deployment, and operational runbooks.
 - Add the [optimization layer](optimization-plan.md): manual limits, runner admission evidence,
   controlled evaluation and restore controls; gate any adaptive follow-up on measured results.
+- Add deeper inference and GPU diagnosis through section 7, starting with request phases and
+  matched baselines before optional kernel profiling.
 
 ## 6. Main risks and fallback
 
@@ -133,3 +139,85 @@ operational integration. Current completed work, remaining features, and test ga
 - Injection artifacts: hold out an injection method and test natural overload.
 - Weak gain over rules: report results honestly; mixed-contention data is central to the comparison.
 - Cost: budget alerts and scheduled capacity reduction; evaluate spot capacity for batch generation.
+
+## 7. Deeper inference and GPU diagnosis
+
+Goal: explain why an inference step slowed, beyond naming GPU/inference as the suspected
+resource. Show measured phase differences, supporting evidence, alternative explanations,
+missing evidence and a suggested confirmation experiment. Keep observations, hypotheses and
+experimentally supported conclusions distinct. High utilization alone proves neither saturation
+nor the cause of a particular request's slowdown.
+
+### Existing evidence and dependencies
+
+Reuse request identity joins and timing definitions from
+[ADR 0007](adr/0007-vllm-request-traces-and-server-metrics.md), the Windows-side GPM path in
+[ADR 0008](adr/0008-windows-gpm-exporter-for-wsl2.md), and the
+[GPU measurement record](gpu-measurement-access.md). vLLM request spans provide queue,
+prefill, decode and token counts in local agent evidence after run closure; live StepEvents
+currently do not carry that breakdown. Server-wide metrics cannot substitute for a request's
+own wait. Ollama queue time remains unavailable.
+
+Build on the [natural-overload capacity-sweep PR #65](https://github.com/all3n2601/AgentWatch/pull/65)
+for compatible concurrency experiments once its protocol and artifacts are accepted. Coordinate
+shared runner and experiment changes with that task instead of implementing another sweep.
+Assign one primary contributor and task branch per milestone before implementation. GPU
+execution stays on Benoy's designated test capacity; no new owner assignments or dates are
+committed here.
+
+### Sequenced milestones
+
+1. **G01 — Persist and expose request-phase evidence.** Define versioned API/SDK/storage
+   contracts for queue, prefill, decode, token counts, model loading where measured, and runner
+   stream timing, keyed to the selected run/step. Preserve existing local evidence. Verify
+   exact identity joins, late traces, missing/duplicate/mismatched spans, retries, rollback and
+   historical UUID selection. Mark evidence pending until received; post-run traces do not
+   establish live phase diagnosis. Unsupported Ollama phases stay unavailable.
+2. **G02 — Compare matched baselines.** Record backend, model/weights, quantization, hardware,
+   token counts, concurrency, cache state and warm/cold state. Declare matching rules, repeat
+   count, variability statistic and slowdown thresholds before evaluation. Compare phase
+   durations and token throughput only where compatible; expose configuration differences and
+   abstain without a suitable baseline. Keep clock domains separate and do not sum overlapping
+   phases or subtract incompatible clocks.
+3. **G03 — Explain likely causes with rules.** Distinguish increased queueing, longer prompt
+   processing, more generated output and slower generation. Correlate with running/waiting
+   requests, KV-cache use, preemptions and GPU compute/DRAM activity. Add temperature, clocks,
+   power limits and throttle reasons only where support is verified. Require source records,
+   units, baseline, method version, coverage, alternatives and limitations for each explanation.
+   Test clean, mixed and ambiguous cases. Device-wide metrics are context, memory allocation
+   does not prove bandwidth pressure, and low clocks alone do not prove thermal throttling.
+4. **G04 — Confirm through controlled experiments.** Reuse bounded paired experiment controls
+   to change one factor, such as concurrency, prompt length or cache state. Preregister order,
+   repetitions and acceptance criteria; preserve failures and inconclusive evidence. Validate
+   against measured request phases on designated capacity. Uncontrolled comparisons report
+   observed differences without causal claims.
+5. **G05 — Present diagnosis in the app.** Show phase deltas, supporting signals, alternatives,
+   evidence quality and a suggested next experiment for the selected UUID. Browser acceptance
+   covers late evidence, missing metrics, insufficient short-step coverage, unmatched baselines
+   and historical selection. Distinguish provisional live observations from completed analysis;
+   raw rule/classifier scores are not calibrated confidence.
+6. **G06 — Optional targeted profiling.** For unresolved cases, assess a compatible profiler
+   for short kernel and CPU–GPU transfer captures. Verify Windows/WSL/device/driver support,
+   bound capture duration, redact exported artifacts and clean up on failure. Measure profiler
+   overhead against an unprofiled baseline before adoption; unsupported capture does not block
+   G01–G05.
+
+Merge order: G01 → G02 → G03 → G04 → G05; G06 is a gated follow-up. Start with vLLM phases
+and reuse existing feature joins, attribution modules and experiment controls. Keep diagnosis
+logic outside routes/rendering. Update API definitions, SDKs, consumers and ordered PostgreSQL
+migrations together when needed, preserving history and idempotency.
+
+### Verification and rollout gates
+
+- Declare diagnosis quality, clean-run false-positive, abstention, latency and overhead gates
+  before evaluation. Compare any learned follow-up against rules on identical frozen splits;
+  exclude injection metadata from features and keep related replays in the same split.
+- Cover invalid timings, zero output tokens, counter resets, stale samples, partial coverage,
+  conflicting identities and unavailable telemetry. Missing readings never become measured zero.
+- Measure actual sampling intervals and coverage. Whole-device GPM windows cannot explain every
+  short step or attribute activity to one process; disclose these limits.
+- For ingestion/storage changes, run dedicated PostgreSQL integration tests with isolated schemas
+  and migration upgrade tests. Run affected language checks and browser flows before shipping.
+- Gate each explanation on evidence availability and retain existing views when analysis abstains.
+  Record completed milestones, verification and real artifact references in
+  [the project checklist](project-checklist.md); keep unverified work open.
