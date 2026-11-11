@@ -1,9 +1,10 @@
 # Measured agent capacity on the GPU laptop (A06)
 
 This is the record of the A06 natural-overload capacity sweeps run on 2026-11-11. Every number in
-the result tables comes from the two sweeps' own `sweep.json` files and their injection logs. The
-tables were generated from those files and not edited by hand. They describe this laptop and
-these two vLLM configurations only, never cloud capacity.
+the result tables comes from the two sweeps' own `sweep.json` files, their injection logs and
+their run folders. The `sweep-record` command generated the Results and Sampling coverage tables
+from those files, and they are not edited by hand (see [Reproduce](#reproduce)). They describe this
+laptop and these two vLLM configurations only, never cloud capacity.
 
 Design: [natural-overload capacity sweep](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md).
 Command: `capacity-sweep` ([agent README](../services/agent/README.md#capacity-sweep)).
@@ -35,6 +36,10 @@ Command: `capacity-sweep` ([agent README](../services/agent/README.md#capacity-s
   overload: `labels-v2` labels a resource only under an injected condition, so it would label
   every natural-overload step `none` (`clean_exceeded_noise` at most). PR 3 and later model
   work must not read these verdicts as validation of the dataset labels.
+- **Agreement is weakest at the capacity itself.** `cfg-default` is `validated` over all N ≥ 2
+  steps, as declared, but not at every level. N = 3, the measured capacity, is `not_validated`
+  (precision 0.808), and N = 2 is `inconclusive`. Every level from N = 4 up is `validated`. Where
+  the label would be used, at the capacity, it agrees least with queue time.
 
 ## Setup
 
@@ -146,7 +151,7 @@ Command: `capacity-sweep` ([agent README](../services/agent/README.md#capacity-s
 
 ## Results
 
-The tables below are generated from each sweep's `sweep.json` and its injection logs.
+The tables below are `sweep-record`'s output for each sweep's `sweep.json` and its injection logs.
 Throughput is passed runs per batch-minute. Durations are the `agent-run` span. vLLM queue,
 prefill, decode and end-to-end times come from each model call's vLLM span. The prefix-cache
 hit rate, preemptions and device metrics are per level. SM clock drift is the level's mean SM
@@ -324,7 +329,8 @@ Baselines: 10 source steps from the N = 1 replays (0 omitted). Tool steps have n
 
 `coverage` (`coverage-v4`) on the first run of the first ramp batch at each level. Rounds are
 sampling rounds recorded, against those expected for the run's length at the declared 0.25 s
-interval. Late and missed rounds are counted by the coverage method. The raw reports are in
+interval. Late and missed rounds are counted by the coverage method. The tables are
+`sweep-record --coverage-jsonl`'s output, and the raw reports it wrote are in
 `.data/a06-20261111/coverage-per-level.jsonl`.
 
 ### `cfg-default`
@@ -459,6 +465,10 @@ Nothing was deleted. All of these are under `.data/a06-20261111/` and in the evi
   `inconclusive`. Widening the reference would be a new protocol version, declared before it
   is run. It also validates the noise threshold only, not the dataset's `labels-v2` (see
   [Summary](#summary)).
+- **Tool steps are labelled with no reference.** Tool steps have no vLLM queue time to check
+  against, yet at N ≥ 2 the noise rule marks 26% of them contended in `cfg-default` (219 of 841)
+  and 38% in `cfg-hardware` (320 of 841). This is the step-type spillover the
+  [data card](data-card.md) warns about, now measured under natural load. PR 3 should report it.
 - **Held-out evidence.** All natural-overload and `prefill-flood-openai-chat-v1` runs are
   held-out test evidence. They must never be used for training, calibration or tuning, and none
   may enter a dataset release before `split-v3` lists them. `fix-median-even` is kept out of
@@ -478,4 +488,11 @@ python -m agentwatch_agent capacity-sweep --configuration cfg-default \
 # then the same command with --configuration cfg-hardware --start-attempt "0.8:started".
 # Re-run the analysis of a recorded sweep offline, without the GPU:
 python -m agentwatch_agent sweep-analyse .data/a06-20261111/capacity-sweeps/<sweep folder>
+# Regenerate this record's Results and Sampling coverage tables (reads only):
+S=.data/a06-20261111/capacity-sweeps
+python -m agentwatch_agent sweep-record $S/cfg-default-20261111T211237Z-2d75ea \
+  $S/cfg-hardware-20261111T213039Z-b4ad4a --coverage-jsonl /tmp/coverage-per-level.jsonl
 ```
+
+Checked on 2026-11-11: `sweep-record`'s output is identical to the tables above, and its
+coverage reports are byte-identical to `coverage-per-level.jsonl`.

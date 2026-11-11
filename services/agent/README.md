@@ -615,6 +615,22 @@ uv run --package agentwatch-agent python -m agentwatch_agent sweep-analyse \
   .data/capacity-sweeps/<configuration>-<UTC time>-<id>
 ```
 
+**Record tables.** `sweep-record <sweep folder> [<sweep folder> ...]` prints the Markdown tables
+of the [capacity record](../../docs/capacity-record.md) for each sweep, in order: the verified
+configuration, the ramp, the capacity decision, label validation, the live confirmation and the
+injected condition. It reads `sweep.json` and the injection logs only and writes nothing.
+`--coverage-jsonl FILE` also prints the sampling coverage tables (`coverage` on the first run of
+the first ramp batch at each level, read under the sweep folder) and writes those raw reports to
+FILE. A value that was not recorded prints as `n/a`, never 0. It exits 0 when the tables are
+printed, and 2, with the reason, when a folder's record, injection log or runs cannot support
+them. The tables use `±`, `≥` and `✗`, so redirect its output to a UTF-8 file.
+
+```sh
+uv run --package agentwatch-agent python -m agentwatch_agent sweep-record \
+  .data/capacity-sweeps/<cfg-default sweep> .data/capacity-sweeps/<cfg-hardware sweep> \
+  --coverage-jsonl .data/coverage-per-level.jsonl > tables.md
+```
+
 **Evidence status.** Natural-overload and prefill-flood runs are held-out test evidence
 (`held_out: true`): never use them for training, calibration, threshold selection or
 tuning. `rules-v1` predicts only `cpu_sandbox` or `none`; it cannot predict inference, and

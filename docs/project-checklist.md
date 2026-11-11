@@ -807,6 +807,10 @@ frozen evaluation sets without tuning against them.
     passed (175 and 208 runs). The prefill flood was active and cleaned up in all 6 injected
     batches.
 
+  Tables (2026-11-11, review of PR #65): the new `sweep-record` command regenerates the record's
+  Results and Sampling coverage tables identically from the two sweep folders
+  (`test_sweep_record.py`). Versioning the evidence outside `data/evidence/` is open.
+
   Open until model and rule scoring of this evidence (A06 PR 3) is done. The capacity
   describes this laptop and these two configurations only, from one sweep each.
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.

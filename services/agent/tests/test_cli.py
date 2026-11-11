@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import signal
@@ -839,6 +840,12 @@ def test_the_vllm_container_is_inspected_for_its_launch_arguments(
     cli.main(sweep_argv(tmp_path, *other))
     sweep_stubs.instances[1].kwargs["read_launch"]()
     assert inspected == [(DEFAULT_VLLM_CONTAINER, 8000), ("other-vllm", 8001)]
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:abc", "http://127.0.0.1:99999", "http://h:0"])
+def test_a_url_with_an_unusable_port_is_a_usage_error(url):
+    with pytest.raises(argparse.ArgumentTypeError, match="invalid port"):
+        cli.http_url(url)
 
 
 def test_the_injector_is_a_prefill_flood_on_the_served_model(tmp_path, sweep_stubs):

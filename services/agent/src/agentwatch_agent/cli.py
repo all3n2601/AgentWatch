@@ -14,7 +14,8 @@ it stopped early or a declared check failed (its evidence is kept), and 3 when a
 evidence needs `resend`. `capacity-sweep` ramps concurrent replays on one vLLM configuration
 (exit codes in the agent README); a completed sweep whose analysis raised exits 1.
 `sweep-analyse` rebuilds a recorded sweep's analysis offline into `analysis.json`; it exits 2
-when the folder has no usable `sweep.json`.
+when the folder has no usable `sweep.json`. `sweep-record` prints the capacity record's tables
+from recorded sweep folders; it exits 2 when a folder's record or runs cannot support them.
 
 Exit codes (all commands):
   0  success: the task passed (run), or all evidence was delivered and the run is closed
@@ -127,6 +128,7 @@ from agentwatch_agent.sweep_protocol import (
     VllmConfiguration,
     sweep_run_limits,
 )
+from agentwatch_agent.sweep_record import render_coverage_tables, render_sweep_tables
 from agentwatch_agent.tasks import Task, TaskDefinitionError, load_task, task_names
 from agentwatch_agent.vllm import vllm_models
 from agentwatch_agent.vllm_launch import DEFAULT_VLLM_CONTAINER, read_launch_arguments
@@ -152,6 +154,13 @@ def http_url(value: str) -> str:
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise argparse.ArgumentTypeError(f"expected an http(s) URL, got {value!r}")
+    # urlsplit checks the port only when it is read; 0 is not a port a client can connect to.
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"invalid port in {value!r}: {error}") from None
+    if port == 0:
+        raise argparse.ArgumentTypeError(f"invalid port in {value!r}: 0")
     return value
 
 
@@ -488,6 +497,19 @@ def parser() -> argparse.ArgumentParser:
         help="Rebuild a recorded capacity sweep's analysis from its folder into analysis.json",
     )
     analyse.add_argument("sweep_dir", type=Path, help="A capacity-sweep folder with sweep.json")
+
+    record = commands.add_parser(
+        "sweep-record",
+        help="Print the capacity record's Markdown tables from recorded capacity-sweep folders",
+    )
+    record.add_argument(
+        "sweep_dirs", type=Path, nargs="+", help="Capacity-sweep folders with sweep.json"
+    )
+    record.add_argument(
+        "--coverage-jsonl",
+        type=Path,
+        help="Also print the sampling coverage tables and write their raw reports to this file",
+    )
 
     overhead = commands.add_parser(
         "overhead", help="Measure instrumentation overhead on a task's test workload"
@@ -1186,6 +1208,29 @@ def sweep_analyse_command(args: argparse.Namespace) -> int:
     return EXIT_PASSED
 
 
+def sweep_record_command(args: argparse.Namespace) -> int:
+    try:
+        results = [render_sweep_tables(sweep_dir) for sweep_dir in args.sweep_dirs]
+        coverage = (
+            [render_coverage_tables(sweep_dir) for sweep_dir in args.sweep_dirs]
+            if args.coverage_jsonl is not None
+            else []
+        )
+        if coverage:
+            reports = [report for _table, sweep_reports in coverage for report in sweep_reports]
+            lines = [json.dumps(report, allow_nan=False) for report in reports]
+            # newline="\n": the record's files use LF on every platform.
+            with args.coverage_jsonl.open("w", encoding="utf-8", newline="\n") as stream:
+                stream.write("\n".join(lines) + "\n")
+    except (SweepFolderError, CoverageError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    print("\n".join(results), end="")
+    for table, _reports in coverage:
+        print("\n" + table, end="")
+    return EXIT_PASSED
+
+
 def tasks_command() -> int:
     for name in task_names():
         task = load_task(name)
@@ -1397,6 +1442,8 @@ def main(argv: list[str] | None = None) -> int:
         return capacity_sweep_command(args)
     if args.command == "sweep-analyse":
         return sweep_analyse_command(args)
+    if args.command == "sweep-record":
+        return sweep_record_command(args)
     if args.command == "overhead":
         return overhead_command(args)
     if args.command == "sampling-overhead":
