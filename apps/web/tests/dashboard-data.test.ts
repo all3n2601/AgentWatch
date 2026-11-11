@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { aggregate, matchingWorkload, scopedRuns } from "../lib/dashboard-data";
+import { aggregate, scopedRuns } from "../lib/dashboard-data";
 import type { Experiment } from "../lib/experiment-schema";
 function run(id: string, time: number): Experiment {
   const step = {
@@ -86,14 +86,4 @@ test("time scopes use recorded completion time and preserve source order", () =>
   assert.equal(scopedRuns(input, "7d", now).length, 2);
   assert.equal(scopedRuns(input, "all", now).length, 3);
   assert.equal(input[0].run_id, "older");
-});
-test("matching comparisons require identical output and capacity settings", () => {
-  const a = run("a", 0),
-    b = run("b", 1);
-  assert.equal(matchingWorkload(a, b), true);
-  b.experiment.worker_capacity = 2;
-  assert.equal(matchingWorkload(a, b), false);
-  b.experiment.worker_capacity = 1;
-  b.clean = { ...b.clean, checksum: "different" };
-  assert.equal(matchingWorkload(a, b), false);
 });

@@ -54,12 +54,12 @@ import {
   Status,
   TraceExplorer,
 } from "@/components/run-views";
+import { compareHref, ComparePage } from "@/components/compare-runs";
 import {
   aggregate,
   duration,
   evidenceUrl,
   executionOf,
-  matchingWorkload,
   percent,
   queueOf,
   runLabel,
@@ -361,7 +361,8 @@ export function Dashboard({
       target === "agents" && !run?.agent ? runs.find((r) => r.agent) : run;
     return `/${target}${targetRun ? `?run=${targetRun.run_id}${baseline ? `&baseline=${baseline.run_id}` : ""}` : ""}`;
   };
-  const baseline = data.experiments.find((r) => r.run_id === initialBaselineId);
+  // Compare starts only from a run the operator named, never from the newest run.
+  const requested = data.experiments.find((r) => r.run_id === initialRunId);
   const source =
     page === "live" && live
       ? { badge: "LIVE API", description: "live run read API" }
@@ -423,7 +424,11 @@ export function Dashboard({
             .map((item) => (
               <Link
                 key={item.id}
-                href={path(item.id, selected)}
+                href={
+                  item.id === "compare"
+                    ? compareHref({ candidate: requested?.run_id })
+                    : path(item.id, selected)
+                }
                 onClick={() => setMobile(false)}
                 aria-current={page === item.id ? "page" : undefined}
                 className={cn(
@@ -857,7 +862,12 @@ export function Dashboard({
             ))}
           {page === "controls" && <ConcurrencyControls />}
           {page === "compare" && (
-            <ComparePage runs={runs} current={selected} baseline={baseline} />
+            <ComparePage
+              runs={runs}
+              loaded={data.experiments}
+              candidateId={initialRunId}
+              baselineId={initialBaselineId}
+            />
           )}
           {page === "settings" && (
             <div className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-2">
@@ -1221,168 +1231,6 @@ function RunContext({ run }: { run: Experiment }) {
           Export evidence
         </a>
       </Button>
-    </div>
-  );
-}
-function ComparePage({
-  runs,
-  current,
-  baseline,
-}: {
-  runs: Experiment[];
-  current?: Experiment;
-  baseline?: Experiment;
-}) {
-  const previous =
-    baseline ??
-    runs.find((r) => r.run_id !== current?.run_id && r.kind === current?.kind);
-  if (!current || !previous)
-    return (
-      <Empty
-        title="Two runs are needed to compare"
-        detail="Record another experiment of the same workload, then return here."
-      />
-    );
-  const match = matchingWorkload(current, previous);
-  const rows: [string, number, number][] = [
-    ["Clean queue", previous.clean.queue_seconds, current.clean.queue_seconds],
-    [
-      "Clean execution",
-      previous.clean.execution_seconds,
-      current.clean.execution_seconds,
-    ],
-    [
-      "Busy queue",
-      previous.contended.queue_seconds,
-      current.contended.queue_seconds,
-    ],
-    [
-      "Busy execution",
-      previous.contended.execution_seconds,
-      current.contended.execution_seconds,
-    ],
-    ["Total tool execution", executionOf(previous), executionOf(current)],
-    ["Total worker waiting", queueOf(previous), queueOf(current)],
-  ];
-  return (
-    <div className="space-y-5">
-      <div className="grid gap-4 lg:grid-cols-2">
-        {[
-          ["Baseline", previous],
-          ["Candidate", current],
-        ].map(([label, r]) => {
-          const run = r as Experiment;
-          return (
-            <Card key={String(label)} className="gap-3 p-5">
-              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                {String(label)}
-              </span>
-              <span className="font-medium">{runLabel(run)}</span>
-              <span className="font-mono text-xs text-muted-foreground">
-                {run.run_id.slice(0, 8)} · <RunDate run={run} />
-              </span>
-              <details className="rounded-lg border">
-                <summary className="cursor-pointer px-3 py-2 text-xs text-muted-foreground">
-                  Change {String(label).toLowerCase()}
-                </summary>
-                <div className="max-h-64 space-y-1 overflow-y-auto border-t p-2">
-                  {runs
-                    .filter(
-                      (item) =>
-                        item.run_id !== current.run_id &&
-                        item.run_id !== previous.run_id,
-                    )
-                    .map((item) => (
-                      <Link
-                        key={item.run_id}
-                        className="block rounded-lg p-3 hover:bg-accent"
-                        href={`/compare?run=${label === "Candidate" ? item.run_id : current.run_id}&baseline=${label === "Baseline" ? item.run_id : previous.run_id}`}
-                      >
-                        <span className="block text-xs font-medium">
-                          {runLabel(item)}
-                        </span>
-                        <span className="mt-1 block font-mono text-[10px] text-muted-foreground">
-                          {item.run_id.slice(0, 8)} · <RunDate run={item} />
-                        </span>
-                      </Link>
-                    ))}
-                  {runs.length <= 2 && (
-                    <p className="p-3 text-xs text-muted-foreground">
-                      All available runs are selected.
-                    </p>
-                  )}
-                </div>
-              </details>
-            </Card>
-          );
-        })}
-      </div>
-      <div
-        className={cn(
-          "rounded-lg border px-4 py-3 text-xs",
-          match
-            ? "border-emerald-400/20 bg-emerald-400/5 text-emerald-200"
-            : "border-amber-400/20 bg-amber-400/5 text-amber-200",
-        )}
-      >
-        {match
-          ? "Matching workload: checksum, iterations, and worker capacity agree."
-          : "Workload settings differ. Timing differences do not establish a performance regression."}
-      </div>
-      <Card className="gap-0 overflow-hidden">
-        <div className="p-5 pb-0">
-          <PanelHeading
-            title="Measured timing differences"
-            detail="Candidate minus baseline · positive values indicate longer duration"
-          />
-        </div>
-        <div className="overflow-x-auto">
-          <table className="aw-table">
-            <thead>
-              <tr>
-                <th>Measurement</th>
-                <th>Baseline</th>
-                <th>Candidate</th>
-                <th>Difference</th>
-                <th>Change</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(([label, a, b]) => (
-                <tr key={label}>
-                  <td>{label}</td>
-                  <td className="font-mono">{duration(a)}</td>
-                  <td className="font-mono">{duration(b)}</td>
-                  <td
-                    className={cn(
-                      "font-mono",
-                      b > a ? "text-amber-200" : "text-emerald-300",
-                    )}
-                  >
-                    {b >= a ? "+" : "−"}
-                    {duration(Math.abs(b - a))}
-                  </td>
-                  <td className="font-mono text-muted-foreground">
-                    {a > 0
-                      ? `${b >= a ? "+" : ""}${(((b - a) / a) * 100).toFixed(1)}%`
-                      : "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-      <div className="flex gap-2">
-        <Button asChild variant="outline" size="sm">
-          <Link href={`/traces?run=${current.run_id}`}>
-            Inspect candidate trace <ArrowRight className="size-3.5" />
-          </Link>
-        </Button>
-        <Button asChild variant="outline" size="sm">
-          <a href={evidenceUrl(previous)}>Export baseline</a>
-        </Button>
-      </div>
     </div>
   );
 }

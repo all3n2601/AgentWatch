@@ -3,8 +3,10 @@ import test from "node:test";
 import { experimentSchema, type Experiment } from "../lib/experiment-schema";
 import {
   comparability,
+  measurementRows,
   observedDifference,
   runMeasurements,
+  type Comparability,
 } from "../lib/run-comparison";
 
 const step = {
@@ -52,13 +54,34 @@ function savedRun(id: string): Experiment {
 
 const BASE = "0b7d1f0e-1c33-4f2e-9a43-6b7c2d0e5a10";
 const CAND = "5a3e9c11-7d2b-4c8a-b1f0-2e6d9a4c7b21";
+const POLICY = "Concurrency policy";
 
-test("saved runs with identical settings are comparable", () => {
-  assert.deepEqual(comparability(savedRun(BASE), savedRun(CAND)), {
-    comparable: true,
-    reasons: [],
-    differences: [],
-  });
+/** Differences other than the policy, which saved runs never record. */
+const workloadDifferences = (result: Comparability) =>
+  result.differences.filter(({ setting }) => setting !== POLICY);
+
+test("the unrecorded policy blocks saved runs whose workload settings all match", () => {
+  const result = comparability(savedRun(BASE), savedRun(CAND));
+  assert.equal(result.comparable, false);
+  assert.deepEqual(result.reasons, []);
+  assert.deepEqual(result.differences, [
+    { setting: POLICY, baseline: "not recorded", candidate: "not recorded" },
+  ]);
+  assert.deepEqual(
+    result.settings.map(({ setting, status }) => [setting, status]),
+    [
+      ["Workload kind", "same"],
+      ["Workload", "same"],
+      ["Workload checksum", "same"],
+      ["Iterations per step", "same"],
+      ["Competing iterations (contention)", "same"],
+      ["Worker capacity", "same"],
+      ["Tests per step", "same"],
+      ["Baseline repeats", "same"],
+      ["Agent model", "same"],
+      [POLICY, "unknown"],
+    ],
+  );
 });
 
 test("every differing workload setting blocks the comparison and is listed", () => {
@@ -92,7 +115,13 @@ test("every differing workload setting blocks the comparison and is listed", () 
     change(other);
     const result = comparability(savedRun(BASE), other);
     assert.equal(result.comparable, false, setting);
-    assert.deepEqual(result.differences, [{ setting, baseline, candidate }]);
+    assert.deepEqual(workloadDifferences(result), [
+      { setting, baseline, candidate },
+    ]);
+    assert.equal(
+      result.settings.find((row) => row.setting === setting)?.status,
+      "differs",
+    );
   }
 });
 
@@ -103,7 +132,7 @@ test("a setting not recorded on either run is unknown, never a match", () => {
   delete b.experiment.competing_iterations;
   const result = comparability(a, b);
   assert.equal(result.comparable, false);
-  assert.deepEqual(result.differences, [
+  assert.deepEqual(workloadDifferences(result), [
     {
       setting: "Competing iterations (contention)",
       baseline: "not recorded",
@@ -118,10 +147,14 @@ test("tests per step is not applicable on both CPU runs, but differs from a reco
     run.experiment.tests_per_step = null;
     return run;
   };
-  assert.equal(comparability(cpu(BASE), cpu(CAND)).comparable, true);
-  assert.deepEqual(comparability(cpu(BASE), savedRun(CAND)).differences, [
-    { setting: "Tests per step", baseline: "not applicable", candidate: "3" },
-  ]);
+  assert.deepEqual(
+    workloadDifferences(comparability(cpu(BASE), cpu(CAND))),
+    [],
+  );
+  assert.deepEqual(
+    workloadDifferences(comparability(cpu(BASE), savedRun(CAND))),
+    [{ setting: "Tests per step", baseline: "not applicable", candidate: "3" }],
+  );
 });
 
 test("a different or missing agent model blocks the comparison", () => {
@@ -135,13 +168,13 @@ test("a different or missing agent model blocks the comparison", () => {
   const a = savedRun(BASE);
   const b = savedRun(CAND);
   a.agent = agent("qwen3:1.7b");
-  assert.deepEqual(comparability(a, b).differences, [
+  assert.deepEqual(workloadDifferences(comparability(a, b)), [
     { setting: "Agent model", baseline: "qwen3:1.7b", candidate: "no agent" },
   ]);
   b.agent = agent("qwen3:8b");
-  assert.equal(comparability(a, b).comparable, false);
+  assert.equal(workloadDifferences(comparability(a, b)).length, 1);
   b.agent = agent("qwen3:1.7b");
-  assert.equal(comparability(a, b).comparable, true);
+  assert.deepEqual(workloadDifferences(comparability(a, b)), []);
 });
 
 test("local artifacts and a run compared with itself are refused", () => {
@@ -149,7 +182,7 @@ test("local artifacts and a run compared with itself are refused", () => {
   local.persisted = false;
   const result = comparability(savedRun(BASE), local);
   assert.equal(result.comparable, false);
-  assert.deepEqual(result.differences, []);
+  assert.deepEqual(workloadDifferences(result), []);
   assert.match(result.reasons[0], /^Candidate is a local artifact/);
 
   const self = comparability(savedRun(BASE), savedRun(BASE));
@@ -193,6 +226,73 @@ test("measurements keep unrecorded batch metrics and telemetry null, not zero", 
     "Model calls ran on CPU",
   ]);
   assert.equal(runMeasurements(savedRun(CAND)).agentStatus, null);
+});
+
+test("blocked pairs show each run's measurements without any difference", () => {
+  const candidate = savedRun(CAND);
+  candidate.clean = {
+    ...candidate.clean,
+    duration_seconds: 4.5,
+    execution_seconds: 3.5,
+  };
+  const rows = measurementRows(savedRun(BASE), candidate, false);
+  assert.ok(rows.every((row) => row.difference === undefined));
+  const clean = rows.find(
+    (row) => row.measurement === "Clean step completion time",
+  );
+  assert.deepEqual(clean, {
+    measurement: "Clean step completion time",
+    baseline: "3.00 s",
+    candidate: "4.50 s",
+  });
+  assert.deepEqual(
+    rows.find((row) => row.measurement === "Throughput"),
+    {
+      measurement: "Throughput",
+      baseline: "Not recorded",
+      candidate: "Not recorded",
+    },
+  );
+});
+
+test("comparable pairs show signed timing differences, never for quality or coverage", () => {
+  const candidate = savedRun(CAND);
+  candidate.clean = {
+    ...candidate.clean,
+    duration_seconds: 4.5,
+    execution_seconds: 3.5,
+  };
+  candidate.checks = { passed: false };
+  const rows = measurementRows(savedRun(BASE), candidate, true);
+  assert.deepEqual(
+    rows.find((row) => row.measurement === "Clean step completion time")
+      ?.difference,
+    { seconds: "+1.50 s", relative: "+50.0%" },
+  );
+  assert.deepEqual(
+    rows.find((row) => row.measurement === "Clean queue")?.difference,
+    { seconds: "0 ms", relative: "0.0%" },
+  );
+  for (const measurement of [
+    "Throughput",
+    "p95 task latency",
+    "Acceptance checks",
+    "Agent outcome",
+    "Clean step coverage",
+  ])
+    assert.equal(
+      rows.find((row) => row.measurement === measurement)?.difference,
+      undefined,
+      measurement,
+    );
+  assert.equal(
+    rows.find((row) => row.measurement === "Acceptance checks")?.candidate,
+    "Failed",
+  );
+  assert.equal(
+    rows.find((row) => row.measurement === "Clean step coverage")?.baseline,
+    "No telemetry recorded",
+  );
 });
 
 test("observed differences have no relative change from a zero or missing baseline", () => {
