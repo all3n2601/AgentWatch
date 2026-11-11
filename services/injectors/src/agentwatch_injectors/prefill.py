@@ -6,10 +6,10 @@ prompts rather than decoding, which is the opposite of `CompetingInferenceInject
 generation-heavy load, so the two are different injection methods. Each prompt starts with a
 nonce line unique to the worker, request and injector run, so vLLM's prefix cache cannot reuse
 the prefill of an earlier request, including one from an earlier run against the same server.
-The per-request digits come first: vLLM caches whole 16-token blocks, and the chat template, the
-word "request" and a leading run token would fill block 0 with text shared by every request of
-a run (measured on 2026-11-10 against vLLM v0.32, see ADR 0011). Only loopback endpoints are
-accepted, as for the competing injector.
+The per-request digits come before the run token, within the first KV-cache block: vLLM caches
+whole 16-token blocks, and the chat template, the word "request" and a leading run token would
+fill block 0 with text shared by every request of a run (measured on 2026-11-10 against vLLM
+v0.32, see ADR 0011). Only loopback endpoints are accepted, as for the competing injector.
 
 The prompt size is an estimate from `FILLER_TOKENS_PER_LINE`; the server's reported
 `usage.prompt_tokens` is what the log records. Prompts are fixed, non-sensitive text and are
@@ -175,7 +175,6 @@ class PrefillFloodInjector(BoundedInjector):
         self.request_timeout_seconds = require_seconds(
             "request_timeout_seconds", request_timeout_seconds, MAX_REQUEST_TIMEOUT_SECONDS
         )
-        self._run_token = uuid.uuid4().hex[:12]
         self._group: ChildGroup | None = None
 
     def bounds(self) -> dict:
@@ -202,6 +201,8 @@ class PrefillFloodInjector(BoundedInjector):
         return self.max_duration_seconds + BACKSTOP_GRACE_SECONDS
 
     def _launch(self) -> None:
+        # Drawn per launch, never logged, so no launch can reuse an earlier token.
+        run_token = uuid.uuid4().hex[:12]
         # Owned before the child starts, so a failed start halts and reports it.
         self._group = new_group()
         start_children(
@@ -210,7 +211,7 @@ class PrefillFloodInjector(BoundedInjector):
             [
                 (
                     self.url,
-                    PrefillProfile(self.model, self.prompt_tokens, self._run_token),
+                    PrefillProfile(self.model, self.prompt_tokens, run_token),
                     self.concurrency,
                     self.request_timeout_seconds,
                 )

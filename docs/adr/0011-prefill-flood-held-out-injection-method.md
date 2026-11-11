@@ -16,11 +16,11 @@ asks for one token (`max_tokens=1`), so the server's time goes to prefill, and g
 barely runs.
 
 - The first line of every prompt is a nonce, `request {worker}-{sequence}-{run_token}`,
-  followed by fixed numbered filler lines. `run_token` is random, generated once per injector
-  instance (12 hex characters), because the worker and sequence counters restart at 0 in every
+  followed by fixed numbered filler lines. `run_token` is random, generated at each launch
+  (12 hex characters), because the worker and sequence counters restart at 0 in every
   run and a later run against the same server would otherwise repeat an earlier run's prompts.
-  The per-request digits come first because vLLM caches whole 16-token blocks and block 0 also
-  holds the chat template and the word "request" (see the measurements). The token is never
+  The per-request digits come before the run token, within the first KV-cache block, because
+  vLLM caches whole 16-token blocks and block 0 also holds the chat template and the word "request" (see the measurements). The token is never
   logged.
 - Bounds: loopback endpoints only; concurrency at most 4; `prompt_tokens` at most 3,072;
   request timeout at most 120 s; the usual `max_duration_seconds` and backstop. The log's bounds
@@ -76,7 +76,7 @@ vLLM v0.32 server (`--max-num-seqs 2`, model above) with concurrency 2 and `prom
 With the run token first, about 0.76% of queried tokens hit the cache, roughly 16 tokens per
 request: one KV block. The token arithmetic suggests the chat template, `request` and the run
 token filled block 0, which every request of a run shared; that attribution is inferred, not
-measured. With the per-request digits first there were no hits in either
+measured. With the per-request digits before the run token there were no hits in either
 run. The reported prompt is 30 to 31 tokens longer than the 2,052 filler tokens, which is the
 chat template and the nonce line. These are two short runs on one laptop GPU, not a
 characterisation of the method's effect on other workloads or servers.
@@ -84,7 +84,7 @@ characterisation of the method's effect on other workloads or servers.
 The rows with the run-token-first nonce (`request {run_token}-{worker}-{sequence}`) were taken
 during development under the same method name. That nonce format was changed before release, so
 those rows are superseded and are not evidence for `prefill-flood-openai-chat-v1` as released;
-only the per-request-digits-first rows describe the released nonce.
+only the rows with the digits before the run token describe the released nonce.
 
 **Consequences.** The method is new and labeled `prefill`, a different injector kind from
 `inference`, so a set can contain both. A formal hold-out of this method needs a new frozen

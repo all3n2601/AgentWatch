@@ -6,6 +6,7 @@ The model server here is a loopback test double; its responses are synthetic.
 import json
 import math
 import threading
+import uuid
 
 import pytest
 from agentwatch_injectors import base, processes, retrieval
@@ -860,3 +861,24 @@ def test_competing_chat_report_keys_are_unchanged():
     profile = CompetingChatProfile(server="vllm", payload_template={})
     assert profile.measure_secondary({"usage": {"completion_tokens": 9}}) is None
     assert profile.summarize([5, 7], 1, [None, None]) == {"generated_tokens": 12}
+
+
+def test_prefill_run_token_is_drawn_at_launch_not_construction(clock, monkeypatch):
+    draws = []
+    real_uuid4 = uuid.uuid4
+
+    def counting_uuid4():
+        draws.append(1)
+        return real_uuid4()
+
+    monkeypatch.setattr(uuid, "uuid4", counting_uuid4)
+    with FakeOllama(reply=PREFILL_COMPLETION) as server:
+        injector = PrefillFloodInjector(clock, 0.6, url=server.url, model="m@1", concurrency=1)
+        injector.bounds()
+        injector.target()
+        assert draws == []
+        injector.start()
+        try:
+            assert len(draws) == 1
+        finally:
+            injector.stop()
