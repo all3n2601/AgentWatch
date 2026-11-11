@@ -101,6 +101,14 @@ def test_preprocessing_contract_carries_what_serving_and_calibration_need(tmp_pa
     )
 
 
+def test_the_report_binds_every_file_calibration_reads_by_hash(tmp_path):
+    output = tmp_path / "out"
+    run(tmp_path / "split.json", output, loader=loader_for([], SPLITS), **tracking(tmp_path))
+    report = read(output / "report.json")
+    for key in ("predictions", "validation_predictions", "preprocessing"):
+        assert report[key]["sha256"] == file_sha256(output / report[key]["file"]), key
+
+
 def test_a_blocked_split_is_still_logged_and_trains_nothing(tmp_path):
     output = tmp_path / "out"
     outcome = run(tmp_path / "split.json", output, loader=blocked, **tracking(tmp_path))
@@ -141,7 +149,7 @@ def test_bad_rows_are_kept_as_a_failed_run_not_a_crash(tmp_path):
     assert logged.data.tags["status"] == "failed"
 
 
-def test_a_mixed_label_row_is_a_failed_run_naming_the_unscored_label(tmp_path):
+def test_a_mixed_row_without_its_resources_is_a_failed_run_naming_it(tmp_path):
     mixed = dict(SPLITS) | {
         "test": SPLITS["test"] + [featured_row("none", 0) | {"label_resource": "mixed"}]
     }
@@ -150,7 +158,46 @@ def test_a_mixed_label_row_is_a_failed_run_naming_the_unscored_label(tmp_path):
         tmp_path / "split.json", output, loader=loader_for([], mixed), **tracking(tmp_path)
     )
     assert outcome.status == "failed"
-    assert "labeled 'mixed'" in read(output / "report.json")["reason"]
+    assert "without label_resources" in read(output / "report.json")["reason"]
+
+
+def mixed_step(index: int) -> dict:
+    return featured_row("cpu_sandbox", index) | {
+        "label_resource": "mixed",
+        "label_resources": "cpu_sandbox,inference",
+        "label_basis": "mixed_confirmed",
+        "condition": "mixed",
+    }
+
+
+def test_early_stopping_is_recorded_per_model_on_mixed_only_validation(tmp_path):
+    # Mixed validation steps cannot stop the classifier but can stop the regressor.
+    splits = dict(SPLITS) | {"validation": [mixed_step(i) for i in range(6)]}
+    output = tmp_path / "out"
+    run(tmp_path / "split.json", output, loader=loader_for([], splits), **tracking(tmp_path))
+    model = read(output / "report.json")["model"]
+    assert model["early_stopping"] == "not_used" and model["validation_rows_dropped"] == 6
+    assert model["regressor_early_stopping"] == "validation"
+    [logged] = logged_runs(tmp_path)
+    assert logged.data.params["regressor_early_stopping"] == "validation"
+
+
+def test_mixed_steps_train_the_regressor_and_are_scored_by_any_member(tmp_path):
+    splits = {
+        "train": SPLITS["train"] + [mixed_step(i) for i in range(4)],
+        "validation": SPLITS["validation"],
+        "test": SPLITS["test"] + [mixed_step(i) for i in range(3)],
+    }
+    output = tmp_path / "out"
+    outcome = run(
+        tmp_path / "split.json", output, loader=loader_for([], splits), **tracking(tmp_path)
+    )
+    assert outcome.status == "evaluated"
+    report = read(output / "report.json")
+    assert report["model"]["train_rows_not_classified"] == 4
+    mixed = report["metrics"]["model"]["slices"]["mixed_contention"]
+    assert mixed["steps"] == 3 and mixed["hit_rate"] is not None
+    assert report["gates"]["mixed_contention_gain"]["outcome"] == "inconclusive"
 
 
 def test_rows_from_mixed_dataset_versions_are_a_failed_run(tmp_path):

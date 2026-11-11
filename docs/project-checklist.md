@@ -429,6 +429,15 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   median instead of 0.25 s), so it is not retrieval-exclusive. Open until review and merge.
   2026-10-27 (M2): the inference injector also loads a loopback vLLM server
   (`competing-openai-chat-v1`, same bounds); one real contended replay confirmed its cleanup.
+  2026-11-10 (branch `feature/prefill-flood-injector`, not yet merged,
+  [ADR 0011](adr/0011-prefill-flood-held-out-injection-method.md)): `PrefillFloodInjector`
+  (`prefill-flood-openai-chat-v1`, long prompts with `max_tokens=1`) is added as a candidate
+  held-out GPU method (92 injector tests). Against real vLLM v0.32, two 20 s runs at
+  concurrency 2 completed 104 and 104 requests with 0 failures and zero prefix-cache hits
+  with the per-request nonce digits first (1,680 of 220,778 and 1,648 of 216,612 queried tokens
+  hit when the run token came first). A formal hold-out needs `split-v3`, accepted by Rohit and
+  Akshay; no evidence using this method may enter a dataset release before `split-v3` lists it in
+  `held_out_injection_methods` (Akshay, review of PR #64). Open until review and merge.
 
 **Exit test:** Known isolated workloads exercise each resource and a clean control. Measurements
 and attribution identify the affected class. Real GPU validation uses real inference hardware;
@@ -728,6 +737,11 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   2026-11-06 (D03, not merged): `steps-v1.3+aafae73eb211` covers all four classes and `mixed`,
   and its split passes the leakage check, but `make rule-baseline` refuses it because `mixed`
   has no scoring rule until M02 (`pipelines/model/tests/test_rule_baseline.py`).
+  2026-11-10 (M02): `mixed-scoring-v1` scores `mixed` steps for the rules and the model (naming
+  any confirmed resource is correct; `mixed_joint_only` reported apart; per-resource F1 beside
+  macro F1), and adds the mixed-contention gain gate (`pipelines/model/tests/test_mixed.py`,
+  `test_comparison.py`). Tested on synthetic rows only. Open: dataset v1's test split mixes two
+  feature definitions, which evaluation refuses, so no rule metrics exist yet.
 
 **Exit test:** Rebuild labels and features from recorded evidence. Validate schema, missingness,
 class balance, baseline noise, split independence, and feature leakage. Report rule metrics on the
@@ -745,6 +759,18 @@ frozen evaluation sets without tuning against them.
   evaluable release; open until one covering all four classes passes the leakage check.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
+  2026-11-10 (M04): `make calibrate` fits `calibration-v1` temperature scaling and the abstention
+  threshold on the validation split only, then reports test-split ECE, abstention rates, clean
+  and missing-feature slices and every contract gate, with abstentions counted as misses
+  ([calibration](model-calibration.md), `pipelines/model/tests`). Tested on synthetic fixtures
+  only. After the M02 merge (`mixed-scoring-v1`), mixed steps are scored by hit, joint-only steps
+  are never scored, the mixed-contention abstention scope and gain gate are measured, and the
+  threshold is chosen on single-class validation steps. 2026-11-11 (PR #63, not merged): the
+  threshold's 20% limit also covers scored mixed validation steps and reads the contract's
+  `abstention_rate_scopes`, as the test gate does (`test_calibration.py`, `test_calibrate.py`;
+  synthetic fixtures only). Open: `split-v2` has an empty validation
+  split, so nothing is fitted yet, and showing uncertain results belongs to serving and the
+  dashboard.
 - [ ] Load a versioned registered model in the correlation service.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
 

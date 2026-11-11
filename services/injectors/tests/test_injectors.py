@@ -3,8 +3,10 @@
 The model server here is a loopback test double; its responses are synthetic.
 """
 
+import json
 import math
 import threading
+import uuid
 
 import pytest
 from agentwatch_injectors import base, processes, retrieval
@@ -15,8 +17,18 @@ from agentwatch_injectors.base import (
     InjectorError,
 )
 from agentwatch_injectors.cpu import CpuSpinInjector, _spin, available_cpus
-from agentwatch_injectors.inference import CompetingInferenceInjector, loopback_url
+from agentwatch_injectors.inference import (
+    CompetingChatProfile,
+    CompetingInferenceInjector,
+    loopback_url,
+)
 from agentwatch_injectors.injection_set import InjectionCancelled, InjectionSet
+from agentwatch_injectors.prefill import (
+    FILLER_TOKENS_PER_LINE,
+    PrefillFloodInjector,
+    PrefillProfile,
+    PrefillRejected,
+)
 from agentwatch_injectors.processes import halt_children, new_group, start_children
 from agentwatch_injectors.retrieval import IndexQueryFloodInjector
 from injector_test_targets import FakeOllama, TestClock, ignore_stop, never_ready, wait_until
@@ -235,6 +247,23 @@ def test_inference_injector_only_targets_loopback_servers(url):
 )
 def test_loopback_servers_are_accepted(url):
     assert loopback_url(url) == url.rstrip("/")
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://127.0.0.1:abc", "http://127.0.0.1:99999", "http://localhost:-1", "http://[::1]:70000"],
+)
+def test_loopback_urls_with_an_invalid_port_are_refused(url):
+    with pytest.raises(ValueError, match="port"):
+        loopback_url(url)
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:abc", "http://127.0.0.1:99999"])
+def test_both_injectors_refuse_an_invalid_port_at_construction(clock, url):
+    with pytest.raises(ValueError, match="port"):
+        PrefillFloodInjector(clock, 5, url=url, model="m")
+    with pytest.raises(ValueError, match="port"):
+        CompetingInferenceInjector(clock, 5, url=url, model="m", num_ctx=None, server="vllm")
 
 
 @pytest.mark.parametrize(
@@ -579,3 +608,277 @@ def test_stop_reasons_are_validated(clock):
         injector.stop("whenever")
     assert injector.stop()["stop_reason"] == "requested"
     assert base.STOP_REASONS == ("requested", "duration_bound", "failure", "cancelled")
+
+
+def test_competing_profile_payloads_do_not_vary_by_request():
+    profile = CompetingChatProfile(
+        server="vllm", payload_template={"model": "m", "max_tokens": 128}
+    )
+    assert profile.payload(0, 0) == profile.payload(3, 41) == {"model": "m", "max_tokens": 128}
+    assert profile.path == "/v1/chat/completions"
+    assert profile.summarize([5, 7], unmeasured=1, secondary=[None, None]) == {
+        "generated_tokens": 12
+    }
+
+
+PREFILL_COMPLETION = {
+    "choices": [{"message": {"content": "x"}, "finish_reason": "length"}],
+    "usage": {"prompt_tokens": 2050, "completion_tokens": 1},
+}
+
+
+def run_prefill(clock, server, seconds: float = 0.6, **settings) -> dict:
+    injector = PrefillFloodInjector(
+        clock, seconds, url=server.url, model="m@1", **{"concurrency": 1} | settings
+    )
+    injector.start()
+    try:
+        assert wait_until(lambda: stopped(injector))
+    finally:
+        log = injector.stop()
+    return log
+
+
+def test_prefill_requests_are_long_prompts_with_one_output_token(clock):
+    with FakeOllama(reply=PREFILL_COMPLETION) as server:
+        log = run_prefill(clock, server, prompt_tokens=256)
+    activity = log["activity"]
+    assert log["method"] == "prefill-flood-openai-chat-v1"
+    assert log["injector"] == "prefill" and log["contended_resource_class"] == "inference"
+    assert log["target"]["server"] == "vllm"
+    assert set(server.paths) == {"/v1/chat/completions"}
+    payload = server.payloads[0]
+    assert payload["max_tokens"] == 1 and payload["stream"] is False
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    lines = payload["messages"][0]["content"].splitlines()
+    assert len(lines) == 1 + math.ceil(256 / FILLER_TOKENS_PER_LINE)
+    assert activity["requests_completed"] > 0 and activity["requests_failed"] == 0
+    assert activity["prompt_tokens"]["median"] == 2050
+    assert activity["prompt_tokens_target"] == 256
+    assert log["cleanup"]["confirmed"] is True
+
+
+def test_every_request_has_a_unique_prefix(clock):
+    with FakeOllama(reply=PREFILL_COMPLETION) as server:
+        run_prefill(clock, server, seconds=1.0, concurrency=2, prompt_tokens=19)
+    assert len(server.payloads) >= 6
+    firsts = [p["messages"][0]["content"].splitlines()[0] for p in server.payloads]
+    assert len(set(firsts)) == len(firsts)
+
+
+def test_separate_runs_never_repeat_a_prompt_prefix(clock):
+    # Counters restart at 0 each run; a cached prefill from run one must not match run two.
+    with FakeOllama(reply=PREFILL_COMPLETION) as server:
+        run_prefill(clock, server, prompt_tokens=19)
+        first_run = {p["messages"][0]["content"].splitlines()[0] for p in server.payloads}
+        server.payloads.clear()
+        run_prefill(TestClock(), server, prompt_tokens=19)
+        second_run = {p["messages"][0]["content"].splitlines()[0] for p in server.payloads}
+    assert first_run and second_run
+    assert first_run.isdisjoint(second_run)
+
+
+def test_prompts_are_never_logged(clock):
+    with FakeOllama(reply=PREFILL_COMPLETION) as server:
+        log = run_prefill(clock, server, prompt_tokens=19)
+    nonce = server.payloads[0]["messages"][0]["content"].splitlines()[0]
+    assert nonce.startswith("request 0-0-")
+    assert nonce not in json.dumps(log)
+    assert nonce.split("-")[2] not in json.dumps(log)  # the run token
+    assert "quick brown fox" not in json.dumps(log)
+
+
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [
+        ("concurrency", 5),
+        ("concurrency", 0),
+        ("prompt_tokens", 3073),
+        ("prompt_tokens", 0),
+        ("request_timeout_seconds", 121.0),
+    ],
+)
+def test_prefill_load_is_bounded(clock, setting, value):
+    settings = {"url": "http://127.0.0.1:1", "model": "m"} | {setting: value}
+    with pytest.raises(ValueError, match=setting):
+        PrefillFloodInjector(clock, 5, **settings)
+
+
+def test_prefill_injector_only_loads_loopback_servers(clock):
+    with pytest.raises(ValueError, match="loopback"):
+        PrefillFloodInjector(clock, 5, url="http://10.0.0.5:8000", model="m")
+
+
+def test_rejected_prefill_requests_count_as_failures(clock):
+    with FakeOllama(status=400) as server:
+        log = run_prefill(clock, server)
+    activity = log["activity"]
+    assert activity["requests_completed"] == 0 and activity["requests_failed"] >= 1
+    assert activity["failures_by_type"] == {"PrefillRejected": activity["requests_failed"]}
+    assert activity["prompt_tokens"] is None
+
+
+def test_completions_without_prompt_token_counts_are_counted_apart(clock):
+    reply = {key: value for key, value in PREFILL_COMPLETION.items() if key != "usage"}
+    with FakeOllama(reply=reply) as server:
+        log = run_prefill(clock, server)
+    activity = log["activity"]
+    assert activity["requests_completed"] > 0
+    assert activity["prompt_tokens"] is None
+    assert activity["completions_without_prompt_tokens"] == activity["requests_completed"]
+
+
+def test_an_unreachable_server_fails_the_prefill_start(clock, monkeypatch):
+    monkeypatch.setattr(processes, "READY_TIMEOUT_SECONDS", 1.0)
+    injector = PrefillFloodInjector(clock, 30, url="http://127.0.0.1:1", model="m", concurrency=1)
+    with pytest.raises(InjectorError, match="did not start"):
+        injector.start()
+    log = injector.log()
+    assert log["stop_reason"] == "failure"
+    assert log["cleanup"]["confirmed"] is True
+    assert len(log["cleanup"]["children"]) == 1
+    # The failed-start halt may stop the child before it reports, so a missing report is legitimate.
+    activity = log["activity"]
+    if activity["report"] == "received":
+        assert activity["requests_sent"] == 0
+        assert activity["requests_completed"] == 0
+    else:
+        assert activity == {"report": "missing"}
+
+
+def test_prefill_activity_is_missing_when_the_child_never_reported(clock, monkeypatch):
+    def halt_without_reports(group):
+        for child in group.children:
+            child.process.kill()
+            child.process.join(5)
+        return [None], {"confirmed": True, "children": []}
+
+    monkeypatch.setattr("agentwatch_injectors.prefill.halt_children", halt_without_reports)
+    with FakeOllama(reply=PREFILL_COMPLETION) as server:
+        injector = PrefillFloodInjector(clock, 30, url=server.url, model="m", concurrency=1)
+        injector.start()
+        log = injector.stop()
+    assert log["activity"] == {"report": "missing"}
+
+
+def test_prefill_and_competing_injectors_share_a_set(clock):
+    prefill = PrefillFloodInjector(clock, 5, url="http://127.0.0.1:1", model="m")
+    competing = CompetingInferenceInjector(
+        clock, 5, url="http://127.0.0.1:1", model="m", num_ctx=None, server="vllm"
+    )
+    InjectionSet(clock, [prefill, competing])
+    assert (prefill.kind, competing.kind) == ("prefill", "inference")
+
+
+FINISHED_CHOICE = {"message": {"content": "x"}, "finish_reason": "length"}
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        ({"prompt_tokens": 2050}, 2050),
+        ({"prompt_tokens": 0}, None),
+        ({"prompt_tokens": -3}, None),
+        ({"prompt_tokens": True}, None),
+        ({"prompt_tokens": "2050"}, None),
+        ({}, None),
+        (None, None),
+    ],
+)
+def test_prefill_measure_accepts_only_positive_integer_prompt_token_counts(usage, expected):
+    result = {"choices": [FINISHED_CHOICE]} | ({} if usage is None else {"usage": usage})
+    assert PrefillProfile("m", 256, "run").measure(result) == expected
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"error": "overloaded", "choices": [FINISHED_CHOICE]},
+        ["not", "a", "dict"],
+        {"choices": "none"},
+        {"choices": []},
+        {"choices": [{"message": {}, "finish_reason": None}]},
+    ],
+)
+def test_prefill_measure_rejects_unusable_replies(result):
+    with pytest.raises(PrefillRejected):
+        PrefillProfile("m", 256, "run").measure(result)
+
+
+def prefill_reply(finish_reason="length", completion_tokens=1):
+    usage = {"prompt_tokens": 2050}
+    if completion_tokens is not None:
+        usage["completion_tokens"] = completion_tokens
+    return {"choices": [{"message": {}, "finish_reason": finish_reason}], "usage": usage}
+
+
+@pytest.mark.parametrize("finish_reason", ["abort", "error", "", "tool_calls", 1])
+def test_prefill_measure_rejects_finish_reasons_other_than_stop_or_length(finish_reason):
+    with pytest.raises(PrefillRejected):
+        PrefillProfile("m", 256, "run").measure(prefill_reply(finish_reason))
+
+
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+def test_prefill_measure_accepts_stop_and_length(finish_reason):
+    assert PrefillProfile("m", 256, "run").measure(prefill_reply(finish_reason)) == 2050
+
+
+def test_prefill_completion_tokens_are_measured_not_assumed():
+    profile = PrefillProfile("m", 256, "run")
+    assert profile.measure_secondary(prefill_reply(completion_tokens=1)) == 1
+    assert profile.measure_secondary(prefill_reply(completion_tokens=3)) == 3
+    assert profile.measure_secondary(prefill_reply(completion_tokens=None)) is None
+    assert profile.measure_secondary(prefill_reply(completion_tokens=True)) is None
+    summary = profile.summarize([2050] * 4, 0, [1, 3, None, 2])
+    assert summary["completion_tokens"] == {
+        "count": 3,
+        "min": 1,
+        "median_low": 2,
+        "max": 3,
+    }
+    # A missing count is not a one-token reply and not a mismatch either.
+    assert summary["completions_not_one_token"] == 2
+    assert summary["completions_without_completion_tokens"] == 1
+
+
+def test_prefill_summary_without_completion_tokens_has_no_stats():
+    summary = PrefillProfile("m", 256, "run").summarize([], 2, [None, None])
+    assert summary["completion_tokens"] is None
+    assert summary["completions_not_one_token"] == 0
+    assert summary["completions_without_completion_tokens"] == 2
+
+
+def test_prefill_log_reports_measured_completion_tokens(clock):
+    with FakeOllama(reply=prefill_reply(completion_tokens=2)) as server:
+        log = run_prefill(clock, server, prompt_tokens=19)
+    activity = log["activity"]
+    assert activity["requests_completed"] > 0
+    assert activity["completion_tokens"]["median_low"] == 2
+    assert activity["completions_not_one_token"] == activity["requests_completed"]
+
+
+def test_competing_chat_report_keys_are_unchanged():
+    profile = CompetingChatProfile(server="vllm", payload_template={})
+    assert profile.measure_secondary({"usage": {"completion_tokens": 9}}) is None
+    assert profile.summarize([5, 7], 1, [None, None]) == {"generated_tokens": 12}
+
+
+def test_prefill_run_token_is_drawn_at_launch_not_construction(clock, monkeypatch):
+    draws = []
+    real_uuid4 = uuid.uuid4
+
+    def counting_uuid4():
+        draws.append(1)
+        return real_uuid4()
+
+    monkeypatch.setattr(uuid, "uuid4", counting_uuid4)
+    with FakeOllama(reply=PREFILL_COMPLETION) as server:
+        injector = PrefillFloodInjector(clock, 0.6, url=server.url, model="m@1", concurrency=1)
+        injector.bounds()
+        injector.target()
+        assert draws == []
+        injector.start()
+        try:
+            assert len(draws) == 1
+        finally:
+            injector.stop()
