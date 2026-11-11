@@ -750,3 +750,34 @@ def test_host_record_names_the_gpu_when_nvml_opens(monkeypatch):
         8 * 1024**3,
     )
     assert closed == [True]
+
+
+def test_sweep_analyse_writes_the_offline_analysis(tmp_path, monkeypatch, capsys):
+    calls = []
+
+    def analyse(directory):
+        calls.append(directory)
+        return {"capacity_decision": {"capacity": 2, "result": "incomplete"}}
+
+    monkeypatch.setattr(cli, "analyse_sweep_folder", analyse)
+    assert cli.main(["sweep-analyse", str(tmp_path)]) == cli.EXIT_PASSED
+    assert calls == [tmp_path]
+    output = capsys.readouterr().out
+    assert "capacity 2 (incomplete)" in output and "analysis.json" in output
+
+
+def test_sweep_analyse_refuses_a_folder_without_a_sweep_record(tmp_path, capsys):
+    assert cli.main(["sweep-analyse", str(tmp_path)]) == cli.EXIT_USAGE
+    assert "sweep.json" in capsys.readouterr().err
+    assert not (tmp_path / "analysis.json").exists()
+
+
+def test_a_completed_sweep_whose_analysis_failed_does_not_exit_0(tmp_path, sweep_stubs, capsys):
+    sweep_stubs.record = {
+        "state": "completed",
+        "ramp_end": "ceiling",
+        "capacity_decision": None,
+        "analysis_errors": [{"stage": "label_validation", "error": "RuntimeError: x"}],
+    }
+    assert cli.main(sweep_argv(tmp_path)) == cli.EXIT_FAILED
+    assert "sweep-analyse" in capsys.readouterr().err

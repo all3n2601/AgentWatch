@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from agentwatch_agent import sweep
+from agentwatch_agent import sweep, sweep_analysis
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.replay import ReplayPlan
 from agentwatch_agent.runner import MODEL_CALL_LIMIT_REASON, VERIFICATION_FAILED
@@ -1028,3 +1028,69 @@ def test_matching_start_attempts_let_the_sweep_run(tmp_path, reported, attempts)
     record = harness.run()
     assert record["phases"]["configuration_check"]["status"] == "completed"
     assert record["start_attempts"] == attempts
+
+
+def test_an_analysis_error_in_one_batch_costs_no_phase(tmp_path, monkeypatch):
+    harness = Harness(tmp_path)
+    real = sweep_analysis.batch_metrics
+
+    def broken_for_one_batch(batch_dir, run_timeout_seconds):
+        if batch_dir.name == "07-ramp-n2-r0":
+            raise ZeroDivisionError("fixture: analysis bug")
+        return real(batch_dir, run_timeout_seconds)
+
+    monkeypatch.setattr(sweep_analysis, "batch_metrics", broken_for_one_batch)
+    record = harness.run()
+    assert record["state"] == "completed"
+    assert record["phases"]["live"]["status"] == "completed"
+    assert record["phases"]["injected"]["status"] == "completed"
+    broken = next(entry for entry in record["batches"] if entry["sequence"] == 7)
+    assert broken["metrics"] == {
+        "status": "analysis_error",
+        "error": "ZeroDivisionError: fixture: analysis bug",
+    }
+    level = record["level_summaries"][2]
+    assert level["analysis_errors"] == 1
+    assert level["unreadable_batches"][0]["status"] == "analysis_error"
+    decision = record["capacity_decision"]
+    # Level 2 failed only `readable`: what it measured is unknown, so no knee is claimed.
+    assert decision["criteria"][2]["readable"]["passed"] is False
+    assert decision["result"] == "incomplete" and decision["capacity"] == 1
+
+
+def test_a_failed_label_validation_is_recorded_without_replacing_the_state(tmp_path, monkeypatch):
+    harness = Harness(tmp_path)
+
+    def broken(*_args):
+        raise RuntimeError("fixture: label bug")
+
+    monkeypatch.setattr(sweep, "ramp_label_results", broken)
+    harness.hooks["ramp-n2-r0"] = lambda *_: cancel_sweep(harness)
+    record = harness.run()
+    assert record["state"] == "cancelled"
+    assert record["capacity_decision"] is not None
+    assert record["analysis_errors"] == [
+        {"stage": "label_validation", "error": "RuntimeError: fixture: label bug"}
+    ]
+    assert "sweep-analyse" in record["analysis_note"]
+    assert read(harness.sweep_file)["analysis_errors"] == record["analysis_errors"]
+
+
+def test_a_failed_capacity_decision_skips_the_later_phases_and_says_why(tmp_path, monkeypatch):
+    harness = Harness(tmp_path)
+
+    def broken(*_args):
+        raise KeyError("fixture: decision bug")
+
+    monkeypatch.setattr(sweep, "ramp_analysis", broken)
+    record = harness.run()
+    assert record["state"] == "completed" and record["ramp_end"] == "ceiling"
+    assert record["phases"]["capacity_decision"]["status"] == "analysis_error"
+    assert record["capacity_decision"] is None
+    assert [error["stage"] for error in record["analysis_errors"]] == ["capacity_decision"]
+    for phase in ("live", "injected"):
+        assert record["phases"][phase]["status"] == "skipped"
+        assert "capacity decision failed" in record["phases"][phase]["reason"]
+    assert not any(call[0] in ("live", "injected") for call in harness.calls)
+    # Label validation still ran.
+    assert record["label_validation"]["levels_skipped"] == []

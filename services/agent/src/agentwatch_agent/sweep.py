@@ -35,16 +35,15 @@ from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.experiment import injection_active
 from agentwatch_agent.replay import ReplayPlan
-from agentwatch_agent.runner import JOURNAL_FILE, write_json_atomic
+from agentwatch_agent.runner import write_json_atomic
 from agentwatch_agent.session import CancellationState
 from agentwatch_agent.sweep_analysis import (
-    _resolve_run_dir,
-    batch_metrics,
+    batch_metrics_or_error,
     classify_run,
     ramp_analysis,
     server_changes,
 )
-from agentwatch_agent.sweep_labels import baselines, label_validation, max_running_check
+from agentwatch_agent.sweep_labels import ramp_label_results
 from agentwatch_agent.sweep_protocol import (
     IDLE_WAIT_SECONDS,
     INJECTOR_BOUND_MARGIN_SECONDS,
@@ -108,6 +107,10 @@ RAMP_CANCELLED = "cancelled"
 FULL_RAMP = "full_ramp"
 PARTIAL_RAMP = "partial_ramp"
 NO_ANALYSIS = "none"
+
+CAPACITY_DECISION = "capacity_decision"
+LABEL_VALIDATION = "label_validation"
+ANALYSIS_FAILED = "analysis_error"  # the capacity_decision phase status when it raised
 
 PHASES = ("configuration_check", "warmup", "ramp", "capacity_decision", "live", "injected")
 RAMP_PHASES = ("warmup", "ramp")
@@ -267,6 +270,8 @@ class CapacitySweep:
             # full_ramp, partial_ramp (the sweep stopped during the ramp) or none.
             "analysis_scope": None,
             "analysis_note": None,
+            # Analysis stages that raised: {stage, error}. The sweep's state is never replaced.
+            "analysis_errors": [],
             "cancellation": None,
             "error": None,
         }
@@ -305,10 +310,15 @@ class CapacitySweep:
     def _sweep(self) -> None:
         self._check_configuration()
         self._ramp()
-        decision = self._decide_capacity(FULL_RAMP)
-        capacity = decision["capacity"]
+        decided = self._try_analysis(CAPACITY_DECISION, lambda: self._decide_capacity(FULL_RAMP))
+        decision = self.record["capacity_decision"] if decided else None
+        capacity = decision["capacity"] if decision is not None else None
         if capacity is None or capacity < 1:
-            reason = f"capacity below 1 or not measured (result {decision['result']})"
+            reason = (
+                f"capacity below 1 or not measured (result {decision['result']})"
+                if decision is not None
+                else "the capacity decision failed (see analysis_errors)"
+            )
             for phase in ("live", "injected"):
                 self.record["phases"][phase] = {"status": "skipped", "reason": reason}
             return
@@ -406,7 +416,8 @@ class CapacitySweep:
         """Analyse the recorded ramp on every outcome but a failure; mark a partial ramp.
 
         A sweep stopped or cancelled during the warm-up or ramp still gets level summaries,
-        the capacity decision and label validation over the ramp batches it recorded.
+        the capacity decision and label validation over the ramp batches it recorded. An
+        analysis error is recorded in `analysis_errors` and never replaces the sweep's state.
         """
         if self.record["phases"]["warmup"]["status"] == "not_run":
             self.record |= {
@@ -414,16 +425,37 @@ class CapacitySweep:
                 "analysis_note": f"no batch ran ({self.record['state']})",
             }
             return
-        if self.record["capacity_decision"] is None:
-            self._decide_capacity(PARTIAL_RAMP)
+        if self.record["phases"][CAPACITY_DECISION]["status"] == "not_run":
             self.record["analysis_note"] = (
                 f"ramp incomplete, {self.record['state']}: {self.record['stop_reason']}"
             )
-        self._validate_labels()
+            self._try_analysis(CAPACITY_DECISION, lambda: self._decide_capacity(PARTIAL_RAMP))
+        self._try_analysis(LABEL_VALIDATION, self._validate_labels)
         self._save()
 
+    def _try_analysis(self, stage: str, step: Callable[[], object]) -> bool:
+        """Run one analysis stage; record its error instead of losing the sweep's state.
+
+        The evidence on disk is untouched, so `sweep-analyse` can analyse the folder again.
+        """
+        try:
+            step()
+        # Any analysis bug: recorded in analysis_errors and the exit code, never dropped.
+        except Exception as error:  # noqa: BLE001
+            self.record["analysis_errors"].append({"stage": stage, "error": _text(error)})
+            if stage == CAPACITY_DECISION:
+                self.record["phases"][CAPACITY_DECISION]["status"] = ANALYSIS_FAILED
+            note = self.record["analysis_note"]
+            self.record["analysis_note"] = (
+                f"{note + '; ' if note else ''}{stage} failed ({_text(error)}); analyse the "
+                "folder again with `sweep-analyse`"
+            )
+            self._save()
+            return False
+        return True
+
     def _decide_capacity(self, scope: str) -> dict:
-        self._begin("capacity_decision", scope=scope)
+        self._begin(CAPACITY_DECISION, scope=scope)
         self.record["analysis_scope"] = scope
         analysis = ramp_analysis(
             self.record["batches"],
@@ -432,51 +464,14 @@ class CapacitySweep:
             lambda entry: entry["metrics"],
         )
         self.record |= analysis
-        self._complete("capacity_decision")
+        self._complete(CAPACITY_DECISION)
         self._save()
         return analysis["capacity_decision"]
 
     def _validate_labels(self) -> None:
-        """Labels of N >= 2 ramp runs against the N = 1 baselines, and the running-count check.
-
-        Level keys stay ints so N = 1 is never validated against itself. Unreadable evidence is
-        recorded as such; the folder can be analysed again without the GPU.
-        """
-        runs, without_evidence = self._ramp_run_dirs()
-        try:
-            reference = baselines(runs.get(1, []))
-            validation = label_validation(
-                {level: paths for level, paths in runs.items() if level >= 2}, reference
-            )
-            self.record["label_validation"] = validation | {
-                "runs_without_evidence": without_evidence
-            }
-        # CoverageError and json.JSONDecodeError are ValueErrors.
-        except (OSError, ValueError, TypeError, KeyError) as error:
-            self.record["label_validation"] = {"status": "unreadable", "error": _text(error)}
-        try:
-            self.record["max_running_check"] = max_running_check(
-                [path for paths in runs.values() for path in paths],
-                self.configuration.max_num_seqs,
-            )
-        except (OSError, ValueError, TypeError, KeyError) as error:
-            self.record["max_running_check"] = {"status": "unreadable", "error": _text(error)}
-
-    def _ramp_run_dirs(self) -> tuple[dict[int, list[Path]], int]:
-        runs: dict[int, list[Path]] = {}
-        without_evidence = 0
-        for entry in self.record["batches"]:
-            if entry["phase"] != "ramp":
-                continue
-            batch_dir = self.output_dir / entry["folder"]
-            for run in entry["runs"]:
-                run_dir, _found_by = _resolve_run_dir(batch_dir, run.get("output_dir"))
-                files = ("agent-evidence.json", JOURNAL_FILE)
-                if run_dir is None or not all((run_dir / name).is_file() for name in files):
-                    without_evidence += 1
-                    continue
-                runs.setdefault(entry["level"], []).append(run_dir)
-        return runs, without_evidence
+        self.record |= ramp_label_results(
+            self.output_dir, self.record["batches"], self.configuration.max_num_seqs
+        )
 
     # Batches
 
@@ -597,7 +592,7 @@ class CapacitySweep:
             "after_error": after_error,
             "changes": server_changes(asdict(before), asdict(after)) if after else None,
         }
-        metrics = batch_metrics(batch_dir, self.run_timeout_seconds)
+        metrics = batch_metrics_or_error(batch_dir, self.run_timeout_seconds)
         entry["wall_seconds"] = metrics.get("wall_seconds")
         if entry["analysed"]:
             entry["metrics"] = metrics

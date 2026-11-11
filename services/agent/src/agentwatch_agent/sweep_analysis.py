@@ -331,6 +331,27 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
     }
 
 
+ANALYSIS_ERROR = "analysis_error"
+MAX_ERROR_TEXT = 1000
+
+
+def batch_metrics_or_error(batch_dir: Path, run_timeout_seconds: float) -> dict:
+    """`batch_metrics`, or status `analysis_error` with the error when the analysis raises.
+
+    Unreadable files are already reported `unreadable`; this keeps a bug in the analysis of one
+    batch from costing the sweep its later phases. The error is recorded on the batch, which
+    then fails its level's `readable` criterion, and the folder can be analysed again offline.
+    """
+    try:
+        return batch_metrics(batch_dir, run_timeout_seconds)
+    # Any analysis bug: recorded on the batch (see the docstring), never dropped.
+    except Exception as error:  # noqa: BLE001
+        return {
+            "status": ANALYSIS_ERROR,
+            "error": f"{type(error).__name__}: {error}"[:MAX_ERROR_TEXT],
+        }
+
+
 def server_changes(before: dict, after: dict) -> dict:
     """Counter increases between two server-state snapshots.
 
@@ -411,10 +432,11 @@ def level_summary(batches: list[dict], baseline_sm_clock_mhz: float | None = Non
             1 for batch in readable if batch["throughput_per_minute"] is None
         ),
         "unreadable_batches": [
-            {"index": position, "error": batch["error"]}
+            {"index": position, "status": batch.get("status"), "error": batch.get("error")}
             for position, batch in enumerate(batches)
             if batch.get("status") != "readable"
         ],
+        "analysis_errors": sum(1 for batch in batches if batch.get("status") == ANALYSIS_ERROR),
         "runs": runs,
         "runs_without_evidence": sum(batch["runs_without_evidence"] for batch in readable),
         "passed": passed,

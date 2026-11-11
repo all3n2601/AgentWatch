@@ -16,7 +16,14 @@ from pathlib import Path
 from agentwatch_agent.coverage import read_journal
 from agentwatch_agent.experiment import step_timings, variability
 from agentwatch_agent.runner import JOURNAL_FILE
-from agentwatch_agent.sweep_analysis import _is_number, _read_json, _span_values
+from agentwatch_agent.sweep_analysis import (
+    MAX_ERROR_TEXT,
+    _is_number,
+    _read_json,
+    _resolve_run_dir,
+    _span_values,
+    split_ramp_entries,
+)
 from agentwatch_agent.sweep_protocol import (
     BASELINE_BATCHES_PER_SOURCE,
     LABEL_THRESHOLD_FLOOR_SECONDS,
@@ -372,11 +379,63 @@ def max_running_check(runs: list[Path], max_num_seqs: int) -> dict:
     }
 
 
+def ramp_run_dirs(output_dir: Path, entries: list[dict]) -> tuple[dict[int, list[Path]], int]:
+    """Run folders of the usable ramp batches by level, and how many runs had no evidence.
+
+    Batches excluded from level metrics (`split_ramp_entries`) are excluded here too.
+    """
+    usable, _excluded = split_ramp_entries(entries)
+    runs: dict[int, list[Path]] = {}
+    without_evidence = 0
+    for entry in usable:
+        batch_dir = output_dir / entry["folder"]
+        for run in entry["runs"]:
+            run_dir, _found_by = _resolve_run_dir(batch_dir, run.get("output_dir"))
+            files = ("agent-evidence.json", JOURNAL_FILE)
+            if run_dir is None or not all((run_dir / name).is_file() for name in files):
+                without_evidence += 1
+                continue
+            runs.setdefault(int(entry["level"]), []).append(run_dir)
+    return runs, without_evidence
+
+
+def _unreadable(error: BaseException) -> dict:
+    return {"status": "unreadable", "error": f"{type(error).__name__}: {error}"[:MAX_ERROR_TEXT]}
+
+
+def ramp_label_results(output_dir: Path, entries: list[dict], max_num_seqs: int) -> dict:
+    """Label validation of N >= 2 ramp runs against the N = 1 baselines, and the running check.
+
+    `entries` are `sweep.json` batch entries under `output_dir`. Level keys stay ints so N = 1
+    is never validated against itself. Unreadable evidence is recorded as such.
+    """
+    runs, without_evidence = ramp_run_dirs(output_dir, entries)
+    results: dict = {}
+    try:
+        reference = baselines(runs.get(BASELINE_LEVEL, []))
+        validation = label_validation(
+            {level: paths for level, paths in runs.items() if level > BASELINE_LEVEL}, reference
+        )
+        results["label_validation"] = validation | {"runs_without_evidence": without_evidence}
+    # CoverageError and json.JSONDecodeError are ValueErrors.
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        results["label_validation"] = _unreadable(error)
+    try:
+        results["max_running_check"] = max_running_check(
+            [path for paths in runs.values() for path in paths], max_num_seqs
+        )
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        results["max_running_check"] = _unreadable(error)
+    return results
+
+
 __all__ = [
     "Baselines",
     "baselines",
     "label_validation",
     "max_running_check",
     "noise_threshold",
+    "ramp_label_results",
+    "ramp_run_dirs",
     "spearman",
 ]

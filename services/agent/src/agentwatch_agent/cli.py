@@ -11,7 +11,10 @@ if the measurement did not complete (its partial evidence is kept). `coverage` r
 recorded run's samples cover its steps; it exits 2 if the run directory cannot support one.
 `experiment` replays one verified run cleanly and under bounded contention; it exits 1 when
 it stopped early or a declared check failed (its evidence is kept), and 3 when a replay's live
-evidence needs `resend`.
+evidence needs `resend`. `capacity-sweep` ramps concurrent replays on one vLLM configuration
+(exit codes in the agent README); a completed sweep whose analysis raised exits 1.
+`sweep-analyse` rebuilds a recorded sweep's analysis offline into `analysis.json`; it exits 2
+when the folder has no usable `sweep.json`.
 
 Exit codes (all commands):
   0  success: the task passed (run), or all evidence was delivered and the run is closed
@@ -107,6 +110,7 @@ from agentwatch_agent.sweep import (
     STOPPED_RESEND_NEEDED,
     CapacitySweep,
 )
+from agentwatch_agent.sweep_offline import ANALYSIS_FILE, SweepFolderError, analyse_sweep_folder
 from agentwatch_agent.sweep_protocol import (
     CONFIGURATIONS,
     INJECTOR_CONCURRENCY,
@@ -461,6 +465,12 @@ def parser() -> argparse.ArgumentParser:
         help="An attempt to start vLLM, e.g. '0.8:failed: CUDA out of memory' then "
         "'0.75:started'; repeatable, the last must be 'started'",
     )
+
+    analyse = commands.add_parser(
+        "sweep-analyse",
+        help="Rebuild a recorded capacity sweep's analysis from its folder into analysis.json",
+    )
+    analyse.add_argument("sweep_dir", type=Path, help="A capacity-sweep folder with sweep.json")
 
     overhead = commands.add_parser(
         "overhead", help="Measure instrumentation overhead on a task's test workload"
@@ -1062,6 +1072,14 @@ def report_sweep(record: dict, sweep_dir: Path) -> int:
     overall = (record.get("label_validation") or {}).get("overall")
     if overall:
         print(f"Label validation: {overall['verdict']}")
+    analysis_errors = record.get("analysis_errors") or []
+    for error in analysis_errors:
+        print(f"error: the {error['stage']} analysis failed: {error['error']}", file=sys.stderr)
+    if analysis_errors:
+        print(
+            f"The evidence is kept; analyse it again with `sweep-analyse {sweep_dir}`.",
+            file=sys.stderr,
+        )
     if state == STOPPED_RESEND_NEEDED:
         print(
             "Live evidence is incomplete for at least one run; resend each journal named in "
@@ -1069,12 +1087,25 @@ def report_sweep(record: dict, sweep_dir: Path) -> int:
             file=sys.stderr,
         )
     if state == COMPLETED:
-        return EXIT_PASSED
+        # A sweep whose analysis raised is not a success, although its evidence is complete.
+        return EXIT_FAILED if analysis_errors else EXIT_PASSED
     if state == REFUSED_CONFIGURATION:
         return EXIT_USAGE
     if state == STOPPED_RESEND_NEEDED:
         return EXIT_INCOMPLETE_DELIVERY
     return EXIT_FAILED
+
+
+def sweep_analyse_command(args: argparse.Namespace) -> int:
+    try:
+        document = analyse_sweep_folder(args.sweep_dir)
+    except SweepFolderError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    decision = document["capacity_decision"]
+    print(f"Capacity: capacity {decision['capacity']} ({decision['result']})")
+    print(f"Analysis: {args.sweep_dir / ANALYSIS_FILE}")
+    return EXIT_PASSED
 
 
 def tasks_command() -> int:
@@ -1286,6 +1317,8 @@ def main(argv: list[str] | None = None) -> int:
         return experiment_command(args)
     if args.command == "capacity-sweep":
         return capacity_sweep_command(args)
+    if args.command == "sweep-analyse":
+        return sweep_analyse_command(args)
     if args.command == "overhead":
         return overhead_command(args)
     if args.command == "sampling-overhead":
