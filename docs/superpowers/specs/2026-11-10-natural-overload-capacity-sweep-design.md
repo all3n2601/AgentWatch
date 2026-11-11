@@ -47,9 +47,9 @@ Three PRs, merged in this order:
    command, its analysis, the real GPU sessions and the capacity record. Uses PR 1 only for
    the injected condition.
 3. **Later, a new branch from `main`** — score `rules-v1`, the M2 inference rule and the
-   learned candidates on the same frozen evidence. Starts only after Rohit's #61
-   (calibration and abstention) and #62 (mixed-step scoring) and the M2 PR 4 inference
-   features merge, and records the versions they merged with.
+   learned candidates on the same frozen evidence. Rohit's #61 (calibration and abstention,
+   `746ec26`) and #62 (`mixed-scoring-v1`, `64c4e2c`) merged on 2026-11-11; PR 3 still waits
+   for the M2 PR 4 inference features and rule, and records the versions it scores with.
 
 Out of scope: policy-limit evaluation (O06; the sweep runs `--no-policy`), changing
 `split-assignment.toml` or labels (Rohit and Akshay's decision), CPU/retrieval cases
