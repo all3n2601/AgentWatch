@@ -187,3 +187,33 @@ def test_bad_calibration_contract_values_are_rejected(tmp_path, old, new, messag
     broken.write_text(text.replace(old, new, 1))
     with pytest.raises(ContractError, match=message):
         load_contract(broken)
+
+
+def test_the_threshold_respects_the_abstention_limit_on_mixed_steps():
+    # Abstaining below 0.9 would drop the wrong 0.5 step but also both mixed steps (0.3).
+    labels = ["none"] * 8 + ["cpu_sandbox"] * 2 + ["mixed"] * 2
+    predictions = ["none"] * 8 + ["none", "cpu_sandbox"] + ["cpu_sandbox", "none"]
+    confidences = [0.9] * 8 + [0.5, 0.9] + [0.3, 0.3]
+    flags = [False] * 10 + [True] * 2
+    chosen = choose_threshold(labels, predictions, confidences, CLASSES, 0.5, mixed=flags)
+    assert chosen["threshold"] == 0.0
+    assert chosen["validation_mixed_abstention_rate"] == 0.0
+
+
+def test_mixed_steps_never_enter_the_validation_macro_f1():
+    # The same single-class steps, with and without two mixed steps beside them.
+    labels = ["none"] * 8 + ["cpu_sandbox"] * 2
+    predictions = ["none"] * 8 + ["none", "cpu_sandbox"]
+    confidences = [0.9] * 8 + [0.5, 0.9]
+    alone = choose_threshold(labels, predictions, confidences, CLASSES, 0.5)
+    beside = choose_threshold(
+        labels + ["mixed"] * 2,
+        predictions + ["cpu_sandbox", "cpu_sandbox"],
+        confidences + [0.95, 0.95],
+        CLASSES,
+        0.5,
+        mixed=[False] * 10 + [True] * 2,
+    )
+    assert beside["threshold"] == alone["threshold"] == pytest.approx(0.9)
+    key = "validation_macro_f1_defined_classes"
+    assert beside[key] == pytest.approx(alone[key])

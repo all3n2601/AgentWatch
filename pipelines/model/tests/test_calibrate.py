@@ -459,15 +459,38 @@ def test_abstaining_on_mixed_steps_above_the_limit_fails_the_abstention_gate(tmp
     assert "mixed_contention" in abstention["reason"]
 
 
-def test_mixed_validation_steps_do_not_change_the_fit(tmp_path):
+def sure_on_mixed(row: dict, index: int) -> dict[str, float]:
+    if row["label_resource"] == "mixed":
+        return {name: 0.97 if name == "cpu_sandbox" else 0.01 for name in COLUMNS}
+    return mistakes_unsure(row, index)
+
+
+def calibrated_with_mixed_validation(tmp_path, scorer) -> tuple[dict, dict]:
     base_split, base_candidates = prepare(tmp_path / "base", validation_scorer=mistakes_unsure)
     calibrate(tmp_path / "base", base_split, base_candidates)
     validation = VALIDATION + mixed_steps(20)
-    split, candidates = prepare(
-        tmp_path / "mixed", validation=validation, validation_scorer=unsure_on_mixed
-    )
+    split, candidates = prepare(tmp_path / "mixed", validation=validation, validation_scorer=scorer)
     calibrate(tmp_path / "mixed", split, candidates, {"validation": validation, "test": TEST})
-    fit = read(tmp_path / "mixed" / "out" / "report.json")["calibration"]
-    base = read(tmp_path / "base" / "out" / "report.json")["calibration"]
-    assert fit["temperature"] == pytest.approx(base["temperature"])
-    assert fit["abstention_threshold"] == pytest.approx(base["abstention_threshold"])
+    return (
+        read(tmp_path / "mixed" / "out" / "report.json"),
+        read(tmp_path / "base" / "out" / "report.json"),
+    )
+
+
+def test_confident_mixed_validation_steps_change_neither_temperature_nor_threshold(tmp_path):
+    report, base = calibrated_with_mixed_validation(tmp_path, sure_on_mixed)
+    fit, expected = report["calibration"], base["calibration"]
+    assert fit["temperature"] == pytest.approx(expected["temperature"])
+    assert fit["abstention_threshold"] == pytest.approx(expected["abstention_threshold"])
+    assert report["fit"]["threshold_selection"]["validation_mixed_abstention_rate"] == 0.0
+
+
+def test_the_threshold_keeps_mixed_validation_abstention_within_the_limit(tmp_path):
+    # Every mixed step is unsure (0.4), so the single-class threshold would abstain on all of
+    # them: over the contract's 20% mixed_contention limit, so a lower threshold is chosen.
+    report, base = calibrated_with_mixed_validation(tmp_path, unsure_on_mixed)
+    fit, expected = report["calibration"], base["calibration"]
+    assert fit["temperature"] == pytest.approx(expected["temperature"])
+    assert fit["abstention_threshold"] < expected["abstention_threshold"]
+    selection = report["fit"]["threshold_selection"]
+    assert selection["validation_mixed_abstention_rate"] <= selection["max_abstention_rate"]
