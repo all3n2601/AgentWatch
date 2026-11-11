@@ -1113,7 +1113,9 @@ serving metadata retain the full label-version set beside the legacy singular fi
   (`lib/run-samples.ts`; missing readings stay gaps), evidence files with acceptance checks, and
   Live runs as a run list beside Status / Timeline / Resources / Evidence tabs sharing one poll.
   `duration()` now picks its unit after rounding (no "1000 μs"). Regression evidence:
-  `tests/run-timeline.test.ts`, `tests/dashboard-data.test.ts`. Checked in a browser: page
+  `tests/run-timeline.test.ts`, `tests/dashboard-data.test.ts`, and the live browser tests
+  (`apps/web/e2e/live-*.spec.ts`, 27 pass, updated to open the tab that holds each view; a
+  failed step's reason is shown on the Status tab without selecting it). Checked in a browser: page
   overflow 0 on every new tab at 1280×800 and 1440×900, no horizontal overflow at 390 px, no
   console errors from the new views.
 - [ ] `components/dashboard.tsx` (the earlier layout) is no longer rendered by any route and can be

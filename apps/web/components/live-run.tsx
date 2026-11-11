@@ -346,6 +346,34 @@ export function LiveGaps({ view }: { view: LiveRunView }) {
   );
 }
 
+/** Failed and cancelled steps with their reasons, so a failure is visible without selecting it. */
+function FailedSteps({ steps }: { steps: LiveStep[] }) {
+  if (!steps.length) return null;
+  return (
+    <InsetCard>
+      <h3 className="mb-2 text-[15px] font-semibold text-ink">
+        Failed or cancelled steps
+      </h3>
+      <ul className="divide-y divide-line">
+        {steps.map((step) => (
+          <li
+            key={step.stepId}
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm"
+          >
+            <span className="font-mono text-ink [overflow-wrap:anywhere]">
+              {step.stepId}
+            </span>
+            <StepStateBadge state={step.state} appearance="dot" />
+            <span className="basis-full text-ink-muted break-words">
+              {step.reason ? `Reason: ${step.reason}` : "No reason reported"}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </InsetCard>
+  );
+}
+
 function unfinishedText(step: LiveStep) {
   if (step.state === "queued") return "Not started";
   return step.state === "running" ? "In progress" : "Not reported";
@@ -582,12 +610,17 @@ export function LiveRunStatus({
             icon={ListOrdered}
             tone={failed.length > 0 ? "danger" : undefined}
             label="Steps"
-            detail={`${view.steps.length - active.length} finished of ${view.steps.length} reported`}
+            detail={
+              view.steps.length
+                ? `${view.steps.length - active.length} finished of ${view.steps.length} reported`
+                : "No step has an applied state yet."
+            }
           >
             {active.length} active · {failed.length} failed or cancelled
           </StatusTile>
         </div>
         <LiveGaps view={view} />
+        <FailedSteps steps={failed} />
         <Totals view={view} run={run} />
         <RunPolicyLine
           runId={runId}

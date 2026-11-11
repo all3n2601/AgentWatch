@@ -239,31 +239,33 @@ function ConnectionBanner({
  * Null once the run has data. A missing run is never replaced by another one.
  */
 export function LiveRunNotice({ live }: { live: LiveRunState }) {
-  const { feed, run } = live;
+  const { feed, run, readAgain } = live;
   if (!feed)
     return (
       <Skeleton label="Contacting the live API" className="h-48 fit:flex-1" />
     );
-  if (
-    feed.connection.status === "stopped" &&
-    feed.connection.kind === "not_found"
-  )
-    return (
-      <ErrorState
-        title="Live run not found"
-        detail={`The live API has no run ${feed.runId}. No other run is shown in its place.`}
-      />
-    );
   if (run) return null;
-  if (feed.connection.status === "connecting")
-    return (
-      <Skeleton label="Reading the live run" className="h-48 fit:flex-1" />
-    );
+  const notFound =
+    feed.connection.status === "stopped" &&
+    feed.connection.kind === "not_found";
   return (
-    <UnavailableState
-      title="Live run unavailable"
-      reason={`No data has been received for run ${feed.runId} yet.`}
-    />
+    // The connection stays visible, so a failed or retrying read says why there is no data.
+    <div className="space-y-3">
+      <ConnectionBanner feed={feed} onReadAgain={readAgain} />
+      {notFound ? (
+        <ErrorState
+          title="Live run not found"
+          detail={`The live API has no run ${feed.runId}. No other run is shown in its place.`}
+        />
+      ) : feed.connection.status === "connecting" ? (
+        <Skeleton label="Reading the live run" className="h-48" />
+      ) : (
+        <UnavailableState
+          title="Live run unavailable"
+          reason={`No data has been received for run ${feed.runId} yet.`}
+        />
+      )}
+    </div>
   );
 }
 
@@ -340,7 +342,7 @@ export function LiveTimelineView({ run }: { run: LiveFeedRun }) {
                 stepRow(row, stateOf(row.step.stepId)),
               )}
               ticks={timeline.ticks}
-              label="Live steps in start order"
+              label="Step timeline"
               selectedId={selected?.stepId}
               onSelect={setSelectedId}
             />
@@ -445,6 +447,11 @@ function MetricChart({
   return (
     <SignalChart
       title={series.label}
+      label={
+        series.resource
+          ? `${series.label}, resource ${series.resource.resourceId}`
+          : series.label
+      }
       unit={series.unit}
       color={seriesColors[series.metric] ?? CPU_SERIES_COLOR}
       spanSeconds={timeline.spanSeconds}
@@ -749,7 +756,7 @@ function RunList({
         className="fit:shrink-0"
       />
       {runs.length > 0 ? (
-        <nav aria-labelledby="live-run-list" className={PANEL_SCROLL}>
+        <nav aria-label="Recorded live runs" className={PANEL_SCROLL}>
           <ul className="space-y-1">
             {runs.map((run) => {
               const selected = run.runId === current;
@@ -814,7 +821,11 @@ function SelectedRun({ runId }: { runId: string }) {
           <CopyChip value={runId} label="run ID" />
           {state && <StepStateBadge state={state} />}
           {live.run && (
-            <span className="text-sm text-ink-muted">{live.run.title}</span>
+            <p className="min-w-0 text-sm text-ink-muted">
+              {live.run.recordCount} record
+              {live.run.recordCount === 1 ? "" : "s"} received for run{" "}
+              <span className="font-mono break-all">{runId}</span>
+            </p>
           )}
           <Button asChild variant="glass" size="pill" className="ml-auto">
             <Link href={routes.run(runId)}>

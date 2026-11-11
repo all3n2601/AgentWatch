@@ -118,11 +118,14 @@ test("a pending completion applied later without redelivery ends the step on the
   await page.clock.install();
   await page.goto(`/live?liveRun=${runId}`);
   await expect(connection(page)).toContainText("Connected");
+  await page.getByRole("tab", { name: "Timeline" }).click();
   await expect(timelineRow).toContainText("in progress");
 
   await advanceRun(request, runId);
   await page.clock.runFor(POLL_MS);
+  await page.getByRole("tab", { name: "Status" }).click();
   await expect(page.getByText("Final step totals")).toBeVisible();
+  await page.getByRole("tab", { name: "Timeline" }).click();
   await expect(timelineRow).not.toContainText("in progress");
   await expect(timelineRow).toContainText("completed");
 });
@@ -296,13 +299,15 @@ test("unavailable samples are shown as gaps with their state, never as zero", as
     ]),
   );
   await page.goto(`/live?liveRun=${runId}`);
-  const chartA = page.getByRole("group", { name: /CPU pressure.*host-a/ });
+  // Charts live on the Resources tab and render only while it is open.
+  await page.getByRole("tab", { name: "Resources" }).click();
+  const chartA = page.getByRole("figure", { name: /CPU pressure.*host-a/ });
   await expect(chartA).toContainText("0 measured · 2 unsupported");
   await expect(chartA).toContainText(
     "Not measured (unsupported): PSI is not available on this host. Shown as gaps, never as zero.",
   );
   await expect(chartA).toContainText("No measured values.");
-  const chartB = page.getByRole("group", { name: /CPU pressure.*host-b/ });
+  const chartB = page.getByRole("figure", { name: /CPU pressure.*host-b/ });
   await expect(chartB).toContainText("0 measured · 1 missing");
 });
 
@@ -382,6 +387,8 @@ test("exports contain the selected UUID only, even after switching runs mid-requ
   );
   await expect(page.getByText(first)).toHaveCount(0);
 
+  await page.getByRole("tab", { name: "Evidence" }).click();
+  await expect(page.getByText(first)).toHaveCount(0);
   await expect(page.getByText("Saved evidence")).toBeVisible();
   await expect(page.getByText("Not available for live runs.")).toBeVisible();
   const [download] = await Promise.all([

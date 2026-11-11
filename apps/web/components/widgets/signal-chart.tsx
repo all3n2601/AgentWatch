@@ -67,6 +67,7 @@ function SignalTooltip({
  */
 export function SignalChart({
   title,
+  label,
   unit,
   color,
   points,
@@ -79,6 +80,8 @@ export function SignalChart({
   className,
 }: {
   title: string;
+  /** Accessible name when the title alone is ambiguous (several resources); defaults to it. */
+  label?: string;
   unit: string;
   /** The series' mark colour; text always uses ink tokens. */
   color: string;
@@ -112,7 +115,7 @@ export function SignalChart({
   return (
     <figure
       className={cn("glass-inset min-w-0 p-3 sm:p-4", className)}
-      aria-label={`${title}, ${measured.length} measured readings`}
+      aria-label={`${label ?? title}, ${measured.length} measured readings`}
     >
       <figcaption className="mb-2 flex items-start justify-between gap-3">
         <span className="min-w-0">
