@@ -215,7 +215,7 @@ agent-experiment: ## Replay a task cleanly and under bounded CPU/inference/retri
 	uv run --package agentwatch-agent python -m agentwatch_agent experiment --task $(AGENT_TASK) $(if $(SOURCE),--source "$(SOURCE)")
 
 agent-capacity-sweep: ## Ramp concurrent replays on the running vLLM configuration (CONFIG=cfg-default|cfg-hardware, SOURCES="dir1 dir2", START_ATTEMPTS="0.8:failed: reason;0.75:started" optional)
-	@test -n "$(CONFIG)" && test -n "$(SOURCES)" || { echo 'usage: make agent-capacity-sweep CONFIG=cfg-default|cfg-hardware SOURCES="<mean run dir> <window run dir>"' >&2; exit 2; }
+	@test -n "$(CONFIG)" && test -n "$(SOURCES)" || { echo 'usage: make agent-capacity-sweep CONFIG=cfg-default|cfg-hardware SOURCES="<mean run dir> <median run dir>"' >&2; exit 2; }
 	@set -f; attempts='$(START_ATTEMPTS)'; set --; IFS=';'; \
 	for attempt in $$attempts; do set -- "$$@" --start-attempt "$$attempt"; done; unset IFS; \
 	uv run --package agentwatch-agent python -m agentwatch_agent capacity-sweep --configuration $(CONFIG) $(foreach source,$(SOURCES),--source "$(source)") "$$@"

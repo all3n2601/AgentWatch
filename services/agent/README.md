@@ -466,8 +466,12 @@ command's. vLLM does not report `max_num_seqs`, so the configuration check reads
 container's launch arguments with `docker inspect` (`--vllm-container`, default
 `agentwatch-vllm-1`; `docker` is tried, then `docker.exe` for Docker Desktop through WSL, each
 bounded to 10 s): a `--max-num-seqs` or `--gpu-memory-utilization` that contradicts the
-declared configuration (or the utilization vLLM reports) refuses the sweep, and when Docker
-is unreachable, the inspect fails or the container is not running, `max_num_seqs` is recorded
+declared configuration (or the utilization vLLM reports) refuses the sweep. The launch
+arguments count only when the inspected container serves the measured endpoint: it must publish
+the `--vllm-url` port on a loopback or all-interfaces address (`serves_endpoint`). Two
+containers cannot publish one host port, so another container's flags can never verify the
+vLLM being measured. When Docker is unreachable, the inspect fails, the container is not
+running or it does not publish the endpoint's port, `max_num_seqs` is recorded
 `declared_not_verified` with the reason. There is no resume: a stopped sweep is kept and a new
 invocation is a new sweep.
 
@@ -533,12 +537,16 @@ one passed run. The ramp continues past the knee so the whole curve is recorded.
 `result` is `measured`, `below_1` (capacity is `null`), `at_least_ceiling` (every level
 passed; capacity 16) or `incomplete`: no knee was found because, before any level failed,
 the recorded ramp ended short of the ceiling, or a level without a hard stop has fewer usable
-batches than it declares (6 at N = 1, 3 above), or the first failing level failed only the
-evidence criteria (`readable`, `evidence_complete`, `summary_present`), so what it measured
-is unknown. An incomplete result's capacity is the last fully passing level and must be read
-as a lower bound; `incomplete_reason` says why, and `batch_counts` gives each level's usable,
-declared and excluded batches. `first_failing_reasons` names the first failing level's
-hard-stop codes and failed criteria. A ramp batch with a live-API failure, or cut short by a
+batches than it declares (6 at N = 1, 3 above), or the first failing level has no measured
+failure, so what it measured is unknown. A level has no measured failure when it has no hard
+stop and fails only the evidence criteria (`readable`, `evidence_complete`,
+`summary_present`) and criteria marked `unmeasured`. A criterion is `unmeasured` when its
+value is missing: no throughput, pass rate or run duration, or no readable batch at N = 1.
+Such a criterion does not pass, but it never counts as an observed slowdown. An incomplete
+result's capacity is the last fully passing level and must be read as a lower bound;
+`incomplete_reason` says why, and `batch_counts` gives each level's usable, declared and
+excluded batches. `first_failing_reasons` names the first failing level's hard-stop codes,
+failed criteria and the unmeasured ones among them. A ramp batch with a live-API failure, or cut short by a
 stop that is not a hard stop (cancellation, an unreadable server, a runner error), is excluded
 from level metrics and listed in `excluded_batches` with its causes, never read as zero
 throughput; its level then has fewer usable batches than declared, so the result is

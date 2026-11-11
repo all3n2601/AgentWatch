@@ -1398,7 +1398,8 @@ def test_live_batches_replay_their_declared_sources_at_an_odd_capacity(tmp_path,
 def launch_reader(**flags):
     """The real reader over a fake `docker inspect` of a container launched with `flags`."""
     run, _calls = inspect_runner(flags)
-    return lambda: read_launch_arguments("agentwatch-vllm-1", run=run)
+    # The Compose container publishes port 8000, the sweep's vLLM endpoint.
+    return lambda: read_launch_arguments("agentwatch-vllm-1", run=run, endpoint_port=8000)
 
 
 def test_launch_arguments_verify_max_num_seqs(tmp_path):

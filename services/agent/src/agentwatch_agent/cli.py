@@ -926,6 +926,12 @@ def load_sweep_sources(source_dirs: list[Path]) -> list[tuple[Task, ReplayPlan]]
         raise ValueError(f"cannot replay the sources: {error}") from error
 
 
+def endpoint_port(url: str) -> int:
+    """The port of an http(s) URL, explicit or the scheme's default."""
+    split = urllib.parse.urlsplit(url)
+    return split.port or (443 if split.scheme == "https" else 80)
+
+
 def parse_start_attempts(
     attempts: list[str], configuration: VllmConfiguration
 ) -> list[dict] | None:
@@ -1107,7 +1113,11 @@ def capacity_sweep_command(args: argparse.Namespace) -> int:
         make_injectors=make_injectors,
         read_state=functools.partial(read_server_state, metrics_url),
         models=functools.partial(vllm_models, model.endpoint),
-        read_launch=functools.partial(read_launch_arguments, args.vllm_container),
+        read_launch=functools.partial(
+            read_launch_arguments,
+            args.vllm_container,
+            endpoint_port=endpoint_port(model.endpoint),
+        ),
         host=host_record(),
         start_attempts=start_attempts,
         code_revision=code_revision(),

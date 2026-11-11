@@ -131,6 +131,18 @@ def _launch_problem(launch: dict) -> str | None:
         return f"launch arguments {launch.get('status')}: {launch.get('reason')}"
     if launch.get("running") is not True:
         return f"container {launch.get('container')} is not running"
+    # Another container's flags say nothing about the vLLM the sweep measures.
+    if launch.get("serves_endpoint") is not True:
+        port = launch.get("endpoint_port")
+        if port is None:
+            return (
+                f"the vLLM endpoint's port was not given, so container "
+                f"{launch.get('container')} cannot be tied to the endpoint"
+            )
+        return (
+            f"container {launch.get('container')} does not publish the vLLM endpoint's "
+            f"port {port} on a loopback-reachable address"
+        )
     return None
 
 

@@ -37,7 +37,11 @@ def compose_command(max_num_seqs="2", utilization="0.6", style="equals"):
     return command + ["--enable-auto-tool-choice", "--tool-call-parser=hermes"]
 
 
-def inspect_document(command, running=True):
+# The Compose service publishes vLLM's port 8000 on the host's loopback address only.
+COMPOSE_PORTS = {"8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8000"}]}
+
+
+def inspect_document(command, running=True, ports=COMPOSE_PORTS):
     return [
         {
             "Name": f"/{DEFAULT_VLLM_CONTAINER}",
@@ -47,11 +51,12 @@ def inspect_document(command, running=True):
                 "Cmd": command,
             },
             "State": {"Running": running, "Status": "running" if running else "exited"},
+            "NetworkSettings": {"Ports": ports},
         }
     ]
 
 
-def inspect_runner(flags=None, *, stdout=None, missing=(), failing=()):
+def inspect_runner(flags=None, *, stdout=None, missing=(), failing=(), ports=COMPOSE_PORTS):
     """A fake `subprocess.run` for `docker inspect`, and the calls it received."""
     calls = []
 
@@ -67,7 +72,7 @@ def inspect_runner(flags=None, *, stdout=None, missing=(), failing=()):
         text = (
             stdout
             if stdout is not None
-            else json.dumps(inspect_document(compose_command(**(flags or {}))))
+            else json.dumps(inspect_document(compose_command(**(flags or {})), ports=ports))
         )
         return subprocess.CompletedProcess(command, 0, stdout=text, stderr="")
 
@@ -165,14 +170,14 @@ def state(utilization="0.6"):
 MODELS = {"data": [{"id": SERVED_MODEL_NAME, "max_model_len": 4096}]}
 
 
-def launch(**flags):
-    run, _calls = inspect_runner(flags)
-    return read_launch_arguments(DEFAULT_VLLM_CONTAINER, run=run)
+def launch(endpoint_port=8000, ports=COMPOSE_PORTS, **flags):
+    run, _calls = inspect_runner(flags, ports=ports)
+    return read_launch_arguments(DEFAULT_VLLM_CONTAINER, run=run, endpoint_port=endpoint_port)
 
 
 def test_a_stopped_container_does_not_verify_the_running_server():
     run, _calls = inspect_runner(stdout=json.dumps(inspect_document(compose_command(), False)))
-    stopped = read_launch_arguments(DEFAULT_VLLM_CONTAINER, run=run)
+    stopped = read_launch_arguments(DEFAULT_VLLM_CONTAINER, run=run, endpoint_port=8000)
     verified = verify_configuration(CONFIGURATIONS["cfg-default"], MODELS, state(), stopped)
     setting = verified["settings"]["max_num_seqs"]
     assert setting["status"] == "declared_not_verified" and "not running" in setting["reason"]
@@ -190,3 +195,58 @@ def test_launch_utilization_must_match_what_vllm_reports():
     )
     assert matching["contradicted"] == []
     assert matching["settings"]["max_num_seqs"]["status"] == "verified"
+
+
+def test_the_published_ports_and_the_served_endpoint_are_recorded():
+    served = launch(endpoint_port=8000)
+    assert served["published_ports"] == [
+        {"container_port": "8000/tcp", "host_ip": "127.0.0.1", "host_port": 8000}
+    ]
+    assert served["endpoint_port"] == 8000 and served["serves_endpoint"] is True
+    # No endpoint given: whether the container serves it is unknown, never assumed.
+    assert launch(endpoint_port=None)["serves_endpoint"] is None
+
+
+@pytest.mark.parametrize(
+    "ports",
+    [
+        {"8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8001"}]},  # another host port
+        {"8000/tcp": [{"HostIp": "10.0.0.5", "HostPort": "8000"}]},  # not a loopback address
+        {"8000/tcp": None},  # exposed, never published
+        {},
+        None,
+    ],
+)
+def test_a_container_that_does_not_publish_the_endpoint_does_not_serve_it(ports):
+    assert launch(endpoint_port=8000, ports=ports)["serves_endpoint"] is False
+
+
+@pytest.mark.parametrize("host_ip", ["", "0.0.0.0", "::", "::1"])
+def test_every_address_that_reaches_loopback_serves_the_endpoint(host_ip):
+    ports = {"8000/tcp": [{"HostIp": host_ip, "HostPort": "8000"}]}
+    assert launch(endpoint_port=8000, ports=ports)["serves_endpoint"] is True
+
+
+def test_launch_evidence_from_another_container_never_verifies_the_endpoint():
+    # Review of #65: the default container runs 2 sequences on port 8000, while the sweep
+    # measures another local vLLM on port 8001 whose /metrics report the same settings.
+    other = launch(endpoint_port=8001, max_num_seqs="2", utilization="0.6")
+    verified = verify_configuration(CONFIGURATIONS["cfg-default"], MODELS, state(), other)
+    for name in ("max_num_seqs", "launch_gpu_memory_utilization"):
+        setting = verified["settings"][name]
+        assert setting["status"] == "declared_not_verified"
+        assert "does not publish" in setting["reason"] and "8001" in setting["reason"]
+    assert verified["contradicted"] == []
+    # The container that does publish port 8001 verifies the server there.
+    second = {"8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8001"}]}
+    own = launch(endpoint_port=8001, ports=second, max_num_seqs="16", utilization="0.8")
+    hardware = verify_configuration(CONFIGURATIONS["cfg-hardware"], MODELS, state("0.8"), own)
+    assert hardware["settings"]["max_num_seqs"]["status"] == "verified"
+    assert hardware["settings"]["max_num_seqs"]["reported"] == 16
+
+
+def test_launch_evidence_without_an_endpoint_never_verifies():
+    unbound = launch(endpoint_port=None)
+    verified = verify_configuration(CONFIGURATIONS["cfg-default"], MODELS, state(), unbound)
+    setting = verified["settings"]["max_num_seqs"]
+    assert setting["status"] == "declared_not_verified" and "endpoint" in setting["reason"]

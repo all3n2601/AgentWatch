@@ -614,6 +614,15 @@ def _criterion(value: object, limit: object, passed: bool, **extra: object) -> d
     return {"value": value, "limit": limit, "passed": passed, **extra}
 
 
+def _unmeasured(value: object, limit: object, reason: str) -> dict:
+    """A criterion that could not be judged because its measurement is missing.
+
+    It does not pass, so the level is never read as passing, but it is not a measured failure
+    either: a level whose only failures are unmeasured or evidence criteria is never the knee.
+    """
+    return _criterion(value, limit, False, reason=reason, unmeasured=True)
+
+
 def _level_criteria(
     level: dict, previous: dict | None, baseline: dict | None, hard_stops: list[str], limit: float
 ) -> dict[str, dict]:
@@ -648,11 +657,18 @@ def _level_criteria(
         **reason,
     )
     if previous is None:
-        criteria["passed_runs"] = _criterion(
-            level.get("passed", 0),
-            MIN_PASSED_RUNS_AT_ONE_AGENT,
-            level.get("passed", 0) >= MIN_PASSED_RUNS_AT_ONE_AGENT,
-        )
+        passed_runs = level.get("passed", 0)
+        if level.get("readable_batches") == 0:
+            # No batch could be read, so "0 passed runs" is not a measurement.
+            criteria["passed_runs"] = _unmeasured(
+                None, MIN_PASSED_RUNS_AT_ONE_AGENT, "no readable batch"
+            )
+        else:
+            criteria["passed_runs"] = _criterion(
+                passed_runs,
+                MIN_PASSED_RUNS_AT_ONE_AGENT,
+                passed_runs >= MIN_PASSED_RUNS_AT_ONE_AGENT,
+            )
 
     mean = (level["throughput_per_minute"] or {}).get("mean")
     if previous is None:
@@ -661,12 +677,12 @@ def _level_criteria(
     else:
         previous_mean = (previous["throughput_per_minute"] or {}).get("mean")
         if mean is None:
-            criteria["throughput_gain"] = _criterion(
-                None, MIN_THROUGHPUT_GAIN, False, reason="no throughput measured"
+            criteria["throughput_gain"] = _unmeasured(
+                None, MIN_THROUGHPUT_GAIN, "no throughput measured"
             )
         elif previous_mean is None:
-            criteria["throughput_gain"] = _criterion(
-                None, MIN_THROUGHPUT_GAIN, False, reason="previous level has no throughput"
+            criteria["throughput_gain"] = _unmeasured(
+                None, MIN_THROUGHPUT_GAIN, "previous level has no throughput"
             )
         elif previous_mean == 0:
             criteria["throughput_gain"] = _criterion(
@@ -685,9 +701,7 @@ def _level_criteria(
     rate = level["pass_rate"]["pooled"]
     baseline_rate = baseline["pass_rate"]["pooled"] if baseline is not None else None
     if rate is None or baseline_rate is None:
-        criteria["pass_rate_drop"] = _criterion(
-            None, MAX_PASS_RATE_DROP, False, reason="pass rate not measured"
-        )
+        criteria["pass_rate_drop"] = _unmeasured(None, MAX_PASS_RATE_DROP, "pass rate not measured")
     else:
         # Rounded so 0.80 against 1.00 is exactly the allowed 20 points, not 20.0000000001.
         drop = round(baseline_rate - rate, 9)
@@ -698,16 +712,14 @@ def _level_criteria(
     p90_limit = MAX_P90_FRACTION_OF_RUN_LIMIT * limit
     p90_value = level["run_duration_seconds"]["p90"]
     if p90_value is None:
-        criteria["p90_duration_seconds"] = _criterion(
-            None, p90_limit, False, reason="no run durations measured"
-        )
+        criteria["p90_duration_seconds"] = _unmeasured(None, p90_limit, "no run durations measured")
     else:
         criteria["p90_duration_seconds"] = _criterion(p90_value, p90_limit, p90_value <= p90_limit)
     return criteria
 
 
 # Criteria about whether the evidence is there, not about what it measured. A level failing only
-# these has an unknown outcome, so it can never be the measured knee.
+# these and unmeasured criteria (`_unmeasured`) has an unknown outcome, so it is never the knee.
 EVIDENCE_CRITERIA = frozenset({"readable", "evidence_complete", "summary_present"})
 
 
@@ -727,7 +739,8 @@ def capacity_decision(
     - a level with no hard stop and fewer usable batches than `declared_batches` (a stopped
       level's outcome is unknown, so its criteria are recorded but not judged);
     - the end of the recorded ramp, short of the ceiling;
-    - or when the first failing level fails only `EVIDENCE_CRITERIA`.
+    - or when the first failing level has no measured failure: it fails only `EVIDENCE_CRITERIA`
+      and criteria whose measurement is missing (marked `unmeasured`), and has no hard stop.
 
     An incomplete result's capacity is the last fully passing level (None when there is none).
     """
@@ -785,9 +798,22 @@ def capacity_decision(
         if first_failing is not None
         else []
     )
+    unmeasured = (
+        sorted(name for name in failed if criteria[first_failing][name].get("unmeasured"))
+        if first_failing is not None
+        else []
+    )
+    # A failure some measurement showed: a hard stop, or a judged criterion that failed.
+    measured_failures = [
+        name for name in failed if name not in EVIDENCE_CRITERIA and name not in unmeasured
+    ]
     # Why the first failing level failed, so a knee from a hard stop reads as one.
     first_failing_reasons = (
-        {"hard_stops": list(hard_stops.get(first_failing, [])), "failed_criteria": failed}
+        {
+            "hard_stops": list(hard_stops.get(first_failing, [])),
+            "failed_criteria": failed,
+            "unmeasured_criteria": unmeasured,
+        }
         if first_failing is not None
         else None
     )
@@ -799,11 +825,11 @@ def capacity_decision(
         incomplete_reason = "the recorded ramp ended before a failing level or the ceiling"
     elif first_failing is None:
         result, capacity = "at_least_ceiling", RAMP_LEVELS[-1]
-    elif set(failed) <= EVIDENCE_CRITERIA:
+    elif not measured_failures:
         result, capacity = "incomplete", previous_level
         incomplete_reason = (
-            f"level {first_failing} failed only evidence criteria ({', '.join(failed)}), so "
-            "what it measured is unknown"
+            f"level {first_failing} has no measured failure: it failed only evidence or "
+            f"unmeasured criteria ({', '.join(failed)}), so what it measured is unknown"
         )
     elif previous_level is None:
         result, capacity = "below_1", None

@@ -827,14 +827,18 @@ def test_the_vllm_container_is_inspected_for_its_launch_arguments(
     monkeypatch.setattr(
         cli,
         "read_launch_arguments",
-        lambda container: inspected.append(container) or {"status": "read"},
+        lambda container, *, endpoint_port: (
+            inspected.append((container, endpoint_port)) or {"status": "read"}
+        ),
     )
     cli.main(sweep_argv(tmp_path))
     assert sweep_stubs.instances[0].kwargs["read_launch"]() == {"status": "read"}
-    assert inspected == [DEFAULT_VLLM_CONTAINER]
-    cli.main(sweep_argv(tmp_path, "--vllm-container", "other-vllm"))
+    # The container's launch arguments are tied to the port of the vLLM being measured.
+    assert inspected == [(DEFAULT_VLLM_CONTAINER, 8000)]
+    other = ["--vllm-container", "other-vllm", "--vllm-url", "http://127.0.0.1:8001"]
+    cli.main(sweep_argv(tmp_path, *other))
     sweep_stubs.instances[1].kwargs["read_launch"]()
-    assert inspected == [DEFAULT_VLLM_CONTAINER, "other-vllm"]
+    assert inspected == [(DEFAULT_VLLM_CONTAINER, 8000), ("other-vllm", 8001)]
 
 
 def test_the_injector_is_a_prefill_flood_on_the_served_model(tmp_path, sweep_stubs):

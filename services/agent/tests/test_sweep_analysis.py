@@ -745,8 +745,55 @@ def test_a_run_without_an_agent_run_duration_fails_evidence_complete(tmp_path):
     decision = capacity_decision({1: summary}, {}, RUN_LIMIT_SECONDS)
     criterion = decision["criteria"][1]["evidence_complete"]
     assert criterion["value"]["runs_missing_duration"] == declared_batches(1)
-    # Without durations the p90 criterion fails too, so N = 1 fails on measurement.
-    assert decision["result"] == "below_1"
+    # Without durations the p90 is unmeasured, not failed by a measurement: N = 1's outcome is
+    # unknown, so the sweep does not claim capacity "below 1".
+    assert decision["criteria"][1]["p90_duration_seconds"]["unmeasured"] is True
+    assert decision["result"] == "incomplete" and decision["capacity"] is None
+
+
+def test_missing_durations_never_produce_a_measured_knee():
+    # Allen's review of #65: N = 2 doubles throughput, but none of its runs has a duration.
+    levels = {
+        1: level(1.0, p90_seconds=100.0),
+        2: level(2.0, p90_seconds=None, missing_durations=6, batches=declared_batches(2)),
+    }
+    decision = capacity_decision(levels, {}, RUN_LIMIT_SECONDS)
+    assert decision["result"] == "incomplete" and decision["capacity"] == 1
+    assert decision["first_failing_level"] == 2
+    assert decision["first_failing_reasons"]["unmeasured_criteria"] == ["p90_duration_seconds"]
+    assert "no measured failure" in decision["incomplete_reason"]
+
+
+def test_an_unreadable_level_never_produces_a_measured_knee():
+    unreadable = level(
+        None, pass_rate=None, p90_seconds=None, unreadable=3, passed=0, batches=declared_batches(2)
+    ) | {"readable_batches": 0}
+    decision = capacity_decision({1: level(1.0), 2: unreadable}, {}, RUN_LIMIT_SECONDS)
+    assert decision["result"] == "incomplete" and decision["capacity"] == 1
+    assert sorted(decision["first_failing_reasons"]["unmeasured_criteria"]) == [
+        "p90_duration_seconds",
+        "pass_rate_drop",
+        "throughput_gain",
+    ]
+
+
+def test_an_unreadable_n1_is_incomplete_not_below_1():
+    # No readable batch, so "0 passed runs" is not a measurement either.
+    unreadable = level(None, pass_rate=None, p90_seconds=None, unreadable=6, passed=0) | {
+        "readable_batches": 0
+    }
+    decision = capacity_decision({1: unreadable}, {}, RUN_LIMIT_SECONDS)
+    assert decision["criteria"][1]["passed_runs"]["unmeasured"] is True
+    assert decision["result"] == "incomplete" and decision["capacity"] is None
+
+
+def test_a_measured_failure_beside_missing_evidence_is_still_the_knee():
+    # N = 2 has one run without a duration, but its measured throughput did not grow.
+    levels = {1: level(1.0), 2: level(1.0, missing_durations=1, batches=declared_batches(2))}
+    decision = capacity_decision(levels, {}, RUN_LIMIT_SECONDS)
+    assert decision["result"] == "measured" and decision["capacity"] == 1
+    assert decision["first_failing_reasons"]["unmeasured_criteria"] == []
+    assert "throughput_gain" in decision["first_failing_reasons"]["failed_criteria"]
 
 
 def test_n1_needs_a_passed_run():
@@ -856,5 +903,6 @@ def test_the_decision_names_why_the_first_failing_level_failed():
     assert decision["first_failing_reasons"] == {
         "hard_stops": ["vllm_restart"],
         "failed_criteria": ["no_hard_stop"],
+        "unmeasured_criteria": [],
     }
     assert capacity_decision(ramp(1.0, 2.0), {}, RUN_LIMIT_SECONDS)["first_failing_reasons"] is None

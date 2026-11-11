@@ -6,6 +6,11 @@ Desktop through WSL interop). Each attempt is one bounded subprocess with list a
 shell. A missing Docker, a failed or timed-out inspect, or a reply that is not one container's
 JSON is recorded `unavailable` with every reason, never guessed; a flag that is absent or not a
 number is None, never vLLM's default.
+
+Launch flags describe the vLLM being measured only if this container serves its endpoint:
+the container must publish the endpoint's port on an address that loopback reaches
+(`serves_endpoint`). Two containers cannot publish one host port, so that ties the
+container to the endpoint; otherwise the flags verify nothing (`vllm_server`).
 """
 
 import json
@@ -20,6 +25,8 @@ DOCKER_INSPECT_TIMEOUT_SECONDS = 10.0
 MAX_NUM_SEQS_FLAG = "--max-num-seqs"
 GPU_MEMORY_UTILIZATION_FLAG = "--gpu-memory-utilization"
 MAX_REASON_TEXT = 300
+# Published host addresses a loopback endpoint reaches: loopback itself or every interface.
+LOOPBACK_REACHABLE_HOST_IPS = frozenset({"", "0.0.0.0", "::", "127.0.0.1", "::1"})
 
 READ = "read"
 UNAVAILABLE = "unavailable"
@@ -60,7 +67,42 @@ def _float(text: str | None) -> float | None:
     return value if value is not None and math.isfinite(value) else None
 
 
-def parse_inspect(container: str, executable: str, stdout: str) -> dict:
+def _published_ports(document: dict) -> list[dict]:
+    """Each published port binding; a malformed entry is left out, never guessed."""
+    network = document.get("NetworkSettings")
+    ports = network.get("Ports") if isinstance(network, dict) else None
+    if not isinstance(ports, dict):
+        return []
+    published = []
+    for container_port, bindings in ports.items():
+        for binding in bindings if isinstance(bindings, list) else []:
+            if not isinstance(binding, dict) or not isinstance(binding.get("HostIp"), str):
+                continue
+            host_port = _int(binding.get("HostPort"))
+            if host_port is not None:
+                published.append(
+                    {
+                        "container_port": container_port,
+                        "host_ip": binding["HostIp"],
+                        "host_port": host_port,
+                    }
+                )
+    return published
+
+
+def _serves(published: list[dict], endpoint_port: int | None) -> bool | None:
+    """Whether a binding publishes `endpoint_port` where loopback reaches it; None if unknown."""
+    if endpoint_port is None:
+        return None
+    return any(
+        binding["host_port"] == endpoint_port and binding["host_ip"] in LOOPBACK_REACHABLE_HOST_IPS
+        for binding in published
+    )
+
+
+def parse_inspect(
+    container: str, executable: str, stdout: str, endpoint_port: int | None = None
+) -> dict:
     """The launch arguments in one container's `docker inspect` JSON, or why they cannot be read."""
     unusable = {
         "status": UNAVAILABLE,
@@ -82,6 +124,7 @@ def parse_inspect(container: str, executable: str, stdout: str) -> dict:
         return unusable
     arguments = [*parts[0], *parts[1]]
     running = state.get("Running") if isinstance(state, dict) else None
+    published = _published_ports(document[0])
     return {
         "status": READ,
         "container": container,
@@ -91,11 +134,20 @@ def parse_inspect(container: str, executable: str, stdout: str) -> dict:
         "arguments": arguments,
         "max_num_seqs": _int(_flag_value(arguments, MAX_NUM_SEQS_FLAG)),
         "gpu_memory_utilization": _float(_flag_value(arguments, GPU_MEMORY_UTILIZATION_FLAG)),
+        "published_ports": published,
+        "endpoint_port": endpoint_port,
+        "serves_endpoint": _serves(published, endpoint_port),
     }
 
 
-def read_launch_arguments(container: str, run: Runner = subprocess.run) -> dict:
-    """`docker inspect` the container with each executable in turn; the first reply is used."""
+def read_launch_arguments(
+    container: str, run: Runner = subprocess.run, *, endpoint_port: int | None = None
+) -> dict:
+    """`docker inspect` the container with each executable in turn; the first reply is used.
+
+    `endpoint_port` is the port of the vLLM endpoint being measured; without it the
+    container cannot be tied to that endpoint (`serves_endpoint` is None).
+    """
     failures = []
     for executable in DOCKER_EXECUTABLES:
         command = [executable, "inspect", "--type", "container", container]
@@ -112,5 +164,5 @@ def read_launch_arguments(container: str, run: Runner = subprocess.run) -> dict:
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             failures.append(_failure_text(executable, error))
             continue
-        return parse_inspect(container, executable, completed.stdout)
+        return parse_inspect(container, executable, completed.stdout, endpoint_port)
     return {"status": UNAVAILABLE, "container": container, "reason": "; ".join(failures)}

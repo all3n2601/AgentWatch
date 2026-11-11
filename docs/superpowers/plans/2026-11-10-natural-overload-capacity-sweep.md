@@ -35,7 +35,7 @@ Task 6.
   batches per source (6).
 - Idle wait ≤ 30 s for 0 running and 0 waiting, then a fixed 10 s pause.
 - Capacity criteria: throughput gain ≥ 0.10 over the previous level; pass rate ≥ N = 1 pass
-  rate − 0.20; p90 run duration ≤ 0.5 × run limit (900 s → 450 s); no hard stop.
+  rate − 0.20; p90 run duration ≤ 0.5 × run limit (450 s → 225 s); no hard stop.
 - Live confirmation: 3 batches at capacity N. Injected: N_inj = max(1, ⌊capacity / 2⌋), 3
   flood batches alternating with 3 clean controls, flood first; `PrefillFloodInjector`
   `concurrency=2`, `prompt_tokens=2048`, ramp 2 s, bound = run limit + 32 s.
@@ -379,7 +379,7 @@ stored per batch. After the ramp, `capacity_decision` runs on the recorded batch
 - Consumes: `CapacitySweep`, `CONFIGURATIONS`, `load_replay_plan`, `build_model`,
   `server_evidence`, `PrefillFloodInjector`.
 - Produces: `capacity-sweep --configuration {cfg-default,cfg-hardware} --source DIR --source
-  DIR [--output-dir .data/capacity-sweeps] [--run-timeout 900] [--start-attempt
+  DIR [--output-dir .data/capacity-sweeps] [--run-timeout 450] [--start-attempt
   "UTIL:OUTCOME" ...] [model, server-evidence and --api-url arguments]`; the model backend
   is forced to vLLM. `--start-attempt` (repeatable, e.g. `"0.8:failed: CUDA out of memory"`,
   `"0.75:started"`) records the operator's vLLM start attempts in `sweep.json`; the last must
