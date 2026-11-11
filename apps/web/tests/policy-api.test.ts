@@ -8,11 +8,13 @@ import {
 import {
   conflictCause,
   controlsConsistent,
+  EFFECTIVE_LIMITS_UNAVAILABLE,
   formFromLimits,
   limitChanges,
   limitsFromForm,
   limitsText,
   policyStatusText,
+  runAppliedLimitsText,
   runPolicyText,
   versionLimitsText,
 } from "../lib/policy-view";
@@ -308,7 +310,10 @@ test("run policy is read by UUID and summarised", async () => {
   const result = await createPolicyApi(URLS, { fetchImpl }).runPolicy(RUN_ID);
   assert.ok(result.ok);
   assert.equal(requested[0].pathname, `/v1/live/runs/${RUN_ID}/policy`);
-  assert.equal(runPolicyText(result), "Policy while open: v0 → v1");
+  assert.equal(
+    runPolicyText(result),
+    "Policy while open: v0 (No limits (baseline)) → v1 (Inference: no limit · Tests: 2)",
+  );
 
   assert.equal(
     runPolicyText({
@@ -324,6 +329,31 @@ test("run policy is read by UUID and summarised", async () => {
   assert.equal(
     runPolicyText({ ok: false, kind: "unavailable", message: "down" }),
     "Policy service unavailable",
+  );
+});
+
+test("no run claims limits were applied; non-agent runs admit nothing", () => {
+  const run = {
+    run_id: RUN_ID,
+    target: "coding-agent",
+    applicable: true,
+    versions: [],
+  };
+  assert.equal(
+    runAppliedLimitsText({ ok: true, data: run }),
+    EFFECTIVE_LIMITS_UNAVAILABLE,
+  );
+  assert.equal(
+    runAppliedLimitsText({ ok: false, kind: "unavailable", message: "down" }),
+    EFFECTIVE_LIMITS_UNAVAILABLE,
+  );
+  assert.equal(runAppliedLimitsText(null), EFFECTIVE_LIMITS_UNAVAILABLE);
+  assert.match(
+    runAppliedLimitsText({
+      ok: true,
+      data: { ...run, applicable: false, versions: [] },
+    }),
+    /^Not applicable/,
   );
 });
 

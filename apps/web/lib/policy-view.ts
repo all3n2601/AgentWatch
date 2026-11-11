@@ -45,7 +45,19 @@ export function runPolicyText(result: PolicyResult<RunPolicyView> | null) {
   if (!result.data.applicable) return "Not an agent run";
   if (result.data.versions.length === 0)
     return "No recorded policy (registered before policy tracking)";
-  return `Policy while open: ${result.data.versions.map((v) => `v${v.version}`).join(" → ")}`;
+  return `Policy while open: ${result.data.versions.map((v) => `v${v.version} (${versionLimitsText(v)})`).join(" → ")}`;
+}
+
+/**
+ * What a run's runner applied. Admission records stay in the runner's local evidence, so for
+ * a coding-agent run this is unavailable whatever the links say; other runs admit nothing.
+ */
+export function runAppliedLimitsText(
+  result: PolicyResult<RunPolicyView> | null,
+) {
+  if (result?.ok && !result.data.applicable)
+    return "Not applicable: this run has no agent runner, so nothing was admitted under a policy.";
+  return EFFECTIVE_LIMITS_UNAVAILABLE;
 }
 
 /** Form inputs holding a version's limits, so a `set` keeps controls the operator left alone. */

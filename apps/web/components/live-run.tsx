@@ -14,8 +14,12 @@ import { Card } from "@/components/ui/card";
 import { PanelHeading } from "@/components/run-views";
 import { duration } from "@/lib/dashboard-data";
 import { createPolicyBrowserApi, type PolicyResult } from "@/lib/policy-api";
-import type { RunPolicyView } from "@/lib/policy-api-schema";
-import { runPolicyText } from "@/lib/policy-view";
+import type { PolicyVersionView, RunPolicyView } from "@/lib/policy-api-schema";
+import {
+  policyStatusText,
+  runAppliedLimitsText,
+  runPolicyText,
+} from "@/lib/policy-view";
 import {
   activeSteps,
   failedSteps,
@@ -396,26 +400,52 @@ function useBrowserClock(ticking: boolean) {
 }
 
 /**
- * The concurrency policy versions active while the run was open. Read again when the run
- * closes, since a policy change while it is open adds a version.
+ * The current policy, the versions active while the run was open, and what its runner applied,
+ * kept apart because none of them proves the others. Read again when the run closes, since a
+ * policy change while it is open adds a version.
  */
-function RunPolicyLine({ runId, closed }: { runId: string; closed: boolean }) {
+function RunPolicy({ runId, closed }: { runId: string; closed: boolean }) {
   const key = `${runId}:${closed}`;
   const [policy, setPolicy] = useState<{
     key: string;
-    result: PolicyResult<RunPolicyView>;
+    run: PolicyResult<RunPolicyView>;
+    current: PolicyResult<PolicyVersionView>;
   } | null>(null);
   useEffect(() => {
     const controller = new AbortController();
-    void policyApi.runPolicy(runId, controller.signal).then((result) => {
-      if (!controller.signal.aborted) setPolicy({ key, result });
+    void Promise.all([
+      policyApi.runPolicy(runId, controller.signal),
+      policyApi.controls(undefined, controller.signal),
+    ]).then(([run, controls]) => {
+      if (controller.signal.aborted) return;
+      const current = controls.ok
+        ? { ok: true as const, data: controls.data.active }
+        : controls;
+      setPolicy({ key, run, current });
     });
     return () => controller.abort();
   }, [key, runId]);
+  // Results for a previously selected run are never shown for this one.
+  const shown = policy?.key === key ? policy : null;
+  const rows = [
+    ["Policy active while open", runPolicyText(shown?.run ?? null)],
+    ["Limits applied by the runner", runAppliedLimitsText(shown?.run ?? null)],
+    ["Current policy", policyStatusText(shown?.current ?? null)],
+  ];
   return (
-    <p className="text-xs text-muted-foreground">
-      {runPolicyText(policy?.key === key ? policy.result : null)}
-    </p>
+    <section aria-labelledby="run-policy-heading" className="text-xs">
+      <h3 id="run-policy-heading" className="font-semibold">
+        Concurrency policy
+      </h3>
+      <dl className="mt-1 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-[max-content_1fr]">
+        {rows.map(([label, text]) => (
+          <div key={label} className="contents">
+            <dt className="text-muted-foreground">{label}</dt>
+            <dd className="break-words">{text}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 
@@ -445,7 +475,7 @@ export function LiveRunSteps({
   const failed = failedSteps(view);
   return (
     <>
-      <RunPolicyLine
+      <RunPolicy
         runId={runId}
         closed={outcome !== "active" && outcome !== "unknown"}
       />
