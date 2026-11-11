@@ -40,6 +40,8 @@ export const experimentSchema = z.object({
   experiment: z.object({
     worker_capacity: z.number(),
     iterations: z.number(),
+    // The contention intensity; optional because the run contract does not declare it.
+    competing_iterations: z.number().optional(),
     baseline_repeats: z.number(),
     workload: z.string(),
     tests_per_step: z.number().nullable(),
