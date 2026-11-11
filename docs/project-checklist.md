@@ -779,8 +779,10 @@ frozen evaluation sets without tuning against them.
     - The new task `fix-median-even` (revision 1; 4 fixture tests: fails unpatched, passes
       only with `average-middle-pair`) was declared with one design and at most 3 attempts.
       It passed on vLLM on the first attempt.
-    - It is not named in `split-v2`, whose hash would place it in train (position 0.622), so
-      its runs need a `split-v3` assignment before any dataset release.
+    - It is to stay out of training (Benoy, 2026-11-11). `split-v2` does not name it and its
+      hash would place it in train (position 0.622), so `split-v3` is to list it in
+      `test_task_groups`. Until then no `fix-median-even` rows may enter a release; the
+      `split-v2` code does not enforce this.
 
   The preflight also checked the live path and the full sweep flow:
   - **16-agent live batch:** all 63,427 events delivered; CPU/NVML sampler 0 late of 1,495

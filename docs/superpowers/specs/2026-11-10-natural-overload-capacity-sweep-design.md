@@ -51,6 +51,13 @@ Three PRs, merged in this order:
    `746ec26`) and #62 (`mixed-scoring-v1`, `64c4e2c`) merged on 2026-11-10
    (00:48 and 00:59 UTC on 2026-11-11); PR 3 still waits
    for the M2 PR 4 inference features and rule, and records the versions it scores with.
+   PR 3 must:
+   - keep the sweep's `protocol.version` and `protocol_sha256` stable in every row it builds,
+     because `split-v3` matches the natural-overload evidence by them (Akshay, review of
+     PR #65);
+   - keep that evidence out of `make add-evidence` and `make dataset` until `split-v3` exists;
+   - not read the sweep's label verdicts as validation of `labels-v2`, since they validate the
+     noise threshold only.
 
 Out of scope: policy-limit evaluation (O06; the sweep runs `--no-policy`), changing
 `split-assignment.toml` or labels (Rohit and Akshay's decision), CPU/retrieval cases

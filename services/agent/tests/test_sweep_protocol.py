@@ -1,6 +1,7 @@
 """The declared natural-overload sweep protocol: schedules and the hashed declaration."""
 
 import functools
+import tomllib
 from dataclasses import asdict
 from pathlib import Path
 
@@ -86,6 +87,14 @@ def test_configurations_and_injector_are_declared():
 
 
 COMPOSE_FILE = Path(__file__).resolve().parents[3] / "deploy" / "compose" / "compose.yaml"
+LABELS_V2_FILE = (
+    Path(__file__).resolve().parents[3]
+    / "pipelines"
+    / "data"
+    / "src"
+    / "agentwatch_data"
+    / "labels-v2.toml"
+)
 
 
 def test_the_measurement_settings_are_hashed_into_the_protocol(monkeypatch):
@@ -103,6 +112,17 @@ def test_the_declared_vllm_image_is_the_compose_services_digest():
     service = lines.index("  vllm:")
     image = next(line for line in lines[service:] if line.strip().startswith("image:"))
     assert image.split("image:", 1)[1].strip() == VLLM_IMAGE
+
+
+def test_the_label_thresholds_are_the_dataset_noise_rule():
+    """Review of #65 (Akshay): the sweep copies `labels-v2.toml [noise]`, so pin it to the file.
+
+    A later label version that changes the noise rule then fails here instead of drifting from
+    what the sweep validated.
+    """
+    noise = tomllib.loads(LABELS_V2_FILE.read_text(encoding="utf-8"))["noise"]
+    assert sweep_protocol.LABEL_THRESHOLD_FLOOR_SECONDS == noise["min_seconds"]
+    assert sweep_protocol.LABEL_THRESHOLD_STDEV_MULTIPLIER == noise["stdev_multiplier"]
 
 
 def test_the_sweeps_bounds_and_run_limits_are_hashed_into_the_protocol(monkeypatch):

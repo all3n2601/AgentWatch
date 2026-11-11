@@ -28,6 +28,13 @@ Command: `capacity-sweep` ([agent README](../services/agent/README.md#capacity-s
   instead by sharing the GPU inside one batch, which shows up as longer prefill and decode time.
   The label check uses queue time as its reference, so it can judge the first kind and not the
   second (see [Findings](#findings)).
+- **What "validated" means here.** The label checked is the noise rule alone: a step is
+  contended when its duration exceeds its N = 1 baseline by more than max(0.01 s, 3σ), the
+  `[noise]` values of `labels-v2.toml`. A `validated` verdict supports that noise threshold as
+  a proxy for inference wait. It does **not** validate the dataset's `labels-v2` under natural
+  overload: `labels-v2` labels a resource only under an injected condition, so it would label
+  every natural-overload step `none` (`clean_exceeded_noise` at most). PR 3 and later model
+  work must not read these verdicts as validation of the dataset labels.
 
 ## Setup
 
@@ -450,11 +457,13 @@ Nothing was deleted. All of these are under `.data/a06-20261111/` and in the evi
 - **Label validation covers queueing only.** Its reference is vLLM's queue time, so it cannot
   validate contention that shows up as longer prefill or decode. That is why `cfg-hardware` is
   `inconclusive`. Widening the reference would be a new protocol version, declared before it
-  is run.
+  is run. It also validates the noise threshold only, not the dataset's `labels-v2` (see
+  [Summary](#summary)).
 - **Held-out evidence.** All natural-overload and `prefill-flood-openai-chat-v1` runs are
   held-out test evidence. They must never be used for training, calibration or tuning, and none
-  may enter a dataset release before `split-v3` lists them. `fix-median-even` is also not in
-  `split-v2`.
+  may enter a dataset release before `split-v3` lists them. `fix-median-even` is kept out of
+  training too (Benoy's decision, 2026-11-11): `split-v2` does not name it and would hash it
+  into train, so `split-v3` is to put it in `test_task_groups`.
 
 ## Reproduce
 
