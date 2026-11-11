@@ -156,7 +156,9 @@ class CapacitySweep:
             raise ValueError(f"A sweep replays exactly {SOURCE_COUNT} sources")
         self.configuration = configuration
         self.sources = list(sources)
-        self.output_dir = output_dir
+        # Absolute once, so every runner records an absolute folder: a relative one would only
+        # resolve from the working directory the sweep was started in.
+        self.output_dir = output_dir.resolve()
         self.run_timeout_seconds = run_timeout_seconds
         self.make_batch = make_batch
         self.make_live_batch = make_live_batch

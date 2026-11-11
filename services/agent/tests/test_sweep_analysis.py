@@ -35,8 +35,14 @@ def run_entry(**fields):
         "reason": None,
         "task_passed": True,
         "delivery_complete": True,
-        "output_dir": "runs/00-t",
+        # As `BatchRun.evidence()` records it: the runner's own folder.
+        "output_dir": "/recorded/batch/runs/00-t",
     } | fields
+
+
+def recorded(batch_dir: Path, name: str) -> str:
+    """A run folder as `BatchRun.evidence()` records it: `str(runner.output_dir)`."""
+    return str(batch_dir / "runs" / name)
 
 
 def level(
@@ -264,9 +270,16 @@ def test_batch_metrics_counts_throughput_durations_spans_and_device(tmp_path):
     write_run(batch_dir / "runs" / "01-b", 20.0)
     write_run(batch_dir / "runs" / "02-c", None)
     entries = [
-        run_entry(index=0, output_dir="runs/00-a"),
-        run_entry(index=1, output_dir="runs/01-b", state="failed", reason=VERIFICATION_FAILED),
-        run_entry(index=2, output_dir="runs/02-c", state="failed", reason="Server error"),
+        run_entry(index=0, output_dir=recorded(batch_dir, "00-a")),
+        run_entry(
+            index=1,
+            output_dir=recorded(batch_dir, "01-b"),
+            state="failed",
+            reason=VERIFICATION_FAILED,
+        ),
+        run_entry(
+            index=2, output_dir=recorded(batch_dir, "02-c"), state="failed", reason="Server error"
+        ),
     ]
     write_batch(batch_dir, entries, wall_seconds=120.0)
 
@@ -310,9 +323,33 @@ def test_a_run_folder_is_found_after_the_sweep_is_copied(tmp_path):
     assert metrics["run_folders"] == [{"index": 0, "found_by": "batch_relative"}]
 
 
+def test_a_run_folder_recorded_relative_to_the_working_directory_is_found(tmp_path, monkeypatch):
+    # The CLI's default --output-dir is relative, and runners record str(output_dir) as given.
+    monkeypatch.chdir(tmp_path)
+    batch_dir = Path(".data/capacity-sweeps/cfg-default-x/batches/01-ramp-n1-r0")
+    write_run(batch_dir / "runs" / "01-fix-mean-empty", 5.0)
+    write_batch(batch_dir, [run_entry(output_dir=recorded(batch_dir, "01-fix-mean-empty"))])
+    metrics = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)
+    assert metrics["run_durations"] == [5.0]
+    assert metrics["run_folders"] == [{"index": 0, "found_by": "recorded"}]
+
+
+def test_a_relative_run_folder_from_another_directory_is_found_beside_its_batch(
+    tmp_path, monkeypatch
+):
+    batch_dir = tmp_path / "copied" / "batches" / "01-ramp-n1-r0"
+    write_run(batch_dir / "runs" / "01-a", 5.0)
+    # Recorded relative to a working directory the analysis is no longer run from.
+    write_batch(batch_dir, [run_entry(output_dir="sweeps/x/batches/01-ramp-n1-r0/runs/01-a")])
+    monkeypatch.chdir(tmp_path)
+    metrics = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)
+    assert metrics["run_durations"] == [5.0]
+    assert metrics["run_folders"] == [{"index": 0, "found_by": "batch_relative"}]
+
+
 def test_a_missing_run_folder_is_counted_missing_not_zero(tmp_path):
     batch_dir = tmp_path / "batch"
-    write_batch(batch_dir, [run_entry(output_dir="runs/gone")])
+    write_batch(batch_dir, [run_entry(output_dir=recorded(batch_dir, "gone"))])
     metrics = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)
     assert metrics["run_durations"] == [] and metrics["run_durations_missing"] == 1
     assert metrics["device"]["runs_unreadable"] == [{"error": "run folder not found"}]
@@ -322,14 +359,16 @@ def test_a_device_failure_is_recorded_per_run(tmp_path):
     batch_dir = tmp_path / "batch"
     write_run(batch_dir / "runs" / "00-a", 5.0)
     (batch_dir / "runs" / "00-a" / "agent-evidence.json").write_text("{}")
-    write_batch(batch_dir, [run_entry(output_dir="runs/00-a")])
+    write_batch(batch_dir, [run_entry(output_dir=recorded(batch_dir, "00-a"))])
     device = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)["device"]
     assert device["runs_readable"] == 0 and len(device["runs_unreadable"]) == 1
     assert device["metrics"]["gpu_sm_clock_mhz"]["mean"] is None
 
 
 def test_zero_wall_seconds_gives_no_throughput(tmp_path):
-    write_batch(tmp_path / "b", [run_entry(output_dir="runs/gone")], wall_seconds=0.0)
+    write_batch(
+        tmp_path / "b", [run_entry(output_dir=recorded(tmp_path / "b", "gone"))], wall_seconds=0.0
+    )
     assert batch_metrics(tmp_path / "b", RUN_LIMIT_SECONDS)["throughput_per_minute"] is None
 
 
@@ -342,7 +381,11 @@ def test_unreadable_batches_are_reported_not_zeroed(tmp_path):
     assert absent["status"] == "unreadable"
 
     write_run(tmp_path / "good" / "runs" / "00-a", 6.0)
-    write_batch(tmp_path / "good", [run_entry(output_dir="runs/00-a")], wall_seconds=60.0)
+    write_batch(
+        tmp_path / "good",
+        [run_entry(output_dir=recorded(tmp_path / "good", "00-a"))],
+        wall_seconds=60.0,
+    )
     good = batch_metrics(tmp_path / "good", RUN_LIMIT_SECONDS)
 
     summary = level_summary([good, broken, absent])
@@ -477,7 +520,7 @@ def test_a_measured_call_contributes_values_and_an_unavailable_one_is_only_count
     assert measured["timing"]["status"] == "reported"
     evidence = {"model_calls": [measured, vllm_call("unavailable"), vllm_call("malformed")]}
     write_run(batch_dir / "runs" / "00-a", 5.0, evidence_extra=evidence)
-    write_batch(batch_dir, [run_entry(output_dir="runs/00-a")])
+    write_batch(batch_dir, [run_entry(output_dir=recorded(batch_dir, "00-a"))])
     spans = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)["spans"]
     assert spans["calls_by_status"] == {
         "measured": 1,
@@ -494,7 +537,7 @@ def test_a_measured_call_contributes_values_and_an_unavailable_one_is_only_count
 def test_a_batch_without_usable_wall_time_has_no_throughput_and_fails_evidence(tmp_path, wall):
     batch_dir = tmp_path / "batch"
     write_run(batch_dir / "runs" / "00-a", 5.0)
-    write_batch(batch_dir, [run_entry(output_dir="runs/00-a")], wall_seconds=wall)
+    write_batch(batch_dir, [run_entry(output_dir=recorded(batch_dir, "00-a"))], wall_seconds=wall)
     batch = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)
     assert batch["throughput_per_minute"] is None
     summary = level_summary([batch])
@@ -507,7 +550,7 @@ def test_a_batch_without_usable_wall_time_has_no_throughput_and_fails_evidence(t
 def test_a_run_without_an_agent_run_duration_fails_evidence_complete(tmp_path):
     batch_dir = tmp_path / "batch"
     write_run(batch_dir / "runs" / "00-a", None)
-    write_batch(batch_dir, [run_entry(output_dir="runs/00-a")])
+    write_batch(batch_dir, [run_entry(output_dir=recorded(batch_dir, "00-a"))])
     summary = level_summary([batch_metrics(batch_dir, RUN_LIMIT_SECONDS)])
     assert summary["run_duration_seconds"]["missing"] == 1
     decision = capacity_decision({1: summary}, {}, RUN_LIMIT_SECONDS)

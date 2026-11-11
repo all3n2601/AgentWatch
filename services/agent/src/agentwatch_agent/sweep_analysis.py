@@ -103,17 +103,22 @@ def _is_number(value: object) -> bool:
 
 
 def _resolve_run_dir(batch_dir: Path, output_dir: object) -> tuple[Path | None, str | None]:
-    """The run's folder and how it was found: `recorded`, or `batch_relative` after a copy."""
+    """The run's folder and how it was found.
+
+    `BatchRun.evidence()` records `str(runner.output_dir)`: absolute, or relative to the
+    working directory the sweep ran in. `recorded` is that path as given (a relative one is
+    read from the current directory); `batch_relative` is `batch_dir/runs/<name>`, for a sweep
+    copied elsewhere or analysed from another directory. Never joined onto `batch_dir` whole,
+    which would double a relative path.
+    """
     if not isinstance(output_dir, str) or not output_dir:
         return None, None
     recorded = Path(output_dir)
-    candidate = recorded if recorded.is_absolute() else batch_dir / recorded
-    if candidate.is_dir():
-        return candidate, "recorded"
-    if recorded.is_absolute():
-        fallback = batch_dir / "runs" / recorded.name
-        if fallback.is_dir():
-            return fallback, "batch_relative"
+    if recorded.is_dir():
+        return recorded, "recorded"
+    fallback = batch_dir / "runs" / recorded.name
+    if fallback.is_dir():
+        return fallback, "batch_relative"
     return None, None
 
 

@@ -99,11 +99,13 @@ class FakeServer:
         )
 
 
-def passed_entry(index, run_dir_name):
+def passed_entry(index, run_dir):
     return {
         "index": index,
         "task_id": "fixture",
-        "output_dir": f"runs/{run_dir_name}",
+        # As `BatchRun.evidence()` records it: str() of the runner's output_dir, which the CLI
+        # builds as batch_dir / "runs" / name.
+        "output_dir": str(run_dir),
         "run_id": f"00000000-0000-0000-0000-{index:012d}",
         "state": "completed",
         "reason": None,
@@ -158,9 +160,9 @@ class StubBatch:
         harness.sweep_json_batches.append(["server" in entry for entry in saved])
         entries = []
         for index in range(1, self.level + 1):
-            run_name = f"{index:02d}"
-            write_run(self.output_dir / "runs" / run_name, duration_seconds=30.0)
-            entries.append(passed_entry(index, run_name))
+            run_dir = self.output_dir / "runs" / f"{index:02d}"
+            write_run(run_dir, duration_seconds=30.0)
+            entries.append(passed_entry(index, run_dir))
         self.runs = [FakeBatchRun(entry) for entry in entries]
         wall = default_wall_seconds(self.level)
         errors = [None] * len(entries)
@@ -209,7 +211,9 @@ class FakeInjector(BoundedInjector):
 
 
 class Harness:
-    def __init__(self, tmp_path, configuration="cfg-default", cache_config=None):
+    def __init__(
+        self, tmp_path, configuration="cfg-default", cache_config=None, output_dir=None, **settings
+    ):
         self.events = []
         self.time = FakeTime(self.events)
         self.server = FakeServer(self.time, cache_config)
@@ -222,7 +226,7 @@ class Harness:
         self.on_make_batch = {}  # batch name -> called inside make_batch
         self.on_make_injectors = None
         self.models = lambda: {"data": [{"id": SERVED, "root": MODEL_ID, "max_model_len": 4096}]}
-        self.output_dir = tmp_path / "sweep"
+        self.output_dir = tmp_path / "sweep" if output_dir is None else output_dir
         self.sweep_file = self.output_dir / SWEEP_FILE
         self.sweep = CapacitySweep(
             configuration=CONFIGURATIONS[configuration],
@@ -237,7 +241,11 @@ class Harness:
             sleep=self.time.sleep,
             monotonic=self.time.monotonic,
             host={"gpu": "fixture"},
-            start_attempts=[{"gpu_memory_utilization": 0.6, "started": True}],
+            # The shape `cli.parse_start_attempts` produces.
+            **(
+                {"start_attempts": [{"gpu_memory_utilization": 0.6, "outcome": "started"}]}
+                | settings
+            ),
         )
 
     def _stub(self, name, level, batch_dir, clock):
@@ -359,7 +367,7 @@ def test_phases_run_in_declared_order(tmp_path):
     assert first_ramp["server"]["before"]["counters"]["vllm:request_success_total"] == 1.0
     assert record["held_out"] is True
     assert record["protocol_sha256"] == sweep.protocol_sha256(record["protocol"])
-    assert record["start_attempts"] == [{"gpu_memory_utilization": 0.6, "started": True}]
+    assert record["start_attempts"] == [{"gpu_memory_utilization": 0.6, "outcome": "started"}]
     assert record["sources"][1]["plan_sha256"] == plan("fix-window-count").sha256()
     assert record["admission"] == {"status": "not_configured"}
     assert record["label_validation"]["levels_skipped"] == []
@@ -369,6 +377,27 @@ def test_phases_run_in_declared_order(tmp_path):
         "declared_not_verified"
     )
     assert read(harness.sweep_file) == json.loads(json.dumps(record))
+
+
+def test_a_relative_sweep_folder_resolves_every_run_folder(tmp_path, monkeypatch):
+    # The CLI's default --output-dir is relative to the working directory.
+    monkeypatch.chdir(tmp_path)
+    harness = Harness(tmp_path, output_dir=Path(".data/capacity-sweeps/cfg-default-x"))
+    record = harness.run()
+    # Every runner received, and recorded, an absolute folder.
+    recorded = [run["output_dir"] for entry in record["batches"] for run in entry["runs"]]
+    assert recorded and all(Path(folder).is_absolute() for folder in recorded)
+    found = [
+        folder["found_by"]
+        for entry in record["batches"]
+        if "metrics" in entry
+        for folder in entry["metrics"]["run_folders"]
+    ]
+    assert found and set(found) == {"recorded"}
+    assert record["level_summaries"][1]["run_duration_seconds"]["missing"] == 0
+    assert record["capacity_decision"]["result"] == "measured"
+    assert record["capacity_decision"]["capacity"] == 2
+    assert record["label_validation"]["runs_without_evidence"] == 0
 
 
 HARD_STOP_HOOKS = {
