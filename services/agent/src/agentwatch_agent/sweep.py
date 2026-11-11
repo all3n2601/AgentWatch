@@ -75,6 +75,8 @@ SERVER_BUSY = "server_busy_after_idle_wait"
 VLLM_RESTART = "vllm_restart"
 SERVER_STATE_UNAVAILABLE = "server_state_unavailable"
 INJECTOR_CLEANUP_UNCONFIRMED = "injector_cleanup_unconfirmed"
+# The server's own state: these stop the sweep in every phase after the ramp.
+SERVER_EVENTS = (SERVER_BUSY, SERVER_STATE_UNAVAILABLE)
 
 # Sweep states. Exit codes (mapped by the CLI): completed 0, refused_configuration 2,
 # stopped_resend_needed 3, every other state 1.
@@ -354,9 +356,9 @@ class CapacitySweep:
 
     def _ramp(self) -> None:
         self._begin("warmup")
+        # `_run_batch` records its hard-stop events itself, before the idle wait can stop.
         events = self._run_batch(WARMUP_BATCH, self._replay_factory(WARMUP_BATCH))
         if events:
-            self.record["hard_stops"].extend(events)
             codes = ", ".join(event["code"] for event in events)
             raise _SweepStop(STOPPED_WARMUP_FAILED, f"hard stop in the warm-up batch: {codes}")
         self._complete("warmup")
@@ -364,7 +366,6 @@ class CapacitySweep:
         for batch in itertools.chain.from_iterable(ramp_batches(n) for n in RAMP_LEVELS):
             events = self._run_batch(batch, self._replay_factory(batch))
             if events:
-                self.record["hard_stops"].extend(events)
                 self.record["ramp_end"] = RAMP_HARD_STOP
                 break
         else:
@@ -457,12 +458,12 @@ class CapacitySweep:
     ) -> None:
         """Run a live, injected or control batch; a server event stops the sweep.
 
-        Infrastructure failures there are evidence of the condition, recorded on the batch.
+        Infrastructure failures there are evidence of the condition, recorded on the batch;
+        `_run_batch` records the server events as hard stops.
         """
         events = self._run_batch(batch, make)
         for event in events:
-            if event["code"] in (SERVER_BUSY, SERVER_STATE_UNAVAILABLE):
-                self.record["hard_stops"].append(event)
+            if event["code"] in SERVER_EVENTS:
                 raise _SweepStop(f"stopped_{event['code']}", event["detail"])
 
     def _ensure_idle(self, phase: str, level: int) -> None:
@@ -482,6 +483,19 @@ class CapacitySweep:
 
     def _event(self, code: str, phase: str, level: int, sequence: int | None, detail: str) -> dict:
         return {"code": code, "phase": phase, "level": level, "batch": sequence, "detail": detail}
+
+    def _record_hard_stops(self, batch: Batch, events: list[dict]) -> None:
+        """Add a batch's hard-stop events to `hard_stops`, once.
+
+        In the warm-up and ramp every event is a hard stop. After the ramp, a run's
+        infrastructure failure is evidence of the condition (kept on the batch only); a busy
+        or unreadable server stops the sweep and is recorded.
+        """
+        self.record["hard_stops"].extend(
+            event
+            for event in events
+            if batch.phase in RAMP_PHASES or event["code"] in SERVER_EVENTS
+        )
 
     def _stop_with(self, state: str, event: dict, reason: str) -> None:
         self.record["hard_stops"].append(event)
@@ -513,9 +527,11 @@ class CapacitySweep:
         except ServerStateUnavailable as error:
             # Idle must be confirmed again before anything else runs on this server.
             self._idle_confirmed = False
-            return [
-                self._event(SERVER_STATE_UNAVAILABLE, batch.phase, batch.level, None, str(error))
-            ]
+            event = self._event(
+                SERVER_STATE_UNAVAILABLE, batch.phase, batch.level, None, str(error)
+            )
+            self._record_hard_stops(batch, [event])
+            return [event]
         restart = self._restart_detail(before)
         if restart is not None:
             event = self._event(VLLM_RESTART, batch.phase, batch.level, None, restart)
@@ -593,15 +609,21 @@ class CapacitySweep:
                     SERVER_STATE_UNAVAILABLE, batch.phase, batch.level, sequence, after_error
                 )
             )
+        # Recorded before the idle wait, which can stop the sweep (a restart or cancellation)
+        # without returning; the batch's own events must survive that.
+        entry["hard_stop_events"] = [event["code"] for event in events]
+        self._record_hard_stops(batch, events)
+        self._save()
         idle = self._wait_until_idle()
         if idle is not None:
             code, detail = idle
             event = self._event(code, batch.phase, batch.level, sequence, detail)
+            entry["hard_stop_events"].append(code)
             if code == VLLM_RESTART:
                 self._stop_with(STOPPED_VLLM_RESTART, event, detail)
             events.append(event)
-        entry["hard_stop_events"] = [event["code"] for event in events]
-        self._save()
+            self._record_hard_stops(batch, [event])
+            self._save()
         if idle is None:
             self._idle_confirmed = True
             self.sleep(PACING_SECONDS)

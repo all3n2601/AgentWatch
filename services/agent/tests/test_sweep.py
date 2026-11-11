@@ -820,6 +820,82 @@ def test_cancellation_during_the_injector_ramp_stops_the_sweep(tmp_path):
     assert last["injection_cleanup_confirmed"] is True
 
 
+def on_nth_read(harness, after, action):
+    """Run `action` when the server is read `after` reads from now (1 is the next read)."""
+    target = harness.server.reads + after
+
+    def on_read(number):
+        if number == target:
+            action()
+
+    harness.server.on_read = on_read
+
+
+def restart_server(harness):
+    harness.server.start_time += 60.0
+
+
+@pytest.mark.parametrize("then", ["restart", "cancel"])
+def test_a_batchs_hard_stop_survives_a_stop_found_during_the_idle_wait(tmp_path, then):
+    """The reviewer's probe: the infrastructure failure was lost when the idle wait stopped."""
+    harness = Harness(tmp_path)
+
+    def fail_then_stop(_stub, entries, wall):
+        entries[0] |= {"state": "failed", "reason": "Model server error", "task_passed": None}
+        if then == "restart":
+            # The reading after the batch, then the first idle poll sees the restart.
+            on_nth_read(harness, 2, lambda: restart_server(harness))
+        else:
+            harness.server.busy_until = float("inf")
+            on_nth_read(harness, 2, lambda: cancel_sweep(harness))
+        return wall, [None] * len(entries)
+
+    harness.hooks["ramp-n4-r2"] = fail_then_stop
+    record = harness.run()
+    last = record["batches"][-1]
+    assert (last["level"], last["repeat"]) == (4, 2)
+    codes = ["infrastructure_failure"] + (["vllm_restart"] if then == "restart" else [])
+    assert [(event["code"], event["level"]) for event in record["hard_stops"]] == [
+        (code, 4) for code in codes
+    ]
+    assert last["hard_stop_events"] == codes
+    assert record["state"] == ("stopped_vllm_restart" if then == "restart" else "cancelled")
+    assert record["capacity_decision"]["criteria"][4]["no_hard_stop"]["passed"] is False
+
+
+def test_a_restart_seen_in_the_reading_before_a_batch_stops_the_sweep(tmp_path):
+    harness = Harness(tmp_path)
+
+    def restart_before_level_three(_stub, _entries, _wall):
+        # The reading after this batch, one idle poll, then the reading before level 3.
+        on_nth_read(harness, 3, lambda: restart_server(harness))
+
+    harness.hooks["ramp-n2-r2"] = restart_before_level_three
+    record = harness.run()
+    assert record["state"] == "stopped_vllm_restart"
+    assert [(e["code"], e["phase"], e["level"], e["batch"]) for e in record["hard_stops"]] == [
+        ("vllm_restart", "ramp", 3, None)
+    ]
+    # Level 3 never started.
+    assert harness.phases_run()[-1] == ("ramp", 2)
+    assert record["batches"][-1]["level"] == 2
+
+
+def test_a_restart_seen_in_an_idle_poll_is_recorded_on_its_batch(tmp_path):
+    harness = Harness(tmp_path)
+    harness.hooks["ramp-n2-r0"] = lambda *_: on_nth_read(
+        harness, 2, lambda: restart_server(harness)
+    )
+    record = harness.run()
+    assert record["state"] == "stopped_vllm_restart"
+    assert [(e["code"], e["level"], e["batch"]) for e in record["hard_stops"]] == [
+        ("vllm_restart", 2, 7)
+    ]
+    assert record["batches"][-1]["hard_stop_events"] == ["vllm_restart"]
+    # No pacing pause once the sweep has stopped.
+    assert harness.events[-1] == ("batch", "ramp-n2-r0")
+
+
 def test_cancellation_between_batches_runs_nothing_further(tmp_path):
     harness = Harness(tmp_path)
 
