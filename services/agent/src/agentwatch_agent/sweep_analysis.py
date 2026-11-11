@@ -19,7 +19,7 @@ from pathlib import Path
 
 from agentwatch_agent.coverage import CoverageError, coverage_report
 from agentwatch_agent.experiment import step_timings, variability
-from agentwatch_agent.runner import VERIFICATION_FAILED
+from agentwatch_agent.runner import VERIFICATION_FAILED, is_agent_decision_failure
 from agentwatch_agent.sweep_protocol import (
     MAX_P90_FRACTION_OF_RUN_LIMIT,
     MAX_PASS_RATE_DROP,
@@ -61,7 +61,13 @@ RESET = "reset"
 
 
 def classify_run(entry: dict) -> str:
-    """`passed`, `task_failure` (a wrong patch) or `infrastructure_failure` for a batch.json run."""
+    """`passed`, `task_failure`, `agent_failure` or `infrastructure_failure` for a batch.json run.
+
+    A task failure is a wrong patch; an agent failure is the agent's own decision ending the
+    run (a model-call or tool-call limit, or a reply with neither a tool call nor an answer,
+    matched against the runner's declared reasons). Both count against the pass rate; neither
+    is a hard stop. Every other failure, and any incomplete delivery, is infrastructure.
+    """
     if entry.get("delivery_complete") is not True:
         return "infrastructure_failure"
     state, reason = entry.get("state"), entry.get("reason")
@@ -69,6 +75,8 @@ def classify_run(entry: dict) -> str:
         return "passed"
     if state == "failed" and reason == VERIFICATION_FAILED:
         return "task_failure"
+    if state == "failed" and is_agent_decision_failure(reason):
+        return "agent_failure"
     return "infrastructure_failure"
 
 
@@ -303,6 +311,7 @@ def batch_metrics(batch_dir: Path, run_timeout_seconds: float) -> dict:
         "runs": len(entries),
         "passed": passed,
         "task_failures": classes.count("task_failure"),
+        "agent_failures": classes.count("agent_failure"),
         "infrastructure_failures": classes.count("infrastructure_failure"),
         "wall_seconds": wall_seconds,
         "throughput_per_minute": throughput,
@@ -403,6 +412,7 @@ def level_summary(batches: list[dict], baseline_sm_clock_mhz: float | None = Non
         "runs": runs,
         "passed": passed,
         "task_failures": sum(batch["task_failures"] for batch in readable),
+        "agent_failures": sum(batch["agent_failures"] for batch in readable),
         "infrastructure_failures": sum(batch["infrastructure_failures"] for batch in readable),
         "throughput_per_minute": _spread(throughputs),
         "pass_rate": {"pooled": passed / runs if runs else None, "per_batch": _spread(pass_rates)},

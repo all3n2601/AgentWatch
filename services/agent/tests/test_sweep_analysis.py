@@ -6,7 +6,12 @@ from uuid import uuid4
 
 import pytest
 from agentwatch_agent.model import joined_vllm_timing
-from agentwatch_agent.runner import VERIFICATION_FAILED
+from agentwatch_agent.runner import (
+    MODEL_CALL_LIMIT_REASON,
+    NO_TOOL_CALL_OR_ANSWER,
+    TOOL_CALL_LIMIT_REASON,
+    VERIFICATION_FAILED,
+)
 from agentwatch_agent.sweep_analysis import (
     DEVICE_METRICS,
     batch_metrics,
@@ -178,6 +183,47 @@ def test_task_failures_are_not_infrastructure_failures():
     assert classify_run(run_entry(delivery_complete=False)) == "infrastructure_failure"
     assert classify_run(run_entry(delivery_complete=None)) == "infrastructure_failure"
     assert classify_run(run_entry(task_passed=False)) == "infrastructure_failure"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        MODEL_CALL_LIMIT_REASON.format(limit=8),
+        TOOL_CALL_LIMIT_REASON.format(limit=12),
+        NO_TOOL_CALL_OR_ANSWER,
+    ],
+)
+def test_agent_decision_failures_are_neither_passes_nor_infrastructure(reason):
+    assert classify_run(run_entry(state="failed", reason=reason, task_passed=False)) == (
+        "agent_failure"
+    )
+    # Only the runner's exact wording: a different or undelivered run is not an agent failure.
+    assert classify_run(run_entry(state="failed", reason=reason + " (edited)")) == (
+        "infrastructure_failure"
+    )
+    assert classify_run(run_entry(state="failed", reason=reason, delivery_complete=False)) == (
+        "infrastructure_failure"
+    )
+
+
+def test_agent_failures_count_against_the_pass_rate(tmp_path):
+    batch_dir = tmp_path / "batch"
+    write_run(batch_dir / "runs" / "00-a", 5.0)
+    write_run(batch_dir / "runs" / "01-b", 5.0)
+    limit = MODEL_CALL_LIMIT_REASON.format(limit=8)
+    entries = [
+        run_entry(index=0, output_dir=recorded(batch_dir, "00-a")),
+        run_entry(index=1, output_dir=recorded(batch_dir, "01-b"), state="failed", reason=limit),
+    ]
+    write_batch(batch_dir, entries)
+    metrics = batch_metrics(batch_dir, RUN_LIMIT_SECONDS)
+    assert (metrics["passed"], metrics["agent_failures"], metrics["infrastructure_failures"]) == (
+        1,
+        1,
+        0,
+    )
+    summary = level_summary([metrics])
+    assert summary["agent_failures"] == 1 and summary["pass_rate"]["pooled"] == 0.5
 
 
 def test_zero_throughput_levels_fail_without_dividing_by_zero():
@@ -457,6 +503,7 @@ def readable_batch(throughput, durations, clock_mean=None, server=None):
         "runs": 2,
         "passed": 1,
         "task_failures": 0,
+        "agent_failures": 0,
         "infrastructure_failures": 1,
         "throughput_per_minute": throughput,
         "run_durations": durations,

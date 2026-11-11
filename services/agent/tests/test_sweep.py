@@ -13,7 +13,7 @@ import pytest
 from agentwatch_agent import sweep
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.replay import ReplayPlan
-from agentwatch_agent.runner import VERIFICATION_FAILED
+from agentwatch_agent.runner import MODEL_CALL_LIMIT_REASON, VERIFICATION_FAILED
 from agentwatch_agent.sweep import SWEEP_FILE, CapacitySweep
 from agentwatch_agent.sweep_protocol import (
     CONFIGURATIONS,
@@ -623,6 +623,18 @@ def test_cancellation_runs_nothing_further(tmp_path):
         "source": "signal",
         "reason": "Cancelled by operator signal SIGINT",
     }
+
+
+def test_an_agent_failure_is_recorded_and_never_a_hard_stop(tmp_path):
+    harness = Harness(tmp_path)
+    harness.hooks["ramp-n3-r0"] = set_runs(
+        state="failed", reason=MODEL_CALL_LIMIT_REASON.format(limit=8), task_passed=False
+    )
+    record = harness.run()
+    assert record["ramp_end"] == "ceiling" and record["hard_stops"] == []
+    level = next(entry for entry in record["batches"] if entry["sequence"] == 10)
+    assert {run["classification"] for run in level["runs"]} == {"agent_failure"}
+    assert record["level_summaries"][3]["agent_failures"] == 3
 
 
 def test_capacity_below_one_skips_live_and_injected_phases(tmp_path):
