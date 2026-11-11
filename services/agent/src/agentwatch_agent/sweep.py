@@ -7,13 +7,16 @@ its own `MonotonicClock`, shared by its runners and, when injected, its injectio
 state is read before and after every batch; after each batch the driver waits until vLLM is
 idle and then pauses `PACING_SECONDS`.
 
-A hard stop ends the ramp only; the later phases still run when capacity is at least 1. A
-vLLM restart, unconfirmed injector cleanup, runs that never started, a run needing `resend`,
-cancellation, or a server that is busy or unreadable outside the ramp stop the whole sweep.
-`sweep.json` is rewritten after every batch, so a stopped or crashed sweep keeps what it
-recorded. There is no resume.
+A hard stop in the ramp ends the ramp only; the later phases still run when capacity is at
+least 1. A hard stop in the warm-up, a vLLM restart, unconfirmed injector cleanup, runs that
+never started, a run needing `resend` (which outranks the others), cancellation, or a server
+that is busy or unreadable outside the ramp stop the whole sweep. A stopped sweep still
+analyses the ramp batches it recorded (`analysis_scope: partial_ramp`). `sweep.json` is
+rewritten after every batch, so a stopped or crashed sweep keeps what it recorded. There is
+no resume.
 """
 
+import http.client
 import itertools
 import time
 from collections.abc import Callable
@@ -83,6 +86,8 @@ STOPPED_VLLM_RESTART = "stopped_vllm_restart"
 STOPPED_INJECTOR_CLEANUP = "stopped_injector_cleanup_unconfirmed"
 STOPPED_RUN_NOT_STARTED = "stopped_run_not_started"
 STOPPED_RESEND_NEEDED = "stopped_resend_needed"
+# A hard stop in the warm-up: the ramp never started, so nothing about capacity was measured.
+STOPPED_WARMUP_FAILED = "stopped_warmup_failed"
 # Outside the ramp a busy or unreadable server stops the sweep: the next batch would start on
 # a server whose state is unknown or still loaded.
 STOPPED_SERVER_BUSY = f"stopped_{SERVER_BUSY}"
@@ -95,6 +100,10 @@ RAMP_HARD_STOP = "hard_stop"
 RAMP_CEILING = "ceiling"
 RAMP_STOPPED = "stopped"
 RAMP_CANCELLED = "cancelled"
+
+FULL_RAMP = "full_ramp"
+PARTIAL_RAMP = "partial_ramp"
+NO_ANALYSIS = "none"
 
 PHASES = ("configuration_check", "warmup", "ramp", "capacity_decision", "live", "injected")
 RAMP_PHASES = ("warmup", "ramp")
@@ -187,14 +196,21 @@ class CapacitySweep:
                 self.record["state"] = COMPLETED
             except _SweepStop as stop:
                 self._record_stop(stop)
-            if self.record["capacity_decision"] is not None and self.record["state"] != CANCELLED:
-                self._validate_labels()
+            self._analyse()
         except BaseException as error:
             batch = self._current
             if batch is not None:
                 batch.request_cancel_from_signal("sweep", f"Sweep failed: {type(error).__name__}")
             self.record |= {"state": FAILED, "error": _text(error)}
             self._end_phase(FAILED)
+            # The failure may have left evidence half-written: analyse the folder offline.
+            if self.record["label_validation"] is None:
+                done = "the capacity decision ran; " if self.record["capacity_decision"] else ""
+                self.record |= {
+                    "analysis_scope": self.record["analysis_scope"] or NO_ANALYSIS,
+                    "analysis_note": f"{done}label validation not run: the sweep failed "
+                    f"({_text(error)})",
+                }
             raise
         finally:
             self.record["finished_at"] = datetime.now(UTC).isoformat()
@@ -238,6 +254,11 @@ class CapacitySweep:
             "state": "running",
             "ramp_end": None,
             "stop_reason": None,
+            # Every cause found when the sweep stopped; `state` is the one that ranks first.
+            "stop_causes": [],
+            # full_ramp, partial_ramp (the sweep stopped during the ramp) or none.
+            "analysis_scope": None,
+            "analysis_note": None,
             "cancellation": None,
             "error": None,
         }
@@ -261,6 +282,8 @@ class CapacitySweep:
 
     def _record_stop(self, stop: _SweepStop) -> None:
         self.record |= {"state": stop.state, "stop_reason": stop.reason}
+        if not self.record["stop_causes"]:
+            self.record["stop_causes"] = [{"state": stop.state, "reason": stop.reason}]
         request = self.cancellation.request
         if stop.state == CANCELLED and request is not None:
             self.record["cancellation"] = {"source": request.source, "reason": request.reason}
@@ -274,7 +297,7 @@ class CapacitySweep:
     def _sweep(self) -> None:
         self._check_configuration()
         self._ramp()
-        decision = self._decide_capacity()
+        decision = self._decide_capacity(FULL_RAMP)
         capacity = decision["capacity"]
         if capacity is None or capacity < 1:
             reason = f"capacity below 1 or not measured (result {decision['result']})"
@@ -301,29 +324,37 @@ class CapacitySweep:
             state = self.read_state()
         except ServerStateUnavailable as error:
             raise _SweepStop(STOPPED_SERVER_STATE_UNAVAILABLE, str(error)) from error
+        try:
+            models = self.models()
+        # The /v1/models read is bounded like /metrics: URLError and timeouts are OSErrors and
+        # a body that is not JSON is a ValueError.
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            raise _SweepStop(
+                STOPPED_SERVER_STATE_UNAVAILABLE, f"vLLM /v1/models unavailable: {_text(error)}"
+            ) from error
         self._start_time_seconds = state.start_time_seconds
-        verified = verify_configuration(self.configuration, self.models(), state)
+        verified = verify_configuration(self.configuration, models, state)
         self.record["server"]["initial_state"] = asdict(state)
         self.record["configuration"]["verified"] = verified
+        problems = []
         if verified["contradicted"]:
-            raise _SweepStop(
-                REFUSED_CONFIGURATION,
-                f"vLLM contradicts the declared {', '.join(verified['contradicted'])}",
+            problems.append(f"vLLM contradicts the declared {', '.join(verified['contradicted'])}")
+        if state.start_time_seconds is None:
+            problems.append(
+                "vLLM reported no process_start_time_seconds, so a restart could not be detected"
             )
+        if problems:
+            raise _SweepStop(REFUSED_CONFIGURATION, "; ".join(problems))
         self._complete("configuration_check")
 
     def _ramp(self) -> None:
         self._begin("warmup")
         events = self._run_batch(WARMUP_BATCH, self._replay_factory(WARMUP_BATCH))
-        self._complete("warmup")
         if events:
             self.record["hard_stops"].extend(events)
-            self.record["ramp_end"] = RAMP_HARD_STOP
-            self.record["phases"]["ramp"] = {
-                "status": "skipped",
-                "reason": "hard stop in the warm-up batch",
-            }
-            return
+            codes = ", ".join(event["code"] for event in events)
+            raise _SweepStop(STOPPED_WARMUP_FAILED, f"hard stop in the warm-up batch: {codes}")
+        self._complete("warmup")
         self._begin("ramp")
         for batch in itertools.chain.from_iterable(ramp_batches(n) for n in RAMP_LEVELS):
             events = self._run_batch(batch, self._replay_factory(batch))
@@ -335,8 +366,29 @@ class CapacitySweep:
             self.record["ramp_end"] = RAMP_CEILING
         self._complete("ramp")
 
-    def _decide_capacity(self) -> dict:
-        self._begin("capacity_decision")
+    def _analyse(self) -> None:
+        """Analyse the recorded ramp on every outcome but a failure; mark a partial ramp.
+
+        A sweep stopped or cancelled during the warm-up or ramp still gets level summaries,
+        the capacity decision and label validation over the ramp batches it recorded.
+        """
+        if self.record["phases"]["warmup"]["status"] == "not_run":
+            self.record |= {
+                "analysis_scope": NO_ANALYSIS,
+                "analysis_note": f"no batch ran ({self.record['state']})",
+            }
+            return
+        if self.record["capacity_decision"] is None:
+            self._decide_capacity(PARTIAL_RAMP)
+            self.record["analysis_note"] = (
+                f"ramp incomplete, {self.record['state']}: {self.record['stop_reason']}"
+            )
+        self._validate_labels()
+        self._save()
+
+    def _decide_capacity(self, scope: str) -> dict:
+        self._begin("capacity_decision", scope=scope)
+        self.record["analysis_scope"] = scope
         by_level: dict[int, list[dict]] = {}
         for entry in self.record["batches"]:
             if entry["phase"] == "ramp" and "metrics" in entry:
@@ -482,6 +534,11 @@ class CapacitySweep:
         clock = MonotonicClock()
         agent_batch = make(batch_dir, clock)
         self._current = agent_batch
+        # A cancellation that arrived after the check above found no batch to forward to; from
+        # here on `request_cancel_from_signal` reaches this batch itself.
+        if self.cancellation.event.is_set():
+            self._current = None
+            self._check_cancelled()
         entry = self._batch_entry(batch, sequence, name, agent_batch, clock)
         self.record["batches"].append(entry)
         self._save()
@@ -493,11 +550,7 @@ class CapacitySweep:
         except ServerStateUnavailable as error:
             after, after_error = None, str(error)
         self._current = None
-        runs = [
-            run.evidence() | {"classification": classify_run(run.evidence())}
-            for run in executed.runs
-        ]
-        entry["runs"] = runs
+        runs = entry["runs"]
         entry["server"] = {
             "before": asdict(before),
             "after": asdict(after) if after is not None else None,
@@ -513,12 +566,23 @@ class CapacitySweep:
                 "stage": executed.not_started.stage,
                 "error": str(executed.not_started)[:MAX_ERROR_TEXT],
             }
+        causes = self._stop_causes(batch, sequence, executed, runs, after)
+        # Recorded before a runner error is re-raised, so unconfirmed cleanup is never lost.
+        for cause in causes:
+            if cause["event"] is not None:
+                self.record["hard_stops"].append(cause["event"])
         self._save()
 
         errors = [run.error for run in executed.runs if run.error is not None]
         if errors:
             raise errors[0]
-        self._stop_if_sweep_ends(batch, sequence, executed, runs, after)
+        if causes:
+            # `resend` outranks every other cause: its exit code tells the operator to resend.
+            chosen = next((c for c in causes if c["state"] == STOPPED_RESEND_NEEDED), causes[0])
+            self.record["stop_causes"] = [
+                {"state": cause["state"], "reason": cause["reason"]} for cause in causes
+            ]
+            raise _SweepStop(chosen["state"], chosen["reason"])
         events = self._run_events(batch, sequence, runs)
         if after is None:
             events.append(
@@ -579,6 +643,7 @@ class CapacitySweep:
     ) -> _Executed:
         """Run the batch, inside the prefill flood when it is an injected batch."""
         executed = _Executed()
+        invoked = False
         injection = None
         if batch.injected:
             bound_seconds = self.run_timeout_seconds + INJECTOR_BOUND_MARGIN_SECONDS
@@ -590,6 +655,7 @@ class CapacitySweep:
             )
         try:
             with injection if injection is not None else nullcontext():
+                invoked = True
                 executed.runs = agent_batch.run()
         except InjectionCancelled:
             executed.cancelled = True
@@ -600,6 +666,13 @@ class CapacitySweep:
             executed.cleanup_error = error
             entry["injection_error"] = str(error)[:MAX_ERROR_TEXT]
         finally:
+            if invoked and not executed.runs:
+                # run() raised: the batch's own runs keep whatever evidence they have.
+                executed.runs = list(agent_batch.runs)
+            entry["runs"] = [
+                run.evidence() | {"classification": classify_run(run.evidence())}
+                for run in executed.runs
+            ]
             if injection is not None:
                 log_path = f"injections/{sequence:02d}.json"
                 (self.output_dir / "injections").mkdir(parents=True, exist_ok=True)
@@ -613,49 +686,54 @@ class CapacitySweep:
                 self.record["injection_logs"].append(log_path)
         return executed
 
-    def _stop_if_sweep_ends(
+    def _stop_causes(
         self,
         batch: Batch,
         sequence: int,
         executed: _Executed,
         runs: list[dict],
         after: ServerState | None,
-    ) -> None:
-        def event(code: str, detail: str) -> dict:
-            return self._event(code, batch.phase, batch.level, sequence, detail)
+    ) -> list[dict]:
+        """Every condition of this batch that stops the sweep, in rank order after resend.
 
+        Each cause has the sweep `state`, a `reason` and the hard-stop `event` it records (or
+        None).
+        """
+
+        def cause(state: str, reason: str, code: str | None = None) -> dict:
+            event = self._event(code, batch.phase, batch.level, sequence, reason) if code else None
+            return {"state": state, "reason": reason, "event": event}
+
+        causes = []
         if executed.cleanup_error is not None:
             detail = str(executed.cleanup_error)[:MAX_ERROR_TEXT]
-            self._stop_with(
-                STOPPED_INJECTOR_CLEANUP, event(INJECTOR_CLEANUP_UNCONFIRMED, detail), detail
-            )
+            causes.append(cause(STOPPED_INJECTOR_CLEANUP, detail, INJECTOR_CLEANUP_UNCONFIRMED))
         restart = self._restart_detail(after) if after is not None else None
         if restart is not None:
-            self._stop_with(STOPPED_VLLM_RESTART, event(VLLM_RESTART, restart), restart)
+            causes.append(cause(STOPPED_VLLM_RESTART, restart, VLLM_RESTART))
         if (
             executed.cancelled
             or self.cancellation.event.is_set()
             or any(run.get("state") == CANCELLED for run in runs)
         ):
             request = self.cancellation.request
-            raise _SweepStop(
-                CANCELLED, request.reason if request else f"batch {sequence:02d} cancelled"
+            causes.append(
+                cause(CANCELLED, request.reason if request else f"batch {sequence:02d} cancelled")
             )
         not_started = [run["index"] for run in runs if run.get("state") == "not_started"]
         if executed.not_started is not None or not_started:
-            raise _SweepStop(
-                STOPPED_RUN_NOT_STARTED,
-                f"batch {sequence:02d}: runs not started"
-                + (
-                    f" ({executed.not_started.stage})"
-                    if executed.not_started
-                    else f" {not_started}"
-                ),
+            stage = f" ({executed.not_started.stage})" if executed.not_started else ""
+            causes.append(
+                cause(
+                    STOPPED_RUN_NOT_STARTED,
+                    f"batch {sequence:02d}: runs not started{stage} {not_started}",
+                )
             )
         resend = [run["index"] for run in runs if run.get("resend_needed") is True]
         if resend:
             detail = f"batch {sequence:02d}: runs {resend} need resend"
-            self._stop_with(STOPPED_RESEND_NEEDED, event(DELIVERY_INCOMPLETE, detail), detail)
+            causes.append(cause(STOPPED_RESEND_NEEDED, detail, DELIVERY_INCOMPLETE))
+        return causes
 
     def _run_events(self, batch: Batch, sequence: int, runs: list[dict]) -> list[dict]:
         """One event per code for runs that failed for an infrastructure reason."""
