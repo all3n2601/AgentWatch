@@ -6,7 +6,8 @@ whose increases are recorded per batch, and the running and waiting request coun
 wait polls. A series that is missing, malformed or non-finite is None, never 0.
 
 vLLM v0.32 reports its cache configuration as the labels of `vllm:cache_config_info`; it does
-not report `max_num_seqs`, which is therefore `declared_not_verified`.
+not report `max_num_seqs`. That is verified from the running container's launch arguments
+(`vllm_launch`) when Docker is reachable, and is otherwise `declared_not_verified`.
 """
 
 import http.client
@@ -14,8 +15,14 @@ import math
 from dataclasses import dataclass
 
 from agentwatch_agent.prometheus_text import Exposition, ExpositionError, fetch_exposition
-from agentwatch_agent.sweep_protocol import MODEL_ID, MODEL_REVISION, VllmConfiguration
+from agentwatch_agent.sweep_protocol import (
+    METRICS_READ_TIMEOUT_SECONDS,
+    MODEL_ID,
+    MODEL_REVISION,
+    VllmConfiguration,
+)
 from agentwatch_agent.vllm import served_model
+from agentwatch_agent.vllm_launch import READ
 
 START_TIME_METRIC = "process_start_time_seconds"
 CACHE_CONFIG_METRIC = "vllm:cache_config_info"
@@ -27,9 +34,11 @@ COUNTER_METRICS = (
     "vllm:num_preemptions_total",
     "vllm:request_success_total",
 )
-DEFAULT_TIMEOUT_SECONDS = 2.0
+DEFAULT_TIMEOUT_SECONDS = METRICS_READ_TIMEOUT_SECONDS  # declared, and hashed, by the protocol
 SERVED_MODEL_NAME = f"{MODEL_ID}@{MODEL_REVISION}"
 METRICS_SOURCE = "vllm /metrics vllm:cache_config_info"
+LAUNCH_SOURCE = "docker inspect of the vLLM container's launch arguments"
+NOT_INSPECTED = {"status": "not_configured", "reason": "no vLLM container was inspected"}
 
 VERIFIED = "verified"
 CONTRADICTED = "contradicted"
@@ -116,13 +125,58 @@ def _setting(declared: object, reported: object, matches: bool, source: str, **e
     return {"declared": declared, "reported": reported, "status": status, "source": source} | extra
 
 
-def verify_configuration(declared: VllmConfiguration, models: dict, state: ServerState) -> dict:
+def _launch_problem(launch: dict) -> str | None:
+    """Why `launch` (a `vllm_launch.read_launch_arguments` result) cannot describe this vLLM."""
+    if launch.get("status") != READ:
+        return f"launch arguments {launch.get('status')}: {launch.get('reason')}"
+    if launch.get("running") is not True:
+        return f"container {launch.get('container')} is not running"
+    return None
+
+
+def _max_num_seqs(declared: int, reported: int | None, launch: dict) -> dict:
+    """From `/metrics` when vLLM reports it, else from the running container's launch flag."""
+    if reported is not None:
+        return _setting(declared, reported, reported == declared, METRICS_SOURCE)
+    problem = _launch_problem(launch)
+    launched = launch.get("max_num_seqs") if problem is None else None
+    if launched is None:
+        reason = problem or "the launch arguments do not set --max-num-seqs"
+        return _setting(
+            declared,
+            None,
+            False,
+            LAUNCH_SOURCE,
+            reason=f"vLLM does not report max_num_seqs and {reason}; running requests are checked",
+        )
+    return _setting(declared, launched, launched == declared, LAUNCH_SOURCE)
+
+
+def _launch_utilization(declared: tuple[float, ...], reported: float | None, launch: dict) -> dict:
+    """The launch flag must be a declared value and, when vLLM reports one, the same value."""
+    problem = _launch_problem(launch)
+    launched = launch.get("gpu_memory_utilization") if problem is None else None
+    if launched is None:
+        reason = problem or "the launch arguments do not set --gpu-memory-utilization"
+        return _setting(list(declared), None, False, LAUNCH_SOURCE, reason=reason)
+    matches = any(math.isclose(launched, value) for value in declared) and (
+        reported is None or math.isclose(launched, reported)
+    )
+    return _setting(list(declared), launched, matches, LAUNCH_SOURCE)
+
+
+def verify_configuration(
+    declared: VllmConfiguration, models: dict, state: ServerState, launch: dict | None = None
+) -> dict:
     """Each declared setting `verified`, `contradicted` or `declared_not_verified` (unreported).
 
     `gpu_memory_utilization` is verified when vLLM reports one of the declared values, because
-    the operator starts the first of the declared fallbacks that runs. The measured KV-cache
-    capacity is recorded alongside, from the same exposition.
+    the operator starts the first of the declared fallbacks that runs. `launch` is the vLLM
+    container's launch arguments (`vllm_launch`); they verify `max_num_seqs`, and their
+    utilization must match. The measured KV-cache capacity is recorded alongside, from the same
+    exposition.
     """
+    launch = NOT_INSPECTED if launch is None else launch
     served = served_model(models, SERVED_MODEL_NAME)
     config = state.cache_config
     memory = _float(config.get("gpu_memory_utilization"))
@@ -161,16 +215,9 @@ def verify_configuration(declared: VllmConfiguration, models: dict, state: Serve
             prefix_caching == declared.enable_prefix_caching,
             METRICS_SOURCE,
         ),
-        "max_num_seqs": _setting(
-            declared.max_num_seqs,
-            max_num_seqs,
-            max_num_seqs == declared.max_num_seqs,
-            METRICS_SOURCE,
-            **(
-                {}
-                if max_num_seqs is not None
-                else {"reason": "vLLM does not report max_num_seqs; running requests are checked"}
-            ),
+        "max_num_seqs": _max_num_seqs(declared.max_num_seqs, max_num_seqs, launch),
+        "launch_gpu_memory_utilization": _launch_utilization(
+            declared.gpu_memory_utilization, memory, launch
         ),
     }
     return {
