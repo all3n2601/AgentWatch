@@ -765,7 +765,10 @@ frozen evaluation sets without tuning against them.
   ([calibration](model-calibration.md), `pipelines/model/tests`). Tested on synthetic fixtures
   only. After the M02 merge (`mixed-scoring-v1`), mixed steps are scored by hit, joint-only steps
   are never scored, the mixed-contention abstention scope and gain gate are measured, and the
-  threshold is chosen on single-class validation steps. Open: `split-v2` has an empty validation
+  threshold is chosen on single-class validation steps. 2026-11-11 (PR #63, not merged): the
+  threshold's 20% limit also covers scored mixed validation steps and reads the contract's
+  `abstention_rate_scopes`, as the test gate does (`test_calibration.py`, `test_calibrate.py`;
+  synthetic fixtures only). Open: `split-v2` has an empty validation
   split, so nothing is fitted yet, and showing uncertain results belongs to serving and the
   dashboard.
 - [ ] Load a versioned registered model in the correlation service.

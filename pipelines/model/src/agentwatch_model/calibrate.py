@@ -39,7 +39,7 @@ from agentwatch_model.calibration_report import (
 )
 from agentwatch_model.contract import DEFAULT_CONTRACT, Contract, ContractError, load_contract
 from agentwatch_model.metrics import CLASSES, is_number
-from agentwatch_model.mixed import is_mixed
+from agentwatch_model.mixed import is_joint_only, is_mixed
 from agentwatch_model.report import dataset_version, summary
 from agentwatch_model.rule_baseline import (
     DEFAULT_SCHEMA,
@@ -247,15 +247,18 @@ def fit_on_validation(
     targets = np.array([columns.index(labels[index]) for index in usable])
     temperature = fit_temperature(matrix[usable], targets, config)
     confidences = scale(matrix, temperature).max(axis=1).tolist()
-    # A mixed step has no single class to score the threshold against, so, like the
-    # classifier's fit, the threshold is chosen on single-class validation steps.
-    single = [index for index, row in enumerate(rows) if not is_mixed(row)]
+    # Macro F1 is judged on single-class steps, as a mixed step has no single class, but the
+    # abstention limit also covers the scored mixed steps, the contract's mixed_contention
+    # scope. Joint-only steps are never scored, so they take no part.
+    scored = [index for index, row in enumerate(rows) if not is_joint_only(row)]
     selection = choose_threshold(
-        [labels[index] for index in single],
-        [records[index]["prediction"] for index in single],
-        [confidences[index] for index in single],
+        [labels[index] for index in scored],
+        [records[index]["prediction"] for index in scored],
+        [confidences[index] for index in scored],
         contract.classes,
         contract.max_abstention_rate,
+        mixed=[is_mixed(rows[index]) for index in scored],
+        scopes=contract.abstention_rate_scopes,
     )
     return Fit(
         True,
