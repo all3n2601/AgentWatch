@@ -140,7 +140,7 @@ exists under v1 yet, so its values may still change under it until then (Ruling 
 
 Both changes came from the GPU preflight on 2026-11-11, before any evidence existed under
 `natural-overload-sweep-v1`. Benoy approved them, so the version stays v1 (Ruling 20).
-Preflight evidence is in `.data/a06-20261111/`.
+Preflight evidence is in `data/held-out/a06-20261111/` (DVC).
 
 - **Run limit 900 s → 450 s.** Every sampling round stores one record per sampled metric,
   and the live API keeps at most 100,000 records per run. The runner therefore refuses any
@@ -153,7 +153,7 @@ Preflight evidence is in `.data/a06-20261111/`.
 - **Second source: `fix-window-count` → `fix-median-even`.**
   - Replays need a passed source recorded on the same backend and model.
   - `fix-window-count` failed verification in 4 of 4 runs on vLLM `Qwen/Qwen3-1.7B` at
-    temperature 0 (2026-11-11T16:02Z, `.data/a06-20261111/sources/`). It skipped
+    temperature 0 (2026-11-11T16:02Z, `data/held-out/a06-20261111/sources/`). It skipped
     `test_windows.py`, applied `skip-first-window`, then named `include-final-window` but
     never applied it.
   - It had passed 12 of 12 times earlier on Ollama `qwen3:1.7b`, a different build of the
@@ -346,8 +346,9 @@ tests.
 - `docs/data-card.md`: natural-overload and prefill-flood runs are held-out test evidence.
 - A drafted note for Rohit and Akshay asking that `split-v3` hold out
   `prefill-flood-openai-chat-v1` and the natural-overload runs; Benoy sends it.
-- Redacted evidence bundles in `C:\Users\benoy\AgentWatch-evidence\a06-<date>\` for Akshay
-  and Rohit; the configuration table for Meghana.
+- The evidence bundle, versioned with DVC as held-out evidence in
+  `data/held-out/a06-<date>/` (not pulled by default), for Akshay and Rohit; the configuration
+  table for Meghana.
 - PR descriptions state that capacity describes this laptop and these configurations only.
 
 ## Risks and limitations

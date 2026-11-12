@@ -1,11 +1,13 @@
 # AgentWatch rule baseline
 
-Status: `rules-v1`, implemented and tested; not yet evaluated on a dataset that can be evaluated.
-On the interim `steps-v1.2+5954f97ef8b2` split (2026-10-26) the report is **blocked** by the
-leakage check, with no metrics. On dataset v1 (`steps-v1.3+aafae73eb211`, split
-`split-v2+febe942a2b59`) it stops before scoring because the test split mixes two feature
-definitions (`steps-v1.2` and `step-features-v1`), which evaluation refuses. Steps labeled
-`mixed` are scored by `mixed-scoring-v1` (see below).
+Status: `rules-v1+1bf54c19`, evaluated on 2026-11-11 on dataset v1
+(`steps-v1.3+aafae73eb211`, split `split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`,
+accepted). It **fails** both clean-step gates and leaves nine gates `not_evaluated`, so it blocks
+promotion; see [Results on dataset v1](#results-on-dataset-v1). Earlier runs had no metrics: on
+the interim `steps-v1.2+5954f97ef8b2` split (2026-10-26) the report is **blocked** by the
+leakage check, and on `split-v2+febe942a2b59` it stops before scoring because that test split
+mixes two feature definitions. Steps labeled `mixed` are scored by `mixed-scoring-v1` (see
+below).
 
 The rule baseline is the transparent reference a learned model must beat. It names the resource
 a step waited on from measured features, and is scored against
@@ -36,9 +38,11 @@ make rule-baseline SPLIT=data/datasets/splits/<release>/<split>.json
 ```
 
 Splits are read only through `load_split`, which refuses a split whose quality verdict or
-leakage check does not pass. The defaults are the current contract (`eval-contract-v2`) and
-frozen schema (`steps-v1.3.pbtxt`). To rerun on a `steps-v1.2` split, pass the files it was
-made with:
+leakage check does not pass. The defaults are the current contract (`eval-contract-v3`, which
+makes `split-v3` splits) and frozen schema (`steps-v1.3.pbtxt`). A split made under another
+contract is refused with the contract to pass. To rerun on a `split-v2` split, pass
+`EVALUATION_CONTRACT=pipelines/model/evaluation-contract-v2.toml`; on a `steps-v1.2` split, pass
+the files it was made with:
 
 ```sh
 make rule-baseline SPLIT=data/datasets/splits/steps-v1.2+5954f97ef8b2/split-v1+58e921fa846a.json \
@@ -97,6 +101,75 @@ or a split row that is missing a required field, repeats a step, has an unknown 
 excess fraction outside 0 to 1, or comes from a different dataset version than the other rows,
 exits with code 2 and an error message instead of a report. `make rule-baseline` without
 `SPLIT` also exits with code 2.
+
+## Results on dataset v1
+
+Run on 2026-11-12 at commit `f229a4c` (branch `feature/split-v3`, PR #70, after
+`eval-contract-v3` was set to `accepted`). To reproduce, with the release pulled (see
+[the data card](data-card.md)):
+
+```sh
+uv run --package agentwatch-data python -m agentwatch_data.splits --release data/datasets/steps-v1.3+aafae73eb211
+make rule-baseline SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+932b2df410a7.json
+```
+
+The first command rebuilds (or reuses) the split; the second writes `.data/rule-baseline/`,
+which is not committed. Two runs gave byte-identical files:
+
+- `report.json`: SHA-256 `5d1b25e23feaa06783a3f5b2addfd021bf9e378f184da79c69b5f23957192ed8`
+- `predictions.jsonl` (3,575 rows, one per test step):
+  SHA-256 `3dda66a896c282fc8a0e6e94db42ef3e14bb6cb21587eefc05b5518c8d1f2083`
+
+The test split is one task, `fix-window-count`, with 3,575 steps (3,482 single-class, 82 scored
+`mixed`, 11 joint-only). The rules were declared on `steps-v1.2` features before any
+evaluation and were not changed for this run. The first runs, on 2026-11-11 at `6ade73d`
+under the then-proposed contract (`b9f20820`, `split-v3+95309c38a53e`, same rows), wrote the
+same `predictions.jsonl`; their report differed only in the contract status and hash and the
+split file and hash.
+
+| Gate or measure | Result | Contract |
+|---|---|---|
+| Macro F1 (four classes, single-class steps) | 0.200; no interval (1 task group, needs 5) | Reported |
+| Clean steps predicted `none` | 0.731 (804 of 1,100) | **fail**, needs 0.95 |
+| Baseline and clean steps predicted `none` | 0.749 (1,853 of 2,475) | **fail**, needs 0.95 |
+| Mixed-contention slice | 82 steps; hit rate 0.049; macro F1 0.047 over `cpu_sandbox` and `inference` | Reported |
+| Excess-latency fraction | Not predicted by `rules-v1`; constant references: MAE 0.194 (zero), 0.233 (training mean) | Limit 0.10 |
+| Other gates | 9 `not_evaluated` (reasons in the report) | — |
+
+Per class (single-class steps):
+
+| Class | Support | Predicted | Precision | Recall | F1 |
+|---|---|---|---|---|---|
+| `none` | 2,923 | 2,606 | 0.801 | 0.714 | 0.755 |
+| `cpu_sandbox` | 127 | 876 | 0.026 | 0.181 | 0.046 |
+| `inference` | 226 | 0 | n/a | 0.000 | 0.000 |
+| `retrieval` | 206 | 0 | n/a | 0.000 | 0.000 |
+
+Confusion matrix (rows: label; columns: prediction):
+
+| Label | `none` | `cpu_sandbox` | `inference` | `retrieval` |
+|---|---|---|---|---|
+| `none` | 2,088 | 835 | 0 | 0 |
+| `cpu_sandbox` | 104 | 23 | 0 | 0 |
+| `inference` | 226 | 0 | 0 | 0 |
+| `retrieval` | 188 | 18 | 0 | 0 |
+
+What this shows, without claiming a cause:
+
+- **False positives.** 835 steps labeled `none` are predicted `cpu_sandbox`: 326 of 1,375
+  baseline steps, 296 of 1,100 clean steps and 213 of 448 contended steps whose label is
+  `none`. The rules were declared on `steps-v1.2` features before any evaluation (see
+  `rules.toml`); on these replay steps they fire far more often than the labels do.
+- **Missed contention.** `rules-v1` has no rule for `inference` or `retrieval`, so all 432
+  such steps are predicted `none` or `cpu_sandbox`. Of the 127 `cpu_sandbox` steps, 23 are found.
+- **Mixed steps.** 4 of 82 scored mixed steps name a confirmed resource (all `cpu_sandbox`);
+  the rest are predicted `none`. 9 of the 11 joint-only steps would name a member, but they are
+  not scored.
+- **Uncertainty.** With one test task, the task-grouped bootstrap gives no interval, and every
+  result describes `fix-window-count` on one laptop and one model only.
+
+This is the reference the learned model is compared against (M03). The handoff to Allen and
+Meghana is the report and predictions above.
 
 ## Report contents
 

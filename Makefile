@@ -127,8 +127,10 @@ DVC_PULL_REMOTE ?= public
 push-dataset: ## Upload versioned evidence and datasets to the team bucket (needs write access; see docs/data-card.md)
 	$(DVC) push
 
-pull-dataset: ## Download the evidence and datasets versioned at this commit, no login needed (TARGET="<paths>" for part of it)
-	$(DVC) pull --remote $(DVC_PULL_REMOTE) $(TARGET)
+# Held-out test evidence (data/held-out/) is never pulled by default, so it cannot end up next to
+# the training stores by accident; name it in TARGET to download it.
+pull-dataset: ## Download the evidence and datasets versioned at this commit, no login needed (TARGET="<paths>" for others, e.g. data/held-out/a06-20261111)
+	$(DVC) pull --remote $(DVC_PULL_REMOTE) $(or $(TARGET),$(DATASET_EVIDENCE) $(DATASET_OUTPUT))
 
 fetch-dataset: ## Fetch every committed version's data into the DVC cache (before merging branches that both versioned data)
 	$(DVC) fetch --all-commits
