@@ -95,6 +95,10 @@ const conflict = (error: string) => ({
   json: { error, kind: "conflict" },
 });
 
+/** The failed-change banner with this title; Next's route announcer is also an alert. */
+const changeNotice = (page: Page, title: string) =>
+  page.getByRole("alert").filter({ hasText: title });
+
 async function attribute(page: Page) {
   await page.getByLabel("Operator").fill("review");
   await page.getByLabel("Reason").fill("Check limits");
@@ -242,7 +246,7 @@ test("a stale version is rejected and the form reloads the latest limits", async
   await attribute(page);
   await page.getByRole("button", { name: "Set limits" }).click();
   await expect(
-    page.getByText(/another change was recorded after this page read/),
+    page.getByText(/another change was recorded after this page read/i),
   ).toBeVisible();
   await expect(
     page.getByText("Version 2: Inference: 1 · Tests: 2"),
@@ -263,7 +267,7 @@ test("a reused request ID is reported as its own conflict", async ({
   await attribute(page);
   await page.getByRole("button", { name: "Set limits" }).click();
   await expect(
-    page.getByText(/this request ID was already used for a different change/),
+    page.getByText(/this request ID was already used for a different change/i),
   ).toBeVisible();
 });
 
@@ -284,11 +288,9 @@ test("a rejected change shows the service's reason", async ({ page }) => {
   await page.getByLabel("Test jobs").fill("4");
   await attribute(page);
   await page.getByRole("button", { name: "Set limits" }).click();
-  await expect(
-    page.getByText(
-      "Not saved: limits.test_jobs: Input should be less than or equal to 1024",
-    ),
-  ).toBeVisible();
+  await expect(changeNotice(page, "Not saved")).toContainText(
+    "limits.test_jobs: Input should be less than or equal to 1024",
+  );
   await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
 });
 
@@ -312,9 +314,9 @@ test("an unconfirmed change is retried with the same request ID", async ({
   await page.getByLabel("Inference requests").fill("1");
   await attribute(page);
   await page.getByRole("button", { name: "Set limits" }).click();
-  await expect(
-    page.getByText(/Not confirmed: Database unavailable/),
-  ).toBeVisible();
+  await expect(changeNotice(page, "Not confirmed")).toContainText(
+    "Database unavailable",
+  );
   await page.getByRole("button", { name: "Retry" }).click();
   await expect(page.getByText("Already recorded as version 2.")).toBeVisible();
   expect(writes).toHaveLength(2);

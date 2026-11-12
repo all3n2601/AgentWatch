@@ -5,9 +5,8 @@ import { PageHeader } from "@/components/shell/page-header";
 import { GlassPanel, PanelHeader } from "@/components/ui/glass-panel";
 
 /**
- * Concurrency controls on the workspace shell. The form itself is the existing
- * versioned-policy editor (components/concurrency-controls.tsx), unchanged; it
- * has no approved glass design yet.
+ * Concurrency controls on the workspace shell. The versioned-policy editor
+ * (components/concurrency-controls.tsx) is built from the glass primitives.
  */
 export function ControlsPage() {
   return (
