@@ -112,7 +112,10 @@ state, as now; such a step usually has no feature row and scoring reports it as 
 
 **Difference from the scoring branch's truths.** Only Akshay's two conditions: tool, retrieval,
 other and root steps no longer get `protocol_clean = none`, and their null reason is `root_step`
-or `no_queue_reference` instead of `not_applicable`. Every model-call truth is unchanged.
+or `no_queue_reference` instead of `not_applicable`. Every model-call truth is unchanged on the
+frozen sweeps (pinned by the contract test); in general the only other difference is that a
+malformed duration refuses the sweep, as the input check does for the whole sweep, instead of
+labelling one step `malformed` (clarified 2026-11-12, final review).
 
 **Output.** `truth.jsonl`: each `steps.jsonl` line's identity and position fields, the timing and
 baseline values used, `noise_threshold_seconds`, `excess_seconds`, `truths` and `truth_reasons`.
@@ -161,7 +164,10 @@ database started for the run and stopped after.
 
 1. When it merges, `main` is merged into `feature/a06-held-out-scoring`; that branch drops
    `capacity-sweep-truth`, reads `truth.jsonl` from this rule, and refuses any other
-   `label_version`.
+   `label_version`. The recorder computes the baseline statistics outside the rule's fingerprint,
+   so a truth set is identified by `label_version` together with `steps_sha256` and
+   `steps_summary_sha256` (recorded in `truth.json`); the branch checks both (added 2026-11-12,
+   final review).
 2. When #70 also merges, the scoring switches to Rohit's M03 model with its M04 calibration on
    `split-v3+932b2df410a7`, as a dated change to its own spec for Benoy's approval, then reruns and
    is pushed for Rohit's review.

@@ -326,19 +326,35 @@ excluded. Reviewer: Akshay.
 | root step (no parent) | null `root_step` | null `root_step` | null `root_step` |
 | any other step type | null `no_queue_reference` | null `no_queue_reference` | null `no_queue_reference` |
 
-The threshold is max(0.01 s, 3 x baseline stdev), the `[noise]` values of `labels-v2`; a baseline
-with one run uses the floor alone. A model call that cannot be judged gets a null truth with a
-reason, in this order: `not_completed`, `malformed`, `no_baseline` (fewer than 3 baseline runs),
-then, for `queue` only, `span_not_measured`.
+The baseline of a step is the mean and sample standard deviation (`statistics.stdev`) of its
+runner-tick duration over the completed steps with the same (replay plan, step id) in the ramp
+N = 1 batches the analysis keeps, with at least 3 values; the recorder computes it. The threshold
+is max(0.01 s, 3 x baseline stdev), the `[noise]` values of `labels-v2`; the floor alone applies
+only to a null stdev, which a baseline of at least 3 runs never has and only hand-made input can
+carry. A model call that cannot be judged gets a null truth with a reason, in this order:
+`not_completed`, `malformed`, `no_baseline` (no baseline, or fewer than 3 baseline runs), then,
+for `queue` only, `span_not_measured`. `malformed` is a defensive branch: the input check refuses
+a negative or non-finite duration for the whole sweep, so it cannot reach the rule on validated
+input.
+
+Precedence: on ramp N = 1, `slower` is `not_applicable` even when the step is `not_completed` or
+has `no_baseline`, while `queue` keeps the specific reason; and `protocol_clean` is `none` for a
+model call in a clean batch whatever its state.
 
 **Exclusions and why.** Tool, retrieval and other steps have no vLLM queue reference, so their
 queue wait cannot be judged: they are null `no_queue_reference`, not `none`. The root `agent-run`
 step spans the whole run and is not a unit of work: null `root_step`. Neither gets
 `protocol_clean = none`. These two exclusions are the only difference from the scoring branch's
-earlier truths; every model-call truth is unchanged.
+earlier truths on the frozen sweeps, and every model-call truth is unchanged there (pinned by
+`tests/contract/test_sweep_truth_frozen.py`). In general the only other difference is that a
+malformed duration refuses the sweep instead of labelling one step `malformed`.
 
 **Label version:** `sweep-truth-v1+3b75882f` (the fingerprint covers the rule values and the
-truth and input-validation code; comments do not change it). Counts from the real run of
+truth and input-validation code; comments and formatting in the TOML do not change it, but any
+edit to `sweep_truth.py` or `sweep_steps_input.py`, comments included, does). The baseline
+statistics are computed by the recorder, outside that fingerprint, so a truth set is identified by
+`label_version` together with `steps_sha256` and `steps_summary_sha256`, both recorded in
+`truth.json`; the scoring branch will check both. Counts from the real run of
 2026-11-12, model calls by class, with the null reasons below:
 
 | | cfg-default (`2d75ea`) | cfg-hardware (`b4ad4a`) |

@@ -13,6 +13,8 @@ min_seconds = 0.01
 
 [baseline]
 # Minimum N = 1 ramp runs behind a step's baseline (the protocol's 3 batches per source).
+# Going below 3 changes nothing in practice: the recorder omits the baseline of any step with
+# fewer than BASELINE_BATCHES_PER_SOURCE (3) values.
 min_runs = 3
 
 [steps]
