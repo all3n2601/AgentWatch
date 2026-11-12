@@ -648,7 +648,7 @@ they are counted in `runs_without_plan` instead of getting records. Output defau
 runs it. It refuses (exit 2, nothing written) a sweep that is not `natural-overload-sweep-v1`,
 `held_out: true` and carrying one of the two accepted protocol hashes, a run whose files cannot
 be read, and an output folder inside `data/held-out`. The label rule that judges these records
-is a separate step in `pipelines/data`.
+is a separate step in `pipelines/data` (`sweep-truth-v2`).
 
 **Evidence status.** Natural-overload and prefill-flood runs are held-out test evidence
 (`held_out: true`): never use them for training, calibration, threshold selection or

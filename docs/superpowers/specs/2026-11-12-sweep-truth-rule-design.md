@@ -186,3 +186,24 @@ database started for the run and stopped after.
 
 Out of scope: any change to `labels-v2`, `sweep-analyse`'s `label_validation`, the split, the
 features, or the scoring code.
+
+## Changed 2026-11-12 (Akshay's review of #74)
+
+The rule becomes `sweep-truth-v2`, label version `sweep-truth-v2+1af0a878`. The text above is
+history and is not rewritten; where it says `sweep-truth-v1`, v2 is that rule plus:
+
+- B. A model call in a clean batch that did not finish (state not `completed`, or no duration)
+  gets `protocol_clean` null `not_completed` instead of `none`. Nothing else in the rule changes.
+- C. `steps.json` carries `recorder_sha256`, the SHA-256 of the recorder's `sweep_steps.py` and
+  `sweep_labels.py` (line endings normalised), and `truth.json` carries it on.
+- D. The contract test pins `steps_sha256`, `steps_summary_sha256` and `truth_sha256` for both
+  frozen sweeps; a truth set is identified by `label_version` plus those three hashes.
+- E. Wording: provenance (the values come from the scoring branch's descriptive, no-gate results
+  on these sweeps, attempt `20261112T025531Z-220363`; nothing was changed in response; the only
+  changes since are Akshay's two exclusions and, in v2, unfinished clean-batch calls being null),
+  acceptance (the approvals of #74 on its final version, as for `eval-contract-v3`), the reason
+  `queue` uses the step's own duration spread as its threshold, and the preflight dry-run sweep
+  being held out without truths.
+
+Every model call in both frozen sweeps completed (825 and 915, including the 45 and 30 in clean
+batches), so no truth on them changes between v1 and v2.

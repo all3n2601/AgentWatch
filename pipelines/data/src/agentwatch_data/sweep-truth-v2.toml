@@ -1,4 +1,7 @@
-# Held-out capacity-sweep truth rule, frozen before any evaluation.
+# Held-out capacity-sweep truth rule, sweep-truth-v2. The values were taken from the scoring
+# branch's truths, which had already produced descriptive, no-gate results on these two sweeps
+# (attempt 20261112T025531Z-220363); nothing was changed in response. docs/data-card.md says
+# what changed since and why.
 # label_version fingerprints these values and the rule's code (sweep_truth.py and
 # sweep_steps_input.py), so retuned labels are never silent. Comments and formatting do not
 # change it.

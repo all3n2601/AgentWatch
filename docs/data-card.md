@@ -354,20 +354,41 @@ The [capacity record](capacity-record.md#reproduce) shows how to re-analyse it a
 its tables. Rohit decided the `split-v3` assignment with Benoy on 2026-11-11
 ([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md)).
 
-## Sweep truth rule `sweep-truth-v1` (held-out A06 sweeps only)
+## Sweep truth rule `sweep-truth-v2` (held-out A06 sweeps only)
 
-`sweep-truth-v1` labels the steps of the frozen A06 natural-overload sweeps so that held-out
+`sweep-truth-v2` labels the steps of the frozen A06 natural-overload sweeps so that held-out
 scoring has truths to compare against. It is a versioned rule in `pipelines/data`
-(`sweep-truth-v1.toml`, `sweep_truth.py`), run as `make sweep-truth STEPS=<dir>` on the output of
+(`sweep-truth-v2.toml`, `sweep_truth.py`), run as `make sweep-truth STEPS=<dir>` on the output of
 `make agent-capacity-sweep-steps SWEEP=<folder>`. The agent service records the steps and decides
-nothing; this rule decides every truth and reason. Rohit and Akshay accepted it as the held-out
-label rule on #70 (2026-11-12) on two conditions: it lands first as its own pull request that
-Akshay reviews, and tool steps are unscored rather than `none` while the root `agent-run` step is
-excluded. Reviewer: Akshay.
+nothing; this rule decides every truth and reason. Reviewer: Akshay.
+
+**History.** On #70 (2026-11-12) Rohit and Akshay agreed to take the scoring branch's rule on
+(named `sweep-truth-v1` there) and review it in its own pull request, with two exclusions: tool
+steps are unscored rather than `none`, and the root `agent-run` step is excluded. `sweep-truth-v2`
+is that rule after Akshay's review of #74, which added the changes under "What v2 changed".
+Acceptance is the approvals of #74 on its final version, as was done for `eval-contract-v3`.
+
+**Provenance.** The values and the model-call definitions come from the scoring branch's truths,
+which had already produced descriptive, no-gate results on these two sweeps (attempt
+`20261112T025531Z-220363`). Nothing was changed in response to those results. The only changes
+since are Akshay's two exclusions (#70) and, in v2, unfinished clean-batch calls being null. None
+of them depends on results. Editing a TOML comment does not change the fingerprint.
+
+**What v2 changed (Akshay's review of #74, 2026-11-12).**
+- A model call in a clean batch that did not finish gets `protocol_clean` null `not_completed`
+  instead of `none`: a call whose state is not `completed`, or that has no duration, was not
+  measured, so it cannot be called clean.
+- The recorder writes `recorder_sha256`, the fingerprint of its own code, into `steps.json`, and
+  `truth.json` carries it.
+- The three hashes below are pinned for both frozen sweeps.
+- The wording of provenance, acceptance and the queue threshold above and below.
+
+In both frozen sweeps every model call completed: 825 in cfg-default and 915 in cfg-hardware,
+including the 45 and 30 in clean batches. So no truth on these sweeps changes between v1 and v2.
 
 | Step | `queue` | `slower` | `protocol_clean` |
 |---|---|---|---|
-| model call | `inference` when vLLM's measured queue time exceeds the threshold, else `none` | `inference` when duration minus the N = 1 baseline mean exceeds the threshold, else `none`; null `not_applicable` on ramp N = 1 | `none` in a ramp or control batch at N = 1, else null `not_applicable` |
+| model call | `inference` when vLLM's measured queue time exceeds the threshold, else `none` | `inference` when duration minus the N = 1 baseline mean exceeds the threshold, else `none`; null `not_applicable` on ramp N = 1 | `none` for a completed call with a duration in a ramp or control batch at N = 1; null `not_completed` for an unfinished call there; else null `not_applicable` |
 | root step (no parent) | null `root_step` | null `root_step` | null `root_step` |
 | any other step type | null `no_queue_reference` | null `no_queue_reference` | null `no_queue_reference` |
 
@@ -385,8 +406,13 @@ up to its duration within 1e-6 s (the live contracts' timing-breakdown tolerance
 `steps.json`'s `steps_sha256` isn't the hash of the `steps.jsonl` beside it.
 
 Precedence: on ramp N = 1, `slower` is `not_applicable` even when the step is `not_completed` or
-has `no_baseline`, while `queue` keeps the specific reason; and `protocol_clean` is `none` for a
-model call in a clean batch whatever its state.
+has `no_baseline`, while `queue` keeps the specific reason; and `protocol_clean` in a clean batch
+is `none` only when the call is `completed` with a duration, null `not_completed` otherwise.
+
+**Why `queue` uses this threshold.** `queue` compares vLLM's measured queue seconds with a
+threshold built from the step's own duration spread at N = 1. A wait inside the step's
+run-to-run jitter cannot be told apart from noise, so it is not counted as `inference`. The same
+values are what `label_validation` in the capacity record uses.
 
 **Exclusions and why.** Tool, retrieval and other steps have no vLLM queue reference, so their
 queue wait cannot be judged: they are null `no_queue_reference`, not `none`. The root `agent-run`
@@ -396,15 +422,25 @@ earlier truths on the frozen sweeps, and every model-call truth is unchanged the
 `tests/contract/test_sweep_truth_frozen.py`). In general the only other difference is that a
 malformed duration refuses the sweep instead of labelling one step `malformed`.
 
-**Label version:** `sweep-truth-v1+d0ded6b6` (the fingerprint covers the rule values and the
+**Label version:** `sweep-truth-v2+1af0a878` (the fingerprint covers the rule values and the
 truth and input-validation code; comments and formatting in the TOML do not change it, but any
 edit to `sweep_truth.py` or `sweep_steps_input.py`, comments included, does). The baseline
 statistics are computed by the recorder, outside that fingerprint, so a truth set is identified by
-`label_version` together with `steps_sha256` and `steps_summary_sha256`, both recorded in
-`truth.json`; the scoring branch will check both. `truth.json` also records the validated rule
+`label_version` together with `steps_sha256`, `steps_summary_sha256` and `truth_sha256`, all
+recorded in `truth.json`; the scoring branch will check them. `steps.json` also carries
+`recorder_sha256`, the fingerprint of the recorder's source (`sweep_steps.py`, `sweep_labels.py`). `truth.json` also records the validated rule
 values (`rule`), so a rule loaded with `--rules` can be reconstructed from its output, and
 `truth_sha256`, the hash of the `truth.jsonl` it was written with. Counts from the real run of
-2026-11-12, model calls by class, with the null reasons below:
+2026-11-12, model calls by class, with the null reasons below. The three hashes, pinned in the
+contract test:
+
+| | cfg-default (`2d75ea`) | cfg-hardware (`b4ad4a`) |
+|---|---|---|
+| `steps_sha256` (`steps.jsonl`) | `7598a42e00fc0a3cf46dcc945646bf723339e280b0f008a0005c527796e81162` | `0ebe5446d0ef9a571d211dff32174ff8dece618dd1e302926bbf495c2d496bfe` |
+| `steps_summary_sha256` (`steps.json`) | `4cfd4804ee0165b9d57d4ae2c9ae24a363f3ffef6d9680d0594f4228a4289b70` | `099c05a492ec34f66fdca7cd7b100c2b5b441688ad353e22e4ab682810aaa1ad` |
+| `truth_sha256` (`truth.jsonl`) | `92da54bca1be5b897e32ec72e6dc1f34dad1bb6695fd8a643b84bf3d19d0debe` | `069a8303ac376c58a821b453ade440347fee94d591ce92a5f22f06a838b71308` |
+
+Counts:
 
 | | cfg-default (`2d75ea`) | cfg-hardware (`b4ad4a`) |
 |---|---|---|
@@ -417,7 +453,9 @@ values (`rule`), so a rule loaded with `--rules` can be reconstructed from its o
 | `no_queue_reference` (each truth) | 906 | 1,006 |
 
 The frozen-sweep contract test (`tests/contract/test_sweep_truth_frozen.py`) pins these counts
-and skips when the DVC data is not pulled. This rule never feeds `make dataset` or a release: its
+and hashes and skips when the DVC data is not pulled. The preflight dry-run sweep
+(`data/held-out/a06-20261111/preflight-dry-run/`, the third held-out protocol hash) is held out
+but has no truths: the recorder accepts only the two protocol sweeps. This rule never feeds `make dataset` or a release: its
 output stays in `.data/a06-scoring/`, and the sweeps remain held-out evidence (see above). This
 document reports no model results.
 
