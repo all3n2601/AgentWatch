@@ -771,7 +771,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   excess-latency fraction (constant-reference MAE 0.194 and 0.233 against the 0.10 limit); 9
   gates `not_evaluated`. Two runs gave byte-identical reports, and the predictions match the
   first runs under the proposed contract
-  ([rule baseline](rule-baseline.md#results-on-dataset-v1)). Open: review and merge of #71.
+  ([rule baseline](rule-baseline.md#results-on-dataset-v1)). PR #71 merged 2026-11-12.
 
 **Exit test:** Rebuild labels and features from recorded evidence. Validate schema, missingness,
 class balance, baseline noise, split independence, and feature leakage. Report rule metrics on the
@@ -785,8 +785,21 @@ frozen evaluation sets without tuning against them.
   2026-10-26 (M03): `make train-candidates` trains the classifier and regressor on the training
   split (`training-v1`), compares them with `rules-v1` on identical rows against
   `eval-contract-v1`, and logs every attempt, including blocked and failed ones, to MLflow
-  ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
-  evaluable release; open until one covering all four classes passes the leakage check.
+  ([model training](model-training.md), `pipelines/model/tests`). At that date no evaluable
+  release existed; the first real run follows.
+  2026-11-11 (M03, PR #72 on branch `docs/m03-m04-first-results`, stacked on #71 and #70, both
+  merged 2026-11-12; rerun 2026-11-12 on #70's code at `f229a4c`):
+  first real run, `training-v1+a34ea0be` on `split-v3+932b2df410a7` (`eval-contract-v3`
+  `1cab0cbe`, accepted), in a Linux container with LightGBM 4.7.0, MLflow run
+  `b7afc8c3c2c04ec39ff9accba103e255` (local). Macro F1 0.790 against the rules' 0.200 on the
+  same 3,564 test steps; clean `none` rate 0.991; mixed-contention macro F1 0.534 against
+  0.047; excess-latency MAE 0.076 (limit 0.10). Every evaluated gate passes; six are
+  `not_evaluated`, including the held-out-method gate: dataset v1 has no `step-features-v1`
+  row of a held-out method. A second run reproduced the report, predictions and both models
+  byte for byte, and the predictions and models match the 2026-11-11 runs under the proposed
+  contract ([model training](model-training.md#results-on-dataset-v1)). One test task, so no
+  interval and no causal claim. Open: review and merge, and more than one task group in
+  training and test.
   2026-11-12 (branch `feature/sweep-truth-rule`, not yet merged): `sweep-truth-v1` is a versioned
   label rule in `pipelines/data` for the frozen A06 sweeps, label version `sweep-truth-v1+3b75882f`
   ([data card](data-card.md#sweep-truth-rule-sweep-truth-v1-held-out-a06-sweeps-only),
@@ -858,9 +871,16 @@ frozen evaluation sets without tuning against them.
   threshold is chosen on single-class validation steps. 2026-11-11 (PR #63, not merged): the
   threshold's 20% limit also covers scored mixed validation steps and reads the contract's
   `abstention_rate_scopes`, as the test gate does (`test_calibration.py`, `test_calibrate.py`;
-  synthetic fixtures only). Open: `split-v2` has an empty validation
-  split, so nothing is fitted yet, and showing uncertain results belongs to serving and the
-  dashboard.
+  synthetic fixtures only). 2026-11-11 (M04, PR #72, not merged; rerun 2026-11-12 at `f229a4c`):
+  first real fit on `split-v3+932b2df410a7`'s 273 validation steps: temperature 0.897,
+  threshold 0.647. On test, calibrated ECE 0.0178 (uncalibrated 0.0074; limit 0.05), abstention
+  2.4% overall, 0% on mixed steps and at most 19.9% per class (`retrieval`), macro F1 with
+  abstentions 0.780; every evaluated gate passes. Calibration made ECE worse overall and on
+  contended steps, and validation is small and shared with early stopping, so this is weak
+  evidence ([calibration](model-calibration.md#results-on-dataset-v1)). Open: review and
+  merge; a second training task group in the next release before calibration is read as
+  evidence (Akshay, #70 review); and showing uncertain results, which belongs to serving and
+  the dashboard.
 - [ ] Load a versioned registered model in the correlation service.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
 
