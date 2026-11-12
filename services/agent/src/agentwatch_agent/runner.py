@@ -9,6 +9,7 @@ cannot be carried by live-contracts-v1 StepEvents, so they are written to local 
 import http.client
 import json
 import os
+import re
 import tempfile
 import time
 from collections.abc import Callable, Iterator
@@ -152,6 +153,38 @@ NO_ADMISSION = {
 # is neither a runner bug nor a task failure. The error itself goes into failure_detail.
 POLICY_FAILED = "Concurrency policy became unusable during the run; admission stopped"
 VERIFICATION_FAILED = "Agent finished, but the runner's verification tests did not pass"
+# The live API could not record the run's start; declared once so the capacity sweep can tell
+# a live-API problem from a model-server one.
+LIVE_API_UNAVAILABLE_AT_START = "Live API unavailable when starting the run"
+# Runs that fail on the agent's own decisions, not on the model server or the runner. Declared
+# once so a classifier matches exactly what the runner records; `{limit}` is the configured
+# limit, rendered as an integer.
+MODEL_CALL_LIMIT_REASON = "Model-call limit ({limit}) reached without an answer"
+TOOL_CALL_LIMIT_REASON = "Tool-call limit ({limit}) reached"
+NO_TOOL_CALL_OR_ANSWER = "Model replied with neither a tool call nor an answer"
+AGENT_DECISION_REASONS = (MODEL_CALL_LIMIT_REASON, TOOL_CALL_LIMIT_REASON, NO_TOOL_CALL_OR_ANSWER)
+_AGENT_DECISION_PATTERNS = tuple(
+    re.compile(re.escape(template).replace(re.escape("{limit}"), r"\d+"))
+    for template in AGENT_DECISION_REASONS
+)
+
+
+def is_agent_decision_failure(reason: object) -> bool:
+    """Whether a recorded run reason is one of `AGENT_DECISION_REASONS`."""
+    return isinstance(reason, str) and any(p.fullmatch(reason) for p in _AGENT_DECISION_PATTERNS)
+
+
+def sampled_metric_names(*, gpu: bool, vllm: bool, dcgm: bool, gpm: bool) -> tuple[str, ...]:
+    """Every metric one sampling round records; each is one record against the sample budget."""
+    metrics = CPU_METRICS + (GPU_METRICS if gpu else ())
+    service = (
+        (VLLM_METRICS if vllm else ())
+        + (DCGM_METRICS if dcgm else ())
+        + (GPM_METRICS if gpm else ())
+    )
+    return tuple(metric for metric, _unit in metrics) + tuple(e.metric for e in service)
+
+
 # Raised by urllib/json/Ollama helpers for a failed or unusable model request.
 MODEL_REQUEST_ERRORS = (OSError, http.client.HTTPException, RuntimeError, ValueError)
 
@@ -454,7 +487,7 @@ class AgentRunner:
                     raise
                 # Recoverable: the closure is deferred and `resend` replays both changes.
                 raise RunFailure(
-                    "Live API unavailable when starting the run",
+                    LIVE_API_UNAVAILABLE_AT_START,
                     f"{type(error).__name__}: {error}",
                 ) from error
             if started_state != "running":
@@ -729,13 +762,12 @@ class AgentRunner:
         )
 
     def _sampled_metrics(self) -> tuple[str, ...]:
-        metrics = CPU_METRICS + (GPU_METRICS if self.open_gpu is not None else ())
-        service = (
-            (VLLM_METRICS if self.model.backend == "vllm" else ())
-            + (DCGM_METRICS if self.dcgm_metrics_url is not None else ())
-            + (GPM_METRICS if self.gpm_file is not None else ())
+        return sampled_metric_names(
+            gpu=self.open_gpu is not None,
+            vllm=self.model.backend == "vllm",
+            dcgm=self.dcgm_metrics_url is not None,
+            gpm=self.gpm_file is not None,
         )
-        return tuple(metric for metric, _unit in metrics) + tuple(e.metric for e in service)
 
     def _probes(self, resources: dict[str, ResourceRegistration]) -> list[Probe]:
         probes: list[Probe] = [CpuProbe(resources["tool_host"], self.proc, self.cgroup_root)]
@@ -966,21 +998,21 @@ class AgentRunner:
         while True:
             self._checkpoint(context.deadline_monotonic)
             if model_calls >= self.limits.max_model_calls:
-                raise RunFailure(
-                    f"Model-call limit ({self.limits.max_model_calls}) reached without an answer"
-                )
+                raise RunFailure(MODEL_CALL_LIMIT_REASON.format(limit=self.limits.max_model_calls))
             model_calls += 1
             reply = self._model_step(context, messages, model_calls)
             messages.append(reply.history_message)
             if not reply.calls:
                 if not reply.content.strip():
-                    raise RunFailure("Model replied with neither a tool call nor an answer")
+                    raise RunFailure(NO_TOOL_CALL_OR_ANSWER)
                 self.evidence["final_answer"] = reply.content
                 break
             for call in reply.calls:
                 self._checkpoint(context.deadline_monotonic)
                 if tool_calls >= self.limits.max_tool_calls:
-                    raise RunFailure(f"Tool-call limit ({self.limits.max_tool_calls}) reached")
+                    raise RunFailure(
+                        TOOL_CALL_LIMIT_REASON.format(limit=self.limits.max_tool_calls)
+                    )
                 tool_calls += 1
                 messages.append(self._tool_step(context, call, tool_calls))
 

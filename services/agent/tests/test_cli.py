@@ -1,8 +1,11 @@
+import argparse
 import json
 import os
 import signal
 import threading
 import time
+from types import SimpleNamespace
+from typing import ClassVar
 from urllib.error import URLError
 
 import pytest
@@ -16,12 +19,27 @@ from agent_test_doubles import (
 )
 from agentwatch_agent import cli
 from agentwatch_agent.config import RunConfiguration, RunLimits
+from agentwatch_agent.sweep_protocol import (
+    INJECTOR_CONCURRENCY,
+    INJECTOR_PROMPT_TOKENS,
+    RUN_TIMEOUT_SECONDS,
+    SAMPLING_INTERVAL_SECONDS,
+    TRACE_WAIT_SECONDS,
+    Batch,
+    sweep_run_limits,
+)
+from agentwatch_agent.vllm_launch import DEFAULT_VLLM_CONTAINER
+from agentwatch_worker.nvml import GpuIdentity, NvmlUnavailable
 
 
 def test_tasks_command_lists_pinned_identities(capsys):
     assert cli.main(["tasks"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert [line.split("\t")[1] for line in lines] == ["fix-mean-empty-r1", "fix-window-count-r1"]
+    assert [line.split("\t")[1] for line in lines] == [
+        "fix-mean-empty-r1",
+        "fix-median-even-r1",
+        "fix-window-count-r1",
+    ]
 
 
 def test_unknown_task_is_a_usage_error(capsys):
@@ -451,3 +469,488 @@ def test_a_batch_with_an_unreadable_policy_exits_four(tmp_path, capsys, monkeypa
     (batch_file,) = tmp_path.glob("batch-*/batch.json")
     assert {run["state"] for run in json.loads(batch_file.read_text())["runs"]} == {"not_started"}
     assert server.runs == {}
+
+
+# capacity-sweep: the sweep driver, runners and batches are stubs; no model, GPU or server runs.
+
+
+class StubSweep:
+    """Test double for `CapacitySweep`: records its construction and returns a canned record."""
+
+    record: ClassVar[dict] = {}
+    error: ClassVar[Exception | None] = None
+    instances: ClassVar[list] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.cancels = []
+        StubSweep.instances.append(self)
+
+    def request_cancel_from_signal(self, source, reason):
+        self.cancels.append((source, reason))
+
+    def run(self):
+        if self.error is not None:
+            raise self.error
+        return self.record
+
+
+@pytest.fixture
+def sweep_stubs(monkeypatch):
+    """Two stub sources (one per task) and recording stand-ins for runners and batches."""
+    StubSweep.instances = []
+    StubSweep.error = None
+    StubSweep.record = {"state": "completed", "ramp_end": "ceiling", "capacity_decision": None}
+    tasks = {"a": "fix-mean-empty", "b": "fix-window-count"}
+    monkeypatch.setattr(cli, "source_task", lambda directory: cli.load_task(tasks[directory.name]))
+    monkeypatch.setattr(
+        cli,
+        "load_replay_plan",
+        lambda directory, task: SimpleNamespace(
+            task_id=task.task_id,
+            source=directory.name,
+            model_backend="vllm",
+            model=cli.SERVED_MODEL_NAME,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "ReplayRunner",
+        lambda **kwargs: SimpleNamespace(kind="replay", **({"admission": None} | kwargs)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "AgentRunner",
+        lambda **kwargs: SimpleNamespace(kind="live", **({"admission": None} | kwargs)),
+    )
+    monkeypatch.setattr(
+        cli,
+        "AgentBatch",
+        lambda runners, controller, path: SimpleNamespace(
+            runners=list(runners), controller=controller, path=path
+        ),
+    )
+    monkeypatch.setattr(cli, "CapacitySweep", StubSweep)
+    monkeypatch.setattr(cli, "host_record", lambda: {"gpu": {"status": "unavailable"}})
+    monkeypatch.setattr(cli, "code_revision", lambda: {"status": "recorded", "commit": "c0ffee"})
+    return StubSweep
+
+
+def sweep_argv(tmp_path, *extra, configuration="cfg-default"):
+    return [
+        "capacity-sweep",
+        "--configuration",
+        configuration,
+        "--source",
+        str(tmp_path / "a"),
+        "--source",
+        str(tmp_path / "b"),
+        "--output-dir",
+        str(tmp_path / "out"),
+        *extra,
+    ]
+
+
+def assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, message):
+    assert code == cli.EXIT_USAGE
+    assert message in capsys.readouterr().err
+    assert sweep_stubs.instances == []
+    assert not (tmp_path / "out").exists()
+
+
+def test_capacity_sweep_needs_two_sources_of_different_tasks(
+    tmp_path, sweep_stubs, capsys, monkeypatch
+):
+    monkeypatch.setattr(cli, "source_task", lambda _directory: cli.load_task("fix-mean-empty"))
+    code = cli.main(sweep_argv(tmp_path))
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "different tasks")
+    one_source = [
+        "capacity-sweep",
+        "--configuration",
+        "cfg-default",
+        "--source",
+        str(tmp_path / "a"),
+    ]
+    code = cli.main(one_source + ["--output-dir", str(tmp_path / "out")])
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "exactly 2 sources")
+
+
+def test_capacity_sweep_refuses_an_unknown_configuration(tmp_path):
+    argv = sweep_argv(tmp_path, configuration="cfg-huge")
+    with pytest.raises(SystemExit) as refused:
+        cli.main(argv)
+    assert refused.value.code == cli.EXIT_USAGE
+
+
+def test_capacity_sweep_refuses_an_unreplayable_source(tmp_path, capsys):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    code = cli.main(sweep_argv(tmp_path))
+    assert code == cli.EXIT_USAGE
+    assert "cannot replay" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_capacity_sweep_refuses_the_ollama_backend(tmp_path, sweep_stubs, capsys):
+    code = cli.main(sweep_argv(tmp_path, "--model-backend", "ollama"))
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "vllm")
+
+
+def test_capacity_sweep_refuses_a_model_other_than_the_declared_one(tmp_path, sweep_stubs, capsys):
+    code = cli.main(sweep_argv(tmp_path, "--model", "other/model@abc"))
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "declared model")
+
+
+@pytest.mark.parametrize(
+    ("backend", "model", "message"),
+    [
+        ("ollama", cli.SERVED_MODEL_NAME, "recorded on ollama"),
+        ("vllm", "qwen3:1.7b", "recorded with model"),
+    ],
+)
+def test_capacity_sweep_refuses_a_source_recorded_on_another_server_or_model(
+    tmp_path, sweep_stubs, capsys, monkeypatch, backend, model, message
+):
+    # A replay must run on the backend and model it was recorded with; the sweep checks that
+    # before anything starts rather than letting every run fail.
+    monkeypatch.setattr(
+        cli,
+        "load_replay_plan",
+        lambda directory, task: SimpleNamespace(
+            task_id=task.task_id,
+            source=directory.name,
+            model_backend=backend if directory.name == "b" else "vllm",
+            model=model if directory.name == "b" else cli.SERVED_MODEL_NAME,
+        ),
+    )
+    code = cli.main(sweep_argv(tmp_path))
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, message)
+
+
+def test_the_sweep_defaults_to_the_protocol_run_limit(tmp_path, sweep_stubs):
+    assert RUN_TIMEOUT_SECONDS == 450.0
+    cli.main(sweep_argv(tmp_path))
+    (sweep,) = sweep_stubs.instances
+    assert sweep.kwargs["run_timeout_seconds"] == RUN_TIMEOUT_SECONDS
+
+
+def test_the_protocol_run_limit_fits_the_sample_budget_with_every_gpu_source(tmp_path, sweep_stubs):
+    cli.main(
+        sweep_argv(
+            tmp_path,
+            "--dcgm-url",
+            "http://127.0.0.1:9400/metrics",
+            "--gpm-file",
+            str(tmp_path / "gpm.prom"),
+        )
+    )
+    assert len(sweep_stubs.instances) == 1
+
+
+def test_capacity_sweep_refuses_a_run_limit_over_the_sample_budget(tmp_path, sweep_stubs, capsys):
+    # 900 s at 0.25 s with vLLM, DCGM and GPM metrics would exceed the live API's per-run budget,
+    # so every runner would refuse to start; the sweep refuses before creating anything.
+    argv = sweep_argv(
+        tmp_path,
+        "--run-timeout",
+        "900",
+        "--dcgm-url",
+        "http://127.0.0.1:9400/metrics",
+        "--gpm-file",
+        str(tmp_path / "gpm.prom"),
+    )
+    code = cli.main(argv)
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "sample budget")
+
+
+def test_capacity_sweep_only_floods_a_loopback_server(tmp_path, sweep_stubs, capsys):
+    code = cli.main(sweep_argv(tmp_path, "--vllm-url", "http://10.0.0.5:8000"))
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "loopback")
+
+
+@pytest.mark.parametrize(
+    ("configuration", "attempts"),
+    [
+        ("cfg-hardware", ["0.8:failed: CUDA out of memory"]),  # the last must have started
+        ("cfg-hardware", ["0.5:started"]),  # not a declared utilization
+        ("cfg-default", ["0.8:started"]),  # not this configuration's utilization
+        ("cfg-hardware", ["0.8:started", "0.75:started"]),  # only the last one starts
+        ("cfg-hardware", ["high:started"]),
+        ("cfg-hardware", ["0.8"]),
+        ("cfg-hardware", ["0.8:  "]),
+    ],
+)
+def test_start_attempts_must_end_with_the_reported_utilization(
+    tmp_path, sweep_stubs, capsys, configuration, attempts
+):
+    extra = [flag for attempt in attempts for flag in ("--start-attempt", attempt)]
+    code = cli.main(sweep_argv(tmp_path, *extra, configuration=configuration))
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "start attempt")
+
+
+def test_start_attempts_are_recorded_as_given(tmp_path, sweep_stubs):
+    extra = ["--start-attempt", "0.8:failed: CUDA out of memory", "--start-attempt", "0.75:started"]
+    assert cli.main(sweep_argv(tmp_path, *extra, configuration="cfg-hardware")) == 0
+    (sweep,) = sweep_stubs.instances
+    assert sweep.kwargs["start_attempts"] == [
+        {"gpu_memory_utilization": 0.8, "outcome": "failed: CUDA out of memory"},
+        {"gpu_memory_utilization": 0.75, "outcome": "started"},
+    ]
+    assert sweep.kwargs["configuration"].name == "cfg-hardware"
+
+
+def test_no_start_attempts_are_recorded_when_none_are_given(tmp_path, sweep_stubs):
+    assert cli.main(sweep_argv(tmp_path)) == 0
+    assert sweep_stubs.instances[0].kwargs["start_attempts"] is None
+
+
+@pytest.mark.parametrize(
+    ("state", "code"),
+    [
+        ("completed", 0),
+        ("refused_configuration", 2),
+        ("stopped_resend_needed", 3),
+        ("stopped_vllm_restart", 1),
+        ("stopped_injector_cleanup_unconfirmed", 1),
+        ("stopped_run_not_started", 1),
+        ("stopped_warmup_failed", 1),
+        ("stopped_server_busy_after_idle_wait", 1),
+        ("stopped_server_state_unavailable", 1),
+        ("stopped_live_api_failure", 1),
+        ("stopped_injector_start_failed", 1),
+        ("cancelled", 1),
+        ("failed", 1),
+    ],
+)
+def test_capacity_sweep_exit_codes_follow_the_sweep_state(
+    tmp_path, sweep_stubs, capsys, state, code
+):
+    sweep_stubs.record = {
+        "state": state,
+        "ramp_end": "hard_stop",
+        "stop_reason": "why it stopped",
+        "capacity_decision": {"capacity": 4, "result": "measured"},
+        "label_validation": {"overall": {"verdict": "validated"}},
+    }
+    assert cli.main(sweep_argv(tmp_path)) == code
+    output = capsys.readouterr()
+    assert state in output.out
+    assert "capacity 4 (measured)" in output.out
+    assert "cfg-default-" in output.out  # the sweep folder is printed
+
+
+def test_an_unexpected_sweep_error_propagates_and_restores_the_signal_handlers(
+    tmp_path, sweep_stubs
+):
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    sweep_stubs.error = RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom"):
+        cli.main(sweep_argv(tmp_path))
+    assert {sig: signal.getsignal(sig) for sig in before} == before
+
+
+def test_a_signal_cancels_the_sweep(tmp_path, sweep_stubs, monkeypatch):
+    def run_and_interrupt(self):
+        signal.raise_signal(signal.SIGTERM)
+        return self.record | {"state": "cancelled"}
+
+    monkeypatch.setattr(StubSweep, "run", run_and_interrupt)
+    assert cli.main(sweep_argv(tmp_path)) == cli.EXIT_FAILED
+    assert sweep_stubs.instances[0].cancels == [("signal", "Cancelled by operator signal SIGTERM")]
+
+
+def test_the_sweep_is_built_under_a_new_folder_with_the_requested_settings(tmp_path, sweep_stubs):
+    cli.main(sweep_argv(tmp_path, "--run-timeout", "300"))
+    (sweep,) = sweep_stubs.instances
+    folder = sweep.kwargs["output_dir"]
+    assert folder.parent == tmp_path / "out"
+    assert folder.name.startswith("cfg-default-")
+    assert sweep.kwargs["run_timeout_seconds"] == 300
+    assert [plan.source for plan in sweep.kwargs["sources"]] == ["a", "b"]
+    assert sweep.kwargs["host"] == {"gpu": {"status": "unavailable"}}
+
+
+def test_replay_batches_use_each_runs_source_one_clock_and_no_policy(tmp_path, sweep_stubs):
+    cli.main(sweep_argv(tmp_path))
+    kwargs = sweep_stubs.instances[0].kwargs
+    clock = cli.MonotonicClock()
+    batch = Batch("ramp", 3, 1, (1, 0, 1), False)
+    built = kwargs["make_batch"](batch, tmp_path / "batch", clock)
+    assert built.controller is None and built.path == tmp_path / "batch"
+    assert [runner.task.name for runner in built.runners] == [
+        "fix-window-count",
+        "fix-mean-empty",
+        "fix-window-count",
+    ]
+    assert [runner.plan.source for runner in built.runners] == ["b", "a", "b"]
+    assert [runner.output_dir.name for runner in built.runners] == [
+        "01-fix-window-count",
+        "02-fix-mean-empty",
+        "03-fix-window-count",
+    ]
+    assert all(runner.output_dir.parent == tmp_path / "batch" / "runs" for runner in built.runners)
+    assert all(runner.clock is clock and runner.admission is None for runner in built.runners)
+    # The protocol's declared sampling interval, passed explicitly.
+    assert {runner.sampling_interval_seconds for runner in built.runners} == {
+        SAMPLING_INTERVAL_SECONDS
+    }
+    assert kwargs["code_revision"] == {"status": "recorded", "commit": "c0ffee"}
+    models = [runner.model for runner in built.runners]
+    assert len({id(model) for model in models}) == 3  # one model client per run
+
+
+def test_live_batches_run_the_tasks_of_their_declared_sources(tmp_path, sweep_stubs):
+    cli.main(sweep_argv(tmp_path))
+    # The second live repeat at capacity 3 rotates: window, mean, window.
+    batch = Batch("live", 3, 1, (1, 0, 1), False)
+    built = sweep_stubs.instances[0].kwargs["make_live_batch"](
+        batch, tmp_path / "live", cli.MonotonicClock()
+    )
+    assert [(runner.kind, runner.task.name) for runner in built.runners] == [
+        ("live", "fix-window-count"),
+        ("live", "fix-mean-empty"),
+        ("live", "fix-window-count"),
+    ]
+    assert [runner.output_dir.name for runner in built.runners] == [
+        "01-fix-window-count",
+        "02-fix-mean-empty",
+        "03-fix-window-count",
+    ]
+    assert all(runner.admission is None for runner in built.runners)
+
+
+def test_every_sweep_runner_gets_the_declared_limits_and_trace_wait(tmp_path, sweep_stubs):
+    cli.main(sweep_argv(tmp_path, "--run-timeout", "300"))
+    kwargs = sweep_stubs.instances[0].kwargs
+    clock = cli.MonotonicClock()
+    replay = kwargs["make_batch"](Batch("ramp", 2, 0, (0, 1), False), tmp_path / "r", clock)
+    live = kwargs["make_live_batch"](Batch("live", 2, 0, (0, 1), False), tmp_path / "l", clock)
+    for runner in [*replay.runners, *live.runners]:
+        assert runner.limits == sweep_run_limits(300.0)
+        assert runner.trace_wait_seconds == TRACE_WAIT_SECONDS
+
+
+def test_the_vllm_container_is_inspected_for_its_launch_arguments(
+    tmp_path, sweep_stubs, monkeypatch
+):
+    inspected = []
+    monkeypatch.setattr(
+        cli,
+        "read_launch_arguments",
+        lambda container, *, endpoint_port: (
+            inspected.append((container, endpoint_port)) or {"status": "read"}
+        ),
+    )
+    cli.main(sweep_argv(tmp_path))
+    assert sweep_stubs.instances[0].kwargs["read_launch"]() == {"status": "read"}
+    # The container's launch arguments are tied to the port of the vLLM being measured.
+    assert inspected == [(DEFAULT_VLLM_CONTAINER, 8000)]
+    other = ["--vllm-container", "other-vllm", "--vllm-url", "http://127.0.0.1:8001"]
+    cli.main(sweep_argv(tmp_path, *other))
+    sweep_stubs.instances[1].kwargs["read_launch"]()
+    assert inspected == [(DEFAULT_VLLM_CONTAINER, 8000), ("other-vllm", 8001)]
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:abc", "http://127.0.0.1:99999", "http://h:0"])
+def test_a_url_with_an_unusable_port_is_a_usage_error(url):
+    with pytest.raises(argparse.ArgumentTypeError, match="invalid port"):
+        cli.http_url(url)
+
+
+def test_the_injector_is_a_prefill_flood_on_the_served_model(tmp_path, sweep_stubs):
+    cli.main(sweep_argv(tmp_path))
+    kwargs = sweep_stubs.instances[0].kwargs
+    (injector,) = kwargs["make_injectors"](cli.MonotonicClock(), 932.0)
+    assert type(injector).__name__ == "PrefillFloodInjector"
+    assert injector.url == cli.DEFAULT_VLLM_URL
+    assert injector.model == cli.DEFAULT_VLLM_MODEL
+    assert injector.concurrency == INJECTOR_CONCURRENCY
+    assert injector.prompt_tokens == INJECTOR_PROMPT_TOKENS
+    assert injector.max_duration_seconds == 932.0
+
+
+def test_host_record_keeps_an_unavailable_gpu_unavailable(monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise NvmlUnavailable("NVML library was not found on this host", unsupported=True)
+
+    monkeypatch.setattr(cli.NvmlDevice, "open", unavailable)
+    host = cli.host_record()
+    assert host["gpu"]["status"] == "unavailable" and "NVML" in host["gpu"]["reason"]
+    assert host["cpu_count"] is None or host["cpu_count"] >= 1
+    assert host["kernel"]
+
+
+def test_host_record_names_the_gpu_when_nvml_opens(monkeypatch):
+    identity = GpuIdentity(0, 1, "Test GPU", "1.2.3", 8 * 1024**3)
+    closed = []
+    device = SimpleNamespace(identity=identity, close=lambda: closed.append(True))
+    monkeypatch.setattr(cli.NvmlDevice, "open", lambda *_a, **_k: device)
+    gpu = cli.host_record()["gpu"]
+    assert gpu["status"] == "available"
+    assert (gpu["name"], gpu["driver_version"], gpu["memory_total_bytes"]) == (
+        "Test GPU",
+        "1.2.3",
+        8 * 1024**3,
+    )
+    assert closed == [True]
+
+
+def test_sweep_analyse_writes_the_offline_analysis(tmp_path, monkeypatch, capsys):
+    calls = []
+
+    def analyse(directory):
+        calls.append(directory)
+        return {"capacity_decision": {"capacity": 2, "result": "incomplete"}}
+
+    monkeypatch.setattr(cli, "analyse_sweep_folder", analyse)
+    assert cli.main(["sweep-analyse", str(tmp_path)]) == cli.EXIT_PASSED
+    assert calls == [tmp_path]
+    output = capsys.readouterr().out
+    assert "capacity 2 (incomplete)" in output and "analysis.json" in output
+
+
+def test_sweep_analyse_refuses_a_folder_without_a_sweep_record(tmp_path, capsys):
+    assert cli.main(["sweep-analyse", str(tmp_path)]) == cli.EXIT_USAGE
+    assert "sweep.json" in capsys.readouterr().err
+    assert not (tmp_path / "analysis.json").exists()
+
+
+def test_a_completed_sweep_whose_analysis_failed_does_not_exit_0(tmp_path, sweep_stubs, capsys):
+    sweep_stubs.record = {
+        "state": "completed",
+        "ramp_end": "ceiling",
+        "capacity_decision": None,
+        "analysis_errors": [{"stage": "label_validation", "error": "RuntimeError: x"}],
+    }
+    assert cli.main(sweep_argv(tmp_path)) == cli.EXIT_FAILED
+    assert "sweep-analyse" in capsys.readouterr().err
+
+
+def test_code_revision_records_the_commit_and_local_changes(monkeypatch):
+    outputs = {"rev-parse": "abc123\n", "status": " M services/agent/x.py\n"}
+
+    def run(command, **kwargs):
+        assert kwargs["timeout"] > 0 and kwargs["check"] is True
+        return SimpleNamespace(stdout=outputs[command[1]])
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    assert cli.code_revision() == {"status": "recorded", "commit": "abc123", "dirty": True}
+
+
+def test_code_revision_without_git_is_unavailable(monkeypatch):
+    def run(command, **_kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    revision = cli.code_revision()
+    assert revision["status"] == "unavailable" and "FileNotFoundError" in revision["reason"]
+
+
+def test_a_run_timeout_beyond_the_injector_bound_is_refused_before_anything_runs(
+    tmp_path, sweep_stubs, capsys, monkeypatch
+):
+    # The sample budget refuses such long runs first today; with it out of the way, 1790 s
+    # fits a run, but its flood bound, 1790 + 32 s, exceeds the injector's 1800 s cap.
+    monkeypatch.setattr(cli, "validate_sample_budget", lambda *_args: None)
+    code = cli.main(sweep_argv(tmp_path, "--run-timeout", "1790"))
+    assert_refused_before_running(code, tmp_path, sweep_stubs, capsys, "max_duration_seconds")
