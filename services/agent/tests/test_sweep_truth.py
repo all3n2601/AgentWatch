@@ -292,3 +292,18 @@ def test_the_accepted_hashes_are_the_frozen_held_out_protocols():
         "cfg-default": "22e26dc7536fe5e88e3d9ea9f01445a754788ce587b1626d6a4eb055ec4524b9",
         "cfg-hardware": "1608deee2a3bcb5245b07d73e13e73dcd1e82702ef14aa683ecd94144e0f18cd",
     }
+
+
+def test_baseline_runs_keep_queue_but_have_no_slower_truth(tmp_path, monkeypatch):
+    _summary, records = sweep_truths(synthetic_sweep(tmp_path, monkeypatch))
+    baseline = [r for r in records if r["phase"] == "ramp" and r["n"] == 1]
+    assert baseline
+    for record in baseline:
+        assert record["truths"]["slower"] is None
+        assert record["truth_reasons"]["slower"] == "not_applicable"
+        assert record["truths"]["queue"] == "none"
+        assert record["truths"]["protocol_clean"] == "none"
+    control = next(r for r in records if r["phase"] == "control" and r["n"] == 1)
+    assert control["truths"]["slower"] == "none" and control["truth_reasons"]["slower"] is None
+    injected = next(r for r in records if r["phase"] == "injected")
+    assert injected["truths"]["slower"] is not None

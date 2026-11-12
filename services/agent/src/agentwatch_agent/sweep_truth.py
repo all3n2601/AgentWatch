@@ -6,6 +6,8 @@ summary in `truth.json`. The truths are what a later scoring step compares predi
 
 - `queue`: the step's own measured vLLM queue time exceeds its noise threshold.
 - `slower`: the step's duration exceeds its N = 1 baseline mean by more than that threshold.
+  The N = 1 ramp runs form the baseline, so `slower` is circular there: it is null with reason
+  `not_applicable` for them (N = 1 `control` and `injected` runs keep it).
 - `protocol_clean`: the batch ran one agent with nothing injected (`ramp` or `control` at N = 1),
   so the step should read as no overload at all.
 
@@ -109,14 +111,17 @@ def _truth_class(value: bool | None) -> str | None:
 def _truths_of(step: StepTruth, entry: dict) -> tuple[dict, dict]:
     """The three truths and, for each one that is null, why."""
     clean = entry["phase"] in PROTOCOL_CLEAN_PHASES and entry["level"] == PROTOCOL_CLEAN_LEVEL
+    is_baseline = entry["phase"] == "ramp" and entry["level"] == BASELINE_LEVEL
     truths = {
         "queue": _truth_class(step.queued),
-        "slower": _truth_class(step.slower),
+        "slower": None if is_baseline else _truth_class(step.slower),
         "protocol_clean": "none" if clean else None,
     }
     reasons = {
         "queue": step.reason if step.queued is None else None,
-        "slower": step.reason if step.slower is None else None,
+        "slower": (
+            NOT_APPLICABLE if is_baseline else (step.reason if step.slower is None else None)
+        ),
         "protocol_clean": None if clean else NOT_APPLICABLE,
     }
     return truths, reasons
