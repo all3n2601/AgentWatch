@@ -8,8 +8,10 @@ version = "split-v3"
 # counted in the split file.
 feature_versions = ["step-features-v1"]
 
-# Every task group with a row using one of these methods goes entirely to test.
-# prefill-flood-openai-chat-v1 is the A06 held-out GPU method (ADR 0011).
+# A row using one of these methods must be on a declared test task; on any other task the split
+# is refused (split-v2 moved the whole task to test instead). prefill-flood-openai-chat-v1 is the
+# A06 held-out GPU method (ADR 0011). The worker_queue_blocker rows are steps-v1.2 and left out
+# above, so that entry has no effect on dataset v1.
 held_out_injection_methods = ["worker_queue_blocker", "prefill-flood-openai-chat-v1"]
 
 # fix-window-count stays the declared test task. fix-median-even is new (revision 1) and stays
@@ -19,7 +21,8 @@ test_task_groups = ["fix-window-count", "fix-median-even"]
 # Natural-overload replays from the A06 capacity sweeps carry no injection method, so they are
 # matched by protocol hash and held out of train, validation and test as a separate evaluation
 # set: cfg-default (sweep c5a40c4c-e4b3-4dc1-b660-21ca4c88bc93), cfg-hardware (sweep
-# 068e27a9-5933-4f99-b465-75502f7e523b) and the preflight dry run (300 s run limit).
+# 068e27a9-5933-4f99-b465-75502f7e523b) and the preflight dry run (sweep
+# 3a8dd5b2-ac98-4095-b58c-3d90e0950976, same protocol version, 300 s run limit).
 [held_out_protocol]
 version = "natural-overload-sweep-v1"
 sha256 = [

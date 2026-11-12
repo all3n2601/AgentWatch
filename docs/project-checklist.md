@@ -742,7 +742,8 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   has a `step-features-v1` row in this release. Validation holds three experiments of the
   training task (weak calibration evidence; see the ADR). Open: review and the contract's
   acceptance; training still has one task group; the natural-overload rule runs on synthetic
-  rows only, and fails open on untagged rows, so the PR that ingests sweep replays must write
+  rows only. A split row with no experiment is refused (2026-11-12, after Benoy's review), so an
+  untagged sweep row cannot reach train; the PR that ingests sweep replays must still write
   `protocol_version` and `protocol_sha256` on every row and test that they are held out.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
@@ -759,15 +760,15 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   macro F1), and adds the mixed-contention gain gate (`pipelines/model/tests/test_mixed.py`,
   `test_comparison.py`). Tested on synthetic rows only. Open: dataset v1's test split mixes two
   feature definitions, which evaluation refuses, so no rule metrics exist yet.
-  2026-11-11 (M02, branch `docs/m02-rule-baseline-report` on top of `feature/split-v3`, PR #70,
-  neither merged): first real rule report, `rules-v1+1bf54c19` on `split-v3+95309c38a53e`
+  2026-11-11 (M02, PR #71 on branch `docs/m02-rule-baseline-report`, stacked on PR #70
+  `feature/split-v3`, neither merged; run at commit `6ade73d`): first real rule report, `rules-v1+1bf54c19` on `split-v3+95309c38a53e`
   under `eval-contract-v3` (`b9f20820`, proposed), 3,575 `fix-window-count` test steps. Macro
   F1 0.200 (no interval: one test task); clean `none` rate 0.731 and baseline-and-clean 0.749,
   both **fail** against 0.95; mixed slice hit rate 0.049 over 82 steps; `rules-v1` predicts no
   excess-latency fraction (constant-reference MAE 0.194 and 0.233 against the 0.10 limit); 9
-  gates `not_evaluated`. Two runs gave byte-identical reports
-  ([rule baseline](rule-baseline.md#results-on-dataset-v1)). Open: review and merge of #70 and
-  this report, and acceptance of `eval-contract-v3`.
+  gates `not_evaluated`. Two runs, and a 2026-11-12 rerun at `e179aca`, gave byte-identical
+  reports ([rule baseline](rule-baseline.md#results-on-dataset-v1)). Open: review and merge of
+  #70 and #71, and acceptance of `eval-contract-v3`.
 
 **Exit test:** Rebuild labels and features from recorded evidence. Validate schema, missingness,
 class balance, baseline noise, split independence, and feature leakage. Report rule metrics on the

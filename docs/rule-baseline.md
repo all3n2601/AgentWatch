@@ -38,9 +38,11 @@ make rule-baseline SPLIT=data/datasets/splits/<release>/<split>.json
 ```
 
 Splits are read only through `load_split`, which refuses a split whose quality verdict or
-leakage check does not pass. The defaults are the current contract (`eval-contract-v3`) and
-frozen schema (`steps-v1.3.pbtxt`). To rerun on a `steps-v1.2` split, pass the files it was
-made with:
+leakage check does not pass. The defaults are the current contract (`eval-contract-v3`, which
+makes `split-v3` splits) and frozen schema (`steps-v1.3.pbtxt`). A split made under another
+contract is refused with the contract to pass. To rerun on a `split-v2` split, pass
+`EVALUATION_CONTRACT=pipelines/model/evaluation-contract-v2.toml`; on a `steps-v1.2` split, pass
+the files it was made with:
 
 ```sh
 make rule-baseline SPLIT=data/datasets/splits/steps-v1.2+5954f97ef8b2/split-v1+58e921fa846a.json \
@@ -102,11 +104,17 @@ exits with code 2 and an error message instead of a report. `make rule-baseline`
 
 ## Results on dataset v1
 
-Run on 2026-11-11 with
-`make rule-baseline SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+95309c38a53e.json`
-(the split is reproduced with `make split-dataset` on the release; see
-[the data card](data-card.md)). Two runs gave byte-identical files, written to
-`.data/rule-baseline/` and not committed:
+Run on 2026-11-11 at commit `6ade73d` (branch `feature/split-v3`, PR #70). To reproduce, with
+the release pulled (see [the data card](data-card.md)):
+
+```sh
+uv run python -m agentwatch_data.splits --release data/datasets/steps-v1.3+aafae73eb211
+make rule-baseline SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+95309c38a53e.json
+```
+
+The first command rebuilds (or reuses) the split; the second writes `.data/rule-baseline/`,
+which is not committed. Two runs at `6ade73d`, and a rerun on 2026-11-12 at `e179aca` (#70 after
+review), gave byte-identical files:
 
 - `report.json`: SHA-256 `203fa8833984f77c5460e3f9539233ee0f9fca0840b714ee21b78e79be6e304e`
 - `predictions.jsonl` (3,575 rows, one per test step):
@@ -147,8 +155,8 @@ What this shows, without claiming a cause:
 
 - **False positives.** 835 steps labeled `none` are predicted `cpu_sandbox`: 326 of 1,375
   baseline steps, 296 of 1,100 clean steps and 213 of 448 contended steps whose label is
-  `none`. The rules' thresholds were proposed on CPU and coding runs; on replay steps they fire
-  far more often than the labels do.
+  `none`. The rules were declared on `steps-v1.2` features before any evaluation (see
+  `rules.toml`); on these replay steps they fire far more often than the labels do.
 - **Missed contention.** `rules-v1` has no rule for `inference` or `retrieval`, so all 432
   such steps are predicted `none` or `cpu_sandbox`. Of the 127 `cpu_sandbox` steps, 23 are found.
 - **Mixed steps.** 4 of 82 scored mixed steps name a confirmed resource (all `cpu_sandbox`);

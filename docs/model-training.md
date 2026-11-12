@@ -42,9 +42,11 @@ reproducible on the same LightGBM version and platform; both versions are record
 make train-candidates SPLIT=data/datasets/splits/<release>/<split>.json
 ```
 
-The defaults are the current contract (`eval-contract-v2`) and frozen schema
-(`steps-v1.3.pbtxt`). To rerun on a `steps-v1.2` split, pass the files it was made with:
-`EVALUATION_CONTRACT=pipelines/model/evaluation-contract-v1.toml
+The defaults are the current contract (`eval-contract-v3`, which makes `split-v3` splits) and
+frozen schema (`steps-v1.3.pbtxt`). A split made under another contract is refused with the
+contract to pass. To rerun on a `split-v2` split, pass
+`EVALUATION_CONTRACT=pipelines/model/evaluation-contract-v2.toml`; on a `steps-v1.2` split, pass
+the files it was made with: `EVALUATION_CONTRACT=pipelines/model/evaluation-contract-v1.toml
 VALIDATION_SCHEMA=pipelines/validation/schema/steps.pbtxt`.
 
 **Mixed steps.** The model and the rules are scored on them alike, by the rule in
