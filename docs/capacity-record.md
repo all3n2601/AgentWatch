@@ -6,7 +6,7 @@ their run folders. The `sweep-record` command generated the Results and Sampling
 from those files, and they are not edited by hand (see [Reproduce](#reproduce)). They describe this
 laptop and these two vLLM configurations only, never cloud capacity. The
 [Attribution baseline](#attribution-baseline) scores the rules and the learned classifier on the
-same sweeps, and its numbers come from that scoring attempt's `report.json`.
+same sweeps, and its numbers come from that scoring attempt's outputs.
 
 Design: [natural-overload capacity sweep](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md).
 Command: `capacity-sweep` ([agent README](../services/agent/README.md#capacity-sweep)).
@@ -45,7 +45,7 @@ Command: `capacity-sweep` ([agent README](../services/agent/README.md#capacity-s
 - **Attribution baseline.** `rules-v1` missed every model call that vLLM queued (miss rate
   1.000), as expected, since it has no inference class. The learned classifier missed 0.285 of
   them (95% interval 0.162–0.475) and raised an alarm on 0.219 (0.144–0.284) of the model calls
-  vLLM did not queue above the noise threshold. On `cfg-hardware`, where contention did not
+  vLLM did not queue above the noise threshold. On `cfg-hardware`, where the ramp did not
   queue, it missed 0.910 (0.770–1.000) of the calls slower than their baseline. Dataset v1 gave
   it no usable validation steps, so it is uncalibrated and never abstains (see
   [Attribution baseline](#attribution-baseline)).
@@ -440,8 +440,12 @@ It measures how often each one misses inference contention that vLLM measured, a
 raises an alarm on a clean step. Neither scorer has an inference feature, so a blind spot was
 expected. The truths, measures and the absence of any pass/fail gate were declared before any
 scoring ran
-([design](superpowers/specs/2026-11-11-a06-held-out-scoring-design.md)). Every number below
-comes from the attempt's `report.json`. The tables were printed from it by a script that reads
+([design](superpowers/specs/2026-11-11-a06-held-out-scoring-design.md)). Every result below
+comes from the attempt's `report.json`, with three exceptions: the commit, times and MLflow run
+id in the Run table come from the console output and the attempt's `tracking.json`; the
+step-type counts in Observations 1 and 7 and the null-confidence count come from its
+`predictions.jsonl` joined to the truth records on (run, step); and the split's task groups
+come from the split file. The tables were printed from the report by a script that reads
 only and rounds to 3 decimals, and none was typed by hand. Nothing was tuned, promoted or
 trained on this evidence, and the report's gate is `none (descriptive baseline)`.
 
@@ -476,6 +480,10 @@ scoring attempt is kept:
 The rerun changed only the `slower` truth. The ramp's N = 1 baseline steps no longer have one
 (`not_applicable`), so they left `slower`'s `none` steps and its false-alarm rates. Every other
 number is the same in both attempts, and the classifier's model file hash is identical.
+
+The truth-file validation that `score-held-out` gained after this attempt (commit `2df17e9`)
+accepts both truth folders unchanged: 4,000 rows, none refused, from the same files this
+attempt hashed.
 
 ### How to read the tables
 
@@ -728,8 +736,10 @@ These are observed differences on one sweep per configuration, not causal attrib
 
 1. **`rules-v1` misses every inference-truth step.** Its miss rate is 1.000 under both truths,
    in every slice, as expected: it covers only `none` and `cpu_sandbox`. On model calls it never
-   raised an alarm (0.000). On one-agent steps of every type it predicted `cpu_sandbox` for 29
-   of 172 (`protocol_clean` false-alarm rate 0.169, interval 0.139–0.198).
+   raised an alarm (0.000). On one-agent steps it predicted `cpu_sandbox` for 29 of 172
+   (`protocol_clean` false-alarm rate 0.169, interval 0.139–0.198): 18 of the 67 tool steps and
+   11 of the 15 retrieval steps, and none of the 75 model calls or the 15 root `agent-run`
+   steps.
 2. **On `cfg-default` the classifier catches most queueing, and catches it better at higher N.**
    Its `queue` miss rate is 0.289 (0.167–0.473). In the ramp it falls from 0.923 and 1.000 at
    N = 3 (seen and unseen) to 0.067 and 0.024 at N = 12. Of the 686 queued model calls, it
@@ -756,10 +766,16 @@ These are observed differences on one sweep per configuration, not causal attrib
    on the unseen task: `slower` 0.286 (0.136–0.515) against 0.026 (0.000–0.097) on the seen
    task, intervals not overlapping; `queue` 0.269 (0.138–0.456) against 0.083 (0.000–0.203),
    overlapping. The classifier's `protocol_clean` intervals collapse to single points (0.083
-   unseen, 0.091 seen) because every resample gave the same value, so that gap is not
+   unseen, 0.091 seen) because every resample gave the same value (see 7), so that gap is not
    informative.
 7. **Clean one-agent steps.** The classifier predicted `inference` on 15 of 172 `protocol_clean`
-   steps (0.087), against `rules-v1`'s 29 `cpu_sandbox`.
+   steps (0.087), against `rules-v1`'s 29 `cpu_sandbox` (18 tool and 11 retrieval steps). All 15
+   are the root `agent-run` step (step type `other`) of the 15 one-agent runs. It predicted
+   `none` on all 157 clean leaf steps (75 model calls, 67 tool and 15 retrieval steps), and
+   `inference` on every `agent-run` step it scored, 348 of 348. Each clean batch is one run
+   whose root step is 1 of its 11 (`fix-mean-empty`) or 12 (`fix-median-even`) steps, so any
+   resample of one task's batches gives 1/11 = 0.091 or 1/12 = 0.083: that is why the
+   classifier's `protocol_clean` intervals per task are single points.
 
 ### Limitations of this baseline
 
@@ -775,13 +791,22 @@ And from the report's model and calibration fields:
 
 - **No early stopping and no calibration.** Dataset v1's validation split gave the classifier
   no rows to stop on (`early_stopping` `not_used`, 300 of 300 rounds). Calibration and
-  abstention are `unavailable` for the reason in the Run table, so the classifier's confidences
-  are raw LightGBM probabilities, not calibrated confidence, and it never abstains. The
-  classifier also skipped 53 mixed training steps (`train_rows_not_classified`).
+  abstention are `unavailable` for the reason in the Run table. Because calibration could not be
+  fitted, the classifier reports no confidence (`confidence` is null on all 4,000 of its rows in
+  `predictions.jsonl`) and it never abstains. The classifier also skipped 53 mixed training
+  steps (`train_rows_not_classified`).
 - **Small cells.** Several cells rest on 1–3 batches, and intervals from 2–3 batches are coarse.
   A cell with 1 batch has no interval.
 - **The truths are proxies.** `queue` sees only queueing, and `slower` only slowdown against
   the N = 1 replays. Neither judges tool or retrieval steps.
+
+And from the split file, `data/datasets/splits/steps-v1.3+aafae73eb211/split-v2+febe942a2b59.json`:
+
+- **One training task group.** The split assigns dataset v1's 4 task groups as 1 to train
+  (`fix-mean-empty`, 2,028 rows from 273 runs), 3 to test and none to validation (0 rows). So
+  "seen in training" means seen as the only training task group, the seen/unseen contrast is
+  one task against one, and the empty validation split is why early stopping and calibration
+  had nothing to fit on.
 
 The scores stay local in `.data/a06-scoring/` and belong to no dataset release (see the
 [data card](data-card.md#held-out-a06-evidence-in-no-release)). M2 PR 4's inference rule will be

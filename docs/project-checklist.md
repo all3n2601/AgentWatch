@@ -822,12 +822,14 @@ frozen evaluation sets without tuning against them.
   2026-11-11 (A06 PR 3, branch `feature/a06-held-out-scoring`, not yet merged; after #69):
   `capacity-sweep-truth` and `score-held-out` scored `rules-v1` and the `training-v1` classifier
   on both frozen sweeps, attempt `20261112T025531Z-220363` (run 2026-11-12 02:55 UTC) at commit
-  `29df6fc` with a clean tree. It supersedes attempt `20261112T022810Z-7eac8a`, whose `slower`
+  `29df6fc`, with no modified or staged tracked files (only the untracked frozen evidence in
+  `data/held-out/` was present). It supersedes attempt `20261112T022810Z-7eac8a`, whose `slower`
   truth still judged the N = 1 baseline steps, contrary to the design. 4,000 steps scored, none
   refused; the 9 and 24 live-confirmation
   runs have no truth records (no plan, so no baseline). `rules-v1` missed every queued model call
   (miss rate 1.000). The classifier missed 0.285 (95% interval 0.162–0.475) of them, and 0.910
-  (0.770–1.000) of the `cfg-hardware` calls that were slower without queueing. Dataset v1 gave it
+  (0.770–1.000) of the `cfg-hardware` calls slower than their baseline, where the ramp did not
+  queue. Dataset v1 gave it
   no usable validation steps, so calibration and abstention are `unavailable`. Results, intervals
   by batch and limitations are in the
   [capacity record](capacity-record.md#attribution-baseline); tests in
