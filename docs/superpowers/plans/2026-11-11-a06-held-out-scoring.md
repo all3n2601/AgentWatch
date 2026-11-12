@@ -332,8 +332,10 @@ git commit -m "feature: build steps-v1.3 feature rows for held-out sweep truths"
     `confidence: float | None`, `abstained: bool`.
   - `rule_scores(rules: Rules, rows: list[dict]) -> list[ScoredStep]` (`scorer="rules-v1"`,
     confidence None, never abstains).
-  - `train_classifier(split: Path, contract_path: Path, frozen_schema: Path, config: TrainingConfig, loader=load_split) -> tuple[Candidate, list[dict]]`
+  - `train_classifier(split: Path, contract_path: Path, frozen_schema: Path, config: TrainingConfig, loader=load_split) -> tuple[Candidate, list[dict], frozenset[str]]`
     loading only `"train"` and `"validation"`; returns the candidate and the validation rows.
+  - `seen_task_groups(train: list[dict]) -> frozenset[str]`: the `task_group` values of the
+    train rows; `train_classifier` also returns it (third tuple element).
   - `classifier_scores(candidate, validation: list[dict], rows: list[dict], contract, calibration) -> tuple[list[ScoredStep], dict]`
     (`scorer="lightgbm-classifier-training-v1"`); the dict records the fit (`fitted`,
     `temperature`, `threshold`, `reason`), or `abstention: "unavailable"` with the reason.
@@ -348,6 +350,8 @@ def test_classifier_abstention_applies_the_validation_threshold(): ...
     # synthetic rows (training_fixtures); confidences below fit.threshold abstain
 def test_unfittable_calibration_reports_abstention_unavailable(): ...
 def test_classes_absent_from_train_are_reported(): ...
+def test_seen_task_groups_come_from_train_rows_only(): ...
+    # train rows of "fix-mean-empty", validation rows of "other": result == {"fix-mean-empty"}
 ```
 
 - [ ] **Step 2: Run and see them fail**
@@ -392,8 +396,12 @@ git commit -m "feature: score held-out rows with rules-v1 and the calibrated cla
     `intervals` for `miss_rate` and `false_alarm_rate` via `bootstrap_interval(group_key="batch_id")`.
     A rate with a zero denominator is None.
   - `build_report(rows, scores: dict[str, list[ScoredStep]], context: dict) -> dict` with
-    `cells`: one entry per populated (scorer, truth, configuration, n, phase, step_type), plus
-    rollups per (scorer, truth) and (scorer, truth, configuration); `refused` by code;
+    `cells`: one entry per populated (scorer, truth, configuration, n, phase, step_type,
+    task_seen_in_training), plus rollups per (scorer, truth), (scorer, truth, configuration),
+    (scorer, truth, task_seen_in_training) and (scorer, truth, configuration,
+    task_seen_in_training). `task_seen_in_training` is
+    `task_group(row["task_id"]) in seen_task_groups`; `context["seen_task_groups"]` is listed
+    in the report; `refused` by code;
     `unscored` (truth null) by truth and reason; `limitations` (the spec's three, verbatim);
     `held_out: true`; `protocol_sha256` per configuration; `gate: "none (descriptive baseline)"`;
     `model` = training version and config hash, LightGBM version, release, split file SHA-256,
@@ -415,6 +423,9 @@ def test_measures_match_a_hand_counted_confusion(): ...
 def test_zero_denominators_are_none_not_zero(): ...
 def test_intervals_group_by_batch(): ...  # rows of one batch move together
 def test_unscored_steps_are_counted_by_reason(): ...
+def test_cells_split_seen_and_unseen_tasks(): ...
+    # rows of fix-mean-empty-r1 and fix-median-even-r1, seen {"fix-mean-empty"}:
+    # the (scorer, truth, task_seen_in_training) rollups have keys True and False with their counts
 def test_run_writes_report_predictions_and_models_and_logs_the_named_experiment(tmp_path): ...
 def test_a_failed_attempt_is_reported_and_tracked(tmp_path): ...
 def test_outputs_inside_data_held_out_are_refused(tmp_path): ...
@@ -464,8 +475,9 @@ failed attempt if one happens and record it.
 
 - [ ] **Step 2: Write the record from `report.json` only**
 
-Per configuration and overall: miss rate and false-alarm rate with intervals for both scorers
-and each truth, the abstention rate, the predicted-class breakdown on inference-truth steps,
+Per configuration and overall, and separately for the seen (`fix-mean-empty`) and unseen
+(`fix-median-even`) task: miss rate and false-alarm rate with intervals for both scorers and
+each truth, the abstention rate, the predicted-class breakdown on inference-truth steps,
 refused and unscored counts, the commit, the attempt id and the input hashes, and the
 limitations. No number is typed by hand that the report does not contain.
 

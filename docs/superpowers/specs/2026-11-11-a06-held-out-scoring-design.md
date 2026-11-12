@@ -125,7 +125,13 @@ MLflow under the separate experiment `a06-held-out-scoring`, never the training 
 
 ## Report measures (declared before scoring)
 
-Broken down by scorer × truth × configuration × N × phase × step type, and overall:
+Broken down by scorer × truth × configuration × N × phase × step type × task seen in training,
+and overall. A step's task is **seen** when dataset v1's train split has rows of its task group
+(`agentwatch_data.replay_labels.task_group`): `fix-mean-empty` is in train (recorded on Ollama),
+while `fix-median-even` is in no dataset v1 split, so it is unseen. The two are never pooled
+without also being shown apart. (Added 2026-11-11, Benoy, before any scoring.)
+
+Measures:
 
 - confusion by predicted class (for example `cpu_sandbox` predicted on GPU contention);
 - **inference miss rate**: 1 − recall on steps whose truth is `inference`;
@@ -141,7 +147,8 @@ Broken down by scorer × truth × configuration × N × phase × step type, and 
 
 No pass/fail gate and no promotion. The report states its limits: one laptop, one sweep per
 configuration; dataset v1's replays were recorded mostly on Ollama, A06 on vLLM; no
-`steps-v1.3` feature describes GPU or vLLM state.
+`steps-v1.3` feature describes GPU or vLLM state; one of the two A06 tasks (`fix-mean-empty`) was
+seen in training, so only `fix-median-even` tests an unseen task.
 
 ## Tests
 
