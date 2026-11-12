@@ -145,10 +145,12 @@ class FakeLiveServer:
             return ChangeResult(run_id=run_id, revision=run.revision, changed=True)
 
     def _close(self, run, state, reason):
+        # Every caller holds self.lock, the condition's lock, so waiters can be notified.
         run.revision += 1
         run.state = state
         run.reason = reason
         run.cleanup_requested = run.cleanup_requested or state == "cancelled"
+        self.changed.notify_all()
 
     def get_run(self, run_id, after=0, limit=256):
         with self.lock:
@@ -170,6 +172,13 @@ class FakeLiveServer:
         with self.changed:
             return self.changed.wait_for(
                 lambda: any(step_id in run.steps for run in self.runs.values()), timeout
+            )
+
+    def wait_for_runs(self, state: str, count: int, timeout: float = 10) -> bool:
+        """Block until `count` runs are in `state`; no fixed sleeps."""
+        with self.changed:
+            return self.changed.wait_for(
+                lambda: sum(run.state == state for run in self.runs.values()) >= count, timeout
             )
 
     def only_run(self) -> FakeRun:
