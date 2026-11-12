@@ -260,8 +260,14 @@ def test_recorder_sha256_changes_with_the_recorder_source():
     assert hash_recorder_sources(crlf) == digest
 
 
-def test_recorder_sha256_hashes_the_two_recorder_modules():
-    assert RECORDER_MODULES == ("sweep_steps.py", "sweep_labels.py")
+def test_recorder_sha256_hashes_the_recorder_and_baseline_modules():
+    assert RECORDER_MODULES == (
+        "experiment.py",
+        "sweep_analysis.py",
+        "sweep_labels.py",
+        "sweep_protocol.py",
+        "sweep_steps.py",
+    )
     package = Path(steps_module.__file__).parent
     sources = {name: (package / name).read_text(encoding="utf-8") for name in RECORDER_MODULES}
     assert recorder_sha256() == hash_recorder_sources(sources)

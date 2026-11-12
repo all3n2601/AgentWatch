@@ -636,7 +636,8 @@ per journaled step of a held-out sweep's scored runs (ramp batches the analysis 
 injected and control; warm-up is skipped) to `steps.jsonl`, and a summary (format
 `sweep-steps-v1`, the excluded ramp batches, the runs without evidence or plan,
 `steps_sha256`, the hash of `steps.jsonl`, and `recorder_sha256`, the hash of the recorder's own
-source, `sweep_steps.py` and `sweep_labels.py`, so a line-ending change does not alter it) to
+source (`sweep_steps.py`, `sweep_labels.py` and the baseline modules `experiment.py`,
+`sweep_analysis.py`, `sweep_protocol.py`; line endings normalised) to
 `steps.json`.
 It records measurements only, with no threshold and no truth: step identity and parent, position
 in the sweep, runner-tick duration, queue and execution seconds, the step's measured vLLM queue

@@ -422,13 +422,17 @@ earlier truths on the frozen sweeps, and every model-call truth is unchanged the
 `tests/contract/test_sweep_truth_frozen.py`). In general the only other difference is that a
 malformed duration refuses the sweep instead of labelling one step `malformed`.
 
-**Label version:** `sweep-truth-v2+1af0a878` (the fingerprint covers the rule values and the
+**Label version:** `sweep-truth-v2+c211f3e8` (the fingerprint covers the rule values and the
 truth and input-validation code; comments and formatting in the TOML do not change it, but any
 edit to `sweep_truth.py` or `sweep_steps_input.py`, comments included, does). The baseline
 statistics are computed by the recorder, outside that fingerprint, so a truth set is identified by
 `label_version` together with `steps_sha256`, `steps_summary_sha256` and `truth_sha256`, all
-recorded in `truth.json`; the scoring branch will check them. `steps.json` also carries
-`recorder_sha256`, the fingerprint of the recorder's source (`sweep_steps.py`, `sweep_labels.py`). `truth.json` also records the validated rule
+recorded in `truth.json`. The A06 scoring PR is to refuse any other label version and to check
+`steps_sha256`, `steps_summary_sha256` and `truth_sha256`; that is planned, not yet done.
+`steps.json` also carries `recorder_sha256`, the fingerprint of the recorder's own source and the
+code behind its baselines: `sweep_steps.py`, `sweep_labels.py`, `experiment.py`,
+`sweep_analysis.py` and `sweep_protocol.py`. Any edit to those five modules, comments included,
+moves it, and with it `steps_summary_sha256`. `truth.json` also records the validated rule
 values (`rule`), so a rule loaded with `--rules` can be reconstructed from its output, and
 `truth_sha256`, the hash of the `truth.jsonl` it was written with. Counts from the real run of
 2026-11-12, model calls by class, with the null reasons below. The three hashes, pinned in the
@@ -437,7 +441,7 @@ contract test:
 | | cfg-default (`2d75ea`) | cfg-hardware (`b4ad4a`) |
 |---|---|---|
 | `steps_sha256` (`steps.jsonl`) | `7598a42e00fc0a3cf46dcc945646bf723339e280b0f008a0005c527796e81162` | `0ebe5446d0ef9a571d211dff32174ff8dece618dd1e302926bbf495c2d496bfe` |
-| `steps_summary_sha256` (`steps.json`) | `4cfd4804ee0165b9d57d4ae2c9ae24a363f3ffef6d9680d0594f4228a4289b70` | `099c05a492ec34f66fdca7cd7b100c2b5b441688ad353e22e4ab682810aaa1ad` |
+| `steps_summary_sha256` (`steps.json`) | `8f49eb141ff4867f974e6411cac3835072e414a05771a7f65b58811665384560` | `9c797b5920975716fccb2493dae36eeb32295c2b1e91fbfba25b04328c33349c` |
 | `truth_sha256` (`truth.jsonl`) | `92da54bca1be5b897e32ec72e6dc1f34dad1bb6695fd8a643b84bf3d19d0debe` | `069a8303ac376c58a821b453ade440347fee94d591ce92a5f22f06a838b71308` |
 
 Counts:
@@ -455,9 +459,9 @@ Counts:
 The frozen-sweep contract test (`tests/contract/test_sweep_truth_frozen.py`) pins these counts
 and hashes and skips when the DVC data is not pulled. The preflight dry-run sweep
 (`data/held-out/a06-20261111/preflight-dry-run/`, the third held-out protocol hash) is held out
-but has no truths: the recorder accepts only the two protocol sweeps. This rule never feeds `make dataset` or a release: its
-output stays in `.data/a06-scoring/`, and the sweeps remain held-out evidence (see above). This
-document reports no model results.
+but has no truths: the recorder accepts only the two protocol sweeps. This rule never feeds
+`make dataset` or a release: its output stays in `.data/a06-scoring/`, and the sweeps remain
+held-out evidence (see above). This document reports no model results.
 
 ## Sources
 

@@ -189,13 +189,14 @@ features, or the scoring code.
 
 ## Changed 2026-11-12 (Akshay's review of #74)
 
-The rule becomes `sweep-truth-v2`, label version `sweep-truth-v2+1af0a878`. The text above is
+The rule becomes `sweep-truth-v2`, label version `sweep-truth-v2+c211f3e8`. The text above is
 history and is not rewritten; where it says `sweep-truth-v1`, v2 is that rule plus:
 
 - B. A model call in a clean batch that did not finish (state not `completed`, or no duration)
   gets `protocol_clean` null `not_completed` instead of `none`. Nothing else in the rule changes.
-- C. `steps.json` carries `recorder_sha256`, the SHA-256 of the recorder's `sweep_steps.py` and
-  `sweep_labels.py` (line endings normalised), and `truth.json` carries it on.
+- C. `steps.json` carries `recorder_sha256`, the SHA-256 of the recorder and baseline modules
+  `experiment.py`, `sweep_analysis.py`, `sweep_labels.py`, `sweep_protocol.py` and `sweep_steps.py`
+  (line endings normalised), and `truth.json` carries it on.
 - D. The contract test pins `steps_sha256`, `steps_summary_sha256` and `truth_sha256` for both
   frozen sweeps; a truth set is identified by `label_version` plus those three hashes.
 - E. Wording: provenance (the values come from the scoring branch's descriptive, no-gate results

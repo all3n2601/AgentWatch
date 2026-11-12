@@ -76,9 +76,17 @@ RECORD_KEYS = frozenset(
         "baseline",
     }
 )
-# The recorder's own code, fingerprinted into every steps.json: a truth set is traceable to the
-# code that produced its steps, not only to the sweep and the rule that read them.
-RECORDER_MODULES = ("sweep_steps.py", "sweep_labels.py")
+# The code behind every record and baseline, fingerprinted into every steps.json: a truth set is
+# traceable to the code that produced its steps, not only to the sweep and the rule that read them.
+# `sweep_labels.baselines` takes durations and mean/stdev from `experiment`, the kept N = 1 batches
+# come from `sweep_analysis`, and the batch count per source from `sweep_protocol`.
+RECORDER_MODULES = (
+    "experiment.py",
+    "sweep_analysis.py",
+    "sweep_labels.py",
+    "sweep_protocol.py",
+    "sweep_steps.py",
+)
 # The keys of the written steps.json: the summary `sweep_steps` returns plus `steps_sha256`,
 # the SHA-256 of steps.jsonl, which `write_steps` adds.
 SUMMARY_KEYS = frozenset(

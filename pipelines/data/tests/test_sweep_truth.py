@@ -28,7 +28,7 @@ RULE_FILE = "sweep-truth-v2.toml"
 # sweep-truth-v2.toml. Otherwise (a comment or refactor) keep the version, and say why in the PR.
 # Either way, update the pin and the docs (docs/data-card.md and docs/project-checklist.md) in
 # the same PR.
-PINNED_SWEEP_TRUTH_LABEL_VERSION = "sweep-truth-v2+1af0a878"
+PINNED_SWEEP_TRUTH_LABEL_VERSION = "sweep-truth-v2+c211f3e8"
 BASELINE = {"count": 3, "mean_seconds": 1.0, "stdev_seconds": 0.1}
 
 

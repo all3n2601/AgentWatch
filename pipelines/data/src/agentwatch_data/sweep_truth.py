@@ -1,6 +1,6 @@
 """The sweep-truth-v2 label rule for held-out capacity-sweep steps.
 
-Values live in sweep-truth-v2.toml, fixed before any scoring with them. `judge` decides, for one
+Values live in sweep-truth-v2.toml; docs/data-card.md records their provenance. `judge` decides, for one
 validated step record from `sweep_steps_input`, each truth as a class or as null with a
 reason, never both. Missing readings stay null; they are never compared as zero.
 """

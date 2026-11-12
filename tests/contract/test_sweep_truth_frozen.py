@@ -4,7 +4,9 @@ The recorder (`services/agent`) and the rule (`pipelines/data`) declare the step
 separately because the data pipeline must not import the agent service; the first test keeps the
 two declarations equal. The pinned counts below are those of the scoring branch's attempt
 `20261112T025531Z-220363` for model calls, plus the spec's root-step and no-queue-reference rows.
-They are measured numbers: a mismatch is a defect to diagnose, not a value to update.
+They are measured numbers: a mismatch is a defect to diagnose, not a value to update. The three
+hashes are different: they change legitimately with any edit to the fingerprinted modules or the
+recorder modules, and are then recomputed deliberately in the same PR.
 """
 
 import hashlib
@@ -40,7 +42,7 @@ PINNED = {
         "runs_without_evidence": 0,
         "runs_without_plan": 9,
         "steps_sha256": "7598a42e00fc0a3cf46dcc945646bf723339e280b0f008a0005c527796e81162",
-        "steps_summary_sha256": "4cfd4804ee0165b9d57d4ae2c9ae24a363f3ffef6d9680d0594f4228a4289b70",
+        "steps_summary_sha256": "8f49eb141ff4867f974e6411cac3835072e414a05771a7f65b58811665384560",
         "truth_sha256": "92da54bca1be5b897e32ec72e6dc1f34dad1bb6695fd8a643b84bf3d19d0debe",
     },
     "cfg-hardware-20261111T213039Z-b4ad4a": {
@@ -55,7 +57,7 @@ PINNED = {
         "runs_without_evidence": 0,
         "runs_without_plan": 24,
         "steps_sha256": "0ebe5446d0ef9a571d211dff32174ff8dece618dd1e302926bbf495c2d496bfe",
-        "steps_summary_sha256": "099c05a492ec34f66fdca7cd7b100c2b5b441688ad353e22e4ab682810aaa1ad",
+        "steps_summary_sha256": "9c797b5920975716fccb2493dae36eeb32295c2b1e91fbfba25b04328c33349c",
         "truth_sha256": "069a8303ac376c58a821b453ade440347fee94d591ce92a5f22f06a838b71308",
     },
 }
