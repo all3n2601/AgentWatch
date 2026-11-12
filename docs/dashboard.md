@@ -24,10 +24,12 @@ are represented in the URL. See [the UI redesign plan](ui-redesign-plan.md) for 
 
 ### Routing
 
-- Each page is its own App Router segment: `app/page.tsx` (Overview), `app/runs`,
-  `app/runs/[runId]`, `app/experiments`, `app/compare`, `app/quality`, `app/controls`,
-  `app/settings`, `app/live` and the development-only `app/design-system`. The earlier
-  dashboard sections share their loading rules through `components/dashboard-section.tsx`.
+- Each page is its own App Router segment in the `app/(workspace)/` route group, whose layout
+  keeps the shell mounted: `page.tsx` (Overview), `runs`, `runs/[runId]`, `experiments`,
+  `compare`, `quality`, `controls`, `settings`, `live` and the development-only
+  `design-system`. Pages read their data on the server through the loaders in `lib/`
+  (`runs-page-load.ts`, `run-load.ts`, `experiments-page-load.ts`, `dataset-load.ts`, and
+  `experiments.ts` for saved history and requested runs).
 - Links are built from `lib/routes.ts`. `typedRoutes` is on in `next.config.ts`, and
   `pnpm typecheck` runs `next typegen` first, so a link to a page that does not exist fails the
   typecheck.
