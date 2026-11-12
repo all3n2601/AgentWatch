@@ -194,7 +194,7 @@ def score_rows(
 ) -> dict:
     """Build rows, train, score with both scorers and save the models; return the report body."""
     contract, rules, config = load_configuration(contract_path, rules_path, training_path)
-    rows, refused, summaries = held_out_rows(truth_dirs, sweep_root)
+    rows, refused, summaries, _ = held_out_rows(truth_dirs, sweep_root)
     if not rows:
         raise HeldOutError(f"no step could be scored; refused steps by code: {refused}")
     candidate, validation, seen_groups, release = train_classifier(

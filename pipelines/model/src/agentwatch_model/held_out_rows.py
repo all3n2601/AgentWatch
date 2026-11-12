@@ -1,9 +1,11 @@
 """Feature rows for held-out capacity-sweep truths.
 
-`capacity-sweep-truth` writes, per sweep, `truth.jsonl` (one record per journaled step, each
-naming its `run_folder` relative to the sweep folder) and `truth.json` (the summary). This
-module joins every truth record, on (run, step), to the `steps-v1.3` feature row computed from
-that run's own `live-journal.jsonl`. Sweep runs have no `experiment.json`, so the per-replay
+`make sweep-truth` (`agentwatch_data.sweep_truth`) writes, per sweep, `truth.jsonl` (one record
+per recorded step, each naming its `run_folder` relative to the sweep folder) and `truth.json`
+(the summary). This module joins every judged truth record, on (run, step), to the `steps-v1.3`
+feature row computed from that run's own `live-journal.jsonl`. A record whose three truths are
+all null is unjudged (a root step, or a step with no reference): it is returned apart and never
+feature-joined, so its missing journal is not a refusal. Sweep runs have no `experiment.json`, so the per-replay
 join of `agentwatch_data.replay_rows` is composed from its public pieces.
 
 A step the evidence cannot support is refused under a `replay_rows` code and counted, never
@@ -13,14 +15,16 @@ terminal row for the step), `feature_timing_mismatch` (the journal's timings dif
 truth record's), `declared_interval_invalid`.
 
 Truth files are another package's output, so they are checked at this boundary before any
-join: a summary or record outside the `sweep-truth-v1` format, a summary that does not match
-its records, or a sweep or step passed twice raises HeldOutError, which fails the attempt.
+join: a summary or record outside the `sweep-truth-v1` format, a summary of another label
+version or that does not match its records (step count, `truth.jsonl` hash), or a sweep or step passed twice raises HeldOutError, which fails the attempt.
 """
 
+import hashlib
 import json
 import math
 from collections import Counter
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 from uuid import UUID
 
 from agentwatch_data.extract import canonical_sha256
@@ -38,20 +42,18 @@ from agentwatch_data.replay_rows import (
     joined_feature,
     same_run,
 )
+from agentwatch_data.sweep_truth import TRUTH_FILE, TRUTH_NAMES, TRUTH_SUMMARY_FILE
 from agentwatch_features import compute_feature_rows
 
-# Declared by services/agent/src/agentwatch_agent/sweep_truth.py (TRUTH_METHOD and
-# ACCEPTED_PROTOCOL_SHA256); re-declared because pipelines must not import the agent service.
-# Keep both in step with it.
-ACCEPTED_TRUTH_METHOD = "sweep-truth-v1"
+# The `sweep-truth-v1` rule's label version: the rule's name plus the fingerprint of its values
+# and logic (`load_truth_rule().label_version`; a test keeps this equal to it). Truths labelled
+# by any other rule are refused.
+ACCEPTED_TRUTH_LABEL_VERSION = "sweep-truth-v1+d0ded6b6"
+# The protocol hashes of the two held-out configurations, as pinned in sweep-truth-v1.toml.
 ACCEPTED_PROTOCOL_SHA256: dict[str, str] = {
     "cfg-default": "22e26dc7536fe5e88e3d9ea9f01445a754788ce587b1626d6a4eb055ec4524b9",
     "cfg-hardware": "1608deee2a3bcb5245b07d73e13e73dcd1e82702ef14aa683ecd94144e0f18cd",
 }
-TRUTH_FILE = "truth.jsonl"
-SUMMARY_FILE = "truth.json"
-# The record format sweep_truth.py writes (`_record`); keep in step with it.
-TRUTH_NAMES = frozenset({"queue", "slower", "protocol_clean"})
 TRUTH_CLASSES = frozenset({"inference", "none"})
 TRUTH_PHASES = frozenset({"ramp", "live", "injected", "control"})
 RECORD_STRINGS = ("run_id", "step_id", "run_folder", "batch_id", "step_type", "task_id")
@@ -73,12 +75,15 @@ def is_seconds(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def summary_problem(summary: dict, record_count: int) -> str | None:
+def summary_problem(summary: dict, record_count: int, truth_sha256: str) -> str | None:
     """Why the summary is not an accepted `sweep-truth-v1` summary of `record_count` records."""
     if summary.get("held_out") is not True:
         return "truths are not marked held_out"
-    if summary.get("method") != ACCEPTED_TRUTH_METHOD:
-        return f"method {summary.get('method')!r} is not accepted"
+    if summary.get("label_version") != ACCEPTED_TRUTH_LABEL_VERSION:
+        return (
+            f"label_version {summary.get('label_version')!r} is not the accepted "
+            f"{ACCEPTED_TRUTH_LABEL_VERSION!r}"
+        )
     configuration = summary.get("configuration")
     accepted = (
         ACCEPTED_PROTOCOL_SHA256.get(configuration) if isinstance(configuration, str) else None
@@ -110,6 +115,11 @@ def summary_problem(summary: dict, record_count: int) -> str | None:
             f"steps is {steps!r} but {TRUTH_FILE} holds {record_count} records; the summary "
             "does not describe these records (stale or incomplete truth files)"
         )
+    if summary.get("truth_sha256") != truth_sha256:
+        return (
+            f"truth_sha256 is {summary.get('truth_sha256')!r} but {TRUTH_FILE} hashes to "
+            f"{truth_sha256}; the summary does not describe these records"
+        )
     return None
 
 
@@ -117,7 +127,7 @@ def truths_problem(record: dict) -> str | None:
     """Why the record's truths are not three classes-or-null, each null one with a reason."""
     truths, reasons = record.get("truths"), record.get("truth_reasons")
     for field, value in (("truths", truths), ("truth_reasons", reasons)):
-        if not isinstance(value, dict) or set(value) != TRUTH_NAMES:
+        if not isinstance(value, dict) or set(value) != set(TRUTH_NAMES):
             return f"{field} must be an object with exactly the keys {sorted(TRUTH_NAMES)}"
     for name in sorted(TRUTH_NAMES):
         truth, reason = truths[name], reasons[name]
@@ -156,10 +166,11 @@ def load_truths(directory: Path) -> tuple[dict, list[dict]]:
 
     Refusals name the file and, for a record, its index among the records and its line.
     """
-    summary_file, truth_file = directory / SUMMARY_FILE, directory / TRUTH_FILE
+    summary_file, truth_file = directory / TRUTH_SUMMARY_FILE, directory / TRUTH_FILE
     try:
         summary = json.loads(summary_file.read_text(encoding="utf-8"))
-        lines = truth_file.read_text(encoding="utf-8").splitlines()
+        truth_bytes = truth_file.read_bytes()
+        lines = truth_bytes.decode("utf-8").splitlines()
         numbered = [
             (number, json.loads(line)) for number, line in enumerate(lines, 1) if line.strip()
         ]
@@ -167,7 +178,7 @@ def load_truths(directory: Path) -> tuple[dict, list[dict]]:
         raise HeldOutError(f"{directory}: truth files cannot be read: {error}") from error
     if not isinstance(summary, dict):
         raise HeldOutError(f"{summary_file}: the summary must be a JSON object")
-    problem = summary_problem(summary, len(numbered))
+    problem = summary_problem(summary, len(numbered), hashlib.sha256(truth_bytes).hexdigest())
     if problem is not None:
         raise HeldOutError(f"{summary_file}: {problem}")
     for index, (number, record) in enumerate(numbered):
@@ -251,27 +262,44 @@ def run_features(run_dir: Path) -> tuple[ReplayFeatures, UUID | None]:
     return features, records[0].run_id if records else None
 
 
-def held_out_rows(
-    truth_dirs: list[Path], sweep_root: Path
-) -> tuple[list[dict], dict[str, int], list[dict]]:
+class HeldOutSet(NamedTuple):
+    """Joined rows, refusal counts by code, the summaries, and the steps left unjudged."""
+
+    rows: list[dict]
+    refused: dict[str, int]
+    summaries: list[dict]
+    unjudged: list[dict]
+
+
+def is_unjudged(record: dict) -> bool:
+    """A record the rule judged on none of its truths; there is nothing to score it against."""
+    return all(record["truths"][name] is None for name in TRUTH_NAMES)
+
+
+def held_out_rows(truth_dirs: list[Path], sweep_root: Path) -> HeldOutSet:
     """Joined rows (truth record, feature columns, telemetry_status), refusal counts by code,
-    and the summaries.
+    the summaries, and the unjudged records.
 
     `sweep_root` holds the sweep folders; each summary names its own by `sweep_folder`.
-    Each run's journal is read once. Unacceptable truth files, a sweep passed twice and a
-    repeated (run, step) raise HeldOutError before any journal is read.
+    Unjudged records are set aside before any journal is read, so they neither join nor
+    count as refused. Each run's journal is read once. Unacceptable truth files, a sweep
+    passed twice and a repeated (run, step) raise HeldOutError before any journal is read.
     """
     loaded = [(truth_dir, *load_truths(truth_dir)) for truth_dir in truth_dirs]
     refuse_repeats(loaded)
     rows: list[dict] = []
     refused: Counter[str] = Counter()
     summaries: list[dict] = []
+    unjudged: list[dict] = []
     for _, summary, records in loaded:
         summaries.append(summary)
         sweep_dir = sweep_root / summary["sweep_folder"]
         by_run: dict[object, list[dict]] = {}
         for record in records:
-            by_run.setdefault(record.get("run_folder"), []).append(record)
+            if is_unjudged(record):
+                unjudged.append(record)
+            else:
+                by_run.setdefault(record.get("run_folder"), []).append(record)
         for run_folder, run_records in by_run.items():
             try:
                 features, journal_run = run_features(run_directory(sweep_dir, run_folder))
@@ -295,4 +323,4 @@ def held_out_rows(
                     | feature_values(feature)
                     | {"telemetry_status": feature.telemetry.status}
                 )
-    return rows, dict(sorted(refused.items())), summaries
+    return HeldOutSet(rows, dict(sorted(refused.items())), summaries, unjudged)
