@@ -61,7 +61,10 @@ Injection logs are labeling metadata. They must never become model features.
   the model server, so it can also slow inference.
 - Inference contention shares Ollama's request slots and the device. Ollama reports no queue
   wait, so the waiting itself is not observed directly. Stopping closes the child's
-  connections; requests in flight are counted as abandoned.
+  connections; requests in flight are counted as abandoned. The log's `generated_tokens` sums
+  the server-reported counts (`eval_count` on Ollama, `usage.completion_tokens` on vLLM) of the
+  completed replies that reported one, and `completions_without_generated_tokens` counts those
+  that did not. `generated_tokens` is null when no completed reply reported a count, never zero.
 - Prefill filler size is an estimate from `FILLER_TOKENS_PER_LINE`; the log records the
   server-reported `prompt_tokens` (min, `median_low` and max: a count the server actually
   reported). The log also records the measured `usage.completion_tokens` (`completion_tokens`
