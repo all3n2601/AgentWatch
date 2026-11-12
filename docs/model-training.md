@@ -1,11 +1,12 @@
 # AgentWatch model training
 
-Status: `training-v1`, implemented and tested on synthetic rows; not yet trained on an evaluable
-release. The interim `steps-v1.2+5954f97ef8b2` split is blocked by the leakage check, so a run
-on it produces a blocked report and a blocked MLflow run, with no model. Dataset v1
-(`steps-v1.3+aafae73eb211`, split `split-v2+febe942a2b59`) passes the leakage check, but its
-test split mixes two feature definitions, which evaluation refuses, so a run on it is a `failed`
-attempt with no model. Steps labeled `mixed` are scored by `mixed-scoring-v1` (see Running it).
+Status: `training-v1+a34ea0be`, trained and evaluated on dataset v1
+(`steps-v1.3+aafae73eb211`, split `split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`,
+accepted); see [Results on dataset v1](#results-on-dataset-v1). It passes every gate it
+evaluates and blocks promotion only because six gates are `not_evaluated`. Earlier: the interim
+`steps-v1.2+5954f97ef8b2` split is blocked by the leakage check, and on `split-v2+febe942a2b59`
+a run is a `failed` attempt because that test split mixes two feature definitions. Steps
+labeled `mixed` are scored by `mixed-scoring-v1` (see Running it).
 
 M03 trains two LightGBM candidates on CPU: a resource classifier and an excess-latency
 regressor. It scores them and [the rule baseline](rule-baseline.md) on identical rows against
@@ -81,6 +82,82 @@ evaluated one. Each attempt first removes the previous attempt's files in its di
 | Any status, not tracked | The report is kept but MLflow logging failed; `tracking.json` holds the error | 3 |
 
 A malformed contract, rules or training file exits with code 2 before any attempt starts.
+
+## Results on dataset v1
+
+Run on 2026-11-12 on the code of PR #70 at commit `f229a4c` (after `eval-contract-v3` was
+set to `accepted`), in a Linux container (`ghcr.io/astral-sh/uv:python3.13-bookworm` with `libgomp1`, since LightGBM needs
+OpenMP; LightGBM 4.7.0, NumPy 2.5.4). To reproduce, after rebuilding the split as in
+[the rule baseline](rule-baseline.md#results-on-dataset-v1). PR #70 was squash-merged as
+`386d494` on `main`; its data and model implementation is identical to `f229a4c`, so that
+main commit provides the merged source for reproduction:
+
+```sh
+make train-candidates SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+932b2df410a7.json
+```
+
+A second run reproduced every file byte for byte:
+
+| File | SHA-256 |
+|---|---|
+| `report.json` | `f98da5478d8295288c716c4997c7a6eff7570f985b6a3ce8485980a150f4a793` |
+| `predictions.jsonl` | `8c20640d65638b302f3cea24516fc42ff32c8142d96b479426d114750237c825` |
+| `classifier.txt` | `b35152b71b4c2504e4066ca3aae334cf65bb1b4dac941f647c7741e9f4f85271` |
+| `regressor.txt` | `f19c93359f9484c7604fe1a4edbe45e2d596f4e891b0ca498341337036fe7bb5` |
+| `preprocessing.json` | `7abf667d18b147394e9fd51153c8d11a961831d1d4e8aa463ef7cc1235c4fa05` |
+| `validation_predictions.jsonl` | `c1bf9555c597282c75b8c9fbbe3f8ecaa15ef67fc607eb62cc0e92312d5ad6ff` |
+
+The files and the MLflow run (`b7afc8c3c2c04ec39ff9accba103e255`, in a local SQLite store) are
+in `.data/` on the machine that ran them, not committed. The first runs, on 2026-11-11 at
+`6ade73d` under the then-proposed contract (`b9f20820`, `split-v3+95309c38a53e`, same rows),
+wrote the same predictions, preprocessing record and model files; their report differed only
+in the contract status and hash and the split file and hash. Training used the 1,755 training
+steps (48 `mixed` steps train the regressor only), with early stopping on validation for both
+models (best iterations: classifier 43, regressor 137). The test split is 3,575
+`fix-window-count` steps; 3,564 are scored and 11 joint-only steps are not.
+
+| Gate or measure | Model | Rules (same rows) | Contract |
+|---|---|---|---|
+| Macro F1 (four classes) | 0.790 | 0.200 | Gain over rules ≥ 0: **pass** |
+| Clean steps predicted `none` | 0.991 | 0.731 | ≥ 0.95: **pass** |
+| Baseline and clean steps predicted `none` | 0.992 | 0.749 | ≥ 0.95: **pass** |
+| Mixed-contention macro F1 (82 steps) | 0.534 | 0.047 | Gain ≥ 0.10: **pass** |
+| Excess-latency MAE | 0.076 | — | ≤ 0.10: **pass** (zero predicts 0.194) |
+| Calibration, abstention | — | — | `not_evaluated` here; M04 |
+| Held-out method, unseen tasks, overhead, latency | — | — | `not_evaluated` |
+
+Per class (single-class steps; no bootstrap interval with one test task):
+
+| Class | Support | Precision | Recall | F1 |
+|---|---|---|---|---|
+| `none` | 2,923 | 0.954 | 0.983 | 0.968 |
+| `cpu_sandbox` | 127 | 0.643 | 0.354 | 0.457 |
+| `inference` | 226 | 0.969 | 0.969 | 0.969 |
+| `retrieval` | 206 | 0.834 | 0.709 | 0.766 |
+
+Confusion matrix (rows: label; columns: prediction):
+
+| Label | `none` | `cpu_sandbox` | `inference` | `retrieval` |
+|---|---|---|---|---|
+| `none` | 2,873 | 20 | 2 | 28 |
+| `cpu_sandbox` | 76 | 45 | 5 | 1 |
+| `inference` | 4 | 3 | 219 | 0 |
+| `retrieval` | 58 | 2 | 0 | 146 |
+
+How far these results reach:
+
+- **One test task, uncontrolled.** Every number describes `fix-window-count` replays on one
+  laptop and one model. The model and rules are compared on identical rows, but the gap is an
+  observed difference, not a measured cause.
+- **Timing features carry the labels.** The training leakage check passed, with a highest
+  single-feature AUC of 0.974 (`queue_seconds` for `retrieval`) against the 0.98 bound, and
+  0.949 for `duration_seconds` on `inference`. `step-features-v1` reads no GPU, inference-server
+  or retrieval metric, so `inference` and `retrieval` are recognized through timings alone.
+- **`cpu_sandbox` is the weak class.** 76 of its 127 steps are predicted `none`.
+- **Mixed steps.** All 82 name a confirmed resource (hit rate 1.0), almost always `inference`;
+  the mixed macro F1 is low because `cpu_sandbox` is rarely named (4 of 82).
+- **Validation is shared.** The same 273 validation steps chose both early-stopping iterations
+  and, in M04, the calibration; see [ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md).
 
 ## Gates
 
