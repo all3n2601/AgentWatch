@@ -87,9 +87,7 @@ def test_frozen_sweeps_keep_their_model_call_truths(folder, tmp_path):
         assert dict(_by_truth(records, name)) == expected[name], name
     for name in ("queue", "slower", "protocol_clean"):
         reasons = Counter(
-            record["truth_reasons"][name]
-            for record in records
-            if record["step_type"] != MODEL_CALL
+            record["truth_reasons"][name] for record in records if record["step_type"] != MODEL_CALL
         )
         assert reasons["root_step"] == expected["root_step"], name
         assert reasons["no_queue_reference"] == expected["no_queue_reference"], name
