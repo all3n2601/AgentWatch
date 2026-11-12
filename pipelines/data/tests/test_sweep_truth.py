@@ -16,7 +16,6 @@ from agentwatch_data.sweep_truth import (
 
 RULE_FILE = "sweep-truth-v1.toml"
 BASELINE = {"count": 3, "mean_seconds": 1.0, "stdev_seconds": 0.1}
-ALL_CASES: list[dict] = []
 
 
 @pytest.fixture(scope="module")
@@ -44,9 +43,15 @@ def record(**changes) -> dict:
     return base
 
 
+def assert_class_or_reason(result: dict) -> None:
+    for name in TRUTH_NAMES:
+        truth, reason = result["truths"][name], result["truth_reasons"][name]
+        assert (truth is None) != (reason is None), (name, truth, reason)
+
+
 def judged(rule: SweepTruthRule, **changes) -> dict:
     result = judge(record(**changes), rule)
-    ALL_CASES.append(result)
+    assert_class_or_reason(result)
     return result
 
 
@@ -219,8 +224,27 @@ def test_null_stdev_uses_the_floor(rule):
 
 
 def test_a_truth_is_a_class_or_a_reason_never_both(rule):
-    assert ALL_CASES
-    for result in ALL_CASES:
-        for name in TRUTH_NAMES:
-            truth, reason = result["truths"][name], result["truth_reasons"][name]
-            assert (truth is None) != (reason is None), (name, truth, reason)
+    no_baseline = {**BASELINE, "count": 2}
+    cases = [
+        {},
+        {"vllm_queue_seconds": 2.0, "duration_seconds": 3.0},
+        {"phase": "ramp", "n": 1},
+        {"phase": "control", "n": 1},
+        {"phase": "control", "n": 1, "state": "failed"},
+        {"phase": "live", "n": 3},
+        {"parent_step_id": None, "step_type": "agent_run"},
+        {"parent_step_id": None},
+        {"step_type": "tool_call"},
+        {"step_type": "retrieval"},
+        {"step_type": "other"},
+        {"state": "failed"},
+        {"duration_seconds": None},
+        {"duration_seconds": -1.0},
+        {"baseline": None},
+        {"baseline": no_baseline},
+        {"baseline": {**BASELINE, "stdev_seconds": None}},
+        {"span_status": "unavailable", "vllm_queue_seconds": None},
+        {"span_status": "measured", "vllm_queue_seconds": None},
+    ]
+    for changes in cases:
+        assert_class_or_reason(judge(record(**changes), rule))
