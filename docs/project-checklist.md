@@ -763,14 +763,16 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   `test_comparison.py`). Tested on synthetic rows only. Open: dataset v1's test split mixes two
   feature definitions, which evaluation refuses, so no rule metrics exist yet.
   2026-11-11 (M02, PR #71 on branch `docs/m02-rule-baseline-report`, stacked on PR #70
-  `feature/split-v3`, neither merged; run at commit `6ade73d`): first real rule report, `rules-v1+1bf54c19` on `split-v3+95309c38a53e`
-  under `eval-contract-v3` (`b9f20820`, proposed), 3,575 `fix-window-count` test steps. Macro
+  `feature/split-v3`, neither merged; rerun 2026-11-12 at commit `f229a4c`): first real rule
+  report, `rules-v1+1bf54c19` on `split-v3+932b2df410a7` under `eval-contract-v3` (`1cab0cbe`,
+  accepted), 3,575 `fix-window-count` test steps. Macro
   F1 0.200 (no interval: one test task); clean `none` rate 0.731 and baseline-and-clean 0.749,
   both **fail** against 0.95; mixed slice hit rate 0.049 over 82 steps; `rules-v1` predicts no
   excess-latency fraction (constant-reference MAE 0.194 and 0.233 against the 0.10 limit); 9
-  gates `not_evaluated`. Two runs, and a 2026-11-12 rerun at `e179aca`, gave byte-identical
-  reports ([rule baseline](rule-baseline.md#results-on-dataset-v1)). Open: review and merge of
-  #70 and #71, and acceptance of `eval-contract-v3`.
+  gates `not_evaluated`. Two runs gave byte-identical reports, and the predictions match the
+  first runs under the proposed contract
+  ([rule baseline](rule-baseline.md#results-on-dataset-v1)). Open: review and merge of #70 and
+  #71.
 
 **Exit test:** Rebuild labels and features from recorded evidence. Validate schema, missingness,
 class balance, baseline noise, split independence, and feature leakage. Report rule metrics on the
