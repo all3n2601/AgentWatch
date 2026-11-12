@@ -6,9 +6,7 @@ import { z } from "zod";
  *
  * The display preferences are read by the workspace shell
  * (components/shell/use-preferences.ts) to set the sidebar, density and
- * refresh interval on every workspace page. The legacy `usePreferences` in
- * components/dashboard.tsx keeps its own copy of the parser with the same
- * storage key, change event, JSON shape and defaults; change both together.
+ * refresh interval on every workspace page.
  */
 
 export const PREFERENCES_STORAGE_KEY = "agentwatch.preferences";

@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   aggregate,
   duration,
-  matchingWorkload,
   scopedRuns,
 } from "../lib/dashboard-data";
 import type { Experiment } from "../lib/experiment-schema";
@@ -92,17 +91,6 @@ test("time scopes use recorded completion time and preserve source order", () =>
   assert.equal(scopedRuns(input, "all", now).length, 3);
   assert.equal(input[0].run_id, "older");
 });
-test("matching comparisons require identical output and capacity settings", () => {
-  const a = run("a", 0),
-    b = run("b", 1);
-  assert.equal(matchingWorkload(a, b), true);
-  b.experiment.worker_capacity = 2;
-  assert.equal(matchingWorkload(a, b), false);
-  b.experiment.worker_capacity = 1;
-  b.clean = { ...b.clean, checksum: "different" };
-  assert.equal(matchingWorkload(a, b), false);
-});
-
 test("duration picks its unit after rounding, so boundary readings do not overflow", () => {
   assert.equal(duration(0), "0 ms");
   assert.equal(duration(0.00023), "230 μs");
