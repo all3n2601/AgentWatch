@@ -22,6 +22,7 @@ from agentwatch_model.candidates import (
     predict,
 )
 from agentwatch_model.contract import Contract
+from agentwatch_model.rule_baseline import validate_dataset_version, validate_rows
 from agentwatch_model.rules import Rules
 
 RULES_SCORER = "rules-v1"
@@ -63,6 +64,9 @@ def train_classifier(
     train, validation = (
         loader(split, name, contract_path, frozen_schema) for name in TRAINING_SPLITS
     )
+    validate_rows(train, "train")
+    validate_rows(validation, "validation")
+    validate_dataset_version(train + validation)
     return fit_candidate(train, validation, config), validation, seen_task_groups(train)
 
 

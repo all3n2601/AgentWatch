@@ -14,6 +14,7 @@ from agentwatch_model.held_out_scorers import (
     seen_task_groups,
     train_classifier,
 )
+from agentwatch_model.rule_baseline import RowError
 from agentwatch_model.rules import load_rules
 
 CLASSES = ("none", "cpu_sandbox", "inference", "retrieval")
@@ -111,3 +112,28 @@ def test_seen_task_groups_come_from_train_rows_only():
     validation = [featured_row("none", 1, task_id="other")]
     assert seen_task_groups(train) == {"fix-mean-empty"}
     assert "other" not in seen_task_groups(train) and validation
+
+
+def _train_with(config, tmp_path, train, validation):
+    splits = {"train": train, "validation": validation}
+
+    def loader(path, name, contract_path, frozen_schema, allow_unchecked_leakage=False):
+        return splits[name]
+
+    return train_classifier(
+        tmp_path / "s.json", DEFAULT_CONTRACT, tmp_path / "f.pbtxt", config, loader
+    )
+
+
+def test_a_validation_row_without_a_label_is_rejected(config, tmp_path):
+    validation = dataset(8, "valid")
+    del validation[0]["label_resource"]
+    with pytest.raises(RowError, match="validation row 0 is missing label_resource"):
+        _train_with(config, tmp_path, dataset(30, "train"), validation)
+
+
+def test_mismatched_feature_versions_across_train_and_validation_are_rejected(config, tmp_path):
+    train = [row | {"feature_version": "steps-v1.3"} for row in dataset(30, "train")]
+    validation = [row | {"feature_version": "steps-v1.2"} for row in dataset(8, "valid")]
+    with pytest.raises(RowError, match="Incompatible feature definitions"):
+        _train_with(config, tmp_path, train, validation)
