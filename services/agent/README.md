@@ -634,8 +634,10 @@ uv run --package agentwatch-agent python -m agentwatch_agent sweep-record \
 **Per-step measurements.** `capacity-sweep-steps <sweep folder> [--output DIR]` writes one record
 per journaled step of a held-out sweep's scored runs (ramp batches the analysis keeps, live,
 injected and control; warm-up is skipped) to `steps.jsonl`, and a summary (format
-`sweep-steps-v1`, the excluded ramp batches, the runs without evidence or plan, and
-`steps_sha256`, the hash of `steps.jsonl`) to `steps.json`.
+`sweep-steps-v1`, the excluded ramp batches, the runs without evidence or plan,
+`steps_sha256`, the hash of `steps.jsonl`, and `recorder_sha256`, the hash of the recorder's own
+source, `sweep_steps.py` and `sweep_labels.py`, so a line-ending change does not alter it) to
+`steps.json`.
 It records measurements only, with no threshold and no truth: step identity and parent, position
 in the sweep, runner-tick duration, queue and execution seconds, the step's measured vLLM queue
 and service seconds with a `span_status` (`measured`, `unavailable`, `malformed`, `incomplete`,

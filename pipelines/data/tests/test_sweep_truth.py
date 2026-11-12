@@ -28,7 +28,7 @@ RULE_FILE = "sweep-truth-v2.toml"
 # sweep-truth-v2.toml. Otherwise (a comment or refactor) keep the version, and say why in the PR.
 # Either way, update the pin and the docs (docs/data-card.md and docs/project-checklist.md) in
 # the same PR.
-PINNED_SWEEP_TRUTH_LABEL_VERSION = "sweep-truth-v2+f96f57be"
+PINNED_SWEEP_TRUTH_LABEL_VERSION = "sweep-truth-v2+1af0a878"
 BASELINE = {"count": 3, "mean_seconds": 1.0, "stdev_seconds": 0.1}
 
 
@@ -345,6 +345,7 @@ def test_records_and_summary_fields(tmp_path, rule):
     assert summary["configuration"] == "cfg-default"
     assert summary["sweep_folder"] == "sweep-1"
     assert summary["steps_sha256"] and summary["steps_summary_sha256"]
+    assert summary["recorder_sha256"] == "c" * 64
     assert summary["rule"] == rule.values
     assert summary["rule"]["noise"] == {"stdev_multiplier": 3.0, "min_seconds": 0.01}
     truth_bytes = (output / TRUTH_FILE).read_bytes()

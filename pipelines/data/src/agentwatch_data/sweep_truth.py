@@ -38,6 +38,7 @@ CARRIED_SUMMARY_FIELDS = (
     "protocol_version",
     "protocol_sha256",
     "sweep_json_sha256",
+    "recorder_sha256",
     "excluded_batches",
     "runs_without_evidence",
     "runs_without_plan",

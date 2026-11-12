@@ -3,6 +3,7 @@ folder with its run folders rewritten as fixtures. None of it is recorded eviden
 
 import hashlib
 import json
+import re
 import shutil
 import statistics
 from pathlib import Path
@@ -14,11 +15,14 @@ from agentwatch_agent.sweep_offline import SweepFolderError
 from agentwatch_agent.sweep_steps import (
     ACCEPTED_PROTOCOL_SHA256,
     RECORD_KEYS,
+    RECORDER_MODULES,
     SPAN_STATUSES,
     STEPS_FILE,
     STEPS_FORMAT,
     SUMMARY_FILE,
     SUMMARY_KEYS,
+    hash_recorder_sources,
+    recorder_sha256,
     sweep_steps,
     write_steps,
 )
@@ -220,6 +224,7 @@ def test_summary_fields(tmp_path, monkeypatch):
         "protocol_version",
         "protocol_sha256",
         "sweep_json_sha256",
+        "recorder_sha256",
         "held_out",
         "steps",
         "steps_sha256",
@@ -241,6 +246,25 @@ def test_summary_fields(tmp_path, monkeypatch):
     first = records[0]
     assert first["plan_sha256"] == PLAN
     assert first["run_folder"].startswith("batches/") and "/runs/" in first["run_folder"]
+    assert summary["recorder_sha256"] == recorder_sha256()
+
+
+def test_recorder_sha256_changes_with_the_recorder_source():
+    sources = {"sweep_steps.py": "a = 1\n", "sweep_labels.py": "b = 2\n"}
+    digest = hash_recorder_sources(sources)
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    assert hash_recorder_sources(dict(sources)) == digest
+    changed = {**sources, "sweep_labels.py": "b = 3\n"}
+    assert hash_recorder_sources(changed) != digest
+    crlf = {name: text.replace("\n", "\r\n") for name, text in sources.items()}
+    assert hash_recorder_sources(crlf) == digest
+
+
+def test_recorder_sha256_hashes_the_two_recorder_modules():
+    assert RECORDER_MODULES == ("sweep_steps.py", "sweep_labels.py")
+    package = Path(steps_module.__file__).parent
+    sources = {name: (package / name).read_text(encoding="utf-8") for name in RECORDER_MODULES}
+    assert recorder_sha256() == hash_recorder_sources(sources)
 
 
 def test_written_files_are_lf_sorted_and_reproducible(tmp_path, monkeypatch):
