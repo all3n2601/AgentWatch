@@ -29,6 +29,16 @@ export const fixtureRunSchema = z.object({
     .min(1),
 });
 export type FixtureRun = z.infer<typeof fixtureRunSchema>;
+
+/** A saved run as GET /v1/runs/{id} returns it; `result` is validated by the web app. */
+export const savedRunSchema = z.object({
+  run_id: z.uuid(),
+  kind: z.enum(["coding", "cpu"]),
+  result: z.looseObject({ run_id: z.uuid() }),
+  created_at: z.iso.datetime({ offset: true }),
+  sequence: z.number().int().positive(),
+});
+export type SavedRun = z.infer<typeof savedRunSchema>;
 export type FixtureState = FixtureRun["states"][number];
 
 export async function resetFixtureApi(request: APIRequestContext) {
@@ -61,4 +71,24 @@ export async function runReads(
 ): Promise<number[]> {
   const response = await request.get(`${CONTROL_URL}/runs/${runId}/reads`);
   return z.array(z.number()).parse(await response.json());
+}
+
+export async function registerSavedRun(
+  request: APIRequestContext,
+  saved: SavedRun,
+) {
+  const response = await request.put(
+    `${CONTROL_URL}/saved-runs/${saved.run_id}`,
+    {
+      data: saved,
+    },
+  );
+  if (!response.ok())
+    throw new Error(`Registering saved ${saved.run_id} failed`);
+}
+
+/** Makes saved history answer 503 until the next reset. */
+export async function takeSavedHistoryDown(request: APIRequestContext) {
+  const response = await request.post(`${CONTROL_URL}/saved-history-down`);
+  if (!response.ok()) throw new Error("Taking saved history down failed");
 }
