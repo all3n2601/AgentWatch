@@ -305,9 +305,18 @@ threshold as a proxy for inference wait. It is not a validation of `labels-v2` u
 overload: `labels-v2` labels a resource only under an injected condition, so every
 natural-overload step would be `none`. A test pins the sweep's thresholds to `labels-v2.toml`.
 
-The evidence is in `.data/a06-20261111/` and the bundle
-`C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`. Rohit and Akshay decide the `split-v3`
-assignment.
+**Where it is.** The evidence is versioned with DVC in `data/held-out/a06-20261111/` (pointer
+`data/held-out/a06-20261111.dvc`; 1,917 files, 950 MB, with a `README.txt` and `SHA256SUMS`).
+It is a separate store from `data/evidence/` and `data/datasets/`, so it stays out of releases:
+- **Not built.** `make dataset` reads `data/evidence/` by default, and this folder has no
+  directory the extractor treats as a run (`cpu`, `coding` or `llm` names).
+- **Not checked by the store gate.** `make version-dataset` snapshots only the two stores, and
+  its append-only check covers only them.
+- **Not pulled by default.** `make pull-dataset` downloads only the two stores. To download it:
+  `make pull-dataset TARGET=data/held-out/a06-20261111`.
+
+The [capacity record](capacity-record.md#reproduce) shows how to re-analyse it and regenerate
+its tables. Rohit and Akshay decide the `split-v3` assignment.
 
 ## Sources
 
@@ -768,6 +777,11 @@ make pull-dataset      # download what this commit versions (TARGET=data/dataset
 make dataset-status    # what is not yet versioned, and (with a remote) what is not yet uploaded
 make retire-release RELEASE=<release>  # remove a never-versioned release the pipeline can no longer build
 ```
+
+Held-out test evidence has its own pointer files under `data/held-out/` (today
+`data/held-out/a06-20261111.dvc`; see [Held-out A06 evidence](#held-out-a06-evidence-in-no-release)).
+It is added once with `dvc add` and never changed, `make push-dataset` uploads it with the
+stores, and `make pull-dataset` skips it unless `TARGET` names it.
 
 - **DVC runs in its own project**, `pipelines/versioning` (DVC 3.67.1 with GCS support, about
   120 packages, its own `uv.lock`, CPython 3.13 and 3.14), so the shared workspace and

@@ -439,7 +439,7 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   Akshay; no evidence using this method may enter a dataset release before `split-v3` lists it in
   `held_out_injection_methods` (Akshay, review of PR #64). In the 2026-11-11 A06 preflight dry
   sweep on real vLLM, each flood had a median of 2,080 prompt tokens, every reply was exactly
-  1 completion token, and cleanup was confirmed (`.data/a06-20261111/preflight-dry-run/`).
+  1 completion token, and cleanup was confirmed (`data/held-out/a06-20261111/preflight-dry-run/`).
 
 **Exit test:** Known isolated workloads exercise each resource and a clean control. Measurements
 and attribution identify the affected class. Real GPU validation uses real inference hardware;
@@ -760,12 +760,12 @@ frozen evaluation sets without tuning against them.
   ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
   evaluable release; open until one covering all four classes passes the leakage check.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
-  2026-11-11 (A06, PR #65 on branch `feature/natural-overload-capacity-sweep`, not yet merged):
+  2026-11-11 (A06, PR #65, merged to `main` as `50f393d` on 2026-11-12 UTC):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol
   `natural-overload-sweep-v1`
   ([design](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md)). It
   decides capacity by the declared rules and validates the contention label against vLLM's
-  measured queue time. The GPU preflight on 2026-11-11 (evidence `.data/a06-20261111/`) led to
+  measured queue time. The GPU preflight on 2026-11-11 (evidence `data/held-out/a06-20261111/`) led to
   two protocol changes, approved by Benoy before any protocol evidence existed:
   - **Run limit 900 s → 450 s.** With vLLM, DCGM and GPM sampled every 0.25 s, the per-run
     sample budget (80,000 records, under the live API's 100,000) fits only about 465 s. Every
@@ -793,8 +793,7 @@ frozen evaluation sets without tuning against them.
     preflight evidence it is not a capacity result.
 
   Protocol sweeps, 2026-11-11, at commit `d5eb41a` with a clean tree
-  ([capacity record](capacity-record.md); evidence `.data/a06-20261111/capacity-sweeps/` and
-  `C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`):
+  ([capacity record](capacity-record.md); evidence `data/held-out/a06-20261111/capacity-sweeps/`):
   - **`cfg-default`** (sweep `c5a40c4c-e4b3-4dc1-b660-21ca4c88bc93`): capacity **3** agents
     (`measured`). Throughput at 4 agents was 6.4% below 3 agents. Label `validated` (precision
     0.971, recall 0.999).
@@ -807,9 +806,11 @@ frozen evaluation sets without tuning against them.
     passed (175 and 208 runs). The prefill flood was active and cleaned up in all 6 injected
     batches.
 
-  Tables (2026-11-11, review of PR #65): the new `sweep-record` command regenerates the record's
-  Results and Sampling coverage tables identically from the two sweep folders
-  (`test_sweep_record.py`). Versioning the evidence outside `data/evidence/` is open.
+  Evidence and tables (2026-11-11, review of PR #65): the whole A06 bundle is versioned with DVC
+  as held-out evidence in `data/held-out/a06-20261111/`, outside `data/evidence/`, and is not
+  pulled by default. `sweep-analyse` on a copy of it reproduces both recorded analyses. The new
+  `sweep-record` command regenerates the record's Results and Sampling coverage tables
+  identically (`test_sweep_record.py`).
 
   Open until model and rule scoring of this evidence (A06 PR 3) is done. The capacity
   describes this laptop and these two configurations only, from one sweep each.
