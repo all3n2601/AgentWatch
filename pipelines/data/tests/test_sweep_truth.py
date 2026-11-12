@@ -21,6 +21,13 @@ from agentwatch_data.sweep_truth import (
 from test_sweep_steps_input import valid_line, write_input
 
 RULE_FILE = "sweep-truth-v1.toml"
+# The full label_version of the packaged sweep-truth rule and the code that applies it, pinned so
+# no change to either reaches a release unnoticed. When this fails: if the change can alter any
+# truth the rule produces, or whether a step is judged at all, bump `version` in
+# sweep-truth-v1.toml. Otherwise (a comment or refactor) keep the version, and say why in the PR.
+# Either way, update the pin and the docs (docs/data-card.md and docs/project-checklist.md) in
+# the same PR.
+PINNED_SWEEP_TRUTH_LABEL_VERSION = "sweep-truth-v1+3b75882f"
 BASELINE = {"count": 3, "mean_seconds": 1.0, "stdev_seconds": 0.1}
 
 
@@ -76,6 +83,13 @@ def test_packaged_rule_values(rule):
         "cfg-hardware": "1608deee2a3bcb5245b07d73e13e73dcd1e82702ef14aa683ecd94144e0f18cd",
     }
     assert re.fullmatch(r"sweep-truth-v1\+[0-9a-f]{8}", rule.label_version)
+
+
+def test_sweep_truth_label_version_is_pinned(rule):
+    assert rule.label_version == PINNED_SWEEP_TRUTH_LABEL_VERSION, (
+        "sweep_truth.py, sweep_steps_input.py or sweep-truth-v1.toml changed; see the comment "
+        "above PINNED_SWEEP_TRUTH_LABEL_VERSION"
+    )
 
 
 def test_comment_does_not_change_the_identifier(tmp_path, rule):
@@ -195,6 +209,23 @@ def test_not_completed_before_malformed_before_no_baseline(rule):
     assert no_baseline["truth_reasons"]["slower"] == "no_baseline"
     assert no_baseline["noise_threshold_seconds"] is None
     assert no_baseline["excess_seconds"] is None
+
+
+def test_no_baseline_comes_before_span_not_measured(rule):
+    result = judged(rule, baseline=None, span_status="unavailable", vllm_queue_seconds=None)
+    assert result["truths"]["queue"] is None
+    assert result["truth_reasons"]["queue"] == "no_baseline"
+    assert result["truths"]["slower"] is None
+    assert result["truth_reasons"]["slower"] == "no_baseline"
+
+
+def test_ramp_n1_slower_is_not_applicable_even_when_not_completed(rule):
+    result = judged(rule, phase="ramp", n=1, state="failed")
+    assert result["truths"]["slower"] is None
+    assert result["truth_reasons"]["slower"] == "not_applicable"
+    assert result["truths"]["queue"] is None
+    assert result["truth_reasons"]["queue"] == "not_completed"
+    assert result["truths"]["protocol_clean"] == "none"
 
 
 def test_completed_without_duration_is_not_completed(rule):

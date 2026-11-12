@@ -12,6 +12,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+from agentwatch_agent import sweep_protocol
 from agentwatch_agent import sweep_steps as recorder
 from agentwatch_data import sweep_steps_input as reader
 from agentwatch_data.sweep_truth import load_truth_rule, write_truths
@@ -48,7 +49,11 @@ def test_recorder_and_rule_agree_on_the_format():
     assert recorder.STEPS_FORMAT == reader.STEPS_FORMAT
     assert recorder.RECORD_KEYS == reader.RECORD_KEYS
     assert recorder.SPAN_STATUSES == reader.SPAN_STATUSES
-    assert load_truth_rule().protocols == recorder.ACCEPTED_PROTOCOL_SHA256
+    rule = load_truth_rule()
+    assert rule.protocols == recorder.ACCEPTED_PROTOCOL_SHA256
+    # The recorder declares the thresholds in the protocol it hashes; the rule must apply the same.
+    assert rule.min_seconds == sweep_protocol.LABEL_THRESHOLD_FLOOR_SECONDS
+    assert rule.stdev_multiplier == sweep_protocol.LABEL_THRESHOLD_STDEV_MULTIPLIER
 
 
 def _by_truth(records: list[dict], name: str) -> Counter:
@@ -74,6 +79,8 @@ def test_frozen_sweeps_keep_their_model_call_truths(folder, tmp_path):
         for line in (truth_dir / "truth.jsonl").read_text(encoding="utf-8").splitlines()
     ]
 
+    summary = json.loads((truth_dir / "truth.json").read_text(encoding="utf-8"))
+    assert summary["label_version"] == load_truth_rule().label_version
     assert len(records) == expected["steps"]
     assert sum(record["step_type"] == MODEL_CALL for record in records) == expected["model_calls"]
     for name in ("queue", "slower", "protocol_clean"):
