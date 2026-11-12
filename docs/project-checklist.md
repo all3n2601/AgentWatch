@@ -760,7 +760,7 @@ frozen evaluation sets without tuning against them.
   ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
   evaluable release; open until one covering all four classes passes the leakage check.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
-  2026-11-11 (A06, PR #65 on branch `feature/natural-overload-capacity-sweep`, not yet merged):
+  2026-11-11 (A06, PR #65, merged to `main` as `50f393d` on 2026-11-12 UTC):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol
   `natural-overload-sweep-v1`
   ([design](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md)). It
