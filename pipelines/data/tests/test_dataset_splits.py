@@ -1420,7 +1420,7 @@ def test_the_live_contract_is_v3_selecting_split_v3():
     c = load_contract(LIVE)
     assert (c.version, c.status, c.method, c.group_key) == (
         "eval-contract-v3",
-        "proposed",
+        "accepted",
         "split-v3",
         "task_group",
     )
@@ -1435,11 +1435,16 @@ def test_the_v2_contract_file_keeps_the_v2_identifier():
     assert load_contract(CONTRACT).sha256 == "9b55506c"
 
 
+def test_the_live_contract_keeps_the_v3_identifier():
+    # 1cab0cbe identifies eval-contract-v3, which split-v3+932b2df410a7 and the M02-M04 results
+    # record; any change to the parsed file needs a new version.
+    assert load_contract(LIVE).sha256 == "1cab0cbe"
+
+
 def test_v3_changes_only_the_split_selection():
     v2, v3 = tomllib.loads(CONTRACT.read_text()), tomllib.loads(LIVE.read_text())
     changed = {
         ("version",): ("eval-contract-v2", "eval-contract-v3"),
-        ("status",): ("accepted", "proposed"),
         ("splits", "method"): ("split-v2", "split-v3"),
         ("splits", "assignment"): (
             "../data/src/agentwatch_data/split-assignment.toml",
