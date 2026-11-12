@@ -112,12 +112,33 @@ def test_training_experiments_below_the_share_go_to_validation(tmp_path):
     rows = [
         row("fix-mean-empty", "a", "exp-0", plan="p0"),
         row("fix-mean-empty", "b", "exp-1", plan="p1"),
-        row("fix-mean-empty", "c", None),  # no experiment: stays with its task
     ]
     groups, members, _ = partition_v3(rows, loaded(tmp_path), FRACTIONS)
     assert groups == {"fix-mean-empty": "train"}
     assert [r["run_id"] for r in members["validation"]] == ["a"]
-    assert [r["run_id"] for r in members["train"]] == ["b", "c"]
+    assert [r["run_id"] for r in members["train"]] == ["b"]
+
+
+@pytest.mark.parametrize("experiment", [None, ""])
+def test_a_split_row_without_an_experiment_is_refused(tmp_path, experiment):
+    # A capacity-sweep run has no experiment; untagged, it would otherwise land in train.
+    rows = [row("fix-mean-empty", "a", "exp-1", plan="p1"), row("fix-mean-empty", "n", experiment)]
+    with pytest.raises(AssignmentError, match="names no experiment"):
+        partition_v3(rows, loaded(tmp_path), FRACTIONS)
+
+
+def test_a_test_task_row_without_an_experiment_is_refused_too(tmp_path):
+    # Fail closed on every split row, not only training ones, so tagging cannot be skipped.
+    rows = [row("fix-mean-empty", "a", "exp-1", plan="p1"), row("fix-window-count", "w", None)]
+    with pytest.raises(AssignmentError, match="names no experiment"):
+        partition_v3(rows, loaded(tmp_path), FRACTIONS)
+
+
+def test_a_held_out_row_needs_no_experiment(tmp_path):
+    overload = {"protocol_version": PROTOCOL, "protocol_sha256": SWEEP_DEFAULT}
+    rows = [row("fix-mean-empty", "a", "exp-1"), row("fix-mean-empty", "n", None, **overload)]
+    _, _, checks = partition_v3(rows, loaded(tmp_path), FRACTIONS)
+    assert checks["held_out_evaluation"]["rows"] == 1
 
 
 def test_declared_test_groups_go_to_test_whole(tmp_path):
@@ -137,7 +158,7 @@ def test_a_held_out_method_on_a_training_task_is_refused(tmp_path, method):
     # split-v2 would move the whole task to test, emptying training; split-v3 refuses instead.
     rows = [
         row("fix-mean-empty", "a", "exp-1", plan="p1"),
-        row("fix-mean-empty", "b", method=method),
+        row("fix-mean-empty", "b", "exp-2", plan="p2", method=method),
     ]
     with pytest.raises(AssignmentError, match="not declare as a test task"):
         partition_v3(rows, loaded(tmp_path), FRACTIONS)
@@ -157,7 +178,7 @@ def test_the_validation_experiments_are_recorded(tmp_path):
 def test_rows_of_another_feature_definition_are_left_out(tmp_path):
     rows = [
         row("fix-mean-empty", "a", "exp-1"),
-        row("cpu-task", "c", feature_version="steps-v1.2"),
+        row("cpu-task", "c", feature_version="steps-v1.2"),  # left out, so no experiment needed
         row("cpu-task", "d", feature_version=None),
     ]
     groups, members, checks = partition_v3(rows, loaded(tmp_path), FRACTIONS)
@@ -182,9 +203,14 @@ def test_natural_overload_rows_stay_out_of_every_split(tmp_path):
 
 
 def test_a_listed_protocol_hash_is_held_out_whatever_its_version(tmp_path):
-    # The preflight dry run is not the protocol, but its hash is listed, so it is held out.
-    dry = {"protocol_version": "preflight-dry-run", "protocol_sha256": SWEEP_DEFAULT}
-    assert held_out_protocol(row("g", "r", **dry), loaded(tmp_path))
+    tagged = {"protocol_version": "another-protocol", "protocol_sha256": SWEEP_DEFAULT}
+    assert held_out_protocol(row("g", "r", **tagged), loaded(tmp_path))
+
+
+def test_the_packaged_assignment_holds_out_the_preflight_dry_run():
+    # The dry run (sweep 3a8dd5b2-...) uses the protocol's version with its own hash.
+    dry = {"protocol_version": PROTOCOL, "protocol_sha256": SWEEP_DRY_RUN}
+    assert held_out_protocol(row("fix-mean-empty", "r", **dry), load_assignment(PACKAGED))
 
 
 @pytest.mark.parametrize("sha256", ["f" * 64, None])

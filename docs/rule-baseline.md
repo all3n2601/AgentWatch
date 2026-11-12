@@ -36,9 +36,11 @@ make rule-baseline SPLIT=data/datasets/splits/<release>/<split>.json
 ```
 
 Splits are read only through `load_split`, which refuses a split whose quality verdict or
-leakage check does not pass. The defaults are the current contract (`eval-contract-v2`) and
-frozen schema (`steps-v1.3.pbtxt`). To rerun on a `steps-v1.2` split, pass the files it was
-made with:
+leakage check does not pass. The defaults are the current contract (`eval-contract-v3`, which
+makes `split-v3` splits) and frozen schema (`steps-v1.3.pbtxt`). A split made under another
+contract is refused with the contract to pass. To rerun on a `split-v2` split, pass
+`EVALUATION_CONTRACT=pipelines/model/evaluation-contract-v2.toml`; on a `steps-v1.2` split, pass
+the files it was made with:
 
 ```sh
 make rule-baseline SPLIT=data/datasets/splits/steps-v1.2+5954f97ef8b2/split-v1+58e921fa846a.json \

@@ -742,7 +742,8 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   has a `step-features-v1` row in this release. Validation holds three experiments of the
   training task (weak calibration evidence; see the ADR). Open: review and the contract's
   acceptance; training still has one task group; the natural-overload rule runs on synthetic
-  rows only, and fails open on untagged rows, so the PR that ingests sweep replays must write
+  rows only. A split row with no experiment is refused (2026-11-12, after Benoy's review), so an
+  untagged sweep row cannot reach train; the PR that ingests sweep replays must still write
   `protocol_version` and `protocol_sha256` on every row and test that they are held out.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).

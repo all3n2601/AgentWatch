@@ -16,9 +16,9 @@ The A06 capacity sweeps (PR #65) also need a frozen place before any of their ro
 release: the prefill-flood runs, the natural-overload replays, and the new task
 `fix-median-even`.
 
-**Decision.** split-v3 keeps split-v2's rules (declared test task groups, held-out methods
-moving whole groups to test, `split-v1` hash positions for everything else, refusal of shared
-runs and plans) and adds the following. Rohit proposed these with Benoy on 2026-11-11
+**Decision.** split-v3 keeps split-v2's declared test task groups, `split-v1` hash positions
+for everything else and refusal of shared runs and plans, changes how held-out methods are
+handled, and adds the rest below. Rohit proposed these with Benoy on 2026-11-11
 (`fix-median-even` staying unseen is Benoy's decision). Every rule is label-independent by
 construction: it reads feature versions, method names, task groups, protocol hashes and
 experiment names, never labels or outcomes. Labels of `fix-mean-empty` were already seen under
@@ -38,12 +38,18 @@ experiment names, never labels or outcomes. Labels of `fix-mean-empty` were alre
   train.
 - **Natural overload, a separate held-out set.** A row whose `protocol_sha256` is listed under
   `[held_out_protocol]` is held out of train, validation and test, whatever its protocol
-  version. The list holds the two A06 protocol sweeps (cfg-default, cfg-hardware) and the
-  preflight dry run. A row of `natural-overload-sweep-v1` whose hash is not listed is refused,
+  version. The list holds the two A06 protocol sweeps (cfg-default, sweep
+  `c5a40c4c-e4b3-4dc1-b660-21ca4c88bc93`; cfg-hardware, sweep
+  `068e27a9-5933-4f99-b465-75502f7e523b`) and the preflight dry run (sweep
+  `3a8dd5b2-ac98-4095-b58c-3d90e0950976`), which uses the same protocol version with a 300 s
+  run limit and so its own hash. A row of `natural-overload-sweep-v1` whose hash is not listed is refused,
   so an unknown sweep can never reach training. The held-out set may share a task with any
   split but never a run or a plan; sharing refuses the split. The split file records the set
   under `split_v3_checks.held_out_evaluation`, including its task groups, so a report can tell
   an unseen condition on a seen task (`fix-mean-empty`) from both unseen (`fix-median-even`).
+- **Every split row names its experiment.** A kept row with no `experiment` refuses the
+  split. Capacity-sweep runs have no experiment, so an untagged natural-overload row of a
+  training task is refused, not trained on. Every `step-features-v1` row of dataset v1 has one.
 - **Validation by experiment.** Within a task group assigned to train, a whole experiment goes
   to validation when the position of `split-v3:<experiment>` (SHA-256, first 8 bytes over
   2^64) is below validation / (train + validation) = 0.15 / 0.85. Train and validation may
@@ -69,15 +75,17 @@ steps) to validation, above the 100 steps `calibration-v1` needs.
 - On dataset v1 the split is `split-v3+95309c38a53e`: train 1,755 steps, validation 273, test
   3,575 (`fix-window-count` only). Leakage, class balance, independence and mixed-in-test pass.
 - The held-out-method check is `not_met`: neither held-out method has a `step-features-v1` row
-  in dataset v1. The rules do not evaluate held-out generalization, and the check stays honest
+  in dataset v1, so the contract's `held_out_injection_methods = 1` is unmet. The
+  `worker_queue_blocker` rows are `steps-v1.2` and left out, so that listing has no effect on
+  dataset v1; it stays so a later `step-features-v1` row of it is placed correctly. The rules do not evaluate held-out generalization, and the check stays honest
   until prefill-flood rows are in a release.
 - The CPU and coding rows are no longer evaluated. Evaluating them needs a model on their own
   features, which is not planned.
 - No row carries `protocol_sha256` yet, so the natural-overload rule runs on synthetic
-  fixtures only. The rule fails open on an untagged row: a natural-overload replay without
-  `protocol_sha256` and `protocol_version` would be split like any other row. The PR that
-  ingests sweep replays must therefore write both fields on every row, and must not merge
-  without a test that its rows are held out. Scoring the held-out set also needs a
+  fixtures only. An untagged sweep row is refused because it names no experiment, but a sweep
+  row that somehow carried an experiment and no protocol fields would be split like any other
+  row. The PR that ingests sweep replays must therefore write both fields on every row, and
+  must not merge without a test that its rows are held out. Scoring the held-out set also needs a
   natural-overload label rule, because `labels-v2` labels every such step `none`.
 - Validation is small and clustered: 273 steps from 3 experiments, 234 of them `none` (8
   `cpu_sandbox`, 14 `inference`, 12 `retrieval`, 5 `mixed`). All three use the 7-step plan

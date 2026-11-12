@@ -765,6 +765,7 @@ def load_split(
         raise SplitError(f"Unknown split {name!r}; expected one of {list(SPLITS)}")
     split = read_split_file(path)
     contract = load_contract(contract_path)
+    require_contract_of(split, path, contract, contract_path)
     release = path.parents[2] / path.parent.name
     manifest, rows = load_release(release)
     check_compatibility(contract, manifest)
@@ -784,6 +785,22 @@ def load_split(
             f"Split {path.name}: its leakage check is {leakage}; the contract blocks evaluation"
         )
     return members_for(rows, contract, assignment)[1][name]
+
+
+def require_contract_of(split: dict, path: Path, contract: Contract, contract_path: Path) -> None:
+    """Refuse a split made under another contract, naming the contract to pass instead.
+
+    Checked before the rebuild, so a split-v2 file read with the current contract is not met
+    with advice to rebuild it, which would make a split of the current contract instead.
+    """
+    made_with = split.get("contract", {}).get("version")
+    if split["split_method"] == contract.method and made_with == contract.version:
+        return
+    raise SplitError(
+        f"Split {path.name} was made with {made_with} ({split['split_method']}), but "
+        f"{contract_path} is {contract.version} ({contract.method}); pass the {made_with} file "
+        f"(earlier contracts are kept as pipelines/model/evaluation-contract-v<N>.toml)"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
