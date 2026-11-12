@@ -783,6 +783,16 @@ frozen evaluation sets without tuning against them.
   `eval-contract-v1`, and logs every attempt, including blocked and failed ones, to MLflow
   ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
   evaluable release; open until one covering all four classes passes the leakage check.
+  2026-11-11 (M03, branch `docs/m03-m04-first-results` on top of #70 and #71, none merged):
+  first real run, `training-v1+a34ea0be` on `split-v3+95309c38a53e` (`eval-contract-v3`
+  `b9f20820`, proposed), in a Linux container with LightGBM 4.7.0, MLflow run
+  `5218bafb5cb949d0aebd9989ac9179e8` (local). Macro F1 0.790 against the rules' 0.200 on the
+  same 3,564 test steps; clean `none` rate 0.991; mixed-contention macro F1 0.534 against
+  0.047; excess-latency MAE 0.076 (limit 0.10). Every evaluated gate passes; six are
+  `not_evaluated`. A second run reproduced the report, predictions and both models byte for
+  byte ([model training](model-training.md#results-on-dataset-v1)). One test task, so no
+  interval and no causal claim. Open: review and merge, `eval-contract-v3` acceptance, and
+  more than one task group in training and test.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
   2026-11-11 (A06, PR #65 on branch `feature/natural-overload-capacity-sweep`, not yet merged):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol
@@ -847,9 +857,15 @@ frozen evaluation sets without tuning against them.
   threshold is chosen on single-class validation steps. 2026-11-11 (PR #63, not merged): the
   threshold's 20% limit also covers scored mixed validation steps and reads the contract's
   `abstention_rate_scopes`, as the test gate does (`test_calibration.py`, `test_calibrate.py`;
-  synthetic fixtures only). Open: `split-v2` has an empty validation
-  split, so nothing is fitted yet, and showing uncertain results belongs to serving and the
-  dashboard.
+  synthetic fixtures only). 2026-11-11 (M04, branch `docs/m03-m04-first-results`, not merged):
+  first real fit on `split-v3+95309c38a53e`'s 273 validation steps: temperature 0.897,
+  threshold 0.647. On test, calibrated ECE 0.0178 (uncalibrated 0.0074; limit 0.05), abstention
+  2.4% overall, 0% on mixed steps and at most 19.9% per class (`retrieval`), macro F1 with
+  abstentions 0.780; every evaluated gate passes. Calibration made ECE worse overall and on
+  contended steps, and validation is small and shared with early stopping, so this is weak
+  evidence ([calibration](model-calibration.md#results-on-dataset-v1)). Open: review and
+  merge, `eval-contract-v3` acceptance, and showing uncertain results, which belongs to serving
+  and the dashboard.
 - [ ] Load a versioned registered model in the correlation service.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
 

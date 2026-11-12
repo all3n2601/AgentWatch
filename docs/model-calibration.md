@@ -1,8 +1,10 @@
 # AgentWatch confidence calibration and abstention
 
-Status: `calibration-v1`, implemented and tested on synthetic fixtures (M04); not yet run on an
-evaluable release. On `split-v2` the validation split is empty, so the calibration is not fitted
-and the calibration and abstention gates are inconclusive.
+Status: `calibration-v1`, fitted and evaluated on 2026-11-11 on dataset v1
+(`split-v3+95309c38a53e`, `eval-contract-v3` `b9f20820`, proposed); see
+[Results on dataset v1](#results-on-dataset-v1). Every gate it evaluates passes. Temperature
+scaling made the test-split ECE slightly worse, not better. On `split-v2` the validation split
+is empty, so no calibration is fitted there.
 
 Raw LightGBM class scores are not calibrated confidence. M04 calibrates the M03 classifier on the
 validation split only, chooses an abstention threshold there, and scores both once on the test
@@ -65,6 +67,49 @@ MLflow keeps every attempt's report, predictions and calibration file.
 
 A consumer shows an abstained step as uncertain: `attribution` is null and `prediction` keeps
 the model's best guess for inspection only.
+
+## Results on dataset v1
+
+Run on 2026-11-11 right after the [M03 run](model-training.md#results-on-dataset-v1), in the same
+Linux container, with `python -m agentwatch_model.calibrate --split <split-v3+95309c38a53e.json>
+--candidates .data/candidates`. A second run reproduced the predictions and every value; only
+the recorded MLflow run IDs differ (`4203a3279a254b71825a87d8ff972dc1` for this one, local and
+not committed). `predictions.jsonl` SHA-256:
+`9f6b03fed9fe23e3263df413a311b73b2129f5aeffe3cd91b80fd2de61a8c70d`.
+
+**Fit on validation** (273 steps, 268 usable): temperature 0.897 (below 1, so it sharpens the
+scores), abstention threshold 0.647 on calibrated top-label confidence. On validation the
+threshold abstains on 1.8% of steps, none of them mixed, with macro F1 0.809.
+
+**Test split** (3,564 scored steps; 11 joint-only steps not scored):
+
+| Gate or measure | Result | Contract |
+|---|---|---|
+| Top-label ECE, calibrated | 0.0178 (uncalibrated 0.0074) | ≤ 0.05: **pass** |
+| Abstention overall | 2.4% (85 steps) | ≤ 20%: **pass** |
+| Abstention per true class | `none` 1.0%, `cpu_sandbox` 6.3%, `inference` 2.7%, `retrieval` 19.9% | ≤ 20% each: **pass** |
+| Abstention on mixed steps | 0% (82 steps) | ≤ 20%: **pass** |
+| Macro F1, abstentions as misses | 0.780 (rules 0.200) | Gain ≥ 0: **pass** |
+| Clean, and baseline-and-clean, `none` rates | 0.987 and 0.989 | ≥ 0.95: **pass** |
+| Mixed-contention macro F1 | 0.534 (rules 0.047) | Gain ≥ 0.10: **pass** |
+| Excess-latency MAE (from M03) | 0.076 | ≤ 0.10: **pass** |
+
+By condition (ECE calibrated, then uncalibrated): baseline 0.015 vs 0.023, clean 0.015 vs
+0.022, contended 0.083 vs 0.066, mixed steps 0.047 vs 0.067. Accuracy before abstention is 0.944
+overall and 0.835 on contended steps.
+
+What this shows, without claiming more:
+
+- **Calibration did not help overall.** The raw scores were already within the limit, and the
+  fitted temperature, chosen on a validation split that is 86% `none`, made contended steps
+  more over-confident. The gate passes because of the raw scores, not the calibration.
+- **`retrieval` abstention is at the limit.** 41 of 206 `retrieval` steps abstain (19.9%,
+  limit 20%); one more would fail the gate.
+- **Weak evidence.** Validation is 273 steps from three experiments of the training task, and it
+  also chose M03's early-stopping iterations, so the fit is optimistic (the report says so).
+  Test is one unseen task on one laptop and one model. See
+  [ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md).
+- **Not shown yet.** Showing uncertain results to users belongs to serving and the dashboard.
 
 ## Report and gates
 
