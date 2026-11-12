@@ -23,7 +23,7 @@ const count = (value: number) => formatQuantity(value, "count");
 /** What the current selection allows, and why when it cannot be compared. */
 function compareNote(selection: CompareSelection): string {
   if (selection.status === "incomplete")
-    return "Tick two saved runs of the same kind to compare them. Live runs have no saved timings to compare.";
+    return "Tick two saved runs to compare them; differences are shown only when their recorded settings do not differ. Live runs have no saved timings to compare.";
   if (selection.status === "incompatible") return selection.reason;
   const { verdict, differing, unknown } = selection.compatibility;
   if (verdict === "differs")
