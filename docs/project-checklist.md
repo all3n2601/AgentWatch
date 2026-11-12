@@ -782,16 +782,18 @@ frozen evaluation sets without tuning against them.
   2026-10-26 (M03): `make train-candidates` trains the classifier and regressor on the training
   split (`training-v1`), compares them with `rules-v1` on identical rows against
   `eval-contract-v1`, and logs every attempt, including blocked and failed ones, to MLflow
-  ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
-  evaluable release; open until one covering all four classes passes the leakage check.
-  2026-11-11 (M03, branch `docs/m03-m04-first-results` on top of #70 and #71, none merged):
+  ([model training](model-training.md), `pipelines/model/tests`). At that date no evaluable
+  release existed; the first real run follows.
+  2026-11-11 (M03, PR #72 on branch `docs/m03-m04-first-results`, stacked on #71 and #70, none
+  merged; run at commit `6ade73d`):
   first real run, `training-v1+a34ea0be` on `split-v3+95309c38a53e` (`eval-contract-v3`
   `b9f20820`, proposed), in a Linux container with LightGBM 4.7.0, MLflow run
   `5218bafb5cb949d0aebd9989ac9179e8` (local). Macro F1 0.790 against the rules' 0.200 on the
   same 3,564 test steps; clean `none` rate 0.991; mixed-contention macro F1 0.534 against
   0.047; excess-latency MAE 0.076 (limit 0.10). Every evaluated gate passes; six are
-  `not_evaluated`. A second run reproduced the report, predictions and both models byte for
-  byte ([model training](model-training.md#results-on-dataset-v1)). One test task, so no
+  `not_evaluated`. A second run, and a 2026-11-12 rerun at `67b6429`, reproduced the report,
+  predictions and both models byte for byte
+  ([model training](model-training.md#results-on-dataset-v1)). One test task, so no
   interval and no causal claim. Open: review and merge, `eval-contract-v3` acceptance, and
   more than one task group in training and test.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
@@ -858,7 +860,7 @@ frozen evaluation sets without tuning against them.
   threshold is chosen on single-class validation steps. 2026-11-11 (PR #63, not merged): the
   threshold's 20% limit also covers scored mixed validation steps and reads the contract's
   `abstention_rate_scopes`, as the test gate does (`test_calibration.py`, `test_calibrate.py`;
-  synthetic fixtures only). 2026-11-11 (M04, branch `docs/m03-m04-first-results`, not merged):
+  synthetic fixtures only). 2026-11-11 (M04, PR #72, not merged; run at commit `6ade73d`):
   first real fit on `split-v3+95309c38a53e`'s 273 validation steps: temperature 0.897,
   threshold 0.647. On test, calibrated ECE 0.0178 (uncalibrated 0.0074; limit 0.05), abstention
   2.4% overall, 0% on mixed steps and at most 19.9% per class (`retrieval`), macro F1 with

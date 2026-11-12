@@ -70,16 +70,32 @@ the model's best guess for inspection only.
 
 ## Results on dataset v1
 
-Run on 2026-11-11 right after the [M03 run](model-training.md#results-on-dataset-v1), in the same
-Linux container, with `python -m agentwatch_model.calibrate --split <split-v3+95309c38a53e.json>
---candidates .data/candidates`. A second run reproduced the predictions and every value; only
-the recorded MLflow run IDs differ (`4203a3279a254b71825a87d8ff972dc1` for this one, local and
-not committed). `predictions.jsonl` SHA-256:
-`9f6b03fed9fe23e3263df413a311b73b2129f5aeffe3cd91b80fd2de61a8c70d`.
+Run on 2026-11-11 at commit `6ade73d`, right after the
+[M03 run](model-training.md#results-on-dataset-v1) and in the same Linux container:
 
-**Fit on validation** (273 steps, 268 usable): temperature 0.897 (below 1, so it sharpens the
-scores), abstention threshold 0.647 on calibrated top-label confidence. On validation the
-threshold abstains on 1.8% of steps, none of them mixed, with macro F1 0.809.
+```sh
+make calibrate SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+95309c38a53e.json
+```
+
+It reads M03's `.data/candidates` (including `validation_predictions.jsonl`, SHA-256
+`c1bf9555c597282c75b8c9fbbe3f8ecaa15ef67fc607eb62cc0e92312d5ad6ff`) and writes
+`.data/calibration/`, not committed. MLflow run `4203a3279a254b71825a87d8ff972dc1` (local).
+
+| File | SHA-256 |
+|---|---|
+| `predictions.jsonl` | `9f6b03fed9fe23e3263df413a311b73b2129f5aeffe3cd91b80fd2de61a8c70d` |
+| `calibration.json` | `11e853f4eefc110409523e6e5419ec3fc98e7679cf57ac492a689865e3842213` |
+| `report.json` | `9fa445f185fb523c952ba195888b5d3c7fb2dd2444c9ac462590be6320a0c28c` |
+
+A second run at `6ade73d`, and a rerun on 2026-11-12 at `67b6429`, reproduced
+`predictions.jsonl` byte for byte and every value in `calibration.json` and `report.json`. Those
+two files record M03's MLflow run ID (`candidates.run_id`), which is new on every run, so their
+hashes match only for the same M03 run.
+
+**Fit on validation** (273 steps, 268 usable; the 5 others are `mixed` steps, which are not a
+class the classifier was trained on): temperature 0.897 (below 1, so it sharpens the scores),
+abstention threshold 0.647 on calibrated top-label confidence. On validation the threshold
+abstains on 1.8% of steps, none of them mixed, with macro F1 0.809.
 
 **Test split** (3,564 scored steps; 11 joint-only steps not scored):
 
@@ -90,7 +106,7 @@ threshold abstains on 1.8% of steps, none of them mixed, with macro F1 0.809.
 | Abstention per true class | `none` 1.0%, `cpu_sandbox` 6.3%, `inference` 2.7%, `retrieval` 19.9% | ≤ 20% each: **pass** |
 | Abstention on mixed steps | 0% (82 steps) | ≤ 20%: **pass** |
 | Macro F1, abstentions as misses | 0.780 (rules 0.200) | Gain ≥ 0: **pass** |
-| Clean, and baseline-and-clean, `none` rates | 0.987 and 0.989 | ≥ 0.95: **pass** |
+| Clean, and baseline-and-clean, `none` rates | 0.987 and 0.989 (M03: 0.991 and 0.992) | ≥ 0.95: **pass** |
 | Mixed-contention macro F1 | 0.534 (rules 0.047) | Gain ≥ 0.10: **pass** |
 | Excess-latency MAE (from M03) | 0.076 | ≤ 0.10: **pass** |
 
@@ -103,8 +119,12 @@ What this shows, without claiming more:
 - **Calibration did not help overall.** The raw scores were already within the limit, and the
   fitted temperature, chosen on a validation split that is 86% `none`, made contended steps
   more over-confident. The gate passes because of the raw scores, not the calibration.
+- **Abstention, not calibration, lowers the clean rates.** Temperature scaling keeps each
+  step's top class, so the predictions match M03's; 4 clean and 4 baseline steps that M03
+  predicted `none` abstain here and count as misses (1,090 to 1,086 of 1,100 clean steps).
 - **`retrieval` abstention is at the limit.** 41 of 206 `retrieval` steps abstain (19.9%,
-  limit 20%); one more would fail the gate.
+  limit 20%); one more would fail the gate. The threshold was chosen on validation alone,
+  before test was scored, and was not changed after.
 - **Weak evidence.** Validation is 273 steps from three experiments of the training task, and it
   also chose M03's early-stopping iterations, so the fit is optimistic (the report says so).
   Test is one unseen task on one laptop and one model. See
