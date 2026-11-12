@@ -1,7 +1,6 @@
 """Label validation tests. Every run folder here is a synthetic fixture built in tmp_path."""
 
 import json
-import shutil
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -13,9 +12,7 @@ from agentwatch_agent.sweep_labels import (
     max_running_check,
     noise_threshold,
     spearman,
-    step_truths,
 )
-from agentwatch_agent.sweep_offline import analyse_sweep_folder
 from agentwatch_sdk.live import ResourceSample, StepEvent
 
 RUN_ID = UUID("00000000-0000-4000-8000-000000000004")
@@ -330,24 +327,6 @@ def test_model_steps_that_did_not_complete_are_counted_by_final_state(tmp_path):
     assert levels["excluded_not_completed"] == {"failed": 1}
 
 
-def test_a_completed_model_step_without_a_duration_is_counted_by_that_reason(tmp_path, monkeypatch):
-    reference = baselines(baseline_runs(tmp_path))
-    run = tmp_path / "no-duration"
-    write_run(run, [(MODEL_STEP, "model_call", 1.0, span_call(MODEL_STEP))])
-    import agentwatch_agent.sweep_labels as labels
-
-    monkeypatch.setattr(
-        labels,
-        "step_timings",
-        lambda _run: {
-            MODEL_STEP: {"step_type": "model_call", "state": "completed", "total_seconds": None}
-        },
-    )
-    overall = label_validation([run], reference)["overall"]
-    assert overall["excluded_not_completed"] == {"completed_without_duration": 1}
-    assert overall["excluded"] == {"not_completed": 1}
-
-
 def test_baselines_count_steps_that_did_not_complete(tmp_path):
     runs = baseline_runs(tmp_path)
     failed = tmp_path / "base-failed"
@@ -452,102 +431,3 @@ def test_the_label_rule_baseline_count_is_model_calls_only(tmp_path):
     # Tool and root-step baselines exist, but the label rule is validated on model calls only.
     assert report["label_rule_baselines"] == 1
     assert report["baselines_by_step_type"] == {"model_call": 1, "tool": 1, "other": 1}
-
-
-def test_step_truths_mark_a_model_call_queued_and_slower(tmp_path):
-    reference = baselines(baseline_runs(tmp_path, durations=(1.0, 1.0, 1.0)))
-    run = tmp_path / "level"
-    write_run(run, [(MODEL_STEP, "model_call", 1.5, span_call(MODEL_STEP, queue=0.4))])
-    plan, truths = step_truths(run, reference)
-    assert plan == PLAN
-    (truth,) = truths
-    assert truth.step_id == MODEL_STEP
-    assert truth.duration_seconds == pytest.approx(1.5)
-    assert truth.baseline_mean_seconds == pytest.approx(1.0)
-    assert truth.noise_threshold_seconds == pytest.approx(0.01)
-    assert truth.excess_seconds == pytest.approx(0.5)
-    assert truth.vllm_queue_seconds == pytest.approx(0.4)
-    assert truth.vllm_service_seconds == pytest.approx(0.3)
-    assert truth.slower is True and truth.queued is True and truth.reason is None
-
-
-def test_step_truths_leave_a_partly_unmeasured_step_without_queue_truth(tmp_path):
-    reference = baselines(baseline_runs(tmp_path))
-    run = tmp_path / "level"
-    write_run(run, [(MODEL_STEP, "model_call", 5.0, span_call(MODEL_STEP, queue=4.0))])
-    evidence_file = run / "agent-evidence.json"
-    evidence = json.loads(evidence_file.read_text())
-    evidence["model_calls"].append(span_call(MODEL_STEP, status="unavailable"))
-    evidence_file.write_text(json.dumps(evidence))
-    (truth,) = step_truths(run, reference)[1]
-    assert truth.queued is None
-    assert truth.reason == "span_not_measured"
-    assert truth.vllm_queue_seconds is None
-    assert truth.slower is True
-    assert label_validation([run], reference)["overall"]["excluded"] == {"unavailable": 1}
-
-
-def test_step_truths_report_missing_baseline_not_completed_and_malformed(tmp_path, monkeypatch):
-    reference = baselines(baseline_runs(tmp_path))
-    no_baseline, failed, malformed = tmp_path / "nb", tmp_path / "failed", tmp_path / "bad"
-    write_run(no_baseline, [("other-model", "model_call", 1.0, span_call("other-model"))])
-    write_failed_step_run(failed, MODEL_STEP)
-    write_run(malformed, [(MODEL_STEP, "model_call", 1.0, span_call(MODEL_STEP))])
-    (no_baseline_truth,) = step_truths(no_baseline, reference)[1]
-    (failed_truth,) = step_truths(failed, reference)[1]
-    assert failed_truth.state == "failed"
-    import agentwatch_agent.sweep_labels as labels
-
-    monkeypatch.setattr(
-        labels,
-        "step_timings",
-        lambda _run: {
-            MODEL_STEP: {"step_type": "model_call", "state": "completed", "total_seconds": -1.0}
-        },
-    )
-    (malformed_truth,) = step_truths(malformed, reference)[1]
-    truths = {
-        "no_baseline": no_baseline_truth,
-        "not_completed": failed_truth,
-        "malformed": malformed_truth,
-    }
-    for reason, truth in truths.items():
-        assert truth.reason == reason
-        assert truth.slower is None and truth.queued is None
-
-
-def test_step_truths_give_tool_steps_no_model_truth(tmp_path):
-    runs = []
-    for index in range(3):
-        run = tmp_path / f"t-base-{index}"
-        write_run(run, [("tool-1", "tool", 0.5, None)])
-        runs.append(run)
-    reference = baselines(runs)
-    slow = tmp_path / "t-slow"
-    write_run(slow, [("tool-1", "tool", 2.0, None)])
-    (truth,) = step_truths(slow, reference)[1]
-    assert truth.step_type == "tool"
-    assert truth.slower is None and truth.queued is None
-    assert truth.reason == "not_applicable"
-    assert truth.excess_seconds == pytest.approx(1.5)
-
-
-def test_step_truths_return_no_steps_for_a_run_without_a_plan(tmp_path):
-    run = tmp_path / "noplan"
-    write_run(run, [(MODEL_STEP, "model_call", 1.0, span_call(MODEL_STEP))], plan=None)
-    assert step_truths(run, {}) == (None, [])
-
-
-FROZEN_SWEEPS = Path(__file__).resolve().parents[3] / "data/held-out/a06-20261111/capacity-sweeps"
-
-
-@pytest.mark.skipif(not FROZEN_SWEEPS.is_dir(), reason="DVC data not pulled")
-def test_sweep_analysis_still_reproduces_the_frozen_label_validation(tmp_path):
-    # The analysis writes analysis.json beside sweep.json, so it runs on a copy.
-    for source in sorted(FROZEN_SWEEPS.iterdir()):
-        copy = tmp_path / source.name
-        shutil.copytree(source, copy)
-        frozen = json.loads((source / "sweep.json").read_text())["label_validation"]
-        # sweep.json is JSON, so its level keys are strings where the analysis has ints.
-        rebuilt = json.loads(json.dumps(analyse_sweep_folder(copy)["label_validation"]))
-        assert rebuilt == frozen

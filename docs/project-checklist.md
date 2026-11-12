@@ -808,6 +808,12 @@ frozen evaluation sets without tuning against them.
   a descriptive baseline with no gate, an uncalibrated classifier and one sweep per
   configuration. Stays open for M2 PR 4's inference rule, which will be scored by the same
   command, and for an evaluable release.
+  2026-11-12 (branch `feature/sweep-truth-rule`, not yet merged): `sweep-truth-v1` is a versioned
+  label rule in `pipelines/data` for the frozen A06 sweeps, label version `sweep-truth-v1+d0ded6b6`
+  ([data card](data-card.md#sweep-truth-rule-sweep-truth-v1-held-out-a06-sweeps-only),
+  [design](superpowers/specs/2026-11-12-sweep-truth-rule-design.md)). The contract test
+  `tests/contract/test_sweep_truth_frozen.py` pins both sweeps' truth counts (skipped when the DVC
+  data is not pulled). It labels only; no model has been scored with it, so the item stays open.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
   2026-11-11 (A06, PR #65, merged to `main` as `50f393d` on 2026-11-12 UTC):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol

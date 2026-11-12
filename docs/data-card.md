@@ -365,6 +365,72 @@ or tuning. `make add-evidence` refuses the truth and score folders
 (`pipelines/model/tests/test_score_held_out.py`), and `make dataset` reads only its configured
 sources (the evidence store and the API), so neither can take them in. Versioning the scores is
 out of scope.
+## Sweep truth rule `sweep-truth-v1` (held-out A06 sweeps only)
+
+`sweep-truth-v1` labels the steps of the frozen A06 natural-overload sweeps so that held-out
+scoring has truths to compare against. It is a versioned rule in `pipelines/data`
+(`sweep-truth-v1.toml`, `sweep_truth.py`), run as `make sweep-truth STEPS=<dir>` on the output of
+`make agent-capacity-sweep-steps SWEEP=<folder>`. The agent service records the steps and decides
+nothing; this rule decides every truth and reason. Rohit and Akshay accepted it as the held-out
+label rule on #70 (2026-11-12) on two conditions: it lands first as its own pull request that
+Akshay reviews, and tool steps are unscored rather than `none` while the root `agent-run` step is
+excluded. Reviewer: Akshay.
+
+| Step | `queue` | `slower` | `protocol_clean` |
+|---|---|---|---|
+| model call | `inference` when vLLM's measured queue time exceeds the threshold, else `none` | `inference` when duration minus the N = 1 baseline mean exceeds the threshold, else `none`; null `not_applicable` on ramp N = 1 | `none` in a ramp or control batch at N = 1, else null `not_applicable` |
+| root step (no parent) | null `root_step` | null `root_step` | null `root_step` |
+| any other step type | null `no_queue_reference` | null `no_queue_reference` | null `no_queue_reference` |
+
+The baseline of a step is the mean and sample standard deviation (`statistics.stdev`) of its
+runner-tick duration over the completed steps with the same (replay plan, step id) in the ramp
+N = 1 batches the analysis keeps, with at least 3 values; the recorder computes it. The threshold
+is max(0.01 s, 3 x baseline stdev), the `[noise]` values of `labels-v2`; the floor alone applies
+only to a null stdev, which a baseline of at least 3 runs never has and only hand-made input can
+carry. A model call that cannot be judged gets a null truth with a reason, in this order:
+`not_completed`, `malformed`, `no_baseline` (no baseline, or fewer than 3 baseline runs), then,
+for `queue` only, `span_not_measured`. `malformed` is a defensive branch: the input check refuses
+a negative or non-finite duration for the whole sweep, so it cannot reach the rule on validated
+input. The input check also refuses the sweep when a step's queue and execution seconds don't add
+up to its duration within 1e-6 s (the live contracts' timing-breakdown tolerance), and when
+`steps.json`'s `steps_sha256` isn't the hash of the `steps.jsonl` beside it.
+
+Precedence: on ramp N = 1, `slower` is `not_applicable` even when the step is `not_completed` or
+has `no_baseline`, while `queue` keeps the specific reason; and `protocol_clean` is `none` for a
+model call in a clean batch whatever its state.
+
+**Exclusions and why.** Tool, retrieval and other steps have no vLLM queue reference, so their
+queue wait cannot be judged: they are null `no_queue_reference`, not `none`. The root `agent-run`
+step spans the whole run and is not a unit of work: null `root_step`. Neither gets
+`protocol_clean = none`. These two exclusions are the only difference from the scoring branch's
+earlier truths on the frozen sweeps, and every model-call truth is unchanged there (pinned by
+`tests/contract/test_sweep_truth_frozen.py`). In general the only other difference is that a
+malformed duration refuses the sweep instead of labelling one step `malformed`.
+
+**Label version:** `sweep-truth-v1+d0ded6b6` (the fingerprint covers the rule values and the
+truth and input-validation code; comments and formatting in the TOML do not change it, but any
+edit to `sweep_truth.py` or `sweep_steps_input.py`, comments included, does). The baseline
+statistics are computed by the recorder, outside that fingerprint, so a truth set is identified by
+`label_version` together with `steps_sha256` and `steps_summary_sha256`, both recorded in
+`truth.json`; the scoring branch will check both. `truth.json` also records the validated rule
+values (`rule`), so a rule loaded with `--rules` can be reconstructed from its output, and
+`truth_sha256`, the hash of the `truth.jsonl` it was written with. Counts from the real run of
+2026-11-12, model calls by class, with the null reasons below:
+
+| | cfg-default (`2d75ea`) | cfg-hardware (`b4ad4a`) |
+|---|---|---|
+| steps / model calls | 1,896 / 825 | 2,104 / 915 |
+| `queue` inference / none | 686 / 139 | 8 / 907 |
+| `slower` inference / none | 715 / 80 | 663 / 222 |
+| `slower` null `not_applicable` | 30 | 30 |
+| `protocol_clean` none / null `not_applicable` | 45 / 780 | 30 / 885 |
+| `root_step` (each truth) | 165 | 183 |
+| `no_queue_reference` (each truth) | 906 | 1,006 |
+
+The frozen-sweep contract test (`tests/contract/test_sweep_truth_frozen.py`) pins these counts
+and skips when the DVC data is not pulled. This rule never feeds `make dataset` or a release: its
+output stays in `.data/a06-scoring/`, and the sweeps remain held-out evidence (see above). This
+document reports no model results.
 
 ## Sources
 

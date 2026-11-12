@@ -11,7 +11,6 @@ Tool and retrieval steps have no measured reference, so their label rate is repo
 """
 
 import math
-from dataclasses import dataclass
 from pathlib import Path
 
 from agentwatch_agent.coverage import read_journal
@@ -120,7 +119,8 @@ def _step_spans(evidence: dict) -> dict[str, dict]:
     return steps
 
 
-def _read_run(run_dir: Path) -> tuple[str | None, dict[str, dict], dict[str, dict]]:
+def read_run(run_dir: Path) -> tuple[str | None, dict[str, dict], dict[str, dict]]:
+    """The run's replay plan hash, `step_timings` and measured vLLM span per step."""
     evidence = _read_json(run_dir / "agent-evidence.json")
     return _plan_sha256(evidence), step_timings(run_dir), _step_spans(evidence)
 
@@ -137,7 +137,7 @@ def baselines(n1_runs: list[Path]) -> Baselines:
     services: dict[BaselineKey, list[float]] = {}
     step_types: dict[BaselineKey, str] = {}
     for run_dir in n1_runs:
-        plan, timings, spans = _read_run(run_dir)
+        plan, timings, spans = read_run(run_dir)
         if plan is None:
             result.runs_without_plan += 1
             continue
@@ -215,156 +215,57 @@ def _count(tally: dict, group: str, key: str) -> None:
     tally[group][key] = tally[group].get(key, 0) + 1
 
 
-@dataclass(frozen=True)
-class StepTruth:
-    """One journaled step: its duration label against the measured vLLM queue reference.
-
-    `slower` and `queued` are the two sides `label_validation` compares, both against the same
-    `noise_threshold_seconds`. They are None for steps that cannot be judged; `reason` says why
-    (`not_completed`, `malformed`, `no_baseline`, `not_applicable`, `span_not_measured`).
-    `queue_seconds` is the runner dispatch delay, `vllm_queue_seconds` the server-side queue.
-    """
-
-    step_id: str
-    step_type: str
-    state: str
-    duration_seconds: float | None
-    queue_seconds: float | None
-    execution_seconds: float | None
-    baseline_mean_seconds: float | None
-    noise_threshold_seconds: float | None
-    excess_seconds: float | None
-    vllm_queue_seconds: float | None
-    vllm_service_seconds: float | None
-    slower: bool | None
-    queued: bool | None
-    reason: str | None
-
-
-def _judge_step(
-    step_id: str, timing: dict, baseline: dict | None, span: dict
-) -> tuple[StepTruth, str | None]:
-    """The step's truth and the detail the tally counts it under.
-
-    The detail is the final-state name of a step that did not complete, or the span status of a
-    model step whose span is unmeasured; None otherwise.
-    """
-    total = timing["total_seconds"]
-    fields = {
-        "step_id": step_id,
-        "step_type": timing["step_type"],
-        "state": str(timing["state"]),
-        "duration_seconds": total,
-        "queue_seconds": timing.get("queue_seconds"),
-        "execution_seconds": timing.get("execution_seconds"),
-        "baseline_mean_seconds": None,
-        "noise_threshold_seconds": None,
-        "excess_seconds": None,
-        "vllm_queue_seconds": None,
-        "vllm_service_seconds": None,
-        "slower": None,
-        "queued": None,
-    }
-
-    def truth(reason: str | None, **extra: object) -> StepTruth:
-        return StepTruth(**(fields | extra), reason=reason)
-
-    not_completed = _not_completed_state(timing)
-    if not_completed is not None:
-        return truth("not_completed"), not_completed
-    if not _valid_seconds(total):
-        return truth("malformed"), None
-    if baseline is None:
-        return truth("no_baseline"), None
-    threshold = noise_threshold(baseline)
-    excess = total - baseline["mean_seconds"]
-    judged = {
-        "baseline_mean_seconds": baseline["mean_seconds"],
-        "noise_threshold_seconds": threshold,
-        "excess_seconds": excess,
-    }
-    if timing["step_type"] != MODEL_STEP_TYPE:
-        return truth("not_applicable", **judged), None
-    if span["status"] != "measured":
-        return truth("span_not_measured", **judged, slower=excess > threshold), span["status"]
-    queue = span["queue_seconds"]
-    return (
-        truth(
-            None,
-            **judged,
-            vllm_queue_seconds=queue,
-            vllm_service_seconds=span["service_seconds"],
-            slower=excess > threshold,
-            queued=queue > threshold,
-        ),
-        None,
-    )
-
-
-def _judge_run(
-    run_dir: Path, reference: dict
-) -> tuple[str | None, list[tuple[StepTruth, str | None]]]:
-    plan, timings, spans = _read_run(run_dir)
-    if plan is None:
-        return None, []
-    return plan, [
-        _judge_step(
-            step_id,
-            timing,
-            reference.get((plan, step_id)),
-            spans.get(step_id, {"status": "not_recorded"}),
-        )
-        for step_id, timing in timings.items()
-    ]
-
-
-def step_truths(run_dir: Path, reference: Baselines | dict) -> tuple[str | None, list[StepTruth]]:
-    """The run's plan SHA-256 and one `StepTruth` per journaled step (none without a plan)."""
-    plan, judged = _judge_run(run_dir, reference)
-    return plan, [truth for truth, _detail in judged]
-
-
 def _tally_run(tally: dict, run_dir: Path, reference: dict) -> None:
-    plan, judged = _judge_run(run_dir, reference)
+    plan, timings, spans = read_run(run_dir)
     if plan is None:
         tally["runs_without_plan"] += 1
         return
-    for truth, detail in judged:
-        is_model = truth.step_type == MODEL_STEP_TYPE
-        if truth.reason == "not_completed":
+    for step_id, timing in timings.items():
+        total = timing["total_seconds"]
+        is_model = timing["step_type"] == MODEL_STEP_TYPE
+        state = _not_completed_state(timing)
+        if state is not None:
             if is_model:
-                _count(tally, "not_completed", detail)
+                _count(tally, "not_completed", state)
                 _count(tally, "excluded", "not_completed")
-        elif truth.reason == "malformed":
+            continue
+        if not _valid_seconds(total):
             if is_model:
                 _count(tally, "excluded", "malformed")
-        elif truth.reason == "no_baseline":
+            continue
+        baseline = reference.get((plan, step_id))
+        if baseline is None:
             tally["no_baseline"] += 1
-        elif truth.step_type in TOOL_STEP_TYPES:
+            continue
+        threshold = noise_threshold(baseline)
+        excess = total - baseline["mean_seconds"]
+        contended = excess > threshold
+        if timing["step_type"] in TOOL_STEP_TYPES:
             tally["tool"]["steps"] += 1
-            tally["tool"]["contended"] += truth.excess_seconds > truth.noise_threshold_seconds
-        elif truth.reason == "span_not_measured":
-            _count(tally, "excluded", detail)
-        elif is_model:
-            _tally_model_step(tally, truth, reference[(plan, truth.step_id)])
-
-
-def _tally_model_step(tally: dict, truth: StepTruth, baseline: dict) -> None:
-    contended, queue, excess = truth.slower, truth.vllm_queue_seconds, truth.excess_seconds
-    outcome = {(True, True): "tp", (True, False): "fp", (False, True): "fn"}
-    tally["confusion"][outcome.get((contended, truth.queued), "tn")] += 1
-    tally["excess"].append(excess)
-    tally["queue"].append(queue)
-    if contended:
-        tally["explained"]["steps"] += 1
-        tally["explained"]["excess_seconds"] += excess
-        tally["explained"]["queue_seconds"] += queue
-        service_mean = baseline.get("service_mean_seconds")
-        if service_mean is None:
-            tally["service"]["without_baseline"] += 1
-        else:
-            tally["service"]["steps"] += 1
-            tally["service"]["increase_seconds"] += truth.vllm_service_seconds - service_mean
+            tally["tool"]["contended"] += contended
+            continue
+        if timing["step_type"] != MODEL_STEP_TYPE:
+            continue
+        span = spans.get(step_id, {"status": "not_recorded"})
+        if span["status"] != "measured":
+            _count(tally, "excluded", span["status"])
+            continue
+        queue = span["queue_seconds"]
+        actual = queue > threshold
+        outcome = {(True, True): "tp", (True, False): "fp", (False, True): "fn"}
+        tally["confusion"][outcome.get((contended, actual), "tn")] += 1
+        tally["excess"].append(excess)
+        tally["queue"].append(queue)
+        if contended:
+            tally["explained"]["steps"] += 1
+            tally["explained"]["excess_seconds"] += excess
+            tally["explained"]["queue_seconds"] += queue
+            service_mean = baseline.get("service_mean_seconds")
+            if service_mean is None:
+                tally["service"]["without_baseline"] += 1
+            else:
+                tally["service"]["steps"] += 1
+                tally["service"]["increase_seconds"] += span["service_seconds"] - service_mean
 
 
 def _verdict(precision: float | None, recall: float | None) -> str:
@@ -547,7 +448,6 @@ def ramp_label_results(
 
 __all__ = [
     "Baselines",
-    "StepTruth",
     "baselines",
     "label_validation",
     "max_running_check",
@@ -555,5 +455,4 @@ __all__ = [
     "ramp_label_results",
     "ramp_run_dirs",
     "spearman",
-    "step_truths",
 ]
