@@ -354,7 +354,7 @@ The [capacity record](capacity-record.md#reproduce) shows how to re-analyse it a
 its tables. Rohit decided the `split-v3` assignment with Benoy on 2026-11-11
 ([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md)).
 
-**Held-out scores (2026-11-11, A06 PR 3).** `capacity-sweep-truth` and `score-held-out` scored
+**Held-out scores (2026-11-11, A06 PR 3).** the agent's former per-step truth command (replaced by `sweep-truth-v1`) and `score-held-out` scored
 `rules-v1` and the classifier on the frozen sweeps; the result is the capacity record's
 [attribution baseline](capacity-record.md#attribution-baseline) (attempt
 `20261112T025531Z-220363`). The truths and scores stay local in `.data/a06-scoring/` (`truth/`,
