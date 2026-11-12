@@ -39,13 +39,15 @@ from test_held_out_rows import (  # noqa: F401
 )
 
 
-def split_loader(validation, extra_train_rows=()):
-    """A load_split stand-in: the synthetic split, plus rows a test wants to plant in it."""
+def split_loader(validation, planted=None):
+    """A load_split stand-in: the synthetic split, plus rows a test plants, by split name."""
     splits = {
-        "train": dataset(30, "train") + list(extra_train_rows),
+        "train": dataset(30, "train"),
         "validation": validation,
         "test": dataset(4, "test"),
     }
+    for name, rows in (planted or {}).items():
+        splits[name] = splits[name] + list(rows)
 
     def loader(path, name, contract_path, frozen_schema, allow_unchecked_leakage=False):
         assert allow_unchecked_leakage is False
@@ -211,14 +213,48 @@ def test_the_training_and_calibration_options_are_gone(prepared, tracking, optio
     assert not prepared["output"].exists()
 
 
-def test_a_scored_run_in_the_split_fails_the_attempt(prepared, tracking):
-    planted = featured_row("none", 0, run_id=prepared["run_id"])
-    loader = split_loader(prepared["pair"].validation_rows, [planted])
+def rename_validation_run(pair, run_id):
+    """Give validation row 0 another run_id, with M03's recorded predictions and report to match,
+    so the reproduction check passes and only the overlap check can refuse."""
+    rows = [dict(row) for row in pair.validation_rows]
+    rows[0]["run_id"] = run_id
+    predictions = pair.candidates_dir / "validation_predictions.jsonl"
+    lines = [json.loads(line) for line in predictions.read_text().splitlines()]
+    lines[0]["run_id"] = run_id
+    predictions.write_text("".join(f"{json.dumps(line)}\n" for line in lines))
+    report_path = pair.candidates_dir / "report.json"
+    saved = json.loads(report_path.read_text())
+    saved["validation_predictions"]["sha256"] = hashlib.sha256(predictions.read_bytes()).hexdigest()
+    report_path.write_text(json.dumps(saved))
+    return rows
+
+
+@pytest.mark.parametrize("split_name", ["train", "validation", "test"])
+def test_a_scored_run_in_any_split_fails_the_attempt(prepared, tracking, split_name):
+    validation = prepared["pair"].validation_rows
+    planted = {}
+    if split_name == "validation":
+        validation = rename_validation_run(prepared["pair"], prepared["run_id"])
+    else:
+        planted[split_name] = [featured_row("none", 0, run_id=prepared["run_id"])]
+    loader = split_loader(validation, planted)
     outcome = run_synthetic(prepared, tracking, loader=loader)
     assert outcome.status == "failed" and outcome.run_id
     report = json.loads((outcome.directory / "report.json").read_text())
     assert report["status"] == "failed" and prepared["run_id"] in report["reason"]
     assert report["model"]["frozen"]["classifier_sha256"]
+    assert not (outcome.directory / "predictions.jsonl").exists()
+
+
+def test_a_scored_plan_in_the_split_fails_the_attempt_without_a_shared_run_id(prepared, tracking):
+    plan = "b" * 64
+    write_truths(prepared["truth"], [r | {"plan_sha256": plan} for r in prepared["records"]])
+    planted = featured_row("none", 0, run_id="another-run", plan_sha256=plan)
+    loader = split_loader(prepared["pair"].validation_rows, {"test": [planted]})
+    outcome = run_synthetic(prepared, tracking, loader=loader)
+    assert outcome.status == "failed" and outcome.run_id
+    report = json.loads((outcome.directory / "report.json").read_text())
+    assert f"plan_sha256 {plan}" in report["reason"] and "run_id" not in report["reason"]
     assert not (outcome.directory / "predictions.jsonl").exists()
 
 

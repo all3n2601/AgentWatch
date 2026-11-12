@@ -200,11 +200,14 @@ def check_reproduces_validation(
     path = candidates_dir / VALIDATION_PREDICTIONS
     recorded = {}
     try:
-        for line in path.read_text().splitlines():
+        lines = path.read_text().splitlines()
+        for line in lines:
             record = json.loads(line)
             recorded[(record["run_id"], record["step_id"])] = record
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
         raise HeldOutModelError(f"Cannot read {path}: {error!r}") from error
+    if len(lines) != len(recorded):
+        raise HeldOutModelError(f"{path} records a (run_id, step_id) step more than once")
     keys = [(row["run_id"], row["step_id"]) for row in validation_rows]
     if set(keys) != set(recorded) or len(keys) != len(set(keys)):
         raise HeldOutModelError(
