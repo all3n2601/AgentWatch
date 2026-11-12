@@ -442,7 +442,7 @@ export function interpretation(
   metrics: readonly MetricDelta[],
 ): string {
   if (compatibility.verdict === "differs")
-    return `Recorded settings differ (${compatibility.differing.join(", ").toLowerCase()}), so no difference or ratio is calculated. Each run's own values are listed side by side.`;
+    return `Recorded settings differ: ${compatibility.differing.join(", ")}. No difference or ratio is calculated; each run's own values are listed side by side.`;
   const total = metrics.find((m) => m.id === "total");
   const queue = metrics.find((m) => m.id === "queue");
   const observed = `Observed total step time ${total ? deltaPhrase(total) : "unavailable"} and worker queue delay ${queue ? deltaPhrase(queue) : "unavailable"}, candidate minus baseline.`;

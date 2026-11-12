@@ -318,14 +318,14 @@ test("interpretation is observational and names differing settings", () => {
     configurations(same, withExperiment("b", { worker_capacity: 4 })),
     metrics,
   );
-  assert.match(differing, /Recorded settings differ \(worker capacity\)/);
+  assert.match(differing, /Recorded settings differ: Worker capacity\./);
   // A blocked pair states no observed difference at all.
   assert.doesNotMatch(differing, /candidate minus baseline|\+/);
   const otherKind = interpretation(
     configurations(same, run("b", { kind: "cpu" })),
     metrics,
   );
-  assert.match(otherKind, /workload kind/);
+  assert.match(otherKind, /Workload kind/);
 });
 
 test("a recorded mismatch suppresses every delta, ratio and headline", () => {

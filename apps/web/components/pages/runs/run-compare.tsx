@@ -27,7 +27,7 @@ function compareNote(selection: CompareSelection): string {
   if (selection.status === "incompatible") return selection.reason;
   const { verdict, differing, unknown } = selection.compatibility;
   if (verdict === "differs")
-    return `Baseline is the older run. Recorded settings differ (${differing.join(", ").toLowerCase()}), so Compare lists them and calculates no difference.`;
+    return `Baseline is the older run. Recorded settings differ: ${differing.join(", ")}. Compare lists them and calculates no difference.`;
   if (verdict === "unverified")
     return policyUnknown(selection.compatibility)
       ? `Baseline is the older run. Recorded settings match. ${POLICY_NOT_RECORDED_WARNING}.`

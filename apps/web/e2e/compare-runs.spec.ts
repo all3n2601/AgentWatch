@@ -223,7 +223,7 @@ test("the Runs selection opens Compare with the same verdict", async ({
   // Inactive Runs tabs stay mounted, so only the visible note is checked.
   await expect(
     page
-      .getByText(/Recorded settings differ \(competing iterations/)
+      .getByText(/Recorded settings differ: Competing iterations/)
       .filter({ visible: true }),
   ).toBeVisible();
   await page.getByRole("link", { name: "Compare runs" }).click();
