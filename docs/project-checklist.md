@@ -731,17 +731,19 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   passed). Open: training has one task group and validation is empty, so unseen-task results
   rest on one task.
   2026-11-11 (split-v3, branch `feature/split-v3`, not merged): `split-v3`
-  (`split-assignment-v3.toml`, `dc2c4c92`) under `eval-contract-v3` (`b9f20820`) holds out
+  (`split-assignment-v3.toml`, `dc2c4c92`) under `eval-contract-v3` (`1cab0cbe`) holds out
   `worker_queue_blocker` and `prefill-flood-openai-chat-v1`, declares test task groups
   `fix-window-count` and `fix-median-even`, holds the A06 natural-overload sweeps out of every
   split by protocol hash, splits only `step-features-v1` rows, and sends whole experiments of the
   training task to validation by hash ([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md),
   `pipelines/data/tests/test_split_v3.py`, `test_dataset_splits.py`). On dataset v1,
-  `split-v3+95309c38a53e`: train 1,755, validation 273, test 3,575; leakage, class balance,
+  `split-v3+932b2df410a7`: train 1,755, validation 273, test 3,575; leakage, class balance,
   independence and mixed in test passed. The held-out-method check is `not_met`: neither method
   has a `step-features-v1` row in this release. Validation holds three experiments of the
-  training task (weak calibration evidence; see the ADR). Open: review and the contract's
-  acceptance; training still has one task group; the natural-overload rule runs on synthetic
+  training task (weak calibration evidence; see the ADR). 2026-11-12: `eval-contract-v3` set
+  to `accepted` in #70 at Akshay's request (identifier `b9f20820` to `1cab0cbe`, split
+  `split-v3+95309c38a53e` to `split-v3+932b2df410a7`, same rows). Open: approval of #70 on this
+  version; training still has one task group; the natural-overload rule runs on synthetic
   rows only. A split row with no experiment is refused (2026-11-12, after Benoy's review), so an
   untagged sweep row cannot reach train; the PR that ingests sweep replays must still write
   `protocol_version` and `protocol_sha256` on every row and test that they are held out.
