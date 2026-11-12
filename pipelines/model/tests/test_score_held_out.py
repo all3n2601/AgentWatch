@@ -17,6 +17,7 @@ require_lightgbm()
 
 import mlflow
 from agentwatch_data import evidence
+from agentwatch_model.candidates import TrainingError
 from agentwatch_model.held_out_model import CLASSIFIER_SCORER
 from agentwatch_model.score_held_out import (
     EXPERIMENT,
@@ -227,6 +228,15 @@ def test_a_mismatched_model_pair_exits_2_and_writes_no_attempt(prepared, trackin
     body = json.loads(calibration.read_text())
     body["model_files"]["classifier"]["sha256"] = "0" * 64
     calibration.write_text(json.dumps(body))
+    assert main(cli_arguments(prepared, tracking)) == 2
+    assert not prepared["output"].exists() or not any(prepared["output"].iterdir())
+
+
+def test_a_missing_lightgbm_exits_2_and_writes_no_attempt(prepared, tracking, monkeypatch):
+    def unavailable():
+        raise TrainingError("LightGBM cannot be loaded")
+
+    monkeypatch.setattr("agentwatch_model.held_out_model.check_lightgbm", unavailable)
     assert main(cli_arguments(prepared, tracking)) == 2
     assert not prepared["output"].exists() or not any(prepared["output"].iterdir())
 

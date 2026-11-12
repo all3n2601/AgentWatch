@@ -32,6 +32,7 @@ from agentwatch_data.replay_evidence import EVIDENCE_FILE, JOURNAL_FILE
 from agentwatch_data.replay_rows import FeatureJoinError
 from agentwatch_data.splits import SplitError, load_split
 
+from agentwatch_model.candidates import TrainingError
 from agentwatch_model.contract import DEFAULT_CONTRACT, Contract, ContractError, load_contract
 from agentwatch_model.held_out_model import (
     CALIBRATION,
@@ -411,6 +412,8 @@ def main(argv: list[str] | None = None) -> int:
         ContractError,
         RulesError,
         HeldOutModelError,
+        # An environment that cannot load LightGBM is a setup error: no attempt exists.
+        TrainingError,
         OutputError,
         tomllib.TOMLDecodeError,
     )
