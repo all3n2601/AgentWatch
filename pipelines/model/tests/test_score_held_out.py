@@ -1,7 +1,9 @@
-"""score-held-out end to end on a synthetic sweep and a fake split loader.
+"""score-held-out end to end on a synthetic sweep, a synthetic frozen M03/M04 pair and a fake
+split loader.
 
 Nothing here is recorded evidence: the sweep is the data tests' synthetic journal copied into
-a sweep layout, and the dataset v1 split is replaced by synthetic rows.
+a sweep layout, the frozen model is a small LightGBM candidate trained on made-up rows, and the
+dataset v1 split is replaced by synthetic rows.
 """
 
 import hashlib
@@ -9,12 +11,13 @@ import json
 
 import pytest
 from agentwatch_data.splits import SplitError
-from training_fixtures import dataset, require_lightgbm
+from training_fixtures import dataset, featured_row, require_lightgbm
 
 require_lightgbm()
 
 import mlflow
 from agentwatch_data import evidence
+from agentwatch_model.held_out_model import CLASSIFIER_SCORER
 from agentwatch_model.score_held_out import (
     EXPERIMENT,
     OutputError,
@@ -22,16 +25,25 @@ from agentwatch_model.score_held_out import (
     main,
     run,
     run_attempt,
+    scored_overlap,
 )
+from frozen_model_fixtures import write_frozen_pair
 from test_held_out_rows import sweep, write_summary, write_truths  # noqa: F401
 
-SPLITS = {"train": dataset(30, "train"), "validation": dataset(30, "valid")}
 
+def split_loader(validation, extra_train_rows=()):
+    """A load_split stand-in: the synthetic split, plus rows a test wants to plant in it."""
+    splits = {
+        "train": dataset(30, "train") + list(extra_train_rows),
+        "validation": validation,
+        "test": dataset(4, "test"),
+    }
 
-def loader(path, name, contract_path, frozen_schema, allow_unchecked_leakage=False):
-    assert allow_unchecked_leakage is False
-    assert name in SPLITS, f"{name} must never be loaded"
-    return SPLITS[name]
+    def loader(path, name, contract_path, frozen_schema, allow_unchecked_leakage=False):
+        assert allow_unchecked_leakage is False
+        return splits[name]
+
+    return loader
 
 
 def refusing(path, name, contract_path, frozen_schema, allow_unchecked_leakage=False):
@@ -50,7 +62,7 @@ def tracking(tmp_path):
 
 @pytest.fixture
 def prepared(sweep, tmp_path):  # noqa: F811
-    """Truth records with the position fields the report slices by."""
+    """Truth records with the position fields the report slices by, and a frozen model pair."""
     records = [
         record
         | {
@@ -66,7 +78,13 @@ def prepared(sweep, tmp_path):  # noqa: F811
     write_truths(sweep["truth"], records)
     split = tmp_path / "split.json"
     split.write_text("{}")
-    return sweep | {"split": split, "output": tmp_path / "scores"}
+    pair = write_frozen_pair(tmp_path / "frozen", split)
+    return sweep | {
+        "split": split,
+        "output": tmp_path / "scores",
+        "pair": pair,
+        "loader": split_loader(pair.validation_rows),
+    }
 
 
 def attempt_directory(output):
@@ -80,20 +98,43 @@ def run_synthetic(prepared, tracking, **overrides):
         prepared["root"],
         prepared["split"],
         prepared["output"],
-        loader=overrides.pop("loader", loader),
+        candidates_dir=prepared["pair"].candidates_dir,
+        calibrated_dir=prepared["pair"].calibrated_dir,
+        loader=overrides.pop("loader", prepared["loader"]),
         resamples=50,
         **tracking,
         **overrides,
     )
 
 
-def test_run_writes_report_predictions_and_models_and_logs_the_named_experiment(prepared, tracking):
+def cli_arguments(prepared, tracking):
+    return [
+        "--truth",
+        str(prepared["truth"]),
+        "--sweep-root",
+        str(prepared["root"]),
+        "--split",
+        str(prepared["split"]),
+        "--candidates",
+        str(prepared["pair"].candidates_dir),
+        "--calibrated",
+        str(prepared["pair"].calibrated_dir),
+        "--output",
+        str(prepared["output"]),
+        "--tracking-uri",
+        tracking["tracking_uri"],
+    ]
+
+
+def test_run_scores_both_scorers_and_writes_no_models(prepared, tracking):
     status = run(
         [prepared["truth"]],
         prepared["root"],
         prepared["split"],
         prepared["output"],
-        loader=loader,
+        candidates_dir=prepared["pair"].candidates_dir,
+        calibrated_dir=prepared["pair"].calibrated_dir,
+        loader=prepared["loader"],
         resamples=50,
         **tracking,
     )
@@ -101,24 +142,33 @@ def test_run_writes_report_predictions_and_models_and_logs_the_named_experiment(
     directory = attempt_directory(prepared["output"])
     stamp, digest = directory.name.rsplit("-", 1)
     assert stamp.endswith("Z") and len(digest) == 6
+    assert not (directory / "models").exists()
     report = json.loads((directory / "report.json").read_text())
     assert report["status"] == "completed" and report["held_out"] is True
     assert report["gate"] == "none (descriptive baseline)"
     assert report["scored_steps"] == 3
-    model = report["model"]
-    assert model["version"].startswith("training-v1+") and model["lightgbm_version"]
-    assert set(model["model_files"]) == {"classifier", "regressor"}
-    for key, file_name in (("classifier", "classifier.txt"), ("regressor", "regressor.txt")):
-        saved = directory / "models" / file_name
-        assert model["model_files"][key] == hashlib.sha256(saved.read_bytes()).hexdigest()
-    assert model["split"]["sha256"] == hashlib.sha256(b"{}").hexdigest()
+    frozen = report["model"]["frozen"]
+    classifier_file = prepared["pair"].candidates_dir / "classifier.txt"
+    assert frozen["classifier_sha256"] == hashlib.sha256(classifier_file.read_bytes()).hexdigest()
+    assert frozen["temperature"] == 0.9 and frozen["threshold"] == 0.6
+    assert report["split"]["sha256"] == hashlib.sha256(b"{}").hexdigest()
+    (truth,) = report["truths"].values()
+    assert set(truth) == {"label_version", "steps_sha256", "steps_summary_sha256", "truth_sha256"}
     inputs = report["inputs"]
-    assert inputs["split"] == model["split"]["sha256"]
+    assert inputs["split"] == report["split"]["sha256"]
     assert all(inputs["truth"].values())
     assert len(inputs["runs"]) == 2 and all(inputs["runs"].values())
+    assert set(inputs["model"]) == {
+        "classifier.txt",
+        "preprocessing.json",
+        "report.json",
+        "validation_predictions.jsonl",
+        "calibration.json",
+    }
+    assert all(inputs["model"].values())
     lines = [json.loads(x) for x in (directory / "predictions.jsonl").read_text().splitlines()]
     assert len(lines) == 6  # three steps, two scorers
-    assert {line["scorer"] for line in lines} == {"rules-v1", "lightgbm-classifier-training-v1"}
+    assert {line["scorer"] for line in lines} == {"rules-v1", CLASSIFIER_SCORER}
     assert set(lines[0]) == {
         "run_id",
         "step_id",
@@ -138,26 +188,87 @@ def test_run_writes_report_predictions_and_models_and_logs_the_named_experiment(
     assert json.loads((directory / "tracking.json").read_text())["logged"] is True
 
 
-def test_release_identity_survives_an_empty_validation_split(prepared, tracking):
-    splits = {"train": dataset(30, "train"), "validation": []}
+@pytest.mark.parametrize("option", ["--training", "--calibration"])
+def test_the_training_and_calibration_options_are_gone(prepared, tracking, option):
+    with pytest.raises(SystemExit) as raised:
+        main([*cli_arguments(prepared, tracking), option, "x"])
+    assert raised.value.code == 2
+    assert not prepared["output"].exists()
 
-    def empty_validation(path, name, contract_path, frozen_schema, allow_unchecked_leakage=False):
-        return splits[name]
 
-    outcome = run_synthetic(prepared, tracking, loader=empty_validation)
-    assert outcome.status == "completed"
+def test_a_scored_run_in_the_split_fails_the_attempt(prepared, tracking):
+    planted = featured_row("none", 0, run_id=prepared["run_id"])
+    loader = split_loader(prepared["pair"].validation_rows, [planted])
+    outcome = run_synthetic(prepared, tracking, loader=loader)
+    assert outcome.status == "failed" and outcome.run_id
     report = json.loads((outcome.directory / "report.json").read_text())
-    assert report["dataset_version"] == splits["train"][0]["dataset_version"]
-    assert report["model"]["dataset_version"] == report["dataset_version"]
-    assert report["model"]["label_version"] == splits["train"][0]["label_version"]
-    assert report["model"]["calibration"]["abstention"] == "unavailable"
-    assert report["model"]["calibration"]["reason"]
-    classifier = [
-        e
-        for e in report["rollups"]["by_scorer_truth"]
-        if e["scorer"].startswith("lightgbm") and e["truth"] == "queue"
+    assert report["status"] == "failed" and prepared["run_id"] in report["reason"]
+    assert report["model"]["frozen"]["classifier_sha256"]
+    assert not (outcome.directory / "predictions.jsonl").exists()
+
+
+def test_scored_overlap_names_run_ids_and_plan_hashes_found_in_the_split():
+    scored = [
+        {"run_id": "run-a", "plan_sha256": "plan-1"},
+        {"run_id": "run-b", "plan_sha256": None},
+        {"run_id": "run-c", "plan_sha256": "plan-9"},
     ]
-    assert classifier and classifier[0]["abstention_rate"] is None
+    split_rows = [
+        {"run_id": "run-b", "plan_sha256": None},
+        {"run_id": "other", "plan_sha256": "plan-1"},
+        {"run_id": "another", "plan_sha256": None},
+    ]
+    assert scored_overlap(scored, split_rows) == ["run_id run-b", "plan_sha256 plan-1"]
+    assert scored_overlap(scored, [{"run_id": "x", "plan_sha256": None}]) == []
+
+
+def test_a_mismatched_model_pair_exits_2_and_writes_no_attempt(prepared, tracking):
+    calibration = prepared["pair"].calibrated_dir / "calibration.json"
+    body = json.loads(calibration.read_text())
+    body["model_files"]["classifier"]["sha256"] = "0" * 64
+    calibration.write_text(json.dumps(body))
+    assert main(cli_arguments(prepared, tracking)) == 2
+    assert not prepared["output"].exists() or not any(prepared["output"].iterdir())
+
+
+def test_a_model_that_does_not_reproduce_validation_is_a_recorded_failure(prepared, tracking):
+    candidates = prepared["pair"].candidates_dir
+    predictions = candidates / "validation_predictions.jsonl"
+    lines = predictions.read_text().splitlines()
+    first = json.loads(lines[0])
+    first["probabilities"] = {name: 0.25 for name in first["probabilities"]}
+    predictions.write_text("".join(f"{line}\n" for line in [json.dumps(first), *lines[1:]]))
+    report_path = candidates / "report.json"
+    saved = json.loads(report_path.read_text())
+    saved["validation_predictions"]["sha256"] = hashlib.sha256(predictions.read_bytes()).hexdigest()
+    report_path.write_text(json.dumps(saved))
+    outcome = run_synthetic(prepared, tracking)
+    assert outcome.status == "failed" and outcome.run_id
+    report = json.loads((outcome.directory / "report.json").read_text())
+    assert "HeldOutModelError" in report["reason"]
+    assert not (outcome.directory / "predictions.jsonl").exists()
+
+
+def test_only_unjudged_steps_fail_the_attempt_with_counts(prepared, tracking):
+    records = [
+        record
+        | {
+            "truths": {"queue": None, "slower": None, "protocol_clean": None},
+            "truth_reasons": {
+                "queue": "root_step",
+                "slower": "root_step",
+                "protocol_clean": "root_step",
+            },
+        }
+        for record in prepared["records"]
+    ]
+    write_truths(prepared["truth"], records)
+    outcome = run_synthetic(prepared, tracking)
+    assert outcome.status == "failed"
+    report = json.loads((outcome.directory / "report.json").read_text())
+    assert "no step could be scored" in report["reason"]
+    assert report["unscored"]["steps"]["queue"] == {"root_step": 3}
+    assert not (outcome.directory / "predictions.jsonl").exists()
 
 
 def test_a_failed_attempt_is_reported_and_tracked(prepared, tracking):

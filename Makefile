@@ -103,11 +103,11 @@ calibrate: ## Calibrate the trained candidates on validation and score abstentio
 
 HELD_OUT_SCORES_OUTPUT ?= .data/a06-scoring/scores
 SWEEP_ROOT ?= data/held-out/a06-20261111/capacity-sweeps
-HELD_OUT_SPLIT ?= data/datasets/splits/steps-v1.3+aafae73eb211/split-v2+febe942a2b59.json
 
-score-held-out: ## Score rules-v1 and the calibrated classifier on held-out sweep truths and track the attempt in MLflow (TRUTH="truth dirs", SWEEP_ROOT, HELD_OUT_SPLIT, HELD_OUT_SCORES_OUTPUT optional)
-	@test -n "$(TRUTH)" || { echo 'Set TRUTH to one or more capacity-sweep-truth folders: make score-held-out TRUTH="<truth dir> ..."' >&2; exit 2; }
-	uv run --package agentwatch-model python -m agentwatch_model.score_held_out --truth $(TRUTH) --sweep-root "$(SWEEP_ROOT)" --split "$(HELD_OUT_SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(HELD_OUT_SCORES_OUTPUT)
+score-held-out: ## Score rules-v1 and the frozen M03/M04 classifier on held-out sweep truths (TRUTH="<truth dirs>", SPLIT=...)
+	@test -n "$(TRUTH)" || { echo 'Set TRUTH to one or more sweep-truth-v1 folders: make score-held-out TRUTH="<truth dir> ..." SPLIT=<split file>' >&2; exit 2; }
+	@test -n "$(SPLIT)" || { echo 'Set SPLIT to the frozen split file: make score-held-out TRUTH="<truth dir> ..." SPLIT=<split file>' >&2; exit 2; }
+	uv run --package agentwatch-model python -m agentwatch_model.score_held_out --truth $(TRUTH) --sweep-root "$(SWEEP_ROOT)" --split "$(SPLIT)" --candidates $(CANDIDATES_OUTPUT) --calibrated $(CALIBRATION_OUTPUT) --output $(HELD_OUT_SCORES_OUTPUT)
 
 freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest release; review the diff in a PR
 	release=$$($(LATEST_RELEASE)) && uv run --project pipelines/validation python -m agentwatch_validation freeze-schema --release "$$release" --schema $(VALIDATION_SCHEMA)

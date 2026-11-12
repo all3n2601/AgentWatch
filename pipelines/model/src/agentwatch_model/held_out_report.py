@@ -10,7 +10,8 @@ from collections import Counter
 
 from agentwatch_data.replay_labels import task_group
 
-from agentwatch_model.held_out_scorers import CLASSIFIER_SCORER, ScoredStep
+from agentwatch_model.held_out_model import CLASSIFIER_SCORER
+from agentwatch_model.held_out_scorers import ScoredStep
 from agentwatch_model.metrics import NONE, bootstrap_interval
 
 INFERENCE = "inference"
@@ -176,10 +177,14 @@ def slice_measures(
     return result
 
 
-def unscored_steps(rows: list[dict]) -> dict[str, dict[str, int]]:
-    """Steps with no judged truth, by truth and recorded reason."""
+def unscored_steps(rows: list[dict], unjudged: list[dict]) -> dict[str, dict[str, int]]:
+    """Steps with no judged truth, by truth and recorded reason.
+
+    `rows` are the scored steps (some truths may be null); `unjudged` are the steps whose three
+    truths are all null (root and tool steps), which are never joined or scored.
+    """
     counts: dict[str, Counter[str]] = {}
-    for row in rows:
+    for row in [*rows, *unjudged]:
         for truth, value in row["truths"].items():
             if value is None:
                 reason = row["truth_reasons"].get(truth) or "unrecorded"
@@ -213,8 +218,9 @@ def build_report(rows: list[dict], scores: dict[str, list[ScoredStep]], context:
     """Cells per (scorer, truth, configuration, N, phase, step type, task seen in training), the
     four rollups, and the report's fixed statements.
 
-    `context` carries `seen_task_groups`, `refused` (counts by code), `summaries`, `model`,
-    `resamples`, `seed` and `abstention_unavailable`.
+    `context` carries `seen_task_groups`, `refused` (counts by code), `summaries`, `unjudged`
+    (truth records with no judged truth), `model`, `resamples`, `seed` and
+    `abstention_unavailable`.
     """
     seen_groups = frozenset(context["seen_task_groups"])
     seen = [task_group(row["task_id"]) in seen_groups for row in rows]
@@ -280,7 +286,7 @@ def build_report(rows: list[dict], scores: dict[str, list[ScoredStep]], context:
         "rollups": rollups,
         "refused": dict(sorted(context["refused"].items())),
         "unscored": {
-            "steps": unscored_steps(rows),
+            "steps": unscored_steps(rows, context["unjudged"]),
             "runs": unscored_runs(context["summaries"]),
         },
         "limitations": list(LIMITATIONS),

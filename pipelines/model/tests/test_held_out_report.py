@@ -4,13 +4,14 @@ The rows and scores here are made up for these tests; none of it is recorded evi
 """
 
 import pytest
+from agentwatch_model.held_out_model import CLASSIFIER_SCORER
 from agentwatch_model.held_out_report import (
     LIMITATIONS,
     NO_PLAN_REASON,
     build_report,
     measures,
 )
-from agentwatch_model.held_out_scorers import CLASSIFIER_SCORER, RULES_SCORER, ScoredStep
+from agentwatch_model.held_out_scorers import RULES_SCORER, ScoredStep
 
 
 def step(truth, batch="b1", task="fix-mean-empty-r1", **overrides):
@@ -120,6 +121,7 @@ def context(**overrides):
                 "excluded_batches": ["ramp-1"],
             }
         ],
+        "unjudged": [],
         "model": {"version": "training-v1"},
         "resamples": 50,
         "seed": 0,
@@ -147,6 +149,23 @@ def test_unscored_steps_are_counted_by_reason():
     assert runs["runs_without_plan"] == {"count": 4, "reason": NO_PLAN_REASON}
     assert runs["runs_without_evidence"] == 1 and runs["excluded_batches"] == 1
     assert report["refused"] == {"feature_timing_mismatch": 2}
+
+
+def test_unjudged_steps_are_counted_by_reason():
+    root_reasons = dict.fromkeys(("queue", "slower", "protocol_clean"), "root_step")
+    tool_reasons = dict.fromkeys(("queue", "slower", "protocol_clean"), "tool_step")
+    unjudged = [
+        step(None, truth_reasons=root_reasons),
+        step(None, truth_reasons=tool_reasons),
+        step(None, truth_reasons=tool_reasons),
+    ]
+    rows = [step("inference")]
+    report = build_report(rows, rules_scores(1), context(unjudged=unjudged))
+    steps = report["unscored"]["steps"]
+    assert steps["queue"] == {"root_step": 1, "tool_step": 2}
+    assert steps["slower"] == {"root_step": 1, "tool_step": 2}
+    assert steps["protocol_clean"] == {"not_applicable": 1, "root_step": 1, "tool_step": 2}
+    assert report["rollups"]["by_scorer_truth"][0]["steps"] == 1
 
 
 def test_cells_split_seen_and_unseen_tasks():

@@ -1,12 +1,20 @@
-"""Score rules-v1 and the calibrated classifier on frozen held-out capacity-sweep truths.
+"""Score rules-v1 and the frozen M03/M04 classifier on held-out capacity-sweep truths.
 
     python -m agentwatch_model.score_held_out --truth DIR [DIR ...] --sweep-root DIR \
-        --split FILE --output DIR
+        --split FILE [--candidates DIR] [--calibrated DIR] [--output DIR]
 
-Each attempt writes `<output>/<attempt id>/` with report.json, predictions.jsonl and models/,
-and is logged to the MLflow experiment `a06-held-out-scoring`, failed attempts included. The
-attempt id is the UTC start time plus the first digits of the hash of every input, so it names
-both when and on what the attempt ran. Outputs are scores, not run evidence: they never belong in
+`--truth` folders are `sweep-truth-v1` outputs, one per sweep. `--candidates` is the M03
+`make train-candidates` folder and `--calibrated` the M04 `make calibrate` folder; nothing is
+trained or fitted here. The pair is loaded and checked against the split first: a pair that
+does not match is a setup error (exit 2) and no attempt is written. Then the split's rows are
+loaded with the leakage check on; the model must reproduce M03's validation predictions, and no
+scored run or plan may appear in the split. Each of those failures ends as a recorded failed
+attempt.
+
+Each attempt writes `<output>/<attempt id>/` with report.json and predictions.jsonl, and is
+logged to the MLflow experiment `a06-held-out-scoring`, failed attempts included. The attempt id
+is the UTC start time plus the first digits of the hash of every input, so it names both when
+and on what the attempt ran. Outputs are scores, not run evidence: they never belong in
 `make add-evidence`, `make dataset` or `data/held-out/`.
 """
 
@@ -24,19 +32,17 @@ from agentwatch_data.replay_evidence import EVIDENCE_FILE, JOURNAL_FILE
 from agentwatch_data.replay_rows import FeatureJoinError
 from agentwatch_data.splits import SplitError, load_split
 
-from agentwatch_model.calibration import (
-    DEFAULT_CALIBRATION,
-    CalibrationConfig,
-    CalibrationError,
-    load_calibration_config,
+from agentwatch_model.contract import DEFAULT_CONTRACT, Contract, ContractError, load_contract
+from agentwatch_model.held_out_model import (
+    CALIBRATION,
+    CLASSIFIER_SCORER,
+    FrozenClassifier,
+    HeldOutModelError,
+    check_reproduces_validation,
+    frozen_scores,
+    load_frozen_classifier,
 )
-from agentwatch_model.candidates import (
-    DEFAULT_TRAINING,
-    TrainingError,
-    check_lightgbm,
-)
-from agentwatch_model.contract import DEFAULT_CONTRACT, ContractError
-from agentwatch_model.held_out_report import build_report
+from agentwatch_model.held_out_report import build_report, unscored_steps
 from agentwatch_model.held_out_rows import (
     HeldOutError,
     held_out_rows,
@@ -44,14 +50,12 @@ from agentwatch_model.held_out_rows import (
     run_directory,
 )
 from agentwatch_model.held_out_scorers import (
-    CLASSIFIER_SCORER,
     RULES_SCORER,
     ScoredStep,
-    classifier_scores,
     rule_scores,
-    train_classifier,
+    seen_task_groups,
 )
-from agentwatch_model.report import identity
+from agentwatch_model.report import dataset_version, identity
 from agentwatch_model.rule_baseline import (
     BOOTSTRAP_RESAMPLES,
     BOOTSTRAP_SEED,
@@ -59,7 +63,7 @@ from agentwatch_model.rule_baseline import (
     EXIT_ERROR,
     split_identity,
 )
-from agentwatch_model.rules import DEFAULT_RULES, RulesError
+from agentwatch_model.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 from agentwatch_model.tracking import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_TRACKING_URI,
@@ -67,31 +71,47 @@ from agentwatch_model.tracking import (
     tracking_errors,
 )
 from agentwatch_model.train_candidates import (
+    MODEL_FILES,
+    PREPROCESSING,
+    VALIDATION_PREDICTIONS,
     Loader,
     attempt_errors,
     failed_report,
-    load_configuration,
-    model_identity,
-    save_models,
+    label_version,
+)
+from agentwatch_model.train_candidates import (
+    REPORT as CANDIDATES_REPORT,
 )
 
+DEFAULT_CANDIDATES = Path(".data/candidates")
+DEFAULT_CALIBRATED = Path(".data/calibration")
 DEFAULT_OUTPUT = Path(".data/a06-scoring/scores")
 EXPERIMENT = "a06-held-out-scoring"
 TASK = "A06"
 REPORT = "report.json"
 PREDICTIONS = "predictions.jsonl"
 TRACKING = "tracking.json"
-MODELS = "models"
+SPLIT_NAMES = ("train", "validation", "test")
 LOGGED_ARTIFACTS = (REPORT, PREDICTIONS)
 FORBIDDEN_OUTPUT = ("data", "held-out")
 ATTEMPT_ID_HASH_DIGITS = 6
 EXIT_FAILED = 1
 EXIT_UNTRACKED = 3
 TRUTH_FILES = ("truth.json", "truth.jsonl")
+# A summary that predates a field records it as None, never as a made-up value.
+TRUTH_IDENTITY_FIELDS = ("label_version", "steps_sha256", "steps_summary_sha256", "truth_sha256")
 
 
 class OutputError(ValueError):
     """An output location that must not receive scores."""
+
+
+class NoStepScored(HeldOutError):
+    """Every truth record was unjudged or refused; carries the unjudged records for the report."""
+
+    def __init__(self, refused: dict[str, int], unjudged: list[dict]) -> None:
+        super().__init__(f"no step could be scored; refused steps by code: {refused}")
+        self.unjudged = unjudged
 
 
 @dataclass(frozen=True)
@@ -115,8 +135,27 @@ def hash_of(path: Path) -> str | None:
     return file_sha256(path) if path.is_file() else None
 
 
-def input_hashes(truth_dirs: list[Path], sweep_root: Path, split: Path) -> dict:
-    """SHA-256 of the split, every truth file and each run's evidence and journal.
+def model_hashes(candidates_dir: Path, calibrated_dir: Path) -> dict:
+    """SHA-256 of each frozen M03/M04 file the attempt depends on; a missing file is None."""
+    files = (
+        candidates_dir / MODEL_FILES["classifier"],
+        candidates_dir / PREPROCESSING,
+        candidates_dir / CANDIDATES_REPORT,
+        candidates_dir / VALIDATION_PREDICTIONS,
+        calibrated_dir / CALIBRATION,
+    )
+    return {path.name: hash_of(path) for path in files}
+
+
+def input_hashes(
+    truth_dirs: list[Path],
+    sweep_root: Path,
+    split: Path,
+    candidates_dir: Path | None = None,
+    calibrated_dir: Path | None = None,
+) -> dict:
+    """SHA-256 of the split, every truth file and each run's evidence and journal, and, when
+    the frozen model folders are given, the model files.
 
     Truth files are keyed by the sweep folder their summary names, or by the truth folder as
     given when it cannot be read; a key already taken gets the folder's argument position, so
@@ -126,6 +165,8 @@ def input_hashes(truth_dirs: list[Path], sweep_root: Path, split: Path) -> dict:
     distinct from any hash.
     """
     hashes: dict = {"split": hash_of(split), "truth": {}, "runs": {}}
+    if candidates_dir is not None and calibrated_dir is not None:
+        hashes["model"] = model_hashes(candidates_dir, calibrated_dir)
     labels: set[str] = set()
     hashed_sweeps: set[str] = set()
     for position, truth_dir in enumerate(truth_dirs):
@@ -177,66 +218,73 @@ def prediction_lines(rows: list[dict], scores: dict[str, list[ScoredStep]]) -> s
     return "".join(f"{line}\n" for line in lines)
 
 
+def scored_overlap(rows: list[dict], split_rows: list[dict]) -> list[str]:
+    """Every scored run_id, and every scored non-null plan_sha256, found in any split row."""
+    split_runs = {row["run_id"] for row in split_rows}
+    split_plans = {row.get("plan_sha256") for row in split_rows} - {None}
+    runs = sorted({row["run_id"] for row in rows} & split_runs)
+    plans = sorted(({row.get("plan_sha256") for row in rows} - {None}) & split_plans)
+    return [f"run_id {run}" for run in runs] + [f"plan_sha256 {plan}" for plan in plans]
+
+
 def score_rows(
     truth_dirs: list[Path],
     sweep_root: Path,
     split: Path,
-    directory: Path,
+    candidates_dir: Path,
+    model: FrozenClassifier,
+    rules: Rules,
+    contract: Contract,
     *,
     contract_path: Path,
     frozen_schema: Path,
-    rules_path: Path,
-    training_path: Path,
-    calibration: CalibrationConfig,
     loader: Loader,
     resamples: int,
     seed: int,
-) -> dict:
-    """Build rows, train, score with both scorers and save the models; return the report body."""
-    contract, rules, config = load_configuration(contract_path, rules_path, training_path)
-    rows, refused, summaries, _ = held_out_rows(truth_dirs, sweep_root)
+) -> tuple[dict, str]:
+    """Join rows, check the model and the split, score with both scorers; return the report
+    body and the predictions text. Nothing is written, so a failed check leaves no scores."""
+    rows, refused, summaries, unjudged = held_out_rows(truth_dirs, sweep_root)
     if not rows:
-        raise HeldOutError(f"no step could be scored; refused steps by code: {refused}")
-    candidate, validation, seen_groups, release = train_classifier(
-        split, contract_path, frozen_schema, config, loader
-    )
-    classifier, fit = classifier_scores(candidate, validation, rows, contract, calibration)
-    scores = {RULES_SCORER: rule_scores(rules, rows), CLASSIFIER_SCORER: classifier}
-    model_hashes = save_models(candidate, directory / MODELS)
-    model = model_identity(config, candidate, release["label_version"]) | {
-        "training_config_sha256": file_sha256(training_path),
-        "calibration": fit,
-        "calibration_version": calibration.version,
-        "model_files": model_hashes,
-        "split": split_identity(split),
-        "dataset_version": release["dataset_version"],
-    }
-    write_atomic(directory / PREDICTIONS, prediction_lines(rows, scores))
+        raise NoStepScored(refused, unjudged)
+    split_rows = {name: loader(split, name, contract_path, frozen_schema) for name in SPLIT_NAMES}
+    check_reproduces_validation(model, split_rows["validation"], candidates_dir)
+    overlap = scored_overlap(rows, [row for part in split_rows.values() for row in part])
+    if overlap:
+        raise HeldOutError(f"scored steps appear in the split: {', '.join(overlap)}")
+    train = split_rows["train"]
+    scores = {RULES_SCORER: rule_scores(rules, rows), CLASSIFIER_SCORER: frozen_scores(model, rows)}
     body = build_report(
         rows,
         scores,
         {
-            "seen_task_groups": seen_groups,
+            "seen_task_groups": seen_task_groups(train),
             "refused": refused,
             "summaries": summaries,
-            "model": model,
+            "unjudged": unjudged,
+            "model": {"frozen": model.identity, "label_version": label_version(train)},
             "resamples": resamples,
             "seed": seed,
-            "abstention_unavailable": fit.get("abstention") == "unavailable",
+            "abstention_unavailable": False,
         },
     )
-    return (
+    report = (
         identity(contract, rules)
         | body
         | {
             "status": "completed",
             "evaluation": False,
-            "dataset_version": model["dataset_version"],
+            "dataset_version": dataset_version(train),
             "scored_split": "held-out",
-            "split": model["split"],
+            "split": split_identity(split),
             "scored_steps": len(rows),
+            "truths": {
+                summary["sweep_folder"]: {name: summary.get(name) for name in TRUTH_IDENTITY_FIELDS}
+                for summary in summaries
+            },
         }
     )
+    return report, prediction_lines(rows, scores)
 
 
 def finish(report: dict, directory: Path, tracking_uri: str, artifact_root: Path) -> Outcome:
@@ -260,58 +308,73 @@ def finish(report: dict, directory: Path, tracking_uri: str, artifact_root: Path
     return Outcome(report["status"], directory, run_id)
 
 
+def load_configuration(contract_path: Path, rules_path: Path) -> tuple[Contract, Rules]:
+    """The evaluation contract and rules; one that cannot be read is a configuration error."""
+    try:
+        return load_contract(contract_path), load_rules(rules_path)
+    except OSError as error:
+        raise ContractError(f"Cannot read configuration: {error}") from error
+
+
 def run_attempt(
     truth_dirs: list[Path],
     sweep_root: Path,
     split: Path,
     output: Path,
     *,
+    candidates_dir: Path = DEFAULT_CANDIDATES,
+    calibrated_dir: Path = DEFAULT_CALIBRATED,
     contract_path: Path = DEFAULT_CONTRACT,
     frozen_schema: Path = DEFAULT_SCHEMA,
     rules_path: Path = DEFAULT_RULES,
-    training_path: Path = DEFAULT_TRAINING,
-    calibration_path: Path = DEFAULT_CALIBRATION,
     loader: Loader | None = None,
     tracking_uri: str = DEFAULT_TRACKING_URI,
     artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
     resamples: int = BOOTSTRAP_RESAMPLES,
     seed: int = BOOTSTRAP_SEED,
 ) -> Outcome:
-    """One scoring attempt; data and training failures end as a recorded failed attempt."""
+    """One scoring attempt; data and model-check failures end as a recorded failed attempt.
+
+    A frozen pair that cannot be loaded or does not match the split is a setup error, raised
+    before any attempt folder exists. A recorded failed report carries the rules identity and
+    the frozen identity under `model.frozen`; nothing was trained, so there is no training
+    config to name.
+    """
     check_output(output)
-    contract, rules, config = load_configuration(contract_path, rules_path, training_path)
-    calibration = load_calibration_config(calibration_path)
-    # An environment that cannot train is a setup error, not a failed attempt.
-    check_lightgbm()
-    recorded_failures = (*attempt_errors(), HeldOutError, SplitError, CalibrationError)
-    hashes = input_hashes(truth_dirs, sweep_root, split)
+    contract, rules = load_configuration(contract_path, rules_path)
+    model = load_frozen_classifier(candidates_dir, calibrated_dir, split)
+    recorded_failures = (*attempt_errors(), HeldOutError, HeldOutModelError, SplitError)
+    hashes = input_hashes(truth_dirs, sweep_root, split, candidates_dir, calibrated_dir)
     directory = output / attempt_id(hashes, datetime.now(UTC))
     directory.mkdir(parents=True, exist_ok=True)
     # A rerun with identical inputs in the same second reuses the folder; drop its old files.
     for name in (REPORT, PREDICTIONS, TRACKING):
         (directory / name).unlink(missing_ok=True)
     try:
-        report = score_rows(
+        report, predictions = score_rows(
             truth_dirs,
             sweep_root,
             split,
-            directory,
+            candidates_dir,
+            model,
+            rules,
+            contract,
             contract_path=contract_path,
             frozen_schema=frozen_schema,
-            rules_path=rules_path,
-            training_path=training_path,
-            calibration=calibration,
             loader=loader or load_split,
             resamples=resamples,
             seed=seed,
         )
     except recorded_failures as error:
-        (directory / PREDICTIONS).unlink(missing_ok=True)
         reason = f"{type(error).__name__}: {error}"
-        report = failed_report(contract, rules, {"version": config.version}, reason) | {
+        report = failed_report(contract, rules, {"frozen": model.identity}, reason) | {
             "held_out": True,
             "split": split_identity(split),
         }
+        if isinstance(error, NoStepScored):
+            report["unscored"] = {"steps": unscored_steps([], error.unjudged)}
+    else:
+        write_atomic(directory / PREDICTIONS, predictions)
     return finish(report | {"inputs": hashes}, directory, tracking_uri, artifact_root)
 
 
@@ -322,17 +385,21 @@ def run(truth_dirs: list[Path], sweep_root: Path, split: Path, output: Path, **o
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Score rules-v1 and the calibrated classifier on held-out sweep truths."
+        description="Score rules-v1 and the frozen M03/M04 classifier on held-out sweep truths."
     )
     parser.add_argument("--truth", type=Path, nargs="+", required=True)
     parser.add_argument("--sweep-root", type=Path, required=True)
     parser.add_argument("--split", type=Path, required=True, help="Frozen split file")
+    parser.add_argument(
+        "--candidates", type=Path, default=DEFAULT_CANDIDATES, help="M03 train-candidates folder"
+    )
+    parser.add_argument(
+        "--calibrated", type=Path, default=DEFAULT_CALIBRATED, help="M04 calibrate folder"
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
     parser.add_argument("--frozen-schema", type=Path, default=DEFAULT_SCHEMA)
     parser.add_argument("--rules", type=Path, default=DEFAULT_RULES)
-    parser.add_argument("--training", type=Path, default=DEFAULT_TRAINING)
-    parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION)
     parser.add_argument("--tracking-uri", default=DEFAULT_TRACKING_URI)
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     return parser.parse_args(argv)
@@ -343,8 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     config_errors = (
         ContractError,
         RulesError,
-        TrainingError,
-        CalibrationError,
+        HeldOutModelError,
         OutputError,
         tomllib.TOMLDecodeError,
     )
@@ -354,11 +420,11 @@ def main(argv: list[str] | None = None) -> int:
             args.sweep_root,
             args.split,
             args.output,
+            candidates_dir=args.candidates,
+            calibrated_dir=args.calibrated,
             contract_path=args.contract,
             frozen_schema=args.frozen_schema,
             rules_path=args.rules,
-            training_path=args.training,
-            calibration_path=args.calibration,
             tracking_uri=args.tracking_uri,
             artifact_root=args.artifact_root,
         )
