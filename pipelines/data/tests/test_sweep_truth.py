@@ -1,5 +1,6 @@
 """Tests for the sweep-truth-v1 rule. All step records here are synthetic fixtures."""
 
+import json
 import re
 from importlib.resources import files
 from pathlib import Path
@@ -7,12 +8,17 @@ from pathlib import Path
 import pytest
 from agentwatch_data.labels import LabelingError
 from agentwatch_data.sweep_truth import (
+    TRUTH_FILE,
     TRUTH_NAMES,
+    TRUTH_SUMMARY_FILE,
     SweepTruthRule,
     judge,
     load_truth_rule,
+    main,
     noise_threshold,
+    write_truths,
 )
+from test_sweep_steps_input import valid_line, write_input
 
 RULE_FILE = "sweep-truth-v1.toml"
 BASELINE = {"count": 3, "mean_seconds": 1.0, "stdev_seconds": 0.1}
@@ -248,3 +254,128 @@ def test_a_truth_is_a_class_or_a_reason_never_both(rule):
     ]
     for changes in cases:
         assert_class_or_reason(judge(record(**changes), rule))
+
+
+def steps_input(tmp_path: Path, rule: SweepTruthRule, name: str = "steps") -> Path:
+    """Synthetic recorder output covering a classed, an unmeasured and a root step."""
+    lines = [
+        valid_line(step_id="s1", phase="injected", n=4, vllm_queue_seconds=2.0),
+        valid_line(step_id="s2", phase="ramp", n=1, vllm_queue_seconds=0.0),
+        valid_line(
+            step_id="s3",
+            span_status="unavailable",
+            vllm_queue_seconds=None,
+            vllm_service_seconds=None,
+        ),
+        valid_line(step_id="root", parent_step_id=None, step_type="agent_run", baseline=None),
+    ]
+    folder = tmp_path / name
+    folder.mkdir()
+    return write_input(folder, lines, protocol_sha256=rule.protocols["cfg-default"])
+
+
+def read_lines(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_records_and_summary_fields(tmp_path, rule):
+    source = steps_input(tmp_path, rule)
+    output = write_truths(source, tmp_path / "out", rule)
+    records = read_lines(output / TRUTH_FILE)
+    summary = json.loads((output / TRUTH_SUMMARY_FILE).read_text(encoding="utf-8"))
+    first = records[0]
+    for dropped in ("span_status", "vllm_service_seconds", "baseline"):
+        assert dropped not in first
+    assert first["vllm_queue_seconds"] == 2.0
+    assert first["baseline_mean_seconds"] == 1.0
+    assert first["baseline_stdev_seconds"] == 0.1
+    assert first["baseline_count"] == 3
+    assert first["truths"]["queue"] == "inference"
+    assert first["noise_threshold_seconds"] == pytest.approx(0.3)
+    assert records[3]["baseline_count"] is None
+    assert records[3]["truth_reasons"]["queue"] == "root_step"
+    assert summary["label_version"] == rule.label_version
+    assert summary["held_out"] is True
+    assert summary["steps"] == 4
+    assert summary["configuration"] == "cfg-default"
+    assert summary["sweep_folder"] == "sweep-1"
+    assert summary["steps_sha256"] and summary["steps_summary_sha256"]
+    assert set(summary["counts"]) == set(TRUTH_NAMES)
+
+
+def test_counts_match_records(tmp_path, rule):
+    output = write_truths(steps_input(tmp_path, rule), tmp_path / "out", rule)
+    records = read_lines(output / TRUTH_FILE)
+    counts = json.loads((output / TRUTH_SUMMARY_FILE).read_text(encoding="utf-8"))["counts"]
+    for name in TRUTH_NAMES:
+        classes, reasons = {}, {}
+        for item in records:
+            truth, reason = item["truths"][name], item["truth_reasons"][name]
+            if truth is not None:
+                classes[truth] = classes.get(truth, 0) + 1
+            if reason is not None:
+                reasons[reason] = reasons.get(reason, 0) + 1
+        assert counts[name] == {"classes": classes, "reasons": reasons}
+    assert counts["queue"]["classes"] == {"inference": 1, "none": 1}
+    assert counts["queue"]["reasons"] == {"root_step": 1, "span_not_measured": 1}
+
+
+def test_same_input_gives_identical_bytes(tmp_path, rule):
+    source = steps_input(tmp_path, rule)
+    first = write_truths(source, tmp_path / "one", rule)
+    second = write_truths(source, tmp_path / "two", rule)
+    for name in (TRUTH_FILE, TRUTH_SUMMARY_FILE):
+        assert (first / name).read_bytes() == (second / name).read_bytes()
+        assert b"\r" not in (first / name).read_bytes()
+
+
+def test_refused_input_writes_nothing(tmp_path, rule):
+    source = steps_input(tmp_path, rule)
+    (source / "steps.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(LabelingError):
+        write_truths(source, tmp_path / "out", rule)
+    assert not (tmp_path / "out").exists()
+
+
+def test_output_inside_held_out_is_refused(tmp_path, rule):
+    source = steps_input(tmp_path, rule)
+    target = tmp_path / "data" / "held-out" / "out"
+    with pytest.raises(LabelingError, match="held-out"):
+        write_truths(source, target, rule)
+    assert not target.exists()
+
+
+def test_output_resolving_into_held_out_is_refused(tmp_path, rule):
+    source = steps_input(tmp_path, rule)
+    held_out = tmp_path / "data" / "held-out"
+    held_out.mkdir(parents=True)
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(held_out, target_is_directory=True)
+    except OSError:
+        pytest.skip("symbolic links are not available here")
+    with pytest.raises(LabelingError, match="held-out"):
+        write_truths(source, link / "out", rule)
+    assert not (held_out / "out").exists()
+
+
+def test_main_exit_codes(tmp_path, rule, capsys):
+    source = steps_input(tmp_path, rule)
+    output = tmp_path / "out"
+    assert main([str(source), "--output", str(output)]) == 0
+    assert str(output / TRUTH_FILE) in capsys.readouterr().out
+    assert (output / TRUTH_SUMMARY_FILE).is_file()
+
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    assert main([str(bad), "--output", str(tmp_path / "bad-out")]) == 2
+    assert capsys.readouterr().err.startswith("error: ")
+
+    rules = tmp_path / "rules.toml"
+    rules.write_text("version = ", encoding="utf-8")
+    assert main([str(source), "--output", str(tmp_path / "r"), "--rules", str(rules)]) == 2
+    assert capsys.readouterr().err.startswith("error: ")
+
+    held = tmp_path / "data" / "held-out" / "out"
+    assert main([str(source), "--output", str(held)]) == 2
+    assert "held-out" in capsys.readouterr().err

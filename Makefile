@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset optimization-schedule compare-optimization rule-baseline train-candidates calibrate freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment agent-capacity-sweep agent-capacity-sweep-steps sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset sweep-truth optimization-schedule compare-optimization rule-baseline train-candidates calibrate freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment agent-capacity-sweep agent-capacity-sweep-steps sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -65,6 +65,10 @@ EVALUATION_CONTRACT ?= pipelines/model/evaluation-contract.toml
 
 split-dataset: ## Freeze train/validation/test splits of the newest release (refused unless its latest gate verdict passed), with the leakage check
 	release=$$($(LATEST_RELEASE)) && $(DATA).splits --release "$$release" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA)
+
+sweep-truth: ## Label recorded capacity-sweep steps with the sweep-truth-v1 rule (STEPS=<steps folder> [OUTPUT=<folder>])
+	@test -n "$(STEPS)" || { echo "usage: make sweep-truth STEPS=<steps folder> [OUTPUT=<folder>]" >&2; exit 2; }
+	$(DATA).sweep_truth "$(STEPS)" $(if $(OUTPUT),--output "$(OUTPUT)")
 
 slice-dataset: ## Slice the newest release for bias (with its newest split, if any): flags, mitigations, and balancing weights under .data/reports/<release>
 	release=$$($(LATEST_RELEASE)) && $(DATA).slices --release "$$release" --newest-split

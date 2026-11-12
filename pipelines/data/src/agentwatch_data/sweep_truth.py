@@ -5,8 +5,12 @@ validated step record from `sweep_steps_input`, each truth as a class or as null
 reason, never both. Missing readings stay null; they are never compared as zero.
 """
 
+import argparse
+import json
 import math
+import os
 import re
+import sys
 import tomllib
 from dataclasses import dataclass
 from importlib.resources import files
@@ -14,11 +18,29 @@ from pathlib import Path
 
 from agentwatch_data.extract import canonical_sha256
 from agentwatch_data.labels import LabelingError, require_keys, require_number, require_text
+from agentwatch_data.sweep_steps_input import SweepSteps, read_steps
 
 TRUTH_NAMES = ("queue", "slower", "protocol_clean")
 CLASS_INFERENCE, CLASS_NONE = "inference", "none"
 SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 PROTOCOL_CONFIGURATIONS = ("cfg-default", "cfg-hardware")
+TRUTH_FILE = "truth.jsonl"
+TRUTH_SUMMARY_FILE = "truth.json"
+HELD_OUT_PARTS = ("data", "held-out")
+DEFAULT_OUTPUT_ROOT = Path(".data/a06-scoring/truth")
+DROPPED_FIELDS = ("span_status", "vllm_service_seconds", "baseline")
+# Summary fields copied from the recorder's steps.json; the rest of the summary is derived here.
+CARRIED_SUMMARY_FIELDS = (
+    "sweep_folder",
+    "sweep_id",
+    "configuration",
+    "protocol_version",
+    "protocol_sha256",
+    "sweep_json_sha256",
+    "excluded_batches",
+    "runs_without_evidence",
+    "runs_without_plan",
+)
 LOGIC_MODULES = ("sweep_truth.py", "sweep_steps_input.py")
 
 
@@ -206,3 +228,102 @@ def judge(record: dict, rule: SweepTruthRule) -> dict:
     if record["step_type"] not in rule.scored_step_types:
         return _unjudged("no_queue_reference")
     return _judge_model_call(record, rule)
+
+
+def _truth_record(record: dict, rule: SweepTruthRule) -> dict:
+    baseline = record["baseline"]
+    result = {key: value for key, value in record.items() if key not in DROPPED_FIELDS}
+    result["baseline_mean_seconds"] = None if baseline is None else baseline["mean_seconds"]
+    result["baseline_stdev_seconds"] = None if baseline is None else baseline["stdev_seconds"]
+    result["baseline_count"] = None if baseline is None else baseline["count"]
+    result.update(judge(record, rule))
+    return result
+
+
+def _counts(records: list[dict]) -> dict:
+    counts: dict = {name: {"classes": {}, "reasons": {}} for name in TRUTH_NAMES}
+    for record in records:
+        for name in TRUTH_NAMES:
+            for group, value in (
+                ("classes", record["truths"][name]),
+                ("reasons", record["truth_reasons"][name]),
+            ):
+                if value is not None:
+                    tally = counts[name][group]
+                    tally[value] = tally.get(value, 0) + 1
+    return counts
+
+
+def sweep_truths(steps: SweepSteps, rule: SweepTruthRule) -> tuple[dict, list[dict]]:
+    """The truth summary and one truth record per step, in the recorder's order."""
+    records = [_truth_record(record, rule) for record in steps.records]
+    summary = {
+        "label_version": rule.label_version,
+        **{field: steps.summary[field] for field in CARRIED_SUMMARY_FIELDS},
+        "steps_sha256": steps.steps_sha256,
+        "steps_summary_sha256": steps.summary_sha256,
+        "held_out": True,
+        "steps": len(records),
+        "counts": _counts(records),
+    }
+    return summary, records
+
+
+def _inside_held_out(output_dir: Path) -> bool:
+    parts = output_dir.resolve().parts
+    width = len(HELD_OUT_PARTS)
+    return any(parts[i : i + width] == HELD_OUT_PARTS for i in range(len(parts) - width + 1))
+
+
+def _write_lf(path: Path, text: str) -> None:
+    """Write through a temporary file so a reader never sees a half-written result."""
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(text)
+    os.replace(temporary, path)
+
+
+def write_truths(steps_dir: Path, output_dir: Path, rule: SweepTruthRule | None = None) -> Path:
+    """Write `truth.jsonl` and `truth.json` into `output_dir`.
+
+    Input, rule, output location and all JSON are checked or built before the folder exists, so
+    a refusal leaves nothing behind. The summary is written last: it marks the records complete.
+    """
+    rule = rule if rule is not None else load_truth_rule()
+    if _inside_held_out(output_dir):
+        raise LabelingError(f"{output_dir} is inside a data/held-out folder; evidence is read only")
+    steps = read_steps(steps_dir, rule.protocols)
+    summary, records = sweep_truths(steps, rule)
+    try:
+        lines = "".join(
+            json.dumps(record, sort_keys=True, allow_nan=False) + "\n" for record in records
+        )
+        summary_text = json.dumps(summary, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    except ValueError as error:
+        raise LabelingError(f"Truths cannot be serialised: {error}") from error
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_lf(output_dir / TRUTH_FILE, lines)
+    _write_lf(output_dir / TRUTH_SUMMARY_FILE, summary_text)
+    return output_dir
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("steps_dir", type=Path, help="folder with steps.jsonl and steps.json")
+    parser.add_argument("--output", type=Path, help="default: .data/a06-scoring/truth/<folder>")
+    parser.add_argument("--rules", type=Path, help="rule TOML; default: the packaged rule")
+    args = parser.parse_args(argv)
+    output = args.output if args.output is not None else DEFAULT_OUTPUT_ROOT / args.steps_dir.name
+    try:
+        rule = load_truth_rule(args.rules)
+        written = write_truths(args.steps_dir, output, rule)
+    except (LabelingError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    print(written / TRUTH_FILE)
+    print(written / TRUTH_SUMMARY_FILE)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
