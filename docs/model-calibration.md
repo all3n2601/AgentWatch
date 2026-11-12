@@ -1,7 +1,7 @@
 # AgentWatch confidence calibration and abstention
 
-Status: `calibration-v1`, fitted and evaluated on 2026-11-11 on dataset v1
-(`split-v3+95309c38a53e`, `eval-contract-v3` `b9f20820`, proposed); see
+Status: `calibration-v1`, fitted and evaluated on dataset v1
+(`split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`, accepted); see
 [Results on dataset v1](#results-on-dataset-v1). Every gate it evaluates passes. Temperature
 scaling made the test-split ECE slightly worse, not better. On `split-v2` the validation split
 is empty, so no calibration is fitted there.
@@ -70,27 +70,28 @@ the model's best guess for inspection only.
 
 ## Results on dataset v1
 
-Run on 2026-11-11 at commit `6ade73d`, right after the
+Run on 2026-11-12 at commit `f229a4c`, right after the
 [M03 run](model-training.md#results-on-dataset-v1) and in the same Linux container:
 
 ```sh
-make calibrate SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+95309c38a53e.json
+make calibrate SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+932b2df410a7.json
 ```
 
 It reads M03's `.data/candidates` (including `validation_predictions.jsonl`, SHA-256
 `c1bf9555c597282c75b8c9fbbe3f8ecaa15ef67fc607eb62cc0e92312d5ad6ff`) and writes
-`.data/calibration/`, not committed. MLflow run `4203a3279a254b71825a87d8ff972dc1` (local).
+`.data/calibration/`, not committed. MLflow run `af4e4b6e7a3e43c0a07363bc0a80cfd1` (local).
 
 | File | SHA-256 |
 |---|---|
 | `predictions.jsonl` | `9f6b03fed9fe23e3263df413a311b73b2129f5aeffe3cd91b80fd2de61a8c70d` |
-| `calibration.json` | `11e853f4eefc110409523e6e5419ec3fc98e7679cf57ac492a689865e3842213` |
-| `report.json` | `9fa445f185fb523c952ba195888b5d3c7fb2dd2444c9ac462590be6320a0c28c` |
+| `calibration.json` | `4ce0d7553b73bc7a574d57ecb7f454b3f5ae2464fefd6172d8bd3057b4e0cb5d` |
+| `report.json` | `5101d78b22a665a53906366c859ead4e29c5ef4866d1b207683f259018a55263` |
 
-A second run at `6ade73d`, and a rerun on 2026-11-12 at `67b6429`, reproduced
-`predictions.jsonl` byte for byte and every value in `calibration.json` and `report.json`. Those
-two files record M03's MLflow run ID (`candidates.run_id`), which is new on every run, so their
-hashes match only for the same M03 run.
+A second M03 and M04 run reproduced `predictions.jsonl` byte for byte and every value in
+`calibration.json` and `report.json`. Those two files record M03's MLflow run ID
+(`candidates.run_id`, here `b7afc8c3c2c04ec39ff9accba103e255`), which is new on every run, so
+their hashes match only for the same M03 run. The first runs, on 2026-11-11 under the
+then-proposed contract (same rows), wrote the same `predictions.jsonl`.
 
 **Fit on validation** (273 steps, 268 usable; the 5 others are `mixed` steps, which are not a
 class the classifier was trained on): temperature 0.897 (below 1, so it sharpens the scores),
