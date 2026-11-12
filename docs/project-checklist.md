@@ -761,7 +761,7 @@ frozen evaluation sets without tuning against them.
   evaluable release; open until one covering all four classes passes the leakage check.
   2026-11-11 (A06 PR 3, not yet merged): `make score-held-out` scores `rules-v1` and the
   classifier on the same held-out A06 steps, against measured vLLM queue and slowdown truths.
-  On the frozen sweeps (attempt `20261112T022810Z-7eac8a`) `rules-v1` missed every queued model
+  On the frozen sweeps (attempt `20261112T025531Z-220363`) `rules-v1` missed every queued model
   call and the classifier 0.285 of them; on the unseen task `fix-median-even` the classifier
   missed 0.268 (0.146–0.465) ([capacity record](capacity-record.md#attribution-baseline)). This is
   a descriptive baseline with no gate, an uncalibrated classifier and one sweep per
@@ -821,8 +821,10 @@ frozen evaluation sets without tuning against them.
 
   2026-11-11 (A06 PR 3, branch `feature/a06-held-out-scoring`, not yet merged; after #69):
   `capacity-sweep-truth` and `score-held-out` scored `rules-v1` and the `training-v1` classifier
-  on both frozen sweeps, attempt `20261112T022810Z-7eac8a` (run 2026-11-12 02:28 UTC) at commit
-  `4658849` with a clean tree. 4,000 steps scored, none refused; the 9 and 24 live-confirmation
+  on both frozen sweeps, attempt `20261112T025531Z-220363` (run 2026-11-12 02:55 UTC) at commit
+  `29df6fc` with a clean tree. It supersedes attempt `20261112T022810Z-7eac8a`, whose `slower`
+  truth still judged the N = 1 baseline steps, contrary to the design. 4,000 steps scored, none
+  refused; the 9 and 24 live-confirmation
   runs have no truth records (no plan, so no baseline). `rules-v1` missed every queued model call
   (miss rate 1.000). The classifier missed 0.285 (95% interval 0.162–0.475) of them, and 0.910
   (0.770–1.000) of the `cfg-hardware` calls that were slower without queueing. Dataset v1 gave it
