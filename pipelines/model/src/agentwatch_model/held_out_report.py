@@ -10,7 +10,6 @@ from collections import Counter
 
 from agentwatch_data.replay_labels import task_group
 
-from agentwatch_model.held_out_model import CLASSIFIER_SCORER
 from agentwatch_model.held_out_scorers import ScoredStep
 from agentwatch_model.metrics import NONE, bootstrap_interval
 
@@ -150,15 +149,6 @@ def measures(
     }
 
 
-def without_abstention(cell: dict) -> dict:
-    """Abstention was never fitted: its rates are unmeasured, not zero."""
-    return cell | {
-        "abstention_rate": None,
-        "answered_miss_rate": None,
-        "answered_false_alarm_rate": None,
-    }
-
-
 def slice_measures(
     rows: list[dict],
     scored: list[ScoredStep],
@@ -166,15 +156,11 @@ def slice_measures(
     *,
     resamples: int,
     seed: int,
-    abstention_unavailable: bool,
 ) -> dict | None:
     """measures() for one slice, or None when no step in it has a judged truth."""
     if all(row["truths"][truth] is None for row in rows):
         return None
-    result = measures(rows, scored, truth, resamples=resamples, seed=seed)
-    if abstention_unavailable and scored and scored[0].scorer == CLASSIFIER_SCORER:
-        return without_abstention(result)
-    return result
+    return measures(rows, scored, truth, resamples=resamples, seed=seed)
 
 
 def unscored_steps(rows: list[dict], unjudged: list[dict]) -> dict[str, dict[str, int]]:
@@ -219,16 +205,10 @@ def build_report(rows: list[dict], scores: dict[str, list[ScoredStep]], context:
     four rollups, and the report's fixed statements.
 
     `context` carries `seen_task_groups`, `refused` (counts by code), `summaries`, `unjudged`
-    (truth records with no judged truth), `model`, `resamples`, `seed` and
-    `abstention_unavailable`.
+    (truth records with no judged truth), `model`, `resamples` and `seed`.
     """
     seen_groups = frozenset(context["seen_task_groups"])
     seen = [task_group(row["task_id"]) in seen_groups for row in rows]
-    settings = {
-        "resamples": context["resamples"],
-        "seed": context["seed"],
-        "abstention_unavailable": context["abstention_unavailable"],
-    }
     cells: list[dict] = []
     rollups: dict[str, list[dict]] = {
         "by_scorer_truth": [],
@@ -266,9 +246,8 @@ def build_report(rows: list[dict], scores: dict[str, list[ScoredStep]], context:
                         [rows[i] for i in members],
                         [scored[i] for i in members],
                         truth,
-                        resamples=settings["resamples"],
-                        seed=settings["seed"],
-                        abstention_unavailable=settings["abstention_unavailable"],
+                        resamples=context["resamples"],
+                        seed=context["seed"],
                     )
                     if result is None:
                         continue

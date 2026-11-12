@@ -1,5 +1,7 @@
 # A06 Held-out Scoring Implementation Plan
 
+> Superseded 2026-11-12 by docs/superpowers/plans/2026-11-12-a06-scoring-m03-m04.md.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Score `rules-v1` and the learned classifier on the frozen A06 sweep evidence, as a

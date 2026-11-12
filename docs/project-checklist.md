@@ -814,9 +814,7 @@ frozen evaluation sets without tuning against them.
   clean-batch truths, attempt `20261112T222540Z-d3316f` at `8d414c2`
   ([capacity record](capacity-record.md#attribution-baseline)). `rules-v1` missed every queued
   call (1.000); the classifier missed 0.288 (0.161–0.482), abstained on 0.130, and on the
-  unseen task `fix-median-even` missed 0.276 (0.150–0.480). It replaces this item's 2026-11-11
-  A06 PR 3 entry, whose attempt `20261112T025531Z-220363` is superseded (different truth rule,
-  model and scored steps; see "Evaluate natural overload" below). It is a descriptive baseline
+  unseen task `fix-median-even` missed 0.276 (0.150–0.480). It is a descriptive baseline
   with no gate, one sweep per configuration and one unseen task. Stays open for M2 PR 4's
   inference rule, which will be scored by the same command, and for an evaluable release.
 - [x] Evaluate natural overload in addition to injector-driven experiments.
@@ -897,7 +895,8 @@ frozen evaluation sets without tuning against them.
   counters do not match, and a sweep or (run, step) passed twice fail the attempt with a
   recorded, tracked report instead of crashing or being miscounted
   (`pipelines/model/tests/test_held_out_rows.py`, `test_score_held_out.py`). Both real truth
-  folders pass unchanged: 4,000 rows, none refused, the same files the reported attempt hashed.
+  folders (the former `sweep-truth-v1` folders, since superseded) pass unchanged: 4,000 rows,
+  none refused, the same files the reported attempt hashed.
 
   2026-11-12 (A06 PR 3, branch `feature/a06-held-out-scoring`, not yet merged; depends on #74):
   closed by attempt `20261112T222540Z-d3316f` (run 2026-11-12 22:25–22:32 UTC at commit

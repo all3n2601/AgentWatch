@@ -107,7 +107,7 @@ SWEEP_ROOT ?= data/held-out/a06-20261111/capacity-sweeps
 score-held-out: ## Score rules-v1 and the frozen M03/M04 classifier on held-out sweep truths (TRUTH="<truth dirs>", SPLIT=...)
 	@test -n "$(TRUTH)" || { echo 'Set TRUTH to one or more sweep-truth-v2 folders: make score-held-out TRUTH="<truth dir> ..." SPLIT=<split file>' >&2; exit 2; }
 	@test -n "$(SPLIT)" || { echo 'Set SPLIT to the frozen split file: make score-held-out TRUTH="<truth dir> ..." SPLIT=<split file>' >&2; exit 2; }
-	uv run --package agentwatch-model python -m agentwatch_model.score_held_out --truth $(TRUTH) --sweep-root "$(SWEEP_ROOT)" --split "$(SPLIT)" --candidates $(CANDIDATES_OUTPUT) --calibrated $(CALIBRATION_OUTPUT) --output $(HELD_OUT_SCORES_OUTPUT)
+	uv run --package agentwatch-model python -m agentwatch_model.score_held_out --truth $(TRUTH) --sweep-root "$(SWEEP_ROOT)" --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --candidates $(CANDIDATES_OUTPUT) --calibrated $(CALIBRATION_OUTPUT) --output $(HELD_OUT_SCORES_OUTPUT)
 
 freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest release; review the diff in a PR
 	release=$$($(LATEST_RELEASE)) && uv run --project pipelines/validation python -m agentwatch_validation freeze-schema --release "$$release" --schema $(VALIDATION_SCHEMA)

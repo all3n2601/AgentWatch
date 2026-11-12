@@ -337,6 +337,8 @@ def test_a_failed_attempt_is_reported_and_tracked(prepared, tracking):
     report = json.loads((outcome.directory / "report.json").read_text())
     assert report["status"] == "failed" and report["held_out"] is True
     assert "SplitError" in report["reason"] and "leakage" in report["reason"]
+    assert report["gate"] == "none (descriptive baseline)"
+    assert not {"gates", "summary", "metrics"} & set(report)
     assert report["inputs"]["split"]
     assert not (outcome.directory / "predictions.jsonl").exists()
     mlflow.set_tracking_uri(tracking["tracking_uri"])

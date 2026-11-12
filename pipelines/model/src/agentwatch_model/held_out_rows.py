@@ -5,8 +5,8 @@ per recorded step, each naming its `run_folder` relative to the sweep folder) an
 (the summary). This module joins every judged truth record, on (run, step), to the `steps-v1.3`
 feature row computed from that run's own `live-journal.jsonl`. A record whose three truths are
 all null is unjudged (a root step, or a step with no reference): it is returned apart and never
-feature-joined, so its missing journal is not a refusal. Sweep runs have no `experiment.json`, so the per-replay
-join of `agentwatch_data.replay_rows` is composed from its public pieces.
+feature-joined, so its missing journal is not a refusal. Sweep runs have no `experiment.json`, so
+the per-replay join of `agentwatch_data.replay_rows` is composed from its public pieces.
 
 A step the evidence cannot support is refused under a `replay_rows` code and counted, never
 guessed: `feature_evidence_unreadable` (journal or evidence unreadable, or a `run_folder` that
@@ -16,7 +16,8 @@ truth record's), `declared_interval_invalid`.
 
 Truth files are another package's output, so they are checked at this boundary before any
 join: a summary or record outside the `sweep-truth-v2` format, a summary of another label
-version or that does not match its records (step count, `truth.jsonl` hash), or a sweep or step passed twice raises HeldOutError, which fails the attempt.
+version or that does not match its records (step count, `truth.jsonl` hash), or a sweep or step
+passed twice raises HeldOutError, which fails the attempt.
 """
 
 import hashlib

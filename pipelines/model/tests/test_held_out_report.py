@@ -3,6 +3,8 @@
 The rows and scores here are made up for these tests; none of it is recorded evidence.
 """
 
+import json
+
 import pytest
 from agentwatch_model.held_out_model import CLASSIFIER_SCORER
 from agentwatch_model.held_out_report import (
@@ -125,7 +127,6 @@ def context(**overrides):
         "model": {"version": "training-v1"},
         "resamples": 50,
         "seed": 0,
-        "abstention_unavailable": False,
     } | overrides
 
 
@@ -201,16 +202,16 @@ def test_report_states_its_fixed_claims():
     assert report["model"] == {"version": "training-v1"}
 
 
-def test_unavailable_abstention_leaves_classifier_rates_none_not_zero():
+def test_classifier_abstention_rates_are_measured_numbers():
     rows = [step("inference"), step("none")]
-    scores = rules_scores(2) | {CLASSIFIER_SCORER: [scored("none"), scored("none")]}
-    report = build_report(rows, scores, context(abstention_unavailable=True))
+    scores = rules_scores(2) | {CLASSIFIER_SCORER: [scored("none", abstained=True), scored("none")]}
+    report = build_report(rows, scores, context())
     overall = {
         e["scorer"]: e for e in report["rollups"]["by_scorer_truth"] if e["truth"] == "queue"
     }
     classifier = overall[CLASSIFIER_SCORER]
-    assert classifier["abstention_rate"] is None
-    assert classifier["answered_miss_rate"] is None
-    assert classifier["answered_false_alarm_rate"] is None
-    assert classifier["miss_rate"] == 1.0
+    assert classifier["abstention_rate"] == 0.5
+    assert classifier["answered_miss_rate"] is None  # its only inference step abstained
+    assert classifier["answered_false_alarm_rate"] == 0.0
     assert overall[RULES_SCORER]["abstention_rate"] == 0.0
+    assert "abstention_unavailable" not in json.dumps(report)

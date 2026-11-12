@@ -43,7 +43,7 @@ from agentwatch_model.held_out_model import (
     frozen_scores,
     load_frozen_classifier,
 )
-from agentwatch_model.held_out_report import build_report, unscored_steps
+from agentwatch_model.held_out_report import GATE, build_report, unscored_steps
 from agentwatch_model.held_out_rows import (
     HeldOutError,
     held_out_rows,
@@ -77,7 +77,6 @@ from agentwatch_model.train_candidates import (
     VALIDATION_PREDICTIONS,
     Loader,
     attempt_errors,
-    failed_report,
     label_version,
 )
 from agentwatch_model.train_candidates import (
@@ -99,7 +98,6 @@ ATTEMPT_ID_HASH_DIGITS = 6
 EXIT_FAILED = 1
 EXIT_UNTRACKED = 3
 TRUTH_FILES = ("truth.json", "truth.jsonl")
-# A summary that predates a field records it as None, never as a made-up value.
 TRUTH_IDENTITY_FIELDS = ("label_version", "steps_sha256", "steps_summary_sha256", "truth_sha256")
 
 
@@ -266,7 +264,6 @@ def score_rows(
             "model": {"frozen": model.identity, "label_version": label_version(train)},
             "resamples": resamples,
             "seed": seed,
-            "abstention_unavailable": False,
         },
     )
     report = (
@@ -280,7 +277,7 @@ def score_rows(
             "split": split_identity(split),
             "scored_steps": len(rows),
             "truths": {
-                summary["sweep_folder"]: {name: summary.get(name) for name in TRUTH_IDENTITY_FIELDS}
+                summary["sweep_folder"]: {name: summary[name] for name in TRUTH_IDENTITY_FIELDS}
                 for summary in summaries
             },
         }
@@ -368,7 +365,12 @@ def run_attempt(
         )
     except recorded_failures as error:
         reason = f"{type(error).__name__}: {error}"
-        report = failed_report(contract, rules, {"frozen": model.identity}, reason) | {
+        report = identity(contract, rules) | {
+            "status": "failed",
+            "evaluation": False,
+            "reason": reason,
+            "model": {"frozen": model.identity},
+            "gate": GATE,
             "held_out": True,
             "split": split_identity(split),
         }
