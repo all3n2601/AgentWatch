@@ -437,7 +437,8 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   with the per-request nonce digits first (1,680 of 220,778 and 1,648 of 216,612 queried tokens
   hit when the run token came first). A formal hold-out needs `split-v3`, accepted by Rohit and
   Akshay; no evidence using this method may enter a dataset release before `split-v3` lists it in
-  `held_out_injection_methods` (Akshay, review of PR #64). In the 2026-11-11 A06 preflight dry
+  `held_out_injection_methods` (Akshay, review of PR #64). 2026-11-11: `split-v3` lists it
+  (branch `feature/split-v3`, not merged). In the 2026-11-11 A06 preflight dry
   sweep on real vLLM, each flood had a median of 2,080 prompt tokens, every reply was exactly
   1 completion token, and cleanup was confirmed (`.data/a06-20261111/preflight-dry-run/`).
 
@@ -729,6 +730,20 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   `worker_queue_blocker` and task group `fix-window-count` (held-out check met, independence
   passed). Open: training has one task group and validation is empty, so unseen-task results
   rest on one task.
+  2026-11-11 (split-v3, branch `feature/split-v3`, not merged): `split-v3`
+  (`split-assignment-v3.toml`, `dc2c4c92`) under `eval-contract-v3` (`b9f20820`) holds out
+  `worker_queue_blocker` and `prefill-flood-openai-chat-v1`, declares test task groups
+  `fix-window-count` and `fix-median-even`, holds the A06 natural-overload sweeps out of every
+  split by protocol hash, splits only `step-features-v1` rows, and sends whole experiments of the
+  training task to validation by hash ([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md),
+  `pipelines/data/tests/test_split_v3.py`, `test_dataset_splits.py`). On dataset v1,
+  `split-v3+95309c38a53e`: train 1,755, validation 273, test 3,575; leakage, class balance,
+  independence and mixed in test passed. The held-out-method check is `not_met`: neither method
+  has a `step-features-v1` row in this release. Validation holds three experiments of the
+  training task (weak calibration evidence; see the ADR). Open: review and the contract's
+  acceptance; training still has one task group; the natural-overload rule runs on synthetic
+  rows only, and fails open on untagged rows, so the PR that ingests sweep replays must write
+  `protocol_version` and `protocol_sha256` on every row and test that they are held out.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
 - [ ] Evaluate the expanded rule baseline before training the learned model.
@@ -780,9 +795,9 @@ frozen evaluation sets without tuning against them.
       only with `average-middle-pair`) was declared with one design and at most 3 attempts.
       It passed on vLLM on the first attempt.
     - It is to stay out of training (Benoy, 2026-11-11). `split-v2` does not name it and its
-      hash would place it in train (position 0.622), so `split-v3` is to list it in
-      `test_task_groups`. Until then no `fix-median-even` rows may enter a release; the
-      `split-v2` code does not enforce this.
+      hash would place it in train (position 0.622), so `split-v3` lists it in
+      `test_task_groups` (2026-11-11, branch `feature/split-v3`, not merged). A release split
+      under `split-v2` must still hold no `fix-median-even` rows; that code does not enforce it.
 
   The preflight also checked the live path and the full sweep flow:
   - **16-agent live batch:** all 63,427 events delivered; CPU/NVML sampler 0 late of 1,495

@@ -3,18 +3,18 @@
 # Never edit a threshold after seeing test-split results; change the version instead.
 # Reports identify this file by SHA-256 of its parsed contents as canonical JSON, so line
 # endings and comments do not change the identifier.
-# eval-contract-v1 is kept unchanged in evaluation-contract-v1.toml, so splits and results made
-# under it still rebuild. v2 adopts items 1, 3 and 4 of docs/evaluation-contract-v2-proposal.md:
-# labels-v2 is evaluated (mixed stays a label value outside the four classes), split-v2 groups
-# by task_group with the frozen assignment file, and every threshold is unchanged. Item 2 (the
-# multi-resource metric and how a prediction on a mixed step is scored) is not encoded here; it
-# remains Rohit's M02 decision, and until then the rule baseline and training refuse splits
-# with mixed labels.
-version = "eval-contract-v2"
-# Accepted by Rohit (M02 owner), told to the owner directly on 2026-11-05; Rohit's approval of
-# the pull request that adds this file is the written confirmation. Values marked "proposed"
-# below still have no supporting data.
-status = "accepted"
+# Earlier versions are kept unchanged beside this file (evaluation-contract-v1.toml and
+# evaluation-contract-v2.toml), so splits and results made under them still rebuild.
+# v3 changes only the split: [splits] selects split-v3 and its assignment file
+# (split-assignment-v3.toml, ADR 0012). It holds out the A06 evidence, splits only
+# step-features-v1 rows, and fills validation with whole experiments of the training task.
+# Every threshold and every other value is eval-contract-v2's.
+version = "eval-contract-v3"
+# The thresholds are eval-contract-v2's, which Rohit (M02 owner) accepted on 2026-11-05. The
+# split change was proposed by Rohit with Benoy on 2026-11-11 and stays proposed until the
+# pull request that adds this file is approved, including by Akshay (splits). Values marked
+# "proposed" below still have no supporting data.
+status = "proposed"
 
 [dataset]
 # Later compatible minor versions (steps-v1.x, which only add columns) are also accepted.
@@ -33,20 +33,22 @@ regression_target = "label_excess_fraction"
 test_sources = ["measured"]
 
 [splits]
-# split-v2 partitions by the frozen assignment file, resolved against this file's directory;
-# changing that file requires split-v3 and a new test split.
-method = "split-v2"
+# split-v3 partitions by the frozen assignment file, resolved against this file's directory;
+# changing that file requires split-v4 and a new test split.
+method = "split-v3"
 group_key = "task_group"
-assignment = "../data/src/agentwatch_data/split-assignment.toml"
+assignment = "../data/src/agentwatch_data/split-assignment-v3.toml"
 train_fraction = 0.70
 validation_fraction = 0.15
 test_fraction = 0.15
 # At least this many injection methods, from the injection_method lineage column, appear
-# only in the test split. split-v2 holds out worker_queue_blocker through the assignment file.
+# only in the test split. split-v3 holds out worker_queue_blocker and
+# prefill-flood-openai-chat-v1 through the assignment file; neither has step-features-v1 rows in
+# dataset v1, so this check is recorded as not met until such rows are in a release.
 held_out_injection_methods = 1
-# split-v2 groups by task_group, so every replay of a task stays in one split. Evaluating
-# unseen tasks still needs more than one task group per split (dataset v1 trains on one), and
-# the task_id of CPU and coding rows remains an interim placeholder.
+# split-v3 groups by task_group, so test shares no task with training; validation takes whole
+# experiments of a training task. Evaluating unseen tasks still needs more than one task group
+# per split (dataset v1 trains on one).
 require_unseen_tasks = true
 # Mixed-contention cases must appear in the test split; training may also contain them.
 require_mixed_contention_in_test = true

@@ -1,0 +1,29 @@
+# Frozen split-v3 assignment (eval-contract-v3). A change to this file requires split-v4 and a
+# new test split. Every rule here was fixed before any label of the split was seen; see
+# docs/adr/0012-split-v3-held-out-a06-evidence-and-validation.md.
+version = "split-v3"
+
+# Only rows of these feature definitions are split. The steps-v1.2 CPU and coding rows have
+# other features, so a model trained on replays could not score them; they are left out and
+# counted in the split file.
+feature_versions = ["step-features-v1"]
+
+# Every task group with a row using one of these methods goes entirely to test.
+# prefill-flood-openai-chat-v1 is the A06 held-out GPU method (ADR 0011).
+held_out_injection_methods = ["worker_queue_blocker", "prefill-flood-openai-chat-v1"]
+
+# fix-window-count stays the declared test task. fix-median-even is new (revision 1) and stays
+# unseen; its split-v1 hash position (0.622) would otherwise put it in train.
+test_task_groups = ["fix-window-count", "fix-median-even"]
+
+# Natural-overload replays from the A06 capacity sweeps carry no injection method, so they are
+# matched by protocol hash and held out of train, validation and test as a separate evaluation
+# set: cfg-default (sweep c5a40c4c-e4b3-4dc1-b660-21ca4c88bc93), cfg-hardware (sweep
+# 068e27a9-5933-4f99-b465-75502f7e523b) and the preflight dry run (300 s run limit).
+[held_out_protocol]
+version = "natural-overload-sweep-v1"
+sha256 = [
+  "22e26dc7536fe5e88e3d9ea9f01445a754788ce587b1626d6a4eb055ec4524b9",
+  "1608deee2a3bcb5245b07d73e13e73dcd1e82702ef14aa683ecd94144e0f18cd",
+  "a16b2a1469fbccb94b715ab9718b482b3539776d994efa7e1c4fb4964ddad25e",
+]
