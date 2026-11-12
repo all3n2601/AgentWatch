@@ -429,15 +429,17 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   median instead of 0.25 s), so it is not retrieval-exclusive. Open until review and merge.
   2026-10-27 (M2): the inference injector also loads a loopback vLLM server
   (`competing-openai-chat-v1`, same bounds); one real contended replay confirmed its cleanup.
-  2026-11-10 (branch `feature/prefill-flood-injector`, not yet merged,
+  2026-11-10 (merged 2026-11-11 as PR #64, `902bec5`,
   [ADR 0011](adr/0011-prefill-flood-held-out-injection-method.md)): `PrefillFloodInjector`
   (`prefill-flood-openai-chat-v1`, long prompts with `max_tokens=1`) is added as a candidate
-  held-out GPU method (92 injector tests). Against real vLLM v0.32, two 20 s runs at
+  held-out GPU method (110 injector tests at merge). Against real vLLM v0.32, two 20 s runs at
   concurrency 2 completed 104 and 104 requests with 0 failures and zero prefix-cache hits
   with the per-request nonce digits first (1,680 of 220,778 and 1,648 of 216,612 queried tokens
   hit when the run token came first). A formal hold-out needs `split-v3`, accepted by Rohit and
   Akshay; no evidence using this method may enter a dataset release before `split-v3` lists it in
-  `held_out_injection_methods` (Akshay, review of PR #64). Open until review and merge.
+  `held_out_injection_methods` (Akshay, review of PR #64). In the 2026-11-11 A06 preflight dry
+  sweep on real vLLM, each flood had a median of 2,080 prompt tokens, every reply was exactly
+  1 completion token, and cleanup was confirmed (`.data/a06-20261111/preflight-dry-run/`).
 
 **Exit test:** Known isolated workloads exercise each resource and a clean control. Measurements
 and attribution identify the affected class. Real GPU validation uses real inference hardware;
@@ -758,6 +760,59 @@ frozen evaluation sets without tuning against them.
   ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
   evaluable release; open until one covering all four classes passes the leakage check.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
+  2026-11-11 (A06, PR #65 on branch `feature/natural-overload-capacity-sweep`, not yet merged):
+  `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol
+  `natural-overload-sweep-v1`
+  ([design](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md)). It
+  decides capacity by the declared rules and validates the contention label against vLLM's
+  measured queue time. The GPU preflight on 2026-11-11 (evidence `.data/a06-20261111/`) led to
+  two protocol changes, approved by Benoy before any protocol evidence existed:
+  - **Run limit 900 s → 450 s.** With vLLM, DCGM and GPM sampled every 0.25 s, the per-run
+    sample budget (80,000 records, under the live API's 100,000) fits only about 465 s. Every
+    900 s run was refused before it started. The p90 criterion (half the run limit) is now
+    225 s, which is stricter. The sweep now checks the budget before anything runs.
+  - **Second source `fix-window-count` → `fix-median-even`.** `fix-window-count` failed 4 of 4
+    runs on vLLM `Qwen/Qwen3-1.7B` at temperature 0: it skipped the test file, applied
+    `skip-first-window` and never applied `include-final-window`. It had passed 12 of 12 on
+    Ollama `qwen3:1.7b`, a different model build. The task and the prompt were not changed to
+    make it pass.
+    - The new task `fix-median-even` (revision 1; 4 fixture tests: fails unpatched, passes
+      only with `average-middle-pair`) was declared with one design and at most 3 attempts.
+      It passed on vLLM on the first attempt.
+    - It is to stay out of training (Benoy, 2026-11-11). `split-v2` does not name it and its
+      hash would place it in train (position 0.622), so `split-v3` is to list it in
+      `test_task_groups`. Until then no `fix-median-even` rows may enter a release; the
+      `split-v2` code does not enforce this.
+
+  The preflight also checked the live path and the full sweep flow:
+  - **16-agent live batch:** all 63,427 events delivered; CPU/NVML sampler 0 late of 1,495
+    rounds; service sampler 28 late and 4 missed of 1,453; vLLM timing on 80 of 80 calls.
+  - **`docker inspect` from WSL:** confirmed `max_num_seqs`.
+  - **Non-protocol dry sweep (300 s limit):** completed with every run passing, the prefill
+    flood active (median 2,080 prompt tokens, every reply 1 token) and cleanup confirmed. As
+    preflight evidence it is not a capacity result.
+
+  Protocol sweeps, 2026-11-11, at commit `d5eb41a` with a clean tree
+  ([capacity record](capacity-record.md); evidence `.data/a06-20261111/capacity-sweeps/` and
+  `C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`):
+  - **`cfg-default`** (sweep `c5a40c4c-e4b3-4dc1-b660-21ca4c88bc93`): capacity **3** agents
+    (`measured`). Throughput at 4 agents was 6.4% below 3 agents. Label `validated` (precision
+    0.971, recall 0.999).
+  - **`cfg-hardware`** (sweep `068e27a9-5933-4f99-b465-75502f7e523b`, vLLM started at 0.8 on the
+    first attempt): capacity **8** agents (`measured`). Throughput at 12 agents was 12.5% below
+    8 agents, while the SM clock was 634 MHz below N = 1's. Label `inconclusive`: vLLM never
+    queued a request (0.008 s in total), so the queue-time reference has no positives; the
+    slowdown came from longer prefill and decode.
+  - **Both sweeps:** full ramp to 16 agents, no hard stops, no excluded batches, and every run
+    passed (175 and 208 runs). The prefill flood was active and cleaned up in all 6 injected
+    batches.
+
+  Tables (2026-11-11, review of PR #65): the new `sweep-record` command regenerates the record's
+  Results and Sampling coverage tables identically from the two sweep folders
+  (`test_sweep_record.py`). Versioning the evidence outside `data/evidence/` is open.
+
+  Open until model and rule scoring of this evidence (A06 PR 3) is done. The capacity
+  describes this laptop and these two configurations only, from one sweep each.
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
   2026-11-10 (M04): `make calibrate` fits `calibration-v1` temperature scaling and the abstention
   threshold on the validation split only, then reports test-split ECE, abstention rates, clean

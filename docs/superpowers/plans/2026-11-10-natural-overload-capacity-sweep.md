@@ -35,7 +35,7 @@ Task 6.
   batches per source (6).
 - Idle wait ≤ 30 s for 0 running and 0 waiting, then a fixed 10 s pause.
 - Capacity criteria: throughput gain ≥ 0.10 over the previous level; pass rate ≥ N = 1 pass
-  rate − 0.20; p90 run duration ≤ 0.5 × run limit (900 s → 450 s); no hard stop.
+  rate − 0.20; p90 run duration ≤ 0.5 × run limit (450 s → 225 s); no hard stop.
 - Live confirmation: 3 batches at capacity N. Injected: N_inj = max(1, ⌊capacity / 2⌋), 3
   flood batches alternating with 3 clean controls, flood first; `PrefillFloodInjector`
   `concurrency=2`, `prompt_tokens=2048`, ramp 2 s, bound = run limit + 32 s.
@@ -379,7 +379,7 @@ stored per batch. After the ramp, `capacity_decision` runs on the recorded batch
 - Consumes: `CapacitySweep`, `CONFIGURATIONS`, `load_replay_plan`, `build_model`,
   `server_evidence`, `PrefillFloodInjector`.
 - Produces: `capacity-sweep --configuration {cfg-default,cfg-hardware} --source DIR --source
-  DIR [--output-dir .data/capacity-sweeps] [--run-timeout 900] [--start-attempt
+  DIR [--output-dir .data/capacity-sweeps] [--run-timeout 450] [--start-attempt
   "UTIL:OUTCOME" ...] [model, server-evidence and --api-url arguments]`; the model backend
   is forced to vLLM. `--start-attempt` (repeatable, e.g. `"0.8:failed: CUDA out of memory"`,
   `"0.75:started"`) records the operator's vLLM start attempts in `sweep.json`; the last must
@@ -421,17 +421,22 @@ in-memory live server from a test (already covered in Task 5); fix anything foun
 Not automatable. Each step records commands, start and end times and outcomes; failed and
 stopped attempts are kept.
 
-- [ ] **Step 1: Record the two sources** under `cfg-default`: `make vllm-up`, the API in
+- [x] **Step 1: Record the two sources** under `cfg-default`: `make vllm-up`, the API in
 Ubuntu, GPM exporter on Windows, then `make agent-run` for `fix-mean-empty` and
-`fix-window-count` with `--model-backend vllm`. A source must be completed with passing
-verification; keep failed attempts, never re-record a passing source.
-- [ ] **Step 2: Sweep `cfg-default`**: `make agent-capacity-sweep CONFIG=cfg-default
+`fix-median-even` with `--model-backend vllm` and `--run-timeout 450`. A source must be
+completed with passing verification; keep failed attempts, never re-record a passing source.
+Done 2026-11-11 (`.data/a06-20261111/sources/`). `fix-window-count` failed 4 of 4 on vLLM and
+was replaced by `fix-median-even` (see the spec, "Changes before the first protocol session").
+- [x] **Step 2: Sweep `cfg-default`**: `make agent-capacity-sweep CONFIG=cfg-default
 SOURCES="..."` with `--gpm-file` and `--dcgm-url` if DCGM is up. Then
 `python -m agentwatch_agent coverage` on one run per level for sampling quality.
-- [ ] **Step 3: Restart vLLM for `cfg-hardware`**: `VLLM_MAX_NUM_SEQS=16
+Done 2026-11-11: capacity 3; coverage in `docs/capacity-record.md` (the HTTP sampler misses
+rounds at N = 16).
+- [x] **Step 3: Restart vLLM for `cfg-hardware`**: `VLLM_MAX_NUM_SEQS=16
 VLLM_GPU_MEMORY_UTILIZATION=0.8 make vllm-up`; on failure try 0.75, then 0.7, recording each
 attempt's error. Sweep `cfg-hardware`, passing every attempt with `--start-attempt`.
-- [ ] **Step 4: Stop Docker services and Postgres when done** (Benoy's preference).
+Done 2026-11-11: 0.8 started on the first attempt; capacity 8.
+- [x] **Step 4: Stop Docker services and Postgres when done** (Benoy's preference).
 
 ### Task 9: Capacity record, checklist, data card and handoff
 
@@ -439,15 +444,15 @@ attempt's error. Sweep `cfg-hardware`, passing every attempt with `--start-attem
 - Create: `docs/capacity-record.md`
 - Modify: `docs/project-checklist.md`, `docs/data-card.md`
 
-- [ ] **Step 1:** Write `docs/capacity-record.md` from `sweep.json` only: hardware, both
+- [x] **Step 1:** Write `docs/capacity-record.md` from `sweep.json` only: hardware, both
 configurations as verified, each level's throughput/pass rate/p90/CV/queue/prefix-cache/
 SM clock, hard stops, capacity per configuration with criteria, label-validation verdicts,
 the injected-condition result, every failed or stopped attempt, limitations (this laptop
 only; replays share prefixes; thermals; WSL2 PSI scope).
-- [ ] **Step 2:** Checklist: A06 progress dated 2026-11-xx with sweep IDs; "Evaluate natural
+- [x] **Step 2:** Checklist: A06 progress dated 2026-11-xx with sweep IDs; "Evaluate natural
 overload" stays open until model and rule scoring (PR 3). Data card: natural-overload and
 `prefill-flood-openai-chat-v1` runs are held-out test evidence.
-- [ ] **Step 3:** Copy redacted bundles to `C:\Users\benoy\AgentWatch-evidence\a06-<date>\`;
+- [x] **Step 3:** Copy redacted bundles to `C:\Users\benoy\AgentWatch-evidence\a06-<date>\`;
 draft the split-v3 hold-out note for Rohit and Akshay and the configuration table for Meghana
 (Benoy sends them).
 - [ ] **Step 4:** Commit — `docs: record measured capacity and natural-overload label validation`.

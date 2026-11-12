@@ -274,6 +274,41 @@ still loads (train 175, validation 0, test 175) with the v1 contract file and `s
 - **Two agent tasks on one host.** All replays come from one GPU laptop and one model; the test
   task differs from the training task, so held-out results will have wide uncertainty.
 
+## Held-out A06 evidence (in no release)
+
+The A06 natural-overload sweeps of 2026-11-11 ([capacity record](capacity-record.md)) are
+held-out test evidence. They are kept outside every dataset release until `split-v3` holds
+them out, and must never be used for training, calibration, threshold selection or tuning.
+This covers:
+
+- **Natural-overload replays**, under sweep protocol `natural-overload-sweep-v1`. They carry no
+  injection method, so a hold-out must match them by sweep protocol, not by method. Akshay
+  plans to match them by `protocol.version` plus `protocol_sha256` from `sweep.json`. A06 PR 3
+  keeps both fields stable in its rows.
+- **Injected runs** using `prefill-flood-openai-chat-v1` ([ADR 0011](adr/0011-prefill-flood-held-out-injection-method.md)).
+  The hold-out must list this method in `held_out_injection_methods`.
+- **`fix-median-even` task runs, including ordinary non-sweep replays.** `fix-median-even` r1 is
+  a new task and is to stay out of training (Benoy's decision, 2026-11-11). `split-v2` does not
+  name it, so it would place the task by its `split-v1` hash position, 0.622, which falls in
+  **train**. `split-v3` is to put `fix-median-even` in `test_task_groups`. Until then, no
+  `fix-median-even` rows may enter a release. That is a rule for whoever builds a release: the
+  `split-v2` code does not enforce it.
+
+Today's code keeps the sweep's own evidence out of every release: sweep output has no
+`experiment.json` or `results.json`, and the API source accepts only `coding` and `cpu` runs, so
+`make add-evidence` and `make dataset` cannot take it in (Akshay, review of PR #65).
+
+**What the A06 label validation validates.** The sweep checks the noise rule alone (duration
+over the N = 1 baseline by more than max(0.01 s, 3σ), the `[noise]` values of this card's
+`labels-v2`) against vLLM's measured queue time. A `validated` verdict supports that noise
+threshold as a proxy for inference wait. It is not a validation of `labels-v2` under natural
+overload: `labels-v2` labels a resource only under an injected condition, so every
+natural-overload step would be `none`. A test pins the sweep's thresholds to `labels-v2.toml`.
+
+The evidence is in `.data/a06-20261111/` and the bundle
+`C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`. Rohit and Akshay decide the `split-v3`
+assignment.
+
 ## Sources
 
 Every row records its origin in `source`.

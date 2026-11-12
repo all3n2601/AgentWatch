@@ -12,7 +12,7 @@ from agentwatch_agent import runner as runner_module
 from agentwatch_agent.config import RunLimits
 from agentwatch_agent.delivery import COMPLETION_REFUSED, RetryPolicy, replay_journal
 from agentwatch_agent.errors import RunNotStarted
-from agentwatch_agent.runner import AgentRunner
+from agentwatch_agent.runner import NO_TOOL_CALL_OR_ANSWER, AgentRunner, is_agent_decision_failure
 from agentwatch_agent.workspace import Workspace
 
 NO_SLEEP = RetryPolicy(attempts=2, initial_backoff_seconds=0, max_backoff_seconds=0)
@@ -160,6 +160,8 @@ def test_model_failures_fail_the_run_with_a_shared_reason(
     outcome = make_runner(mean_task, server, ScriptedModel([response]), tmp_path).run()
     run = server.only_run()
     assert (outcome.state, run.state, run.reason) == ("failed", "failed", reason)
+    # Only the empty reply is the agent's own decision; the others are server failures.
+    assert is_agent_decision_failure(outcome.reason) is (reason == NO_TOOL_CALL_OR_ANSWER)
     assert all(state in {"completed", "failed"} for state in step_states(server).values())
     assert evidence(outcome)["cleanup"]["workspace_removed"] is True
 
@@ -172,6 +174,7 @@ def test_model_call_limit_is_enforced(mean_task, server, tmp_path):
     outcome = runner.run()
     assert outcome.state == "failed"
     assert server.only_run().reason == "Model-call limit (3) reached without an answer"
+    assert is_agent_decision_failure(outcome.reason)
 
 
 def test_tool_call_limit_is_enforced(mean_task, server, tmp_path):
@@ -183,8 +186,10 @@ def test_tool_call_limit_is_enforced(mean_task, server, tmp_path):
         tmp_path,
         limits=RunLimits(max_tool_calls=2),
     )
-    assert runner.run().state == "failed"
+    outcome = runner.run()
+    assert outcome.state == "failed"
     assert server.only_run().reason == "Tool-call limit (2) reached"
+    assert is_agent_decision_failure(outcome.reason)
 
 
 def run_until_blocked(runner, model, action, delivered_step=None, server=None):
