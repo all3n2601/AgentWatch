@@ -2,7 +2,7 @@
 # label_version fingerprints these values and the rule's code (sweep_truth.py and
 # sweep_steps_input.py), so retuned labels are never silent. Comments and formatting do not
 # change it.
-version = "sweep-truth-v1"
+version = "sweep-truth-v2"
 
 [noise]
 # A model call is "inference" only when its measure exceeds max(min_seconds,

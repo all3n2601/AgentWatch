@@ -1,4 +1,4 @@
-"""sweep-truth-v1 keeps agreeing with the recorder and with the frozen A06 sweeps.
+"""sweep-truth-v2 keeps agreeing with the recorder and with the frozen A06 sweeps.
 
 The recorder (`services/agent`) and the rule (`pipelines/data`) declare the steps format
 separately because the data pipeline must not import the agent service; the first test keeps the

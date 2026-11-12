@@ -1,4 +1,4 @@
-"""Tests for the sweep-truth-v1 rule. All step records here are synthetic fixtures."""
+"""Tests for the sweep-truth-v2 rule. All step records here are synthetic fixtures."""
 
 import hashlib
 import json
@@ -21,14 +21,14 @@ from agentwatch_data.sweep_truth import (
 )
 from test_sweep_steps_input import valid_line, write_input
 
-RULE_FILE = "sweep-truth-v1.toml"
+RULE_FILE = "sweep-truth-v2.toml"
 # The full label_version of the packaged sweep-truth rule and the code that applies it, pinned so
 # no change to either reaches a release unnoticed. When this fails: if the change can alter any
 # truth the rule produces, or whether a step is judged at all, bump `version` in
-# sweep-truth-v1.toml. Otherwise (a comment or refactor) keep the version, and say why in the PR.
+# sweep-truth-v2.toml. Otherwise (a comment or refactor) keep the version, and say why in the PR.
 # Either way, update the pin and the docs (docs/data-card.md and docs/project-checklist.md) in
 # the same PR.
-PINNED_SWEEP_TRUTH_LABEL_VERSION = "sweep-truth-v1+d0ded6b6"
+PINNED_SWEEP_TRUTH_LABEL_VERSION = "sweep-truth-v2+f96f57be"
 BASELINE = {"count": 3, "mean_seconds": 1.0, "stdev_seconds": 0.1}
 
 
@@ -70,7 +70,7 @@ def judged(rule: SweepTruthRule, **changes) -> dict:
 
 
 def test_packaged_rule_values(rule):
-    assert rule.version == "sweep-truth-v1"
+    assert rule.version == "sweep-truth-v2"
     assert rule.stdev_multiplier == 3.0
     assert rule.min_seconds == 0.01
     assert rule.min_baseline_runs == 3
@@ -83,12 +83,12 @@ def test_packaged_rule_values(rule):
         "cfg-default": "22e26dc7536fe5e88e3d9ea9f01445a754788ce587b1626d6a4eb055ec4524b9",
         "cfg-hardware": "1608deee2a3bcb5245b07d73e13e73dcd1e82702ef14aa683ecd94144e0f18cd",
     }
-    assert re.fullmatch(r"sweep-truth-v1\+[0-9a-f]{8}", rule.label_version)
+    assert re.fullmatch(r"sweep-truth-v2\+[0-9a-f]{8}", rule.label_version)
 
 
 def test_sweep_truth_label_version_is_pinned(rule):
     assert rule.label_version == PINNED_SWEEP_TRUTH_LABEL_VERSION, (
-        "sweep_truth.py, sweep_steps_input.py or sweep-truth-v1.toml changed; see the comment "
+        "sweep_truth.py, sweep_steps_input.py or sweep-truth-v2.toml changed; see the comment "
         "above PINNED_SWEEP_TRUTH_LABEL_VERSION"
     )
 
@@ -170,10 +170,22 @@ def test_protocol_clean_only_in_clean_batches(rule):
         assert result["truth_reasons"]["protocol_clean"] == "not_applicable"
 
 
-def test_protocol_clean_ignores_state(rule):
-    result = judged(rule, phase="control", n=1, state="failed")
-    assert result["truths"]["protocol_clean"] == "none"
+@pytest.mark.parametrize(
+    "changes",
+    [{"state": "failed"}, {"state": "completed", "duration_seconds": None}],
+    ids=["failed", "completed-without-duration"],
+)
+def test_protocol_clean_is_not_completed_for_an_unfinished_call_in_a_clean_batch(rule, changes):
+    result = judged(rule, phase="control", n=1, **changes)
+    assert result["truths"]["protocol_clean"] is None
+    assert result["truth_reasons"]["protocol_clean"] == "not_completed"
     assert result["truth_reasons"]["queue"] == "not_completed"
+
+
+def test_protocol_clean_stays_none_for_a_completed_call_in_a_clean_batch(rule):
+    result = judged(rule, phase="control", n=1)
+    assert result["truths"]["protocol_clean"] == "none"
+    assert result["truth_reasons"]["protocol_clean"] is None
 
 
 def test_root_step_is_root_step_everywhere(rule):
@@ -226,7 +238,8 @@ def test_ramp_n1_slower_is_not_applicable_even_when_not_completed(rule):
     assert result["truth_reasons"]["slower"] == "not_applicable"
     assert result["truths"]["queue"] is None
     assert result["truth_reasons"]["queue"] == "not_completed"
-    assert result["truths"]["protocol_clean"] == "none"
+    assert result["truths"]["protocol_clean"] is None
+    assert result["truth_reasons"]["protocol_clean"] == "not_completed"
 
 
 def test_completed_without_duration_is_not_completed(rule):
