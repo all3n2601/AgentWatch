@@ -438,7 +438,7 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   hit when the run token came first). A formal hold-out needs `split-v3`, accepted by Rohit and
   Akshay; no evidence using this method may enter a dataset release before `split-v3` lists it in
   `held_out_injection_methods` (Akshay, review of PR #64). 2026-11-11: `split-v3` lists it
-  (branch `feature/split-v3`, not merged). In the 2026-11-11 A06 preflight dry
+  (PR #70, merged 2026-11-12 as `386d494`). In the 2026-11-11 A06 preflight dry
   sweep on real vLLM, each flood had a median of 2,080 prompt tokens, every reply was exactly
   1 completion token, and cleanup was confirmed (`data/held-out/a06-20261111/preflight-dry-run/`).
 
@@ -730,7 +730,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   `worker_queue_blocker` and task group `fix-window-count` (held-out check met, independence
   passed). Open: training has one task group and validation is empty, so unseen-task results
   rest on one task.
-  2026-11-11 (split-v3, branch `feature/split-v3`, not merged): `split-v3`
+  2026-11-11 (split-v3, PR #70, merged 2026-11-12 as `386d494`): `split-v3`
   (`split-assignment-v3.toml`, `dc2c4c92`) under `eval-contract-v3` (`1cab0cbe`) holds out
   `worker_queue_blocker` and `prefill-flood-openai-chat-v1`, declares test task groups
   `fix-window-count` and `fix-median-even`, holds the A06 natural-overload sweeps out of every
@@ -742,8 +742,8 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   has a `step-features-v1` row in this release. Validation holds three experiments of the
   training task (weak calibration evidence; see the ADR). 2026-11-12: `eval-contract-v3` set
   to `accepted` in #70 at Akshay's request (identifier `b9f20820` to `1cab0cbe`, split
-  `split-v3+95309c38a53e` to `split-v3+932b2df410a7`, same rows). Open: approval of #70 on this
-  version; training still has one task group; the natural-overload rule runs on synthetic
+  `split-v3+95309c38a53e` to `split-v3+932b2df410a7`, same rows), then approved by Akshay, Benoy
+  and Allen. Open: training still has one task group; the natural-overload rule runs on synthetic
   rows only. A split row with no experiment is refused (2026-11-12, after Benoy's review), so an
   untagged sweep row cannot reach train; the PR that ingests sweep replays must still write
   `protocol_version` and `protocol_sha256` on every row and test that they are held out.
@@ -798,8 +798,8 @@ frozen evaluation sets without tuning against them.
   row of a held-out method. A second run reproduced the report, predictions and both models
   byte for byte, and the predictions and models match the 2026-11-11 runs under the proposed
   contract ([model training](model-training.md#results-on-dataset-v1)). One test task, so no
-  interval and no causal claim. Open: review and merge, and more than one task group in
-  training and test.
+  interval and no causal claim. PR #72 merged 2026-11-12 as `d67303c`. Open: more than one
+  task group in training and test.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
   2026-11-11 (A06, PR #65, merged to `main` as `50f393d` on 2026-11-12 UTC):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol
@@ -822,7 +822,7 @@ frozen evaluation sets without tuning against them.
       It passed on vLLM on the first attempt.
     - It is to stay out of training (Benoy, 2026-11-11). `split-v2` does not name it and its
       hash would place it in train (position 0.622), so `split-v3` lists it in
-      `test_task_groups` (2026-11-11, branch `feature/split-v3`, not merged). A release split
+      `test_task_groups` (2026-11-11, PR #70, merged 2026-11-12). A release split
       under `split-v2` must still hold no `fix-median-even` rows; that code does not enforce it.
 
   The preflight also checked the live path and the full sweep flow:
@@ -862,17 +862,17 @@ frozen evaluation sets without tuning against them.
   ([calibration](model-calibration.md), `pipelines/model/tests`). Tested on synthetic fixtures
   only. After the M02 merge (`mixed-scoring-v1`), mixed steps are scored by hit, joint-only steps
   are never scored, the mixed-contention abstention scope and gain gate are measured, and the
-  threshold is chosen on single-class validation steps. 2026-11-11 (PR #63, not merged): the
+  threshold is chosen on single-class validation steps. 2026-11-11 (PR #63, merged as `5df771e`): the
   threshold's 20% limit also covers scored mixed validation steps and reads the contract's
   `abstention_rate_scopes`, as the test gate does (`test_calibration.py`, `test_calibrate.py`;
-  synthetic fixtures only). 2026-11-11 (M04, PR #72, not merged; rerun 2026-11-12 at `f229a4c`):
+  synthetic fixtures only). 2026-11-11 (M04, PR #72, merged 2026-11-12 as `d67303c`; rerun 2026-11-12 at `f229a4c`):
   first real fit on `split-v3+932b2df410a7`'s 273 validation steps: temperature 0.897,
   threshold 0.647. On test, calibrated ECE 0.0178 (uncalibrated 0.0074; limit 0.05), abstention
   2.4% overall, 0% on mixed steps and at most 19.9% per class (`retrieval`), macro F1 with
   abstentions 0.780; every evaluated gate passes. Calibration made ECE worse overall and on
   contended steps, and validation is small and shared with early stopping, so this is weak
-  evidence ([calibration](model-calibration.md#results-on-dataset-v1)). Open: review and
-  merge; a second training task group in the next release before calibration is read as
+  evidence ([calibration](model-calibration.md#results-on-dataset-v1)). Open: a second
+  training task group in the next release before calibration is read as
   evidence (Akshay, #70 review); and showing uncertain results, which belongs to serving and
   the dashboard.
 - [ ] Load a versioned registered model in the correlation service.
