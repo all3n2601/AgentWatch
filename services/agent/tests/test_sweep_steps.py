@@ -18,6 +18,7 @@ from agentwatch_agent.sweep_steps import (
     STEPS_FILE,
     STEPS_FORMAT,
     SUMMARY_FILE,
+    SUMMARY_KEYS,
     sweep_steps,
     write_steps,
 )
@@ -209,7 +210,9 @@ def test_summary_fields(tmp_path, monkeypatch):
     sweep_dir = synthetic_sweep(tmp_path, monkeypatch)
     summary, records = sweep_steps(sweep_dir)
     record = read_record(sweep_dir)
-    assert set(summary) == {
+    # write_steps adds steps_sha256 once the records are serialised.
+    assert set(summary) == SUMMARY_KEYS - {"steps_sha256"}
+    assert SUMMARY_KEYS == {
         "format",
         "sweep_folder",
         "sweep_id",
@@ -219,6 +222,7 @@ def test_summary_fields(tmp_path, monkeypatch):
         "sweep_json_sha256",
         "held_out",
         "steps",
+        "steps_sha256",
         "excluded_batches",
         "runs_without_evidence",
         "runs_without_plan",
@@ -253,7 +257,10 @@ def test_written_files_are_lf_sorted_and_reproducible(tmp_path, monkeypatch):
     assert all(
         line == json.dumps(json.loads(line), sort_keys=True, allow_nan=False) for line in lines
     )
-    assert json.loads((first / SUMMARY_FILE).read_text(encoding="utf-8"))["steps"] == len(records)
+    written = json.loads((first / SUMMARY_FILE).read_text(encoding="utf-8"))
+    assert set(written) == SUMMARY_KEYS
+    assert written["steps"] == len(records)
+    assert written["steps_sha256"] == hashlib.sha256((first / STEPS_FILE).read_bytes()).hexdigest()
 
 
 def test_the_accepted_hashes_are_the_frozen_held_out_protocols():

@@ -5,11 +5,14 @@ does not import the agent, so the format constants below are re-declared and mus
 module's. Everything is checked before a record is returned: a refusal names the file and, for
 a record, its 1-based line number and field, and no partial result exists.
 
-A reading that was not measured is null; it is never coerced to zero here.
+`steps.json` records the SHA-256 of `steps.jsonl`, so records from one write are never read with
+the summary of another. A reading that was not measured is null; it is never coerced to zero
+here.
 """
 
 import json
 import math
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -48,6 +51,10 @@ RECORD_KEYS = frozenset(
 SPAN_STATUSES = ("measured", "unavailable", "malformed", "incomplete", "not_recorded")
 PHASES = ("ramp", "live", "injected", "control")
 PROTOCOL_VERSION = "natural-overload-sweep-v1"
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+# A step's runner ticks split into queue and execution time; the parts must add up to the
+# duration within the live contracts' timing-breakdown tolerance.
+TIMING_TOLERANCE_SECONDS = 1e-6
 
 SECONDS_FIELDS = (
     "duration_seconds",
@@ -71,6 +78,7 @@ SUMMARY_KEYS = frozenset(
         "sweep_json_sha256",
         "held_out",
         "steps",
+        "steps_sha256",
         "excluded_batches",
         "runs_without_evidence",
         "runs_without_plan",
@@ -152,9 +160,11 @@ def _summary_problem(
         return "steps", f"must be a nonnegative integer, got {summary['steps']!r}"
     if summary["steps"] != line_count:
         return "steps", f"says {summary['steps']} but {STEPS_FILE} has {line_count} records"
-    for field in ("sweep_folder", "sweep_json_sha256"):
-        if not _is_text(summary[field]):
-            return field, f"must be a nonempty string, got {summary[field]!r}"
+    if not _is_text(summary["sweep_folder"]):
+        return "sweep_folder", f"must be a nonempty string, got {summary['sweep_folder']!r}"
+    for field in ("sweep_json_sha256", "steps_sha256"):
+        if not isinstance(summary[field], str) or not SHA256_HEX.fullmatch(summary[field]):
+            return field, f"must be 64 lowercase hex digits, got {summary[field]!r}"
     if summary["sweep_id"] is not None and not isinstance(summary["sweep_id"], str):
         return "sweep_id", f"must be a string or null, got {summary['sweep_id']!r}"
     excluded = summary["excluded_batches"]
@@ -211,6 +221,11 @@ def _record_problem(record: dict) -> tuple[str, str] | None:
     for field in SECONDS_FIELDS:
         if record[field] is not None and not _is_seconds(record[field]):
             return field, f"must be null or a finite number >= 0, got {record[field]!r}"
+    parts = (record["queue_seconds"], record["execution_seconds"], record["duration_seconds"])
+    if None not in parts and abs(parts[0] + parts[1] - parts[2]) > TIMING_TOLERANCE_SECONDS:
+        return "duration_seconds", (
+            f"queue_seconds + execution_seconds is {parts[0] + parts[1]!r}, not {parts[2]!r}"
+        )
     if record["span_status"] not in SPAN_STATUSES:
         return "span_status", f"must be one of {SPAN_STATUSES}, got {record['span_status']!r}"
     if record["span_status"] != "measured":
@@ -253,6 +268,12 @@ def read_steps(directory: Path, accepted_protocols: dict[str, str]) -> SweepStep
     if problem is not None:
         field, detail = problem
         raise SweepStepsError(f"{SUMMARY_FILE} field {field}: {detail}")
+    steps_sha256 = file_sha256(steps_path)
+    if summary["steps_sha256"] != steps_sha256:
+        raise SweepStepsError(
+            f"{SUMMARY_FILE} field steps_sha256: does not match {STEPS_FILE} ({steps_sha256}); "
+            "the two files are not from the same write"
+        )
     seen: set[tuple[str, str]] = set()
     for number, record in parsed:
         problem = _record_problem(record)
@@ -274,6 +295,6 @@ def read_steps(directory: Path, accepted_protocols: dict[str, str]) -> SweepStep
     return SweepSteps(
         summary=summary,
         records=tuple(record for _number, record in parsed),
-        steps_sha256=file_sha256(steps_path),
+        steps_sha256=steps_sha256,
         summary_sha256=file_sha256(summary_path),
     )

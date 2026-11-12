@@ -75,6 +75,25 @@ RECORD_KEYS = frozenset(
         "baseline",
     }
 )
+# The keys of the written steps.json: the summary `sweep_steps` returns plus `steps_sha256`,
+# the SHA-256 of steps.jsonl, which `write_steps` adds.
+SUMMARY_KEYS = frozenset(
+    {
+        "format",
+        "sweep_folder",
+        "sweep_id",
+        "configuration",
+        "protocol_version",
+        "protocol_sha256",
+        "sweep_json_sha256",
+        "held_out",
+        "steps",
+        "steps_sha256",
+        "excluded_batches",
+        "runs_without_evidence",
+        "runs_without_plan",
+    }
+)
 
 
 def _check_protocol(record: dict, path: Path) -> str:
@@ -291,7 +310,11 @@ def write_steps(sweep_dir: Path, output_dir: Path) -> Path:
     summary, records = sweep_steps(sweep_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     lines = [json.dumps(record, sort_keys=True, allow_nan=False) for record in records]
-    _write_lf(output_dir / STEPS_FILE, "".join(line + "\n" for line in lines))
+    steps_text = "".join(line + "\n" for line in lines)
+    # The records file is replaced before the summary; this hash lets a reader detect a
+    # summary left beside records from another write.
+    summary["steps_sha256"] = hashlib.sha256(steps_text.encode("utf-8")).hexdigest()
+    _write_lf(output_dir / STEPS_FILE, steps_text)
     _write_lf(
         output_dir / SUMMARY_FILE,
         json.dumps(summary, sort_keys=True, indent=2, allow_nan=False) + "\n",

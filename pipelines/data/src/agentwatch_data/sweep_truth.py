@@ -6,6 +6,7 @@ reason, never both. Missing readings stay null; they are never compared as zero.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -56,6 +57,9 @@ class SweepTruthRule:
     baseline_phase: str
     baseline_level: int
     protocols: dict[str, str]
+    # The validated values the fingerprint covers, recorded in truth.json so a rule loaded with
+    # --rules can be reconstructed from its output.
+    values: dict
     fingerprint: str
 
     @property
@@ -148,6 +152,7 @@ def load_truth_rule(path: Path | None = None) -> SweepTruthRule:
         baseline_phase=baseline_phase,
         baseline_level=baseline_level,
         protocols=protocols,
+        values=validated,
         fingerprint=canonical_sha256({"rules": validated, "logic": logic_source()}),
     )
 
@@ -255,10 +260,14 @@ def _counts(records: list[dict]) -> dict:
 
 
 def sweep_truths(steps: SweepSteps, rule: SweepTruthRule) -> tuple[dict, list[dict]]:
-    """The truth summary and one truth record per step, in the recorder's order."""
+    """The truth summary and one truth record per step, in the recorder's order.
+
+    `write_truths` adds `truth_sha256`, the hash of the written `truth.jsonl`.
+    """
     records = [_truth_record(record, rule) for record in steps.records]
     summary = {
         "label_version": rule.label_version,
+        "rule": rule.values,
         **{field: steps.summary[field] for field in CARRIED_SUMMARY_FIELDS},
         "steps_sha256": steps.steps_sha256,
         "steps_summary_sha256": steps.summary_sha256,
@@ -298,6 +307,9 @@ def write_truths(steps_dir: Path, output_dir: Path, rule: SweepTruthRule | None 
         lines = "".join(
             json.dumps(record, sort_keys=True, allow_nan=False) + "\n" for record in records
         )
+        # The records file is replaced before the summary; this hash lets a reader detect a
+        # summary left beside records from another write.
+        summary["truth_sha256"] = hashlib.sha256(lines.encode("utf-8")).hexdigest()
         summary_text = json.dumps(summary, sort_keys=True, indent=2, allow_nan=False) + "\n"
     except ValueError as error:
         raise LabelingError(f"Truths cannot be serialised: {error}") from error

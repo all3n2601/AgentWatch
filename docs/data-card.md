@@ -380,7 +380,9 @@ carry. A model call that cannot be judged gets a null truth with a reason, in th
 `not_completed`, `malformed`, `no_baseline` (no baseline, or fewer than 3 baseline runs), then,
 for `queue` only, `span_not_measured`. `malformed` is a defensive branch: the input check refuses
 a negative or non-finite duration for the whole sweep, so it cannot reach the rule on validated
-input.
+input. The input check also refuses the sweep when a step's queue and execution seconds don't add
+up to its duration within 1e-6 s (the live contracts' timing-breakdown tolerance), and when
+`steps.json`'s `steps_sha256` isn't the hash of the `steps.jsonl` beside it.
 
 Precedence: on ramp N = 1, `slower` is `not_applicable` even when the step is `not_completed` or
 has `no_baseline`, while `queue` keeps the specific reason; and `protocol_clean` is `none` for a
@@ -394,12 +396,14 @@ earlier truths on the frozen sweeps, and every model-call truth is unchanged the
 `tests/contract/test_sweep_truth_frozen.py`). In general the only other difference is that a
 malformed duration refuses the sweep instead of labelling one step `malformed`.
 
-**Label version:** `sweep-truth-v1+3b75882f` (the fingerprint covers the rule values and the
+**Label version:** `sweep-truth-v1+d0ded6b6` (the fingerprint covers the rule values and the
 truth and input-validation code; comments and formatting in the TOML do not change it, but any
 edit to `sweep_truth.py` or `sweep_steps_input.py`, comments included, does). The baseline
 statistics are computed by the recorder, outside that fingerprint, so a truth set is identified by
 `label_version` together with `steps_sha256` and `steps_summary_sha256`, both recorded in
-`truth.json`; the scoring branch will check both. Counts from the real run of
+`truth.json`; the scoring branch will check both. `truth.json` also records the validated rule
+values (`rule`), so a rule loaded with `--rules` can be reconstructed from its output, and
+`truth_sha256`, the hash of the `truth.jsonl` it was written with. Counts from the real run of
 2026-11-12, model calls by class, with the null reasons below:
 
 | | cfg-default (`2d75ea`) | cfg-hardware (`b4ad4a`) |

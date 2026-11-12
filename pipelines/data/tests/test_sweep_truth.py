@@ -1,5 +1,6 @@
 """Tests for the sweep-truth-v1 rule. All step records here are synthetic fixtures."""
 
+import hashlib
 import json
 import re
 from importlib.resources import files
@@ -27,7 +28,7 @@ RULE_FILE = "sweep-truth-v1.toml"
 # sweep-truth-v1.toml. Otherwise (a comment or refactor) keep the version, and say why in the PR.
 # Either way, update the pin and the docs (docs/data-card.md and docs/project-checklist.md) in
 # the same PR.
-PINNED_SWEEP_TRUTH_LABEL_VERSION = "sweep-truth-v1+3b75882f"
+PINNED_SWEEP_TRUTH_LABEL_VERSION = "sweep-truth-v1+d0ded6b6"
 BASELINE = {"count": 3, "mean_seconds": 1.0, "stdev_seconds": 0.1}
 
 
@@ -331,7 +332,23 @@ def test_records_and_summary_fields(tmp_path, rule):
     assert summary["configuration"] == "cfg-default"
     assert summary["sweep_folder"] == "sweep-1"
     assert summary["steps_sha256"] and summary["steps_summary_sha256"]
+    assert summary["rule"] == rule.values
+    assert summary["rule"]["noise"] == {"stdev_multiplier": 3.0, "min_seconds": 0.01}
+    truth_bytes = (output / TRUTH_FILE).read_bytes()
+    assert summary["truth_sha256"] == hashlib.sha256(truth_bytes).hexdigest()
     assert set(summary["counts"]) == set(TRUTH_NAMES)
+
+
+def test_a_rule_given_by_file_is_recorded_with_its_values(tmp_path, rule):
+    path = tmp_path / RULE_FILE
+    path.write_text(packaged_text().replace("min_seconds = 0.01", "min_seconds = 0.02"))
+    output = tmp_path / "out"
+    assert (
+        main([str(steps_input(tmp_path, rule)), "--output", str(output), "--rules", str(path)]) == 0
+    )
+    summary = json.loads((output / TRUTH_SUMMARY_FILE).read_text(encoding="utf-8"))
+    assert summary["label_version"] != rule.label_version
+    assert summary["rule"]["noise"]["min_seconds"] == 0.02
 
 
 def test_counts_match_records(tmp_path, rule):

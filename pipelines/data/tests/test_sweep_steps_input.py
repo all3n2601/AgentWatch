@@ -3,6 +3,7 @@
 Every fixture here is synthetic recorder output written by the tests, not a recorded run.
 """
 
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ from agentwatch_data.labels import LabelingError
 from agentwatch_data.sweep_steps_input import (
     STEPS_FILE,
     SUMMARY_FILE,
+    TIMING_TOLERANCE_SECONDS,
     SweepStepsError,
     read_steps,
 )
@@ -51,7 +53,8 @@ def valid_line(**changes) -> dict:
 
 def write_input(tmp_path: Path, lines: list, newline: str = "\n", **summary_changes) -> Path:
     texts = [line if isinstance(line, str) else json.dumps(line) for line in lines]
-    (tmp_path / STEPS_FILE).write_bytes("".join(text + newline for text in texts).encode())
+    written = "".join(text + newline for text in texts).encode()
+    (tmp_path / STEPS_FILE).write_bytes(written)
     summary = {
         "format": "sweep-steps-v1",
         "sweep_folder": "sweep-1",
@@ -62,6 +65,7 @@ def write_input(tmp_path: Path, lines: list, newline: str = "\n", **summary_chan
         "sweep_json_sha256": "d" * 64,
         "held_out": True,
         "steps": len(texts),
+        "steps_sha256": hashlib.sha256(written).hexdigest(),
         "excluded_batches": [{"sequence": 1, "level": 2, "causes": []}],
         "runs_without_evidence": 0,
         "runs_without_plan": 0,
@@ -111,6 +115,10 @@ def test_empty_lines_are_ignored(tmp_path):
         ({"excluded_batches": {}}, "excluded_batches"),
         ({"runs_without_plan": -1}, "runs_without_plan"),
         ({"sweep_id": 3}, "sweep_id"),
+        ({"sweep_json_sha256": "d" * 63}, "sweep_json_sha256"),
+        ({"sweep_json_sha256": "D" * 64}, "sweep_json_sha256"),
+        ({"steps_sha256": ...}, "steps_sha256"),
+        ({"steps_sha256": "not-a-hash"}, "steps_sha256"),
     ],
 )
 def test_summary_is_refused(tmp_path, changes, field):
@@ -141,6 +149,8 @@ def without(key: str) -> dict:
         (valid_line(duration_seconds=float("nan")), "duration_seconds"),
         (valid_line(duration_seconds="1.0"), "duration_seconds"),
         (valid_line(queue_seconds=True), "queue_seconds"),
+        (valid_line(duration_seconds=1.6), "duration_seconds"),
+        (valid_line(execution_seconds=1.0), "duration_seconds"),
         (valid_line(span_status="reported"), "span_status"),
         (valid_line(span_status="unavailable"), "vllm_queue_seconds"),
         (
@@ -169,6 +179,27 @@ def test_line_is_refused(tmp_path, line, field):
     with pytest.raises(SweepStepsError, match=field) as raised:
         read_steps(tmp_path, PROTOCOLS)
     assert f"{STEPS_FILE} line 2" in str(raised.value)
+
+
+def test_steps_from_another_write_are_refused(tmp_path):
+    write_input(tmp_path, [valid_line()], steps_sha256="e" * 64)
+    with pytest.raises(SweepStepsError, match="steps_sha256") as raised:
+        read_steps(tmp_path, PROTOCOLS)
+    assert "not from the same write" in str(raised.value)
+
+
+def test_duration_breakdown_within_tolerance_is_accepted(tmp_path):
+    near = valid_line(duration_seconds=1.5 + TIMING_TOLERANCE_SECONDS / 2)
+    write_input(tmp_path, [near])
+    assert (
+        read_steps(tmp_path, PROTOCOLS).records[0]["duration_seconds"] == near["duration_seconds"]
+    )
+
+
+@pytest.mark.parametrize("field", ["duration_seconds", "queue_seconds", "execution_seconds"])
+def test_duration_breakdown_is_not_checked_when_a_part_is_missing(tmp_path, field):
+    write_input(tmp_path, [valid_line(**{field: None})])
+    assert read_steps(tmp_path, PROTOCOLS).records[0][field] is None
 
 
 def test_repeated_run_and_step_is_refused(tmp_path):

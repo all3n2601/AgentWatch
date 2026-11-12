@@ -30,7 +30,6 @@ from agentwatch_agent.sweep_protocol import (
 )
 from agentwatch_agent.vllm_launch import DEFAULT_VLLM_CONTAINER
 from agentwatch_worker.nvml import GpuIdentity, NvmlUnavailable
-from test_sweep_steps import synthetic_sweep
 
 
 def test_tasks_command_lists_pinned_identities(capsys):
@@ -917,10 +916,9 @@ def test_sweep_analyse_refuses_a_folder_without_a_sweep_record(tmp_path, capsys)
 
 
 def test_cli_capacity_sweep_steps_writes_default_folder_and_exits_2_on_refusal(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, capacity_sweep_dir
 ):
-    # The sweep is synthetic: the stub driver's folder with fixture run folders.
-    sweep_dir = synthetic_sweep(tmp_path, monkeypatch)
+    sweep_dir = capacity_sweep_dir
     monkeypatch.chdir(tmp_path)
     assert cli.main(["capacity-sweep-steps", str(sweep_dir)]) == cli.EXIT_PASSED
     written = tmp_path / ".data/a06-scoring/steps" / sweep_dir.name

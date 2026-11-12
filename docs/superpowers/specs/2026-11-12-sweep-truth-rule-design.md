@@ -136,6 +136,18 @@ written with sorted keys and LF line ends, through temporary files, summary last
 - The output folder is inside `data/held-out/`.
 - A malformed rule file exits 2 before any input is read.
 
+Changed 2026-11-12 (Rohit's review of #74, before any results used the rule):
+- `steps.json` records `steps_sha256`, the hash of `steps.jsonl`. The reader refuses a summary
+  whose hash doesn't match.
+- `sweep_json_sha256` and `steps_sha256` must be 64 lowercase hex digits.
+- A line whose `queue_seconds + execution_seconds` differs from `duration_seconds` by more than
+  1e-6 s, the live contracts' timing-breakdown tolerance, is refused. The check is skipped when
+  any of the three is null.
+- `truth.json` records `rule`, the validated rule values, and `truth_sha256`, the hash of
+  `truth.jsonl`. A scoring consumer checks `truth_sha256` too.
+- The truths on accepted input are unchanged, so `version` stays `sweep-truth-v1`. The
+  fingerprint moves from `3b75882f` to `d0ded6b6`.
+
 ## Tests
 
 Synthetic fixtures, labelled as such.

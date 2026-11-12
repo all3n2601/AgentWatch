@@ -801,7 +801,7 @@ frozen evaluation sets without tuning against them.
   interval and no causal claim. Open: review and merge, and more than one task group in
   training and test.
   2026-11-12 (branch `feature/sweep-truth-rule`, not yet merged): `sweep-truth-v1` is a versioned
-  label rule in `pipelines/data` for the frozen A06 sweeps, label version `sweep-truth-v1+3b75882f`
+  label rule in `pipelines/data` for the frozen A06 sweeps, label version `sweep-truth-v1+d0ded6b6`
   ([data card](data-card.md#sweep-truth-rule-sweep-truth-v1-held-out-a06-sweeps-only),
   [design](superpowers/specs/2026-11-12-sweep-truth-rule-design.md)). The contract test
   `tests/contract/test_sweep_truth_frozen.py` pins both sweeps' truth counts (skipped when the DVC

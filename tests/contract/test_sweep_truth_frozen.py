@@ -7,6 +7,7 @@ two declarations equal. The pinned counts below are those of the scoring branch'
 They are measured numbers: a mismatch is a defect to diagnose, not a value to update.
 """
 
+import hashlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -21,8 +22,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SWEEPS = ROOT / "data" / "held-out" / "a06-20261111" / "capacity-sweeps"
 MODEL_CALL = "model_call"
 
-# folder -> (steps, model calls, queue, slower, protocol_clean, root_step, no_queue_reference).
-# queue / slower / protocol_clean map "class or reason" to a model-call count.
+# folder -> (steps, model calls, queue, slower, protocol_clean, root_step, no_queue_reference,
+# and the recorder's excluded batches and runs it could not record). queue / slower /
+# protocol_clean map "class or reason" to a model-call count. runs_without_plan counts the live
+# runs, which have no replay plan.
 PINNED = {
     "cfg-default-20261111T211237Z-2d75ea": {
         "steps": 1896,
@@ -32,6 +35,9 @@ PINNED = {
         "protocol_clean": {"none": 45, "not_applicable": 780},
         "root_step": 165,
         "no_queue_reference": 906,
+        "excluded_batches": [],
+        "runs_without_evidence": 0,
+        "runs_without_plan": 9,
     },
     "cfg-hardware-20261111T213039Z-b4ad4a": {
         "steps": 2104,
@@ -41,6 +47,9 @@ PINNED = {
         "protocol_clean": {"none": 30, "not_applicable": 885},
         "root_step": 183,
         "no_queue_reference": 1006,
+        "excluded_batches": [],
+        "runs_without_evidence": 0,
+        "runs_without_plan": 24,
     },
 }
 
@@ -49,6 +58,7 @@ def test_recorder_and_rule_agree_on_the_format():
     assert recorder.STEPS_FORMAT == reader.STEPS_FORMAT
     assert recorder.RECORD_KEYS == reader.RECORD_KEYS
     assert recorder.SPAN_STATUSES == reader.SPAN_STATUSES
+    assert recorder.SUMMARY_KEYS == reader.SUMMARY_KEYS
     rule = load_truth_rule()
     assert rule.protocols == recorder.ACCEPTED_PROTOCOL_SHA256
     # The recorder declares the thresholds in the protocol it hashes; the rule must apply the same.
@@ -80,7 +90,13 @@ def test_frozen_sweeps_keep_their_model_call_truths(folder, tmp_path):
     ]
 
     summary = json.loads((truth_dir / "truth.json").read_text(encoding="utf-8"))
-    assert summary["label_version"] == load_truth_rule().label_version
+    rule = load_truth_rule()
+    assert summary["label_version"] == rule.label_version
+    assert summary["rule"] == rule.values
+    truth_bytes = (truth_dir / "truth.jsonl").read_bytes()
+    assert summary["truth_sha256"] == hashlib.sha256(truth_bytes).hexdigest()
+    for name in ("excluded_batches", "runs_without_evidence", "runs_without_plan"):
+        assert summary[name] == expected[name], name
     assert len(records) == expected["steps"]
     assert sum(record["step_type"] == MODEL_CALL for record in records) == expected["model_calls"]
     for name in ("queue", "slower", "protocol_clean"):
