@@ -22,8 +22,10 @@ from agentwatch_model.candidates import (
     predict,
 )
 from agentwatch_model.contract import Contract
+from agentwatch_model.report import dataset_version
 from agentwatch_model.rule_baseline import validate_dataset_version, validate_rows
 from agentwatch_model.rules import Rules
+from agentwatch_model.train_candidates import label_version
 
 RULES_SCORER = "rules-v1"
 CLASSIFIER_SCORER = "lightgbm-classifier-training-v1"
@@ -57,9 +59,13 @@ def train_classifier(
     frozen_schema: Path,
     config: TrainingConfig,
     loader: Loader = load_split,
-) -> tuple[Candidate, list[dict], frozenset[str]]:
-    """Fit on train with validation early stopping; return the candidate, validation rows and
-    the train task groups."""
+) -> tuple[Candidate, list[dict], frozenset[str], dict]:
+    """Fit on train with validation early stopping; return the candidate, validation rows, the
+    train task groups and the release identity (dataset and label version).
+
+    The identity comes from the train rows: a release's validation split can be empty, and
+    validate_dataset_version has already required one version across both splits.
+    """
     check_lightgbm()
     train, validation = (
         loader(split, name, contract_path, frozen_schema) for name in TRAINING_SPLITS
@@ -67,7 +73,11 @@ def train_classifier(
     validate_rows(train, "train")
     validate_rows(validation, "validation")
     validate_dataset_version(train + validation)
-    return fit_candidate(train, validation, config), validation, seen_task_groups(train)
+    release = {
+        "dataset_version": dataset_version(train),
+        "label_version": label_version(train),
+    }
+    return fit_candidate(train, validation, config), validation, seen_task_groups(train), release
 
 
 def classifier_scores(

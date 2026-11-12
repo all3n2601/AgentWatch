@@ -44,12 +44,14 @@ from agentwatch_model.held_out_rows import (
     run_directory,
 )
 from agentwatch_model.held_out_scorers import (
+    CLASSIFIER_SCORER,
+    RULES_SCORER,
     ScoredStep,
     classifier_scores,
     rule_scores,
     train_classifier,
 )
-from agentwatch_model.report import dataset_version, identity
+from agentwatch_model.report import identity
 from agentwatch_model.rule_baseline import (
     BOOTSTRAP_RESAMPLES,
     BOOTSTRAP_SEED,
@@ -68,7 +70,6 @@ from agentwatch_model.train_candidates import (
     Loader,
     attempt_errors,
     failed_report,
-    label_version,
     load_configuration,
     model_identity,
     save_models,
@@ -183,19 +184,19 @@ def score_rows(
     rows, refused, summaries = held_out_rows(truth_dirs, sweep_root)
     if not rows:
         raise HeldOutError(f"no step could be scored; refused steps by code: {refused}")
-    candidate, validation, seen_groups = train_classifier(
+    candidate, validation, seen_groups, release = train_classifier(
         split, contract_path, frozen_schema, config, loader
     )
     classifier, fit = classifier_scores(candidate, validation, rows, contract, calibration)
-    scores = {"rules": rule_scores(rules, rows), "classifier": classifier}
+    scores = {RULES_SCORER: rule_scores(rules, rows), CLASSIFIER_SCORER: classifier}
     model_hashes = save_models(candidate, directory / MODELS)
-    model = model_identity(config, candidate, label_version(validation)) | {
+    model = model_identity(config, candidate, release["label_version"]) | {
         "training_config_sha256": file_sha256(training_path),
         "calibration": fit,
         "calibration_version": calibration.version,
         "model_files": model_hashes,
         "split": split_identity(split),
-        "dataset_version": dataset_version(validation),
+        "dataset_version": release["dataset_version"],
     }
     write_atomic(directory / PREDICTIONS, prediction_lines(rows, scores))
     body = build_report(

@@ -98,6 +98,15 @@ def test_a_cell_with_one_batch_has_no_interval():
     assert interval["low"] is None and interval["groups"] == 1
 
 
+def test_interval_groups_count_only_batches_with_the_rates_denominator():
+    rows = [step("inference", batch="b1"), step("none", batch="b2")]
+    result = run_measures(rows, [scored("none"), scored("none")])
+    miss = result["intervals"]["miss_rate"]
+    assert miss["groups"] == 1 and miss["low"] is None and miss["high"] is None
+    alarm = result["intervals"]["false_alarm_rate"]
+    assert alarm["groups"] == 1 and alarm["low"] is None
+
+
 def context(**overrides):
     return {
         "seen_task_groups": {"fix-mean-empty"},

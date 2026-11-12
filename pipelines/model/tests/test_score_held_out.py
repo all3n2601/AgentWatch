@@ -131,6 +131,28 @@ def test_run_writes_report_predictions_and_models_and_logs_the_named_experiment(
     assert json.loads((directory / "tracking.json").read_text())["logged"] is True
 
 
+def test_release_identity_survives_an_empty_validation_split(prepared, tracking):
+    splits = {"train": dataset(30, "train"), "validation": []}
+
+    def empty_validation(path, name, contract_path, frozen_schema, allow_unchecked_leakage=False):
+        return splits[name]
+
+    outcome = run_synthetic(prepared, tracking, loader=empty_validation)
+    assert outcome.status == "completed"
+    report = json.loads((outcome.directory / "report.json").read_text())
+    assert report["dataset_version"] == splits["train"][0]["dataset_version"]
+    assert report["model"]["dataset_version"] == report["dataset_version"]
+    assert report["model"]["label_version"] == splits["train"][0]["label_version"]
+    assert report["model"]["calibration"]["abstention"] == "unavailable"
+    assert report["model"]["calibration"]["reason"]
+    classifier = [
+        e
+        for e in report["rollups"]["by_scorer_truth"]
+        if e["scorer"].startswith("lightgbm") and e["truth"] == "queue"
+    ]
+    assert classifier and classifier[0]["abstention_rate"] is None
+
+
 def test_a_failed_attempt_is_reported_and_tracked(prepared, tracking):
     outcome = run_synthetic(prepared, tracking, loader=refusing)
     assert outcome.status == "failed" and outcome.run_id

@@ -80,8 +80,9 @@ def measures(
     """Confusion, miss and false-alarm rates, and batch-grouped intervals for one slice.
 
     Only rows whose `truths[truth]` is not null count. Intervals resample whole batches, because
-    runs in one batch share their contention; each batch is summarised once so a draw costs one
-    addition per batch rather than one per step.
+    runs in one batch share their contention. Each batch is summarised once, so a draw costs one
+    addition per batch rather than one per step, and a rate draws only the batches that have
+    its denominator.
     """
     if len(rows) != len(scored):
         raise ValueError("rows and scored steps must have the same length")
@@ -100,22 +101,25 @@ def measures(
         for name, value in counts.items():
             totals[name] += value
             batch[name] += value
-    by_batch = [{BATCH_KEY: key, "counts": counts} for key, counts in sorted(batches.items())]
 
-    def statistic(rate_of):
+    def interval(rate_of, denominator: str) -> dict:
+        # Only batches that contribute to this rate's denominator are groups for it, so the
+        # group count and the minimum-groups rule describe the batches the rate is made of.
+        by_batch = [counts for _, counts in sorted(batches.items()) if counts[denominator] > 0]
+        pseudo_rows = [
+            {BATCH_KEY: index, "counts": counts} for index, counts in enumerate(by_batch)
+        ]
+
         def draw(indices: list[int]) -> float | None:
             summed = dict.fromkeys(COUNTERS, 0)
             for index in indices:
-                for name, value in by_batch[index]["counts"].items():
+                for name, value in by_batch[index].items():
                     summed[name] += value
             return rate_of(summed)
 
-        return draw
-
-    def interval(rate_of) -> dict:
         return bootstrap_interval(
-            by_batch,
-            statistic(rate_of),
+            pseudo_rows,
+            draw,
             group_key=BATCH_KEY,
             resamples=resamples,
             seed=seed,
@@ -136,8 +140,8 @@ def measures(
         ),
         "abstention_rate": rate(totals["abstained"], totals["steps"]),
         "intervals": {
-            "miss_rate": interval(miss_rate),
-            "false_alarm_rate": interval(false_alarm_rate),
+            "miss_rate": interval(miss_rate, "inference"),
+            "false_alarm_rate": interval(false_alarm_rate, "none"),
         },
     }
 

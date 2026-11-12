@@ -48,13 +48,17 @@ def test_only_train_and_validation_are_loaded(config, tmp_path):
         assert allow_unchecked_leakage is False
         return splits[name]
 
-    candidate, validation, groups = train_classifier(
+    candidate, validation, groups, release = train_classifier(
         tmp_path / "split.json", DEFAULT_CONTRACT, tmp_path / "schema.pbtxt", config, loader
     )
     assert names == ["train", "validation"]
     assert validation == splits["validation"]
     assert candidate.class_order == CLASSES
     assert groups == {f"train-{i}" for i in range(5)}
+    assert release == {
+        "dataset_version": splits["train"][0]["dataset_version"],
+        "label_version": splits["train"][0]["label_version"],
+    }
 
 
 def test_rules_v1_scores_never_abstain():
@@ -100,7 +104,7 @@ def test_classes_absent_from_train_are_reported(config, tmp_path):
     def loader(path, name, contract_path, frozen_schema, allow_unchecked_leakage=False):
         return splits[name]
 
-    candidate, _, _ = train_classifier(
+    candidate, *_ = train_classifier(
         tmp_path / "s.json", DEFAULT_CONTRACT, tmp_path / "f.pbtxt", config, loader
     )
     assert candidate.classes_absent_from_train == ("retrieval",)
