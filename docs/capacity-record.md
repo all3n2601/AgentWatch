@@ -734,7 +734,8 @@ These are observed differences on one sweep per configuration, not causal attrib
    Its `queue` miss rate is 0.289 (0.167–0.473). In the ramp it falls from 0.923 and 1.000 at
    N = 3 (seen and unseen) to 0.067 and 0.024 at N = 12. Of the 686 queued model calls, it
    predicted `cpu_sandbox` on 118, `none` on 70 and `retrieval` on 10. No `steps-v1.3` feature
-   describes GPU or vLLM state, so whatever it uses is in the timing features.
+   describes GPU or vLLM state, and the report does not show which features drive these
+   predictions.
 3. **On `cfg-hardware` the classifier misses the slowdown that does not queue.** vLLM queued
    only 8 model calls above the threshold, all in the prefill-flood batches, and the classifier
    predicted `inference` on all 8. Of the 663 model calls slower than their baseline, it missed
