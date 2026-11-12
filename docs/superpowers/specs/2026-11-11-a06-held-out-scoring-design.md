@@ -8,6 +8,11 @@ truth records (the phase `live` never occurs) and are counted as runs without a 
 evidence to `data/held-out/a06-20261111/`. Parent design:
 [A06 natural overload](2026-11-10-natural-overload-capacity-sweep-design.md).
 
+**Changed 2026-11-12, before the rerun. Proposed for Benoy's approval.** The section
+[Change after #70, #72 and #74](#change-after-70-72-and-74-2026-11-12) replaces Stage 1, the
+Candidates part of Stage 2, and parts of the record. The run of 2026-11-11 (attempt
+`20261112T025531Z-220363`) stays recorded as superseded.
+
 ## Intent
 
 Score today's attribution, `rules-v1` and the learned candidates, on the frozen A06 evidence:
@@ -178,3 +183,98 @@ on both truth folders, from a clean tree at a recorded commit. The results go in
 exists; the "Compare models and rules on the same held-out tasks and contention cases" item
 gains this evidence and stays open for M2 PR 4's rule) and in `docs/data-card.md`. Outputs
 stay local in `.data/a06-scoring/`; versioning them is out of scope.
+
+## Change after #70, #72 and #74 (2026-11-12)
+
+Proposed 2026-11-12 for Benoy's approval, before the rerun and before any result that uses
+`sweep-truth-v1` is pushed. Three changes landed after the run of 2026-11-11:
+
+- On #70, Rohit and Akshay accepted `sweep-truth-v1` as the held-out set's label rule. They
+  required it to land as a versioned rule in `pipelines/data`, reviewed in its own PR, with
+  root and tool steps unscored. That is #74.
+- Rohit asked for the scoring to use his `split-v3` M03 model and M04 calibration (#72) instead
+  of retraining. The same model is then evaluated on dataset v1's test split and on A06, and its
+  calibration is valid: none of it was fitted on `split-v2` training rows.
+- `split-v3` holds the A06 sweeps out of every split, by protocol hash.
+
+What follows replaces the corresponding parts above. Everything not named here is unchanged:
+the feature rows, the batch-grouped bootstrap, the measures and their breakdowns, the absence of
+a gate, the outputs, and the separate MLflow experiment.
+
+### Truths come from `sweep-truth-v1` (replaces Stage 1)
+
+- `capacity-sweep-truth`, `services/agent/src/agentwatch_agent/sweep_truth.py`, its Make target
+  and its tests are removed. So is the `step_truths` refactor of `sweep_labels` (83be357, and
+  807285c, which only repairs that refactor). `sweep_labels` goes back to `main`'s version, so
+  `sweep-analyse` is unchanged.
+- The truths are produced by #74's two commands: `make agent-capacity-sweep-steps SWEEP=<sweep>`,
+  then `make sweep-truth STEPS=<steps folder>`. They write `.data/a06-scoring/truth/<sweep>/`
+  with `truth.jsonl` and `truth.json`.
+- `score-held-out` refuses a truth folder, writing nothing, unless all of these hold:
+  - `truth.json`'s `label_version` is `sweep-truth-v1+d0ded6b6`;
+  - its `truth_sha256` is the hash of the `truth.jsonl` beside it;
+  - `held_out` is true;
+  - its protocol hash is one of the two accepted ones.
+- The report records `label_version`, `steps_sha256`, `steps_summary_sha256` and `truth_sha256`
+  for each sweep. Together they identify the truth set.
+- **Scored steps:** model calls whose truth is a class. Steps the rule leaves null are counted by
+  reason and not scored. That covers root steps (`root_step`), tool, retrieval and other steps
+  (`no_queue_reference`), and model calls with `not_completed`, `no_baseline`,
+  `span_not_measured` or `not_applicable`. The false-alarm rate on `protocol_clean` is therefore
+  over model calls in 1-agent batches only. The run of 2026-11-11 counted every step type.
+
+### The model is M03 with its M04 calibration (replaces Candidates)
+
+- `score-held-out` trains nothing. `train_classifier` and the `--training` and `--calibration`
+  rule-file options are removed.
+- New options:
+  - `--candidates <dir>`: M03's output, default `.data/candidates`, as written by
+    `make train-candidates`.
+  - `--calibrated <dir>`: M04's output, default `.data/calibration`, as written by
+    `make calibrate`.
+- Both folders are rebuilt with #72's two commands on
+  `split-v3+932b2df410a7`. On 2026-11-12 that rebuild reproduced every M03 file byte for byte
+  (classifier `b35152b7…`). M04's `calibration.json` and `report.json` differ only in M03's
+  MLflow run ID.
+- Before scoring, the command refuses, writing nothing, unless all of these hold:
+  - M03's `report.json` names the split file passed with `--split` (by id and SHA-256) and the
+    accepted contract `eval-contract-v3` (`1cab0cbe`);
+  - `classifier.txt` and `preprocessing.json` hash to the values that report and
+    `calibration.json` record;
+  - `calibration.json` is `fitted: true` with status `evaluated`, and names that classifier.
+- The classifier is applied with M03's `preprocessing.json`: the same feature columns, order and
+  class columns. M04's temperature and abstention threshold are applied unchanged. Nothing is
+  refitted on A06 or on dataset v1.
+- Recorded identity: training version (`training-v1+a34ea0be`), calibration version, contract,
+  split id and SHA-256, and the SHA-256 of each model and calibration file. The capacity record
+  compares them with #72's published hashes.
+- **Leakage check:** the command refuses if any scored run id, or any scored step's plan
+  SHA-256, appears in a row of the split file's train, validation or test splits. `split-v3`
+  already excludes these sweeps; this confirms it for the rows actually scored.
+- **Seen task:** a task group with rows in `split-v3+932b2df410a7`'s train split.
+  `fix-mean-empty` is seen; `fix-median-even` has no rows in dataset v1, so it is unseen. The
+  split's train rows are read only for this and for the leakage check.
+- Abstention is no longer `unavailable`. The report gives the abstention rate, and the miss and
+  false-alarm rates on the steps the classifier answered, as declared above.
+
+### Run and record
+
+- One new attempt, from a clean tree at a recorded commit, CPU only:
+  - #74's two commands on both frozen sweeps;
+  - #72's two commands on `split-v3+932b2df410a7`;
+  - `score-held-out` on both truth folders.
+- In `docs/capacity-record.md`, the attribution baseline is rewritten from the new attempt. The
+  2026-11-11 attempt is listed as superseded, with the reason: a different truth rule, model
+  and set of scored steps. Its numbers are not compared with the new ones as an improvement.
+- `docs/project-checklist.md`: as declared above, "Evaluate natural overload" is ticked when the
+  new record exists, not before. The merge of `main` on 2026-11-12 left it unchecked.
+  "Compare models and rules on the same held-out tasks and contention cases" gains the new entry
+  and stays open.
+- `docs/data-card.md` and `docs/model-training.md` name the new attempt.
+
+### Order
+
+- The code is built on this branch with #74's branch merged in locally, because it reads #74's
+  output format. #74 is Benoy's own PR, and the dependency is stated in this PR.
+- Nothing is pushed until #74 has merged. Then `main` is merged in, the full checks rerun, and
+  the PR opens for Rohit's review.
