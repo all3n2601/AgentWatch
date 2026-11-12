@@ -1,8 +1,8 @@
 # AgentWatch rule baseline
 
 Status: `rules-v1+1bf54c19`, evaluated on 2026-11-11 on dataset v1
-(`steps-v1.3+aafae73eb211`, split `split-v3+95309c38a53e`, `eval-contract-v3` `b9f20820`,
-proposed). It **fails** both clean-step gates and leaves nine gates `not_evaluated`, so it blocks
+(`steps-v1.3+aafae73eb211`, split `split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`,
+accepted). It **fails** both clean-step gates and leaves nine gates `not_evaluated`, so it blocks
 promotion; see [Results on dataset v1](#results-on-dataset-v1). Earlier runs had no metrics: on
 the interim `steps-v1.2+5954f97ef8b2` split (2026-10-26) the report is **blocked** by the
 leakage check, and on `split-v2+febe942a2b59` it stops before scoring because that test split
@@ -104,25 +104,28 @@ exits with code 2 and an error message instead of a report. `make rule-baseline`
 
 ## Results on dataset v1
 
-Run on 2026-11-11 at commit `6ade73d` (branch `feature/split-v3`, PR #70). To reproduce, with
-the release pulled (see [the data card](data-card.md)):
+Run on 2026-11-12 at commit `f229a4c` (branch `feature/split-v3`, PR #70, after
+`eval-contract-v3` was set to `accepted`). To reproduce, with the release pulled (see
+[the data card](data-card.md)):
 
 ```sh
-uv run python -m agentwatch_data.splits --release data/datasets/steps-v1.3+aafae73eb211
-make rule-baseline SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+95309c38a53e.json
+uv run --package agentwatch-data python -m agentwatch_data.splits --release data/datasets/steps-v1.3+aafae73eb211
+make rule-baseline SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+932b2df410a7.json
 ```
 
 The first command rebuilds (or reuses) the split; the second writes `.data/rule-baseline/`,
-which is not committed. Two runs at `6ade73d`, and a rerun on 2026-11-12 at `e179aca` (#70 after
-review), gave byte-identical files:
+which is not committed. Two runs gave byte-identical files:
 
-- `report.json`: SHA-256 `203fa8833984f77c5460e3f9539233ee0f9fca0840b714ee21b78e79be6e304e`
+- `report.json`: SHA-256 `5d1b25e23feaa06783a3f5b2addfd021bf9e378f184da79c69b5f23957192ed8`
 - `predictions.jsonl` (3,575 rows, one per test step):
   SHA-256 `3dda66a896c282fc8a0e6e94db42ef3e14bb6cb21587eefc05b5518c8d1f2083`
 
 The test split is one task, `fix-window-count`, with 3,575 steps (3,482 single-class, 82 scored
 `mixed`, 11 joint-only). The rules were declared on `steps-v1.2` features before any
-evaluation and were not changed for this run.
+evaluation and were not changed for this run. The first runs, on 2026-11-11 at `6ade73d`
+under the then-proposed contract (`b9f20820`, `split-v3+95309c38a53e`, same rows), wrote the
+same `predictions.jsonl`; their report differed only in the contract status and hash and the
+split file and hash.
 
 | Gate or measure | Result | Contract |
 |---|---|---|

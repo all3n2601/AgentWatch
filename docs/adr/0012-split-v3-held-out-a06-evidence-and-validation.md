@@ -1,6 +1,7 @@
 # 0012: split-v3 holds out the A06 evidence and fills validation
 
-Date: November 11, 2026. Status: proposed. Adds `split-v3`
+Date: November 11, 2026. Status: accepted in PR #70 (November 12, 2026), with
+`eval-contract-v3` set to `accepted` before merge so its identifier (`1cab0cbe`) does not move. Adds `split-v3`
 (`pipelines/data/src/agentwatch_data/split-assignment-v3.toml`) and `eval-contract-v3`, and
 keeps [split-v2](0009-combined-dataset-release-and-split-v2.md) and `eval-contract-v2`
 unchanged so their splits still rebuild.
@@ -72,7 +73,7 @@ steps) to validation, above the 100 steps `calibration-v1` needs.
 
 **Consequences.**
 
-- On dataset v1 the split is `split-v3+95309c38a53e`: train 1,755 steps, validation 273, test
+- On dataset v1 the split is `split-v3+932b2df410a7`: train 1,755 steps, validation 273, test
   3,575 (`fix-window-count` only). Leakage, class balance, independence and mixed-in-test pass.
 - The held-out-method check is `not_met`: neither held-out method has a `step-features-v1` row
   in dataset v1, so the contract's `held_out_injection_methods = 1` is unmet. The

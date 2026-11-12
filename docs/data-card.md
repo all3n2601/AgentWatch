@@ -2,7 +2,7 @@
 
 Status: dataset v1, schema `steps-v1.3` (release `steps-v1.3+aafae73eb211`, 2026-11-07, D03),
 with two label rule sets: `labels-v1.1` for CPU and coding run rows and `labels-v2` for agent
-replay rows. It is split with `split-v3` under `eval-contract-v3` (proposed 2026-11-11); its `split-v2`
+replay rows. It is split with `split-v3` under `eval-contract-v3` (accepted in #70, 2026-11-12); its `split-v2`
 split under `eval-contract-v2` is kept and still rebuilds. The earlier
 `steps-v1.2+5954f97ef8b2` release and its `split-v1` split are kept unchanged. Recorded runs and
 replay experiments are curated into a versioned evidence store (`make add-evidence`); releases
@@ -36,7 +36,7 @@ step, and experiment-derived labels naming the resource that caused excess waiti
 
 ## Dataset v1 (`steps-v1.3+aafae73eb211`)
 
-Current format 3 release: `steps-v1.3+aafae73eb211`, split `split-v3+95309c38a53e` (local until
+Current format 3 release: `steps-v1.3+aafae73eb211`, split `split-v3+932b2df410a7` (local until
 the DVC pointer is updated) and the earlier `split-v2+febe942a2b59`. The release and the
 `split-v2` split are publicly downloadable and independently reproduced
 byte for byte on 2026-11-07 (see Review fixes below).
@@ -247,7 +247,7 @@ coding task groups go to test.
   Live telemetry legitimately sees injected load on steps that were not slowed, so this is not a
   gate.
 
-**`split-v3+95309c38a53e`** (2026-11-11), under `eval-contract-v3` (identifier `b9f20820`) and
+**`split-v3+932b2df410a7`** (2026-11-11), under `eval-contract-v3` (identifier `1cab0cbe`) and
 the `split-v3` assignment (identifier `dc2c4c92`; see
 [Frozen split assignment (`split-v3`)](#frozen-split-assignment-split-v3)). It splits only the
 5,603 `step-features-v1` rows; the 350 `steps-v1.2` CPU and coding rows (50 runs) are in no

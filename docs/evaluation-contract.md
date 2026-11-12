@@ -1,8 +1,9 @@
 # AgentWatch evaluation contract
 
-Status: `eval-contract-v3` (frozen identifier `b9f20820`), proposed on 2026-11-11 by Rohit
-with Benoy, until the pull request that adds it is approved (including by Akshay, who owns
-splits). It changes only the split: `[splits]` selects `split-v3` and its assignment file
+Status: `eval-contract-v3` (frozen identifier `1cab0cbe`), accepted. Rohit proposed it with
+Benoy on 2026-11-11; `status = "accepted"` was set on 2026-11-12 in the pull request that adds
+it (#70), at Akshay's (splits) request, so the identifier that results record does not move at
+merge. That pull request's approvals, on this version, are the acceptance record. It changes only the split: `[splits]` selects `split-v3` and its assignment file
 `split-assignment-v3.toml` ([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md)).
 Every threshold and every other value is
 `eval-contract-v2`'s. Thresholds live in `pipelines/model/evaluation-contract.toml`.
@@ -57,7 +58,7 @@ its splits, pass `pipelines/model/evaluation-contract-v2.toml`.
 The leakage check exists because on the CPU and coding data `label_resource` equals
 `rule_prediction` on every row and `queue_fraction` nearly separates the classes. On the first
 `split-v2` split (`split-v2+febe942a2b59`, dataset v1) the check passed, with an observed
-maximum of 0.974242 (`queue_seconds`, `retrieval`) against the 0.98 bound. On the first `split-v3` split (`split-v3+95309c38a53e`, dataset v1) it also passed.
+maximum of 0.974242 (`queue_seconds`, `retrieval`) against the 0.98 bound. On the first `split-v3` split (`split-v3+932b2df410a7`, dataset v1) it also passed.
 
 ## Gates
 

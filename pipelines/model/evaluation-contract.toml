@@ -11,10 +11,12 @@
 # Every threshold and every other value is eval-contract-v2's.
 version = "eval-contract-v3"
 # The thresholds are eval-contract-v2's, which Rohit (M02 owner) accepted on 2026-11-05. The
-# split change was proposed by Rohit with Benoy on 2026-11-11 and stays proposed until the
-# pull request that adds this file is approved, including by Akshay (splits). Values marked
-# "proposed" below still have no supporting data.
-status = "proposed"
+# split change was proposed by Rohit with Benoy on 2026-11-11 and set to accepted on
+# 2026-11-12 in the pull request that adds this file (#70), at Akshay's (splits) request, so
+# the identifier that results record does not move at merge. The approvals of that pull
+# request, on this version, are the acceptance record. Values marked "proposed" below still
+# have no supporting data.
+status = "accepted"
 
 [dataset]
 # Later compatible minor versions (steps-v1.x, which only add columns) are also accepted.
