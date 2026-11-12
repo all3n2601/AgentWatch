@@ -835,6 +835,14 @@ frozen evaluation sets without tuning against them.
   `test_score_held_out.py`. Closed: natural overload is now evaluated beside injector-driven
   experiments. The capacity and the baseline describe this laptop and these two configurations
   only, from one sweep each.
+
+  2026-11-11 (final review of A06 PR 3): `score-held-out` now validates the truth files at its
+  boundary. A record without its identity, position, timing or truth fields, a truth outside
+  `inference`, `none` and null, a summary whose protocol hash, configuration, step count or
+  counters do not match, and a sweep or (run, step) passed twice fail the attempt with a
+  recorded, tracked report instead of crashing or being miscounted
+  (`pipelines/model/tests/test_held_out_rows.py`, `test_score_held_out.py`). Both real truth
+  folders pass unchanged: 4,000 rows, none refused, the same files the reported attempt hashed.
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
   2026-11-10 (M04): `make calibrate` fits `calibration-v1` temperature scaling and the abstention
   threshold on the validation split only, then reports test-split ECE, abstention rates, clean

@@ -17,7 +17,10 @@ INFERENCE = "inference"
 ABSTAINED = "abstained"
 GATE = "none (descriptive baseline)"
 BATCH_KEY = "batch_id"
-NO_PLAN_REASON = "live-confirmation runs are not replays: no plan, so no step baseline"
+NO_PLAN_REASON = (
+    "runs without a replay plan, so no step baseline "
+    "(live-confirmation runs are not replays and have none)"
+)
 LIMITATIONS = (
     "one laptop, one sweep per configuration",
     "dataset v1's replays were recorded mostly on Ollama, A06 on vLLM",
@@ -184,14 +187,11 @@ def unscored_steps(rows: list[dict]) -> dict[str, dict[str, int]]:
     return {truth: dict(sorted(reasons.items())) for truth, reasons in sorted(counts.items())}
 
 
-def excluded_count(value: object) -> int:
-    return len(value) if isinstance(value, list | dict) else int(value or 0)
-
-
 def unscored_runs(summaries: list[dict]) -> dict[str, dict]:
     """Runs and batches the truth step never reached, per configuration.
 
-    Live-confirmation runs have no plan, so they have no baseline and no truth records.
+    A run without a replay plan has no baseline and no truth records; live-confirmation runs
+    are such runs. `load_truths` guarantees the counters and the excluded-batch list.
     """
     runs: dict[str, dict] = {}
     for summary in summaries:
@@ -203,9 +203,9 @@ def unscored_runs(summaries: list[dict]) -> dict[str, dict]:
                 "excluded_batches": 0,
             },
         )
-        entry["runs_without_plan"]["count"] += summary.get("runs_without_plan") or 0
-        entry["runs_without_evidence"] += summary.get("runs_without_evidence") or 0
-        entry["excluded_batches"] += excluded_count(summary.get("excluded_batches"))
+        entry["runs_without_plan"]["count"] += summary["runs_without_plan"]
+        entry["runs_without_evidence"] += summary["runs_without_evidence"]
+        entry["excluded_batches"] += len(summary["excluded_batches"])
     return runs
 
 

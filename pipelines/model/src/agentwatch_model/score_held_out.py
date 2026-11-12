@@ -118,17 +118,30 @@ def hash_of(path: Path) -> str | None:
 def input_hashes(truth_dirs: list[Path], sweep_root: Path, split: Path) -> dict:
     """SHA-256 of the split, every truth file and each run's evidence and journal.
 
-    A truth folder that cannot be read contributes only its own files; the attempt itself then
-    fails on it and records why. A missing file is None, so it stays distinct from any hash.
+    Truth files are keyed by the sweep folder their summary names, or by the truth folder as
+    given when it cannot be read; a key already taken gets the folder's argument position, so
+    no two truth folders share a key. A truth folder that cannot be read contributes only its
+    own files; the attempt itself then fails on it and records why. A sweep folder named twice
+    is hashed once (its run files are the same files). A missing file is None, so it stays
+    distinct from any hash.
     """
     hashes: dict = {"split": hash_of(split), "truth": {}, "runs": {}}
-    for truth_dir in truth_dirs:
-        for name in TRUTH_FILES:
-            hashes["truth"][f"{truth_dir.name}/{name}"] = hash_of(truth_dir / name)
+    labels: set[str] = set()
+    hashed_sweeps: set[str] = set()
+    for position, truth_dir in enumerate(truth_dirs):
         try:
             summary, records = load_truths(truth_dir)
         except HeldOutError:
+            summary, records = None, []
+        label = summary["sweep_folder"] if summary else truth_dir.as_posix()
+        if label in labels:
+            label = f"{label} (truth argument {position})"
+        labels.add(label)
+        for name in TRUTH_FILES:
+            hashes["truth"][f"{label}/{name}"] = hash_of(truth_dir / name)
+        if summary is None or summary["sweep_folder"] in hashed_sweeps:
             continue
+        hashed_sweeps.add(summary["sweep_folder"])
         sweep_dir = sweep_root / summary["sweep_folder"]
         for run_folder in sorted({record.get("run_folder") for record in records}, key=str):
             try:

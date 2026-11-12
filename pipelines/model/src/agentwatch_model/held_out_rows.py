@@ -11,9 +11,14 @@ guessed: `feature_evidence_unreadable` (journal or evidence unreadable, or a `ru
 leaves the sweep folder), `feature_row_missing` (the journal belongs to another run, or has no
 terminal row for the step), `feature_timing_mismatch` (the journal's timings differ from the
 truth record's), `declared_interval_invalid`.
+
+Truth files are another package's output, so they are checked at this boundary before any
+join: a summary or record outside the `sweep-truth-v1` format, a summary that does not match
+its records, or a sweep or step passed twice raises HeldOutError, which fails the attempt.
 """
 
 import json
+import math
 from collections import Counter
 from pathlib import Path, PurePosixPath
 from uuid import UUID
@@ -25,6 +30,7 @@ from agentwatch_data.replay_journal import read_journal
 from agentwatch_data.replay_rows import (
     FEATURE_EVIDENCE_UNREADABLE,
     FEATURE_ROW_MISSING,
+    JOINED_TIMINGS,
     FeatureJoinError,
     ReplayFeatures,
     declared_interval_seconds,
@@ -44,28 +50,43 @@ ACCEPTED_PROTOCOL_SHA256: dict[str, str] = {
 }
 TRUTH_FILE = "truth.jsonl"
 SUMMARY_FILE = "truth.json"
+# The record format sweep_truth.py writes (`_record`); keep in step with it.
+TRUTH_NAMES = frozenset({"queue", "slower", "protocol_clean"})
+TRUTH_CLASSES = frozenset({"inference", "none"})
+TRUTH_PHASES = frozenset({"ramp", "live", "injected", "control"})
+RECORD_STRINGS = ("run_id", "step_id", "run_folder", "batch_id", "step_type", "task_id")
+SUMMARY_COUNTERS = ("runs_without_plan", "runs_without_evidence")
 
 
 class HeldOutError(ValueError):
     """Truth files that are not accepted held-out sweep truths."""
 
 
-def load_truths(directory: Path) -> tuple[dict, list[dict]]:
-    """The summary and truth records of one sweep truth folder, refused unless accepted."""
-    try:
-        summary = json.loads((directory / SUMMARY_FILE).read_text(encoding="utf-8"))
-        lines = (directory / TRUTH_FILE).read_text(encoding="utf-8").splitlines()
-        records = [json.loads(line) for line in lines if line.strip()]
-    except (OSError, ValueError) as error:
-        raise HeldOutError(f"{directory}: truth files cannot be read: {error}") from error
-    if not isinstance(summary, dict) or not all(isinstance(r, dict) for r in records):
-        raise HeldOutError(f"{directory}: truth files must hold JSON objects")
+def is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_seconds(value: object) -> bool:
+    """A finite number of seconds, or None for an unmeasured reading."""
+    if value is None:
+        return True
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def summary_problem(summary: dict, record_count: int) -> str | None:
+    """Why the summary is not an accepted `sweep-truth-v1` summary of `record_count` records."""
     if summary.get("held_out") is not True:
-        raise HeldOutError(f"{directory}: truths are not marked held_out")
+        return "truths are not marked held_out"
     if summary.get("method") != ACCEPTED_TRUTH_METHOD:
-        raise HeldOutError(f"{directory}: method {summary.get('method')!r} is not accepted")
-    if summary.get("protocol_sha256") not in ACCEPTED_PROTOCOL_SHA256.values():
-        raise HeldOutError(f"{directory}: protocol hash is not an accepted held-out protocol")
+        return f"method {summary.get('method')!r} is not accepted"
+    configuration = summary.get("configuration")
+    accepted = (
+        ACCEPTED_PROTOCOL_SHA256.get(configuration) if isinstance(configuration, str) else None
+    )
+    if accepted is None:
+        return f"configuration {configuration!r} is not an accepted held-out configuration"
+    if summary.get("protocol_sha256") != accepted:
+        return f"protocol_sha256 is not the accepted {configuration} protocol hash"
     folder = summary.get("sweep_folder")
     if (
         not isinstance(folder, str)
@@ -74,8 +95,114 @@ def load_truths(directory: Path) -> tuple[dict, list[dict]]:
         or "\\" in folder
         or ":" in folder
     ):
-        raise HeldOutError(f"{directory}: sweep_folder must be a single folder name")
-    return summary, records
+        return "sweep_folder must be a single folder name"
+    sweep_id = summary.get("sweep_id")
+    if not isinstance(sweep_id, str) or not sweep_id:
+        return f"sweep_id must be a non-empty string, found {sweep_id!r}"
+    for name in SUMMARY_COUNTERS:
+        if not is_count(summary.get(name)) or summary[name] < 0:
+            return f"{name} must be a non-negative integer, found {summary.get(name)!r}"
+    if not isinstance(summary.get("excluded_batches"), list):
+        return f"excluded_batches must be a list, found {summary.get('excluded_batches')!r}"
+    steps = summary.get("steps")
+    if not is_count(steps) or steps != record_count:
+        return (
+            f"steps is {steps!r} but {TRUTH_FILE} holds {record_count} records; the summary "
+            "does not describe these records (stale or incomplete truth files)"
+        )
+    return None
+
+
+def truths_problem(record: dict) -> str | None:
+    """Why the record's truths are not three classes-or-null, each null one with a reason."""
+    truths, reasons = record.get("truths"), record.get("truth_reasons")
+    for field, value in (("truths", truths), ("truth_reasons", reasons)):
+        if not isinstance(value, dict) or set(value) != TRUTH_NAMES:
+            return f"{field} must be an object with exactly the keys {sorted(TRUTH_NAMES)}"
+    for name in sorted(TRUTH_NAMES):
+        truth, reason = truths[name], reasons[name]
+        if truth is None:
+            if not isinstance(reason, str) or not reason:
+                return f"truths.{name} is null without a reason in truth_reasons.{name}"
+        elif not isinstance(truth, str) or truth not in TRUTH_CLASSES:
+            return f"truths.{name} is {truth!r}, not 'inference', 'none' or null"
+        elif reason is not None:
+            return f"truth_reasons.{name} must be null when truths.{name} is {truth!r}"
+    return None
+
+
+def record_problem(record: dict, configuration: str) -> str | None:
+    """Why the record is not a `sweep-truth-v1` step record of the summary's configuration."""
+    for field in RECORD_STRINGS:
+        if not isinstance(record.get(field), str):
+            return f"{field} must be a string, found {record.get(field)!r}"
+    if not is_count(record.get("n")):
+        return f"n must be an integer, found {record.get('n')!r}"
+    phase = record.get("phase")
+    if not isinstance(phase, str) or phase not in TRUTH_PHASES:
+        return f"phase must be one of {sorted(TRUTH_PHASES)}, found {phase!r}"
+    if record.get("configuration") != configuration:
+        return (
+            f"configuration is {record.get('configuration')!r}, the summary's is {configuration!r}"
+        )
+    for field in JOINED_TIMINGS:
+        if field not in record or not is_seconds(record[field]):
+            return f"{field} must be a finite number or null, found {record.get(field)!r}"
+    return truths_problem(record)
+
+
+def load_truths(directory: Path) -> tuple[dict, list[dict]]:
+    """The summary and truth records of one sweep truth folder, refused unless accepted.
+
+    Refusals name the file and, for a record, its index among the records and its line.
+    """
+    summary_file, truth_file = directory / SUMMARY_FILE, directory / TRUTH_FILE
+    try:
+        summary = json.loads(summary_file.read_text(encoding="utf-8"))
+        lines = truth_file.read_text(encoding="utf-8").splitlines()
+        numbered = [
+            (number, json.loads(line)) for number, line in enumerate(lines, 1) if line.strip()
+        ]
+    except (OSError, ValueError) as error:
+        raise HeldOutError(f"{directory}: truth files cannot be read: {error}") from error
+    if not isinstance(summary, dict):
+        raise HeldOutError(f"{summary_file}: the summary must be a JSON object")
+    problem = summary_problem(summary, len(numbered))
+    if problem is not None:
+        raise HeldOutError(f"{summary_file}: {problem}")
+    for index, (number, record) in enumerate(numbered):
+        if not isinstance(record, dict):
+            problem = "the record must be a JSON object"
+        else:
+            problem = record_problem(record, summary["configuration"])
+        if problem is not None:
+            raise HeldOutError(f"{truth_file}: record {index} (line {number}): {problem}")
+    return summary, [record for _, record in numbered]
+
+
+def refuse_repeats(loaded: list[tuple[Path, dict, list[dict]]]) -> None:
+    """Refuse a sweep passed twice, by id or folder, and a (run, step) recorded twice: either
+    would count the same steps more than once."""
+    sweeps: dict[tuple[str, str], Path] = {}
+    steps: dict[tuple[str, str], Path] = {}
+    for truth_dir, summary, records in loaded:
+        for field in ("sweep_id", "sweep_folder"):
+            key = (field, summary[field])
+            if key in sweeps:
+                raise HeldOutError(
+                    f"{truth_dir} and {sweeps[key]} both hold {field} {summary[field]!r}; "
+                    "pass each sweep's truths once"
+                )
+            sweeps[key] = truth_dir
+        truth_file = truth_dir / TRUTH_FILE
+        for record in records:
+            step = (record["run_id"], record["step_id"])
+            if step in steps:
+                raise HeldOutError(
+                    f"{truth_file}: run {step[0]} step {step[1]} appears more than once "
+                    f"(first in {steps[step]})"
+                )
+            steps[step] = truth_file
 
 
 def run_directory(sweep_dir: Path, run_folder: object) -> Path:
@@ -131,13 +258,15 @@ def held_out_rows(
     and the summaries.
 
     `sweep_root` holds the sweep folders; each summary names its own by `sweep_folder`.
-    Each run's journal is read once. Unacceptable truth files raise HeldOutError.
+    Each run's journal is read once. Unacceptable truth files, a sweep passed twice and a
+    repeated (run, step) raise HeldOutError before any journal is read.
     """
+    loaded = [(truth_dir, *load_truths(truth_dir)) for truth_dir in truth_dirs]
+    refuse_repeats(loaded)
     rows: list[dict] = []
     refused: Counter[str] = Counter()
     summaries: list[dict] = []
-    for truth_dir in truth_dirs:
-        summary, records = load_truths(truth_dir)
+    for _, summary, records in loaded:
         summaries.append(summary)
         sweep_dir = sweep_root / summary["sweep_folder"]
         by_run: dict[object, list[dict]] = {}

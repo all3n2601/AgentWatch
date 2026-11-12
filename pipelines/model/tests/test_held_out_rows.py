@@ -35,10 +35,15 @@ def record(run_id: str, run_folder: str, step_id: str, **overrides) -> dict:
         "step_id": step_id,
         "step_type": timing["step_type"],
         "task_id": "fix-a-r1",
+        "configuration": "cfg-default",
+        "n": 1,
+        "phase": "ramp",
+        "batch_id": "batch-1",
         "duration_seconds": timing["total_seconds"],
         "queue_seconds": timing["queue_seconds"],
         "execution_seconds": timing["execution_seconds"],
-        "truths": {"queue": "queue_free", "slower": "not_slower", "protocol_clean": "clean"},
+        "truths": {"queue": "none", "slower": None, "protocol_clean": "none"},
+        "truth_reasons": {"queue": None, "slower": "not_applicable", "protocol_clean": None},
         "run_folder": run_folder,
     }
     return base | overrides
@@ -53,6 +58,10 @@ def write_summary(directory: Path, **overrides) -> dict:
         "protocol_sha256": ACCEPTED_PROTOCOL_SHA256["cfg-default"],
         "held_out": True,
         "sweep_folder": SWEEP_FOLDER,
+        "steps": len(STEP_SECONDS),
+        "runs_without_plan": 0,
+        "runs_without_evidence": 0,
+        "excluded_batches": [],
     } | overrides
     (directory / "truth.json").write_text(json.dumps(summary))
     return summary
@@ -90,7 +99,7 @@ def test_held_out_rows_join_truth_and_features(sweep):
     assert [row["step_id"] for row in rows] == list(STEP_SECONDS)
     for row in rows:
         assert set(feature_columns()) <= set(row)
-        assert row["truths"]["queue"] == "queue_free"
+        assert row["truths"]["queue"] == "none"
         assert row["telemetry_status"]
         assert row["worker_capacity"] is None
         assert row["queue_seconds"] == pytest.approx(0.001)
@@ -148,3 +157,155 @@ def test_the_accepted_summary_loads(sweep):
     summary, records = load_truths(sweep["truth"])
     assert summary["sweep_folder"] == SWEEP_FOLDER
     assert len(records) == 3
+
+
+MISSING = object()
+
+
+def changed(record: dict, path: str, value: object) -> dict:
+    """The record with one field, or one `truths`/`truth_reasons` entry, replaced or removed."""
+    copy = json.loads(json.dumps(record))
+    *parents, name = path.split(".")
+    target = copy
+    for parent in parents:
+        target = target[parent]
+    if value is MISSING:
+        del target[name]
+    else:
+        target[name] = value
+    return copy
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        ("run_id", MISSING, "run_id must be a string"),
+        ("run_id", None, "run_id must be a string"),
+        ("step_id", 7, "step_id must be a string"),
+        ("run_folder", None, "run_folder must be a string"),
+        ("batch_id", MISSING, "batch_id must be a string"),
+        ("step_type", None, "step_type must be a string"),
+        ("task_id", None, "task_id must be a string"),
+        ("n", "1", "n must be an integer"),
+        ("n", True, "n must be an integer"),
+        ("n", MISSING, "n must be an integer"),
+        ("phase", "warmup", "phase must be one of"),
+        ("phase", ["ramp"], "phase must be one of"),
+        ("configuration", "cfg-hardware", "the summary's is 'cfg-default'"),
+        ("configuration", MISSING, "configuration is None"),
+        ("truths", None, "truths must be an object"),
+        ("truths.slower", MISSING, "truths must be an object"),
+        ("truths.extra", "none", "truths must be an object"),
+        ("truth_reasons", MISSING, "truth_reasons must be an object"),
+        ("truth_reasons.extra", None, "truth_reasons must be an object"),
+        ("truths.queue", "queue_free", "truths.queue is 'queue_free'"),
+        ("truths.queue", ["none"], "truths.queue is"),
+        ("truth_reasons.slower", None, "truths.slower is null without a reason"),
+        ("truth_reasons.slower", "", "truths.slower is null without a reason"),
+        ("truth_reasons.queue", "not_applicable", "truth_reasons.queue must be null"),
+        ("duration_seconds", float("nan"), "duration_seconds must be a finite number"),
+        ("queue_seconds", float("inf"), "queue_seconds must be a finite number"),
+        ("execution_seconds", "0.5", "execution_seconds must be a finite number"),
+        ("execution_seconds", True, "execution_seconds must be a finite number"),
+        ("duration_seconds", MISSING, "duration_seconds must be a finite number"),
+    ],
+)
+def test_a_malformed_truth_record_is_refused_naming_file_line_and_field(
+    sweep, path, value, message
+):
+    records = sweep["records"]
+    records[1] = changed(records[1], path, value)
+    write_truths(sweep["truth"], records)
+    with pytest.raises(HeldOutError, match=message) as refused:
+        load_truths(sweep["truth"])
+    assert "truth.jsonl" in str(refused.value) and "line 2" in str(refused.value)
+    with pytest.raises(HeldOutError):
+        held_out_rows([sweep["truth"]], sweep["root"])
+
+
+def test_a_null_timing_is_accepted_as_unmeasured(sweep):
+    records = sweep["records"]
+    records[0] = records[0] | {"queue_seconds": None}
+    write_truths(sweep["truth"], records)
+    _, loaded = load_truths(sweep["truth"])
+    assert loaded[0]["queue_seconds"] is None
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"configuration": "cfg-hardware"}, "not the accepted cfg-hardware protocol hash"),
+        ({"configuration": "cfg-unknown"}, "not an accepted held-out configuration"),
+        ({"configuration": None}, "not an accepted held-out configuration"),
+        ({"configuration": ["cfg-default"]}, "not an accepted held-out configuration"),
+        ({"sweep_id": None}, "sweep_id must be a non-empty string"),
+        ({"steps": 4}, "steps is 4 but truth.jsonl holds 3 records"),
+        ({"steps": None}, "steps is None"),
+        ({"steps": True}, "steps is True"),
+        ({"runs_without_plan": None}, "runs_without_plan must be a non-negative integer"),
+        ({"runs_without_plan": -1}, "runs_without_plan must be a non-negative integer"),
+        ({"runs_without_plan": True}, "runs_without_plan must be a non-negative integer"),
+        ({"runs_without_evidence": "0"}, "runs_without_evidence must be a non-negative integer"),
+        ({"excluded_batches": 0}, "excluded_batches must be a list"),
+    ],
+)
+def test_a_malformed_summary_is_refused(sweep, change, message):
+    write_summary(sweep["truth"], **change)
+    with pytest.raises(HeldOutError, match=message):
+        load_truths(sweep["truth"])
+
+
+@pytest.mark.parametrize("name", ["steps", "runs_without_plan", "runs_without_evidence"])
+def test_a_summary_without_a_counter_is_refused(sweep, name):
+    summary = json.loads((sweep["truth"] / "truth.json").read_text())
+    del summary[name]
+    (sweep["truth"] / "truth.json").write_text(json.dumps(summary))
+    with pytest.raises(HeldOutError, match=name):
+        load_truths(sweep["truth"])
+
+
+def test_a_summary_without_excluded_batches_is_refused(sweep):
+    summary = json.loads((sweep["truth"] / "truth.json").read_text())
+    del summary["excluded_batches"]
+    (sweep["truth"] / "truth.json").write_text(json.dumps(summary))
+    with pytest.raises(HeldOutError, match="excluded_batches must be a list"):
+        load_truths(sweep["truth"])
+
+
+def copy_truth(sweep, name: str, **summary_changes) -> Path:
+    other = sweep["truth"].parent / name
+    shutil.copytree(sweep["truth"], other)
+    if summary_changes:
+        write_summary(other, **summary_changes)
+    return other
+
+
+def test_the_same_truth_folder_twice_is_refused(sweep):
+    with pytest.raises(HeldOutError, match="sweep_id 'synthetic'"):
+        held_out_rows([sweep["truth"], sweep["truth"]], sweep["root"])
+
+
+def test_two_truth_folders_of_one_sweep_folder_are_refused(sweep):
+    other = copy_truth(sweep, "other", sweep_id="another")
+    with pytest.raises(HeldOutError, match=f"sweep_folder '{SWEEP_FOLDER}'"):
+        held_out_rows([sweep["truth"], other], sweep["root"])
+
+
+def test_two_truth_folders_of_one_sweep_id_are_refused(sweep):
+    other = copy_truth(sweep, "other", sweep_folder="cfg-default-elsewhere")
+    with pytest.raises(HeldOutError, match="sweep_id 'synthetic'"):
+        held_out_rows([sweep["truth"], other], sweep["root"])
+
+
+def test_a_repeated_run_and_step_is_refused(sweep):
+    records = sweep["records"]
+    write_truths(sweep["truth"], [*records, records[1]])
+    write_summary(sweep["truth"], steps=len(records) + 1)
+    with pytest.raises(HeldOutError, match="model-call-1 appears more than once"):
+        held_out_rows([sweep["truth"]], sweep["root"])
+
+
+def test_a_run_and_step_repeated_across_sweeps_is_refused(sweep):
+    other = copy_truth(sweep, "other", sweep_id="another", sweep_folder="cfg-default-elsewhere")
+    with pytest.raises(HeldOutError, match="appears more than once"):
+        held_out_rows([sweep["truth"], other], sweep["root"])

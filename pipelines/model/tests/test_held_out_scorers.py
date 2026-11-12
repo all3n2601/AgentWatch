@@ -111,11 +111,14 @@ def test_classes_absent_from_train_are_reported(config, tmp_path):
     assert "retrieval" not in candidate.class_order
 
 
-def test_seen_task_groups_come_from_train_rows_only():
-    train = [featured_row("none", 0, task_id="fix-mean-empty-r2")]
-    validation = [featured_row("none", 1, task_id="other")]
-    assert seen_task_groups(train) == {"fix-mean-empty"}
-    assert "other" not in seen_task_groups(train) and validation
+def test_seen_task_groups_come_from_train_rows_only(config, tmp_path):
+    assert seen_task_groups([featured_row("none", 0, task_id="fix-mean-empty-r2")]) == {
+        "fix-mean-empty"
+    }
+    train, validation = dataset(30, "train"), dataset(8, "valid")
+    _, _, seen, _ = _train_with(config, tmp_path, train, validation)
+    assert seen == seen_task_groups(train)
+    assert not seen & seen_task_groups(validation)
 
 
 def _train_with(config, tmp_path, train, validation):

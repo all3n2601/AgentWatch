@@ -15,8 +15,15 @@ require_lightgbm()
 
 import mlflow
 from agentwatch_data import evidence
-from agentwatch_model.score_held_out import EXPERIMENT, OutputError, main, run, run_attempt
-from test_held_out_rows import sweep, write_truths  # noqa: F401
+from agentwatch_model.score_held_out import (
+    EXPERIMENT,
+    OutputError,
+    input_hashes,
+    main,
+    run,
+    run_attempt,
+)
+from test_held_out_rows import sweep, write_summary, write_truths  # noqa: F401
 
 SPLITS = {"train": dataset(30, "train"), "validation": dataset(30, "valid")}
 
@@ -174,6 +181,39 @@ def test_a_truth_file_without_held_out_fails_the_attempt(prepared, tracking):
     assert outcome.status == "failed"
     report = json.loads((outcome.directory / "report.json").read_text())
     assert "held_out" in report["reason"]
+
+
+def test_a_malformed_truth_record_fails_the_attempt_with_a_tracked_report(prepared, tracking):
+    lines = (prepared["truth"] / "truth.jsonl").read_text().splitlines()
+    malformed = [json.loads(line) for line in lines]
+    del malformed[0]["run_id"]
+    write_truths(prepared["truth"], malformed)
+    outcome = run_synthetic(prepared, tracking)
+    assert outcome.status == "failed" and outcome.run_id
+    report = json.loads((outcome.directory / "report.json").read_text())
+    assert report["status"] == "failed" and report["held_out"] is True
+    assert "HeldOutError" in report["reason"] and "run_id must be a string" in report["reason"]
+    assert all(report["inputs"]["truth"].values()) and report["inputs"]["runs"] == {}
+    assert not (outcome.directory / "predictions.jsonl").exists()
+    assert json.loads((outcome.directory / "tracking.json").read_text())["logged"] is True
+
+
+def test_truth_hashes_of_folders_with_one_name_do_not_collide(prepared, tmp_path):
+    other = tmp_path / "elsewhere" / prepared["truth"].name
+    other.mkdir(parents=True)
+    (other / "truth.jsonl").write_text((prepared["truth"] / "truth.jsonl").read_text())
+    write_summary(other, sweep_id="another", sweep_folder="cfg-default-elsewhere")
+    hashes = input_hashes([prepared["truth"], other], prepared["root"], prepared["split"])
+    assert len(hashes["truth"]) == 4
+    assert (
+        hashes["truth"]["cfg-default-synthetic/truth.json"]
+        != hashes["truth"]["cfg-default-elsewhere/truth.json"]
+    )
+
+
+def test_truth_hashes_keep_a_folder_passed_twice(prepared):
+    hashes = input_hashes([prepared["truth"]] * 2, prepared["root"], prepared["split"])
+    assert len(hashes["truth"]) == 4
 
 
 @pytest.mark.parametrize(
