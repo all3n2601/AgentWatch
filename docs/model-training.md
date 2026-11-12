@@ -88,7 +88,9 @@ A malformed contract, rules or training file exits with code 2 before any attemp
 Run on 2026-11-12 on the code of PR #70 at commit `f229a4c` (after `eval-contract-v3` was
 set to `accepted`), in a Linux container (`ghcr.io/astral-sh/uv:python3.13-bookworm` with `libgomp1`, since LightGBM needs
 OpenMP; LightGBM 4.7.0, NumPy 2.5.4). To reproduce, after rebuilding the split as in
-[the rule baseline](rule-baseline.md#results-on-dataset-v1):
+[the rule baseline](rule-baseline.md#results-on-dataset-v1). PR #70 was squash-merged as
+`386d494` on `main`; its data and model implementation is identical to `f229a4c`, so that
+main commit provides the merged source for reproduction:
 
 ```sh
 make train-candidates SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+932b2df410a7.json
