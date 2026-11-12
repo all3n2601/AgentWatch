@@ -40,14 +40,18 @@ export function RatioChip({
 /**
  * Absolute and relative change ("+24.85 s (11.4×)", "+0.30 ms (1.2×)"). With
  * no ratio (a measured-zero baseline) the absolute change still shows.
+ * `neutral` drops the slowdown emphasis, for differences that must not read as
+ * better or worse.
  */
 export function DeltaChip({
   deltaSeconds,
   ratio,
+  neutral = false,
   className,
 }: {
   deltaSeconds: number | null;
   ratio: number | null;
+  neutral?: boolean;
   className?: string;
 }) {
   if (deltaSeconds === null || !Number.isFinite(deltaSeconds)) {
@@ -59,8 +63,8 @@ export function DeltaChip({
     );
   }
   const sign = deltaSeconds > 0 ? "+" : deltaSeconds < 0 ? "−" : "±";
-  const tone =
-    ratio === null || !Number.isFinite(ratio) ? null : slowdownTone(ratio);
+  const hasRatio = ratio !== null && Number.isFinite(ratio);
+  const tone = hasRatio && !neutral ? slowdownTone(ratio) : null;
   return (
     <span
       className={cn(
@@ -71,8 +75,10 @@ export function DeltaChip({
     >
       {sign}
       {formatSeconds(Math.abs(deltaSeconds))}
-      {tone && ratio !== null && ` (${formatQuantity(ratio, "ratio")})`}
-      {!tone && <span className="sr-only"> (no ratio: baseline is zero)</span>}
+      {hasRatio && ` (${formatQuantity(ratio, "ratio")})`}
+      {!hasRatio && (
+        <span className="sr-only"> (no ratio: baseline is zero)</span>
+      )}
     </span>
   );
 }

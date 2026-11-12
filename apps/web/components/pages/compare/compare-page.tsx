@@ -19,12 +19,17 @@ import {
 } from "@/lib/compare-page";
 import { formatQuantity } from "@/lib/measurement-format";
 import { routes } from "@/lib/routes";
-import { slowdownTone, type Tone } from "@/lib/tone";
+import {
+  policyUnknown,
+  POLICY_NOT_RECORDED_WARNING,
+  type Compatibility,
+} from "@/lib/run-compatibility";
 import {
   AlignedStepsPanel,
   ConfigurationPanel,
   InterpretationPanel,
   LargestDifferencesPanel,
+  QualityPanel,
   TimeChangesPanel,
 } from "./compare-panels";
 import { RunPicker } from "./run-picker";
@@ -47,6 +52,17 @@ function pickerSlot(slot: RunSlot, options: readonly RunOption[]) {
   };
 }
 
+/** The configuration verdict; unknown settings are never labelled a match. */
+export function verdictStatus(compatibility: Compatibility) {
+  if (compatibility.verdict === "differs")
+    return { label: "Settings differ", tone: "danger" as const };
+  if (compatibility.verdict === "unverified")
+    return policyUnknown(compatibility)
+      ? { label: "Policy not recorded", tone: "warning" as const }
+      : { label: "Settings not recorded", tone: "warning" as const };
+  return { label: "Configuration match", tone: "success" as const };
+}
+
 function ConfigurationStatus({
   comparison,
   className,
@@ -54,23 +70,13 @@ function ConfigurationStatus({
   comparison: Comparison;
   className?: string;
 }) {
-  const { compatibility } = comparison;
-  if (!compatibility.sameKind)
-    return (
-      <StatusBadge
-        label="Different workload kinds"
-        tone="danger"
-        className={className}
-      />
-    );
-  return compatibility.allMatch ? (
+  const status = verdictStatus(comparison.compatibility);
+  return (
     <StatusBadge
-      label="Configuration match"
-      tone="success"
+      label={status.label}
+      tone={status.tone}
       className={className}
     />
-  ) : (
-    <StatusBadge label="Settings differ" tone="warning" className={className} />
   );
 }
 
@@ -127,37 +133,32 @@ function SelectionNotices({ model }: { model: ComparePageModel }) {
   );
 }
 
-function headlineTone(comparison: Comparison): Tone {
-  const { headline } = comparison;
-  if (!headline || headline.direction !== "slower") return "info";
-  return slowdownTone(headline.ratio) ?? "info";
-}
-
+/**
+ * The verdict before any number: differing settings block the comparison; an
+ * unknown setting allows the neutral observed total with a visible warning.
+ */
 function ComparisonHeadline({ comparison }: { comparison: Comparison }) {
   const { compatibility, headline } = comparison;
+  if (compatibility.verdict === "differs")
+    return (
+      <AlertBanner
+        tone="danger"
+        title="Not compared: recorded settings differ"
+        detail={`Differing settings: ${compatibility.differing.join(", ")}. No difference or ratio is calculated; each run's values are shown side by side.`}
+        className="fit:py-3"
+      />
+    );
   const total = comparison.metrics.find((m) => m.id === "total");
-  const detail = !compatibility.sameKind
-    ? "Different workload kinds: these runs do not perform the same work."
-    : compatibility.allMatch
-      ? `Total step time over ${total?.scope ?? "all steps"}; recorded settings match.`
-      : `Settings differ: ${compatibility.differing.join(", ").toLowerCase()}. Not a like-for-like comparison.`;
+  const detail =
+    compatibility.verdict === "unverified"
+      ? policyUnknown(compatibility)
+        ? `${POLICY_NOT_RECORDED_WARNING}. Every recorded setting matches.`
+        : `Not recorded on both runs: ${compatibility.unknown.join(", ")}; full compatibility cannot be verified.`
+      : `Total step time over ${total?.scope ?? "all steps"}; recorded settings match.`;
   return (
     <AlertBanner
-      tone={headlineTone(comparison)}
-      title={
-        headline ? (
-          <>
-            {headline.title}
-            <span className="sr-only">
-              {" "}
-              ({formatQuantity(headline.ratio, "ratio")} of baseline total step
-              time)
-            </span>
-          </>
-        ) : (
-          "Total step time could not be compared"
-        )
-      }
+      tone={compatibility.verdict === "unverified" ? "warning" : "info"}
+      title={headline?.title ?? "Total step time could not be compared"}
       detail={detail}
       aside="Observed difference, not causal"
       // On phones the aside (the banner's only direct <p>) takes its own row
@@ -165,6 +166,14 @@ function ComparisonHeadline({ comparison }: { comparison: Comparison }) {
       className="max-sm:[&>p]:basis-full fit:py-3"
     />
   );
+}
+
+function configurationBadge({ verdict, differing, unknown }: Compatibility) {
+  if (verdict === "differs")
+    return `${formatQuantity(differing.length, "count")} differ`;
+  if (verdict === "unverified")
+    return `${formatQuantity(unknown.length, "count")} unknown`;
+  return "Match";
 }
 
 function comparisonTabs(
@@ -179,14 +188,18 @@ function comparisonTabs(
       // rows and the side column scrolls as a whole, so neither moves the page.
       content: (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)] lg:items-start fit:h-full fit:grid-rows-[minmax(0,1fr)] fit:items-stretch">
-          <TimeChangesPanel metrics={comparison.metrics} />
+          <TimeChangesPanel
+            metrics={comparison.metrics}
+            differencesShown={comparison.differencesShown}
+          />
           <div
             role="region"
-            aria-label="Interpretation and largest differences"
+            aria-label="Interpretation, quality and largest differences"
             tabIndex={0}
             className="relative min-w-0 space-y-4 rounded-2xl outline-none focus-visible:ring-[3px] focus-visible:ring-brand/40 fit:h-full fit:min-h-0 fit:overflow-y-auto"
           >
             <InterpretationPanel comparison={comparison} />
+            <QualityPanel rows={comparison.quality} />
             <LargestDifferencesPanel comparison={comparison} />
           </div>
         </div>
@@ -195,9 +208,7 @@ function comparisonTabs(
     {
       id: "configuration",
       label: "Configuration",
-      badge: compatibility.allMatch
-        ? "Match"
-        : `${formatQuantity(compatibility.differing.length, "count")} differ`,
+      badge: configurationBadge(compatibility),
       content: (
         <ConfigurationPanel
           compatibility={compatibility}
@@ -209,7 +220,12 @@ function comparisonTabs(
       id: "steps",
       label: "Steps",
       badge: formatQuantity(comparison.steps.length, "count"),
-      content: <AlignedStepsPanel steps={comparison.steps} />,
+      content: (
+        <AlignedStepsPanel
+          steps={comparison.steps}
+          differencesShown={comparison.differencesShown}
+        />
+      ),
     },
   ];
 }
