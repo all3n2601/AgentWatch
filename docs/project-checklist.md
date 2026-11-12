@@ -759,6 +759,12 @@ frozen evaluation sets without tuning against them.
   `eval-contract-v1`, and logs every attempt, including blocked and failed ones, to MLflow
   ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
   evaluable release; open until one covering all four classes passes the leakage check.
+  2026-11-12 (branch `feature/sweep-truth-rule`, not yet merged): `sweep-truth-v1` is a versioned
+  label rule in `pipelines/data` for the frozen A06 sweeps, label version `sweep-truth-v1+3b75882f`
+  ([data card](data-card.md#sweep-truth-rule-sweep-truth-v1-held-out-a06-sweeps-only),
+  [design](superpowers/specs/2026-11-12-sweep-truth-rule-design.md)). The contract test
+  `tests/contract/test_sweep_truth_frozen.py` pins both sweeps' truth counts (skipped when the DVC
+  data is not pulled). It labels only; no model has been scored with it, so the item stays open.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
   2026-11-11 (A06, PR #65 on branch `feature/natural-overload-capacity-sweep`, not yet merged):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol

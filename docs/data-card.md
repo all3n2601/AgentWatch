@@ -309,6 +309,53 @@ The evidence is in `.data/a06-20261111/` and the bundle
 `C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`. Rohit and Akshay decide the `split-v3`
 assignment.
 
+## Sweep truth rule `sweep-truth-v1` (held-out A06 sweeps only)
+
+`sweep-truth-v1` labels the steps of the frozen A06 natural-overload sweeps so that held-out
+scoring has truths to compare against. It is a versioned rule in `pipelines/data`
+(`sweep-truth-v1.toml`, `sweep_truth.py`), run as `make sweep-truth STEPS=<dir>` on the output of
+`make agent-capacity-sweep-steps SWEEP=<folder>`. The agent service records the steps and decides
+nothing; this rule decides every truth and reason. Rohit and Akshay accepted it as the held-out
+label rule on #70 (2026-11-12) on two conditions: it lands first as its own pull request that
+Akshay reviews, and tool steps are unscored rather than `none` while the root `agent-run` step is
+excluded. Reviewer: Akshay.
+
+| Step | `queue` | `slower` | `protocol_clean` |
+|---|---|---|---|
+| model call | `inference` when vLLM's measured queue time exceeds the threshold, else `none` | `inference` when duration minus the N = 1 baseline mean exceeds the threshold, else `none`; null `not_applicable` on ramp N = 1 | `none` in a ramp or control batch at N = 1, else null `not_applicable` |
+| root step (no parent) | null `root_step` | null `root_step` | null `root_step` |
+| any other step type | null `no_queue_reference` | null `no_queue_reference` | null `no_queue_reference` |
+
+The threshold is max(0.01 s, 3 x baseline stdev), the `[noise]` values of `labels-v2`; a baseline
+with one run uses the floor alone. A model call that cannot be judged gets a null truth with a
+reason, in this order: `not_completed`, `malformed`, `no_baseline` (fewer than 3 baseline runs),
+then, for `queue` only, `span_not_measured`.
+
+**Exclusions and why.** Tool, retrieval and other steps have no vLLM queue reference, so their
+queue wait cannot be judged: they are null `no_queue_reference`, not `none`. The root `agent-run`
+step spans the whole run and is not a unit of work: null `root_step`. Neither gets
+`protocol_clean = none`. These two exclusions are the only difference from the scoring branch's
+earlier truths; every model-call truth is unchanged.
+
+**Label version:** `sweep-truth-v1+3b75882f` (the fingerprint covers the rule values and the
+truth and input-validation code; comments do not change it). Counts from the real run of
+2026-11-12, model calls by class, with the null reasons below:
+
+| | cfg-default (`2d75ea`) | cfg-hardware (`b4ad4a`) |
+|---|---|---|
+| steps / model calls | 1,896 / 825 | 2,104 / 915 |
+| `queue` inference / none | 686 / 139 | 8 / 907 |
+| `slower` inference / none | 715 / 80 | 663 / 222 |
+| `slower` null `not_applicable` | 30 | 30 |
+| `protocol_clean` none / null `not_applicable` | 45 / 780 | 30 / 885 |
+| `root_step` (each truth) | 165 | 183 |
+| `no_queue_reference` (each truth) | 906 | 1,006 |
+
+The frozen-sweep contract test (`tests/contract/test_sweep_truth_frozen.py`) pins these counts
+and skips when the DVC data is not pulled. This rule never feeds `make dataset` or a release: its
+output stays in `.data/a06-scoring/`, and the sweeps remain held-out evidence (see above). This
+document reports no model results.
+
 ## Sources
 
 Every row records its origin in `source`.
