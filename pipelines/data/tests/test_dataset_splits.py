@@ -1178,6 +1178,18 @@ def test_load_split_v2_rebuilds_and_refuses_an_edited_file(v1_3_release):
         load_split(result.path, "train", CONTRACT, FROZEN_V1_3, True)
 
 
+def test_a_split_v2_file_read_with_the_v3_contract_names_the_contract_to_pass(v1_3_release):
+    result = split_v2(v1_3_release)
+    with pytest.raises(SplitError, match="made with eval-contract-v2 .*pass the eval-contract-v2"):
+        load_split(result.path, "train", LIVE, FROZEN_V1_3, allow_unchecked_leakage=True)
+
+
+def test_a_split_v3_file_read_with_the_v2_contract_is_refused(v3_release):
+    result = make_split(v3_release, LIVE, FROZEN_V1_3)
+    with pytest.raises(SplitError, match="made with eval-contract-v3 .*pass the eval-contract-v3"):
+        load_split(result.path, "train", CONTRACT, FROZEN_V1_3, allow_unchecked_leakage=True)
+
+
 def copied_contract(tmp_path: Path) -> Path:
     """eval-contract-v2 and its assignment file, copied so the assignment can be edited."""
     directory = tmp_path / "contract"

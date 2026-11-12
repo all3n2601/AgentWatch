@@ -278,9 +278,10 @@ def experiment_position(experiment: str) -> float:
 def held_out_protocol(row: dict, assignment: Assignment) -> bool:
     """Whether a row is from a held-out natural-overload sweep; an unlisted one is refused.
 
-    A listed hash is held out whatever its protocol version (the preflight dry run is listed
-    but is not the protocol). A row of the protocol with an unlisted hash cannot be placed
-    safely, so it is refused rather than split.
+    A listed hash is held out whatever its protocol version. The preflight dry run uses the
+    protocol's version with a different hash (a 300 s run limit) and is listed too. A row of
+    the protocol with an unlisted hash cannot be placed safely, so it is refused rather than
+    split.
     """
     sha256 = row.get("protocol_sha256")
     if sha256 is not None and sha256 in assignment.held_out_protocol_sha256:
@@ -330,6 +331,20 @@ def require_held_out_apart(held_out: list[dict], members: dict[str, list[dict]])
             )
 
 
+def require_experiments(rows: list[dict], assignment: Assignment) -> None:
+    """Every split row names its experiment; split-v3 fails closed on one that does not.
+
+    Validation is chosen by experiment, and capacity-sweep runs have no experiment, so an
+    untagged natural-overload row of a training task would otherwise land in train.
+    """
+    for row in rows:
+        if not row.get("experiment"):
+            raise AssignmentError(
+                f"Row of run {row['run_id']} on task {group_of(row)!r} names no experiment; "
+                f"{assignment.version} splits only rows of a recorded experiment"
+            )
+
+
 def require_held_out_methods_in_test(rows: list[dict], assignment: Assignment) -> None:
     """split-v3 never moves a training task to test for a held-out method; it refuses instead.
 
@@ -355,8 +370,8 @@ def partition_v3(
     are in validation, which the checks list as `validation_experiments`. Natural-overload rows
     and rows of other feature definitions are in no split; the checks record them. Raises
     AssignmentError when a run or plan is shared between splits or with the held-out set, a
-    task group between test and the training splits, or a held-out method appears on a task
-    that is not a declared test task.
+    task group between test and the training splits, a split row names no experiment, or a
+    held-out method appears on a task that is not a declared test task.
     """
     if assignment.version != VERSION_V3:
         raise AssignmentError(
@@ -370,14 +385,14 @@ def partition_v3(
             other_features.append(row)
         else:
             kept.append(row)
+    require_experiments(kept, assignment)
     groups = assign_groups(kept, assignment, fractions)
     require_held_out_methods_in_test(kept, assignment)
     share = validation_share(fractions)
     members: dict[str, list[dict]] = {name: [] for name in SPLITS}
     for row in sorted(kept, key=row_order):
         split = groups[group_of(row)]
-        experiment = row.get("experiment")
-        if split == "train" and experiment and experiment_position(experiment) < share:
+        if split == "train" and experiment_position(row["experiment"]) < share:
             split = "validation"
         members[split].append(row)
     checks = independent(split_checks(members, assignment))
@@ -387,9 +402,7 @@ def partition_v3(
         members,
         checks
         | {
-            "validation_experiments": sorted(
-                {row["experiment"] for row in members["validation"] if row.get("experiment")}
-            ),
+            "validation_experiments": sorted({row["experiment"] for row in members["validation"]}),
             "excluded_feature_versions": excluded_counts(other_features),
             "held_out_evaluation": held_out_summary(held_out),
         },
