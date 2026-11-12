@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import statistics
+from pathlib import Path
 
 import pytest
 from agentwatch_agent import sweep
@@ -53,6 +54,17 @@ def set_parent(run_dir, step_id, parent):
     path.write_text("\n".join(lines) + "\n")
 
 
+def set_evidence_run_id(run_dir, run_id):
+    """Make the run folder's own evidence name `run_id` (None removes it)."""
+    path = run_dir / "agent-evidence.json"
+    evidence = json.loads(path.read_text())
+    if run_id is None:
+        evidence.pop("run_id", None)
+    else:
+        evidence["run_id"] = run_id
+    path.write_text(json.dumps(evidence))
+
+
 def synthetic_sweep(tmp_path, monkeypatch, name="sweep"):
     """A stub-driver sweep whose every run folder holds a root step, a model step and a tool step.
 
@@ -90,12 +102,23 @@ def synthetic_sweep(tmp_path, monkeypatch, name="sweep"):
             )
             set_parent(run_dir, MODEL_STEP, ROOT_STEP)
             set_parent(run_dir, TOOL_STEP, ROOT_STEP)
+            set_evidence_run_id(run_dir, run["run_id"])
     return sweep_dir
 
 
 def live_run_dir(sweep_dir):
     entry = next(e for e in read_record(sweep_dir)["batches"] if e["phase"] == "live")
     return sweep_dir / entry["folder"] / "runs" / "01"
+
+
+def rewrite_live_run(sweep_dir, steps, plan=PLAN):
+    """Replace the live run's folder with `steps`, keeping the run id `sweep.json` names."""
+    entry = next(e for e in read_record(sweep_dir)["batches"] if e["phase"] == "live")
+    run_dir = live_run_dir(sweep_dir)
+    shutil.rmtree(run_dir)
+    write_run(run_dir, steps, plan=plan)
+    set_evidence_run_id(run_dir, entry["runs"][0]["run_id"])
+    return run_dir
 
 
 def steps_of(sweep_dir, run_dir):
@@ -129,10 +152,8 @@ def test_measured_span_keeps_vllm_seconds(tmp_path, monkeypatch):
 
 def test_unmeasured_span_has_null_vllm_seconds(tmp_path, monkeypatch):
     sweep_dir = synthetic_sweep(tmp_path, monkeypatch)
-    run_dir = live_run_dir(sweep_dir)
-    shutil.rmtree(run_dir)
-    write_run(
-        run_dir,
+    run_dir = rewrite_live_run(
+        sweep_dir,
         [
             (MODEL_STEP, "model_call", 1.0, span_call(MODEL_STEP, status="unavailable")),
             (TOOL_STEP, "tool", 0.2, None),
@@ -150,9 +171,9 @@ def test_unmeasured_span_has_null_vllm_seconds(tmp_path, monkeypatch):
 
 def test_baseline_is_count_mean_stdev_or_null(tmp_path, monkeypatch):
     sweep_dir = synthetic_sweep(tmp_path, monkeypatch)
-    run_dir = live_run_dir(sweep_dir)
-    shutil.rmtree(run_dir)
-    write_run(run_dir, [("other-step", "model_call", 1.0, span_call("other-step"))], plan="b" * 64)
+    rewrite_live_run(
+        sweep_dir, [("other-step", "model_call", 1.0, span_call("other-step"))], plan="b" * 64
+    )
     _summary, records = sweep_steps(sweep_dir)
     model = next(r for r in records if r["step_id"] == MODEL_STEP and r["n"] == 2)
     # Each N = 1 ramp batch holds two runs, so the three durations repeat twice.
@@ -175,9 +196,7 @@ def test_no_threshold_or_truth_fields(tmp_path, monkeypatch):
 
 def test_warmup_is_skipped_and_live_runs_count_as_without_plan(tmp_path, monkeypatch):
     sweep_dir = synthetic_sweep(tmp_path, monkeypatch)
-    run_dir = live_run_dir(sweep_dir)
-    shutil.rmtree(run_dir)
-    write_run(run_dir, [(MODEL_STEP, "model_call", 1.0, None)], plan=None)
+    run_dir = rewrite_live_run(sweep_dir, [(MODEL_STEP, "model_call", 1.0, None)], plan=None)
     summary, records = sweep_steps(sweep_dir)
     assert "warmup" not in {r["phase"] for r in records}
     assert min(r["batch_sequence"] for r in records) > 0
@@ -298,6 +317,26 @@ def test_a_damaged_sweep_writes_nothing(tmp_path, monkeypatch, damage):
     with pytest.raises(SweepFolderError):
         write_steps(sweep_dir, output)
     assert not output.exists()
+
+
+@pytest.mark.parametrize("evidence_run_id", ["00000000-0000-4000-8000-0000000000ff", None])
+def test_a_run_id_that_disagrees_with_its_evidence_writes_nothing(
+    tmp_path, monkeypatch, evidence_run_id
+):
+    sweep_dir = synthetic_sweep(tmp_path, monkeypatch)
+    run_dir = live_run_dir(sweep_dir)
+    set_evidence_run_id(run_dir, evidence_run_id)
+    output = tmp_path / "out"
+    with pytest.raises(SweepFolderError, match=run_dir.relative_to(sweep_dir).as_posix()):
+        write_steps(sweep_dir, output)
+    assert not output.exists()
+
+
+def test_the_sweep_folder_is_the_real_name_when_given_as_a_dot(tmp_path, monkeypatch):
+    sweep_dir = synthetic_sweep(tmp_path, monkeypatch, name="the-real-sweep")
+    monkeypatch.chdir(sweep_dir)
+    summary, _records = sweep_steps(Path("."))
+    assert summary["sweep_folder"] == "the-real-sweep"
 
 
 def test_output_inside_held_out_is_refused(tmp_path, monkeypatch):

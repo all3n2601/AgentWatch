@@ -140,6 +140,17 @@ def _parent_step_ids(run_dir: Path) -> dict[str, str | None]:
     return {step_id: event.get("parent_step_id") for step_id, event in latest.items()}
 
 
+def _check_run_identity(run_dir: Path, run: dict, run_folder: str, path: Path) -> None:
+    """Refuse a run whose `sweep.json` id is not the id in its own folder's evidence."""
+    evidence = json.loads((run_dir / EVIDENCE_FILE).read_text(encoding="utf-8"))
+    recorded = evidence.get("run_id") if isinstance(evidence, dict) else None
+    if not isinstance(recorded, str) or recorded != run.get("run_id"):
+        raise SweepFolderError(
+            f"{path} names run {run.get('run_id')!r} for {run_folder}, "
+            f"whose evidence names {recorded!r}"
+        )
+
+
 def _baseline_of(reference: Baselines, plan: str, step_id: str) -> dict | None:
     found = reference.get((plan, step_id))
     if found is None:
@@ -199,7 +210,8 @@ def sweep_steps(sweep_dir: Path) -> tuple[dict, list[dict]]:
     """The summary and one record per journaled step of the sweep's scored runs.
 
     Raises `SweepFolderError` for a sweep that is not an accepted held-out sweep, has a malformed
-    scored batch, or has a run whose files cannot be read: the records are never partial.
+    scored batch, has a run whose id disagrees with its evidence, or has a run whose files cannot
+    be read: the records are never partial.
     """
     path = sweep_dir / SWEEP_FILE
     record = _read_record(sweep_dir)
@@ -223,6 +235,7 @@ def sweep_steps(sweep_dir: Path) -> tuple[dict, list[dict]]:
                     without_evidence += 1
                     continue
                 run_folder = run_dir.relative_to(sweep_dir).as_posix()
+                _check_run_identity(run_dir, run, run_folder, path)
                 run_records = _run_records(
                     run_dir, reference, run, entry, run_folder, configuration
                 )
@@ -236,7 +249,7 @@ def sweep_steps(sweep_dir: Path) -> tuple[dict, list[dict]]:
         raise SweepFolderError(f"cannot read the runs of {path}{where}: {error}") from error
     summary = {
         "format": STEPS_FORMAT,
-        "sweep_folder": sweep_dir.name,
+        "sweep_folder": sweep_dir.resolve().name,
         "sweep_id": record.get("sweep_id"),
         "configuration": configuration,
         "protocol_version": record["protocol"]["version"],
