@@ -25,11 +25,18 @@ import {
   PanelHeader,
 } from "@/components/ui/glass-panel";
 import { StatusBadge, TONE_TEXT } from "@/components/ui/status-badge";
-import type { KeyValueItem } from "@/components/widgets/evidence-lists";
+import {
+  KeyValueList,
+  type KeyValueItem,
+} from "@/components/widgets/evidence-lists";
 import { duration } from "@/lib/dashboard-data";
 import { createPolicyBrowserApi, type PolicyResult } from "@/lib/policy-api";
-import type { RunPolicyView } from "@/lib/policy-api-schema";
-import { runPolicyText } from "@/lib/policy-view";
+import type { PolicyVersionView, RunPolicyView } from "@/lib/policy-api-schema";
+import {
+  policyStatusText,
+  runAppliedLimitsText,
+  runPolicyText,
+} from "@/lib/policy-view";
 import {
   activeSteps,
   failedSteps,
@@ -496,27 +503,66 @@ function useBrowserClock(ticking: boolean) {
 }
 
 /**
- * The concurrency policy versions active while the run was open. Read again when the run
- * closes, since a policy change while it is open adds a version.
+ * The policy versions linked to the run, what its runner applied, and the current policy.
+ * Read again when the run closes, since a policy change while it is open adds a version.
  */
-function RunPolicyLine({ runId, closed }: { runId: string; closed: boolean }) {
+function RunPolicy({ runId, closed }: { runId: string; closed: boolean }) {
   const key = `${runId}:${closed}`;
   const [policy, setPolicy] = useState<{
     key: string;
-    result: PolicyResult<RunPolicyView>;
+    run: PolicyResult<RunPolicyView>;
+    current: PolicyResult<PolicyVersionView>;
   } | null>(null);
   useEffect(() => {
     const controller = new AbortController();
-    void policyApi.runPolicy(runId, controller.signal).then((result) => {
-      if (!controller.signal.aborted) setPolicy({ key, result });
+    void Promise.all([
+      policyApi.runPolicy(runId, controller.signal),
+      policyApi.controls(undefined, controller.signal),
+    ]).then(([run, controls]) => {
+      if (controller.signal.aborted) return;
+      const current = controls.ok
+        ? { ok: true as const, data: controls.data.active }
+        : controls;
+      setPolicy({ key, run, current });
     });
     return () => controller.abort();
   }, [key, runId]);
+  // Results for a previously selected run are never shown for this one.
+  const shown = policy?.key === key ? policy : null;
+  const run = shown?.run ?? null;
+  const notApplicable = run?.ok === true && !run.data.applicable;
+  const items: KeyValueItem[] = [
+    {
+      id: "linked",
+      label: "Policy active while open",
+      value: runPolicyText(run),
+    },
+    {
+      id: "applied",
+      label: "Limits applied by the runner",
+      value: notApplicable ? "Not applicable" : "Not available",
+      ...(!notApplicable && {
+        status: { label: "Not recorded", tone: "warning" as const },
+      }),
+    },
+    {
+      id: "current",
+      label: "Current policy",
+      value: policyStatusText(shown?.current ?? null),
+    },
+  ];
   return (
-    <p className="flex items-start gap-2 text-sm text-ink-muted">
-      <Scale className="mt-0.5 size-4 shrink-0" aria-hidden />
-      {runPolicyText(policy?.key === key ? policy.result : null)}
-    </p>
+    <InsetCard role="region" aria-labelledby={`run-policy-${runId}`}>
+      <h3
+        id={`run-policy-${runId}`}
+        className="mb-2 flex items-center gap-2 text-[15px] font-semibold text-ink"
+      >
+        <Scale className="size-4 shrink-0" aria-hidden />
+        Concurrency policy
+      </h3>
+      <KeyValueList items={items} dense className="[&_dd]:break-words" />
+      <p className="mt-2 text-sm text-ink-muted">{runAppliedLimitsText(run)}</p>
+    </InsetCard>
   );
 }
 
@@ -622,7 +668,7 @@ export function LiveRunStatus({
         <LiveGaps view={view} />
         <FailedSteps steps={failed} />
         <Totals view={view} run={run} />
-        <RunPolicyLine
+        <RunPolicy
           runId={runId}
           closed={outcome !== "active" && outcome !== "unknown"}
         />
