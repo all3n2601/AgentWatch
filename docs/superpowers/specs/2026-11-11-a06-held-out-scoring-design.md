@@ -10,7 +10,8 @@ evidence to `data/held-out/a06-20261111/`. Parent design:
 
 **Changed 2026-11-12, before the rerun; approved 2026-11-12 (Benoy); implemented and run
 2026-11-12 (attempt `20261112T222540Z-d3316f`,
-[capacity record](../../capacity-record.md#attribution-baseline)).** The section
+[capacity record](../../capacity-record.md#attribution-baseline)). A truth folder that fails
+its checks ends a recorded failed attempt rather than writing nothing (see below).** The section
 [Change after #70, #72 and #74](#change-after-70-72-and-74-2026-11-12) replaces Stage 1, the
 Candidates part of Stage 2, and parts of the record. The run of 2026-11-11 (attempt
 `20261112T025531Z-220363`) stays recorded as superseded.
@@ -215,7 +216,9 @@ Updated 2026-11-12: #74 became `sweep-truth-v2+c211f3e8` after Akshay's review; 
 - The truths are produced by #74's two commands: `make agent-capacity-sweep-steps SWEEP=<sweep>`,
   then `make sweep-truth STEPS=<steps folder>`. They write `.data/a06-scoring/truth/<sweep>/`
   with `truth.jsonl` and `truth.json`.
-- `score-held-out` refuses a truth folder, writing nothing, unless all of these hold:
+- `score-held-out` fails the attempt unless all of these hold for each truth folder. The
+  failure is a recorded, tracked attempt with no predictions (ruling of 2026-11-12, matching the
+  code and tests); only setup errors exit 2 with nothing written:
   - `truth.json`'s `label_version` is `sweep-truth-v2+c211f3e8`;
   - its `truth_sha256` is the hash of the `truth.jsonl` beside it;
   - its `steps_sha256`, `steps_summary_sha256` and `recorder_sha256` are each 64 lowercase hex

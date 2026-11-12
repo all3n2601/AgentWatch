@@ -885,9 +885,9 @@ frozen evaluation sets without tuning against them.
   queue. Dataset v1 gave it
   no usable validation steps, so calibration and abstention are `unavailable`. Results, intervals
   by batch and limitations are in the
-  [capacity record](capacity-record.md#attribution-baseline); tests in
-  `services/agent/tests/test_sweep_truth.py` and `pipelines/model/tests/test_held_out_*.py`,
-  `test_score_held_out.py`. This attempt was later superseded (see the 2026-11-12 entry below),
+  [capacity record](capacity-record.md#attribution-baseline) (since replaced; see that attempt's
+  `report.json`); tests in `services/agent/tests/test_sweep_truth.py` (since deleted) and
+  `pipelines/model/tests/test_held_out_*.py`, `test_score_held_out.py`. This attempt was later superseded (see the 2026-11-12 entry below),
   and the item stayed open until that rerun. The capacity and the baseline describe this laptop
   and these two configurations only, from one sweep each.
 

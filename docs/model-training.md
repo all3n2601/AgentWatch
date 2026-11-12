@@ -185,6 +185,8 @@ How far these results reach:
 ```sh
 make agent-capacity-sweep-steps SWEEP=data/held-out/a06-20261111/capacity-sweeps/<sweep folder>
 make sweep-truth STEPS=.data/a06-scoring/steps/<sweep folder>
+uv run --package agentwatch-data python -m agentwatch_data.splits \
+  --release data/datasets/steps-v1.3+aafae73eb211
 SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+932b2df410a7.json
 make train-candidates SPLIT=$SPLIT    # M03, into .data/candidates
 make calibrate SPLIT=$SPLIT           # M04, into .data/calibration

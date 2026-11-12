@@ -141,7 +141,7 @@ Evidence: `data/held-out/a06-20261111/`, versioned with DVC and held out of ever
      confirmed.
 
    These are observed differences between paired batches, not a causal attribution. The
-   [Attribution baseline](#prefill-flood-and-its-controls-queue-truth) scores the injected runs
+   [Attribution baseline](#prefill-flood-and-its-controls) scores the injected runs
    with the rule and the model.
 5. **Live agents run at a similar rate to replays.**
    - **`cfg-default`:** free agents at the capacity (N = 3) ran at 37.2–45.9 runs per minute,
@@ -462,14 +462,14 @@ this evidence.
 | --- | --- |
 | Attempt | `20261112T222540Z-d3316f`, status `completed`, in `.data/a06-scoring/scores/20261112T222540Z-d3316f/` |
 | When | 2026-11-12 22:25–22:32 UTC (17:25–17:32 local), on the laptop's CPU in WSL Ubuntu |
-| Code | Commit `8d414c2` on `feature/a06-held-out-scoring`, with no modified, staged or untracked files outside the ignored `.data/` and `data/` stores |
+| Code | Commit `8d414c2` on `feature/a06-held-out-scoring`. The recorder, rule, split and scoring commands each started with no modified, staged or untracked files outside the ignored `.data/` and `data/` stores; see the next rows for M03 and M04 |
 | MLflow | Experiment `a06-held-out-scoring`, run `67d710877ec24eb3babea1c8080745cd` |
 | Evidence | `data/held-out/a06-20261111/capacity-sweeps/`, both sweeps; protocol `natural-overload-sweep-v1`, `protocol_sha256` `22e26dc7536f…` (`cfg-default`) and `1608deee2a3b…` (`cfg-hardware`); `held_out: true` |
 | Truths | `capacity-sweep-steps`, then `sweep-truth` with label version `sweep-truth-v2+c211f3e8`, on each sweep, in `.data/a06-scoring/sweep-truth-v2/{steps,truth}/<sweep folder>/` |
 | Truth identity (`truths` in the report) | `cfg-default`: `steps_sha256` `7598a42e00fc…`, `steps_summary_sha256` `8f49eb141ff4…`, `truth_sha256` `92da54bca1be…`; `cfg-hardware`: `0ebe5446d0ef…`, `9c797b592097…`, `069a8303ac37…`. All six equal the hashes pinned by #74 ([data card](data-card.md#sweep-truth-rule-sweep-truth-v2-held-out-a06-sweeps-only)) |
 | Model (`model.frozen`) | `training-v1+a34ea0be`, trained on dataset v1 `steps-v1.3+aafae73eb211` (`labels-v2+d803a9c6`) with split `split-v3+932b2df410a7` (SHA-256 `32488a942ad6…`) under `eval-contract-v3` (`1cab0cbe`, accepted). `classifier.txt` `b35152b71b4c…`, `preprocessing.json` `7abf667d18b1…` |
 | Calibration (`model.frozen`) | `calibration-v1+08119e78`, `calibration.json` `459ff2a6f0db…`; temperature 0.897, abstention threshold 0.647 on calibrated top-label confidence, both applied unchanged |
-| M03 and M04 runs | Rebuilt for this attempt with `train-candidates` and `calibrate` on the same split: MLflow runs `34ef108ec273401b8cfc14105efc9334` (M03) and `5f5782166c4c4cf0b3c9cc4622bdbbab` (M04) |
+| M03 and M04 runs | Rebuilt for this attempt with `train-candidates` and `calibrate` on the same split: MLflow runs `34ef108ec273401b8cfc14105efc9334` (M03) and `5f5782166c4c4cf0b3c9cc4622bdbbab` (M04). Two documentation files (this record and `model-training.md`) were being edited in the tree while they ran; neither command reads them, and their outputs are byte-identical to #72's (next row) |
 | Comparison with #72 | M03's `classifier.txt`, `preprocessing.json`, `report.json` (`f98da5478d82…`), `validation_predictions.jsonl` (`c1bf9555c597…`), `predictions.jsonl` and `regressor.txt` equal #72's published hashes ([model training](model-training.md#results-on-dataset-v1)), as does M04's `predictions.jsonl` (`9f6b03fed9fe…`, [calibration](model-calibration.md#results-on-dataset-v1)). M04's `calibration.json` and `report.json` differ from those of #72's rebuild on 2026-11-12 (kept in `.data/review-72/calibration/`) only in `candidates.run_id`, M03's MLflow run id |
 | Input hashes (SHA-256) | split, both `truth.jsonl` and `truth.json`, the five M03 and M04 files above, and 696 run evidence and journal files, none missing (all listed in the report's `inputs`) |
 | Scored steps | 1,740 model calls (825 `cfg-default`, 915 `cfg-hardware`); refused: none; no scored run or plan appears in the split |
@@ -478,14 +478,14 @@ this evidence.
 
 The full hashes are in the report. The commands were the recipes of the Make targets in
 [Reproduce](#reproduce), as `make -n` prints them, with the recorder and rule outputs written
-under `.data/a06-scoring/sweep-truth-v2/` so the superseded attempt's truths stay in place.
+under `.data/a06-scoring/sweep-truth-v2/` to keep them apart from earlier outputs.
 Every scoring attempt is kept:
 
 | When (UTC) | Attempt | Code | Outcome |
 | --- | --- | --- | --- |
 | 2026-11-12, before 02:27 | First launch | `4658849` | Called `make` inside WSL, which is not installed there; stopped before any command ran and wrote nothing |
 | 2026-11-12 02:28 | `20261112T022810Z-7eac8a` | `4658849` | Completed; superseded: its `slower` truth still judged the N = 1 baseline steps, contrary to the spec; fixed in 29df6fc before the next attempt. Its outputs stay in `.data/a06-scoring/scores/20261112T022810Z-7eac8a/`, and its truth files in `.data/a06-scoring/superseded/20261112T022810Z-7eac8a-truth/` |
-| 2026-11-12 02:55 | `20261112T025531Z-220363` | `29df6fc` | Completed; superseded: it used a different truth rule (`sweep-truth-v1`, from the agent's former per-step truth command), a different model (a classifier retrained on `split-v2`, uncalibrated and never abstaining) and a different set of scored steps (4,000 steps of every type). Its numbers are not compared with this attempt's. Its outputs stay in `.data/a06-scoring/scores/20261112T025531Z-220363/`, and its truths in `.data/a06-scoring/truth/` |
+| 2026-11-12 02:55 | `20261112T025531Z-220363` | `29df6fc` | Completed; superseded: it used a different truth rule (`sweep-truth-v1`, from the agent's former per-step truth command), a different model (a classifier retrained on `split-v2`, uncalibrated and never abstaining) and a different set of scored steps (4,000 steps of every type). Its numbers are not compared with this attempt's. Its outputs stay in `.data/a06-scoring/scores/20261112T025531Z-220363/`. Its truth files are no longer on disk: they are identified by the hashes in that attempt's `report.json` `inputs.truth` (`truth.jsonl` `2c822ddaba90…` and `f113b63d2516…`), and can be regenerated with that attempt's code, the scoring branch's former `capacity-sweep-truth` at `29df6fc`. `.data/a06-scoring/truth/` and `steps/` now hold a later `sweep-truth-v1+3b75882f` labelling from the #74 work |
 | 2026-11-12 22:25 | `20261112T222540Z-d3316f` | `8d414c2` | Completed; the attempt this section reports |
 
 ### How to read the tables
@@ -497,8 +497,9 @@ Every scoring attempt is kept:
   the step's noise threshold, max(0.01 s, 3σ). `slower` is `inference` when the call is slower
   than its N = 1 baseline by more than that threshold; the ramp's N = 1 calls are that baseline,
   so they have no `slower` truth (N = 1 control and injected calls keep theirs).
-  `protocol_clean` is `none` for every completed model call of a one-agent batch: ramp N = 1,
-  and the `cfg-default` control batches (`cfg-hardware`'s control batches run 4 agents).
+  `protocol_clean` is `none` for every completed model call of a one-agent batch without a
+  flood: ramp N = 1, and the `cfg-default` control batches (`cfg-hardware`'s control batches run
+  4 agents).
 - **Miss rate** is the share of `inference`-truth steps not predicted `inference`; an abstention
   counts as a miss. **False-alarm rate** is the share of `none`-truth steps predicted another
   class; an abstention is not an alarm but stays in the denominator. Each rate's batch count is
@@ -812,7 +813,7 @@ Steps with no judged truth, both sweeps together (`unscored.steps`):
 | --- | --- | --- | --- |
 | `root_step` (the root `agent-run` step) | 348 | 348 | 348 |
 | `no_queue_reference` (tool, retrieval and other steps) | 1,912 | 1,912 | 1,912 |
-| `not_applicable` | | 60 (ramp N = 1 model calls) | 1,665 (model calls outside one-agent batches) |
+| `not_applicable` | none (not used by this truth) | 60 (ramp N = 1 model calls) | 1,665 (model calls outside one-agent batches without a flood) |
 
 No model call had `not_completed`, `no_baseline` or `span_not_measured`, and no step was refused
 at the feature join (`refused` is empty).
