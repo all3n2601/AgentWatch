@@ -745,9 +745,10 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   `split-v3+95309c38a53e` to `split-v3+932b2df410a7`, same rows); approved at `f229a4c` by
   Akshay and Benoy, and at `b966f39`, after `main` was merged in with no code change, by Allen
   and Benoy. Open: training still has one task group; the natural-overload rule runs on
-  synthetic rows only. A split row with no experiment is refused (2026-11-12, after Benoy's review), so an
-  untagged sweep row cannot reach train; the PR that ingests sweep replays must still write
-  `protocol_version` and `protocol_sha256` on every row and test that they are held out.
+  synthetic rows only. A split row with no experiment is refused (2026-11-12, after Benoy's
+  review), so an untagged sweep row cannot reach train; the PR that ingests sweep replays must
+  still write `protocol_version` and `protocol_sha256` on every row and test that they are held
+  out.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
 - [ ] Evaluate the expanded rule baseline before training the learned model.
@@ -867,15 +868,15 @@ frozen evaluation sets without tuning against them.
   as `5df771e`): the threshold's 20% limit also covers scored mixed validation steps and reads
   the contract's `abstention_rate_scopes`, as the test gate does (`test_calibration.py`,
   `test_calibrate.py`; synthetic fixtures only). 2026-11-11 (M04, PR #72, merged 2026-11-12 as
-  `d67303c`; rerun 2026-11-12 at `f229a4c`): first real fit on `split-v3+932b2df410a7`'s 273 validation steps: temperature 0.897,
-  threshold 0.647. On test, calibrated ECE 0.0178 (uncalibrated 0.0074; limit 0.05), abstention
-  2.4% overall, 0% on mixed steps and at most 19.9% per class (`retrieval`), macro F1 with
-  abstentions 0.780; every evaluated gate passes. Calibration made ECE worse overall and on
-  contended steps, and validation is small and shared with early stopping, so this is weak
-  evidence ([calibration](model-calibration.md#results-on-dataset-v1)). Open: a second
-  training task group in the next release before calibration is read as
-  evidence (Akshay, #70 review); and showing uncertain results, which belongs to serving and
-  the dashboard.
+  `d67303c`; rerun 2026-11-12 at `f229a4c`): first real fit on `split-v3+932b2df410a7`'s 273
+  validation steps: temperature 0.897, threshold 0.647. On test, calibrated ECE 0.0178
+  (uncalibrated 0.0074; limit 0.05), abstention 2.4% overall, 0% on mixed steps and at most 19.9%
+  per class (`retrieval`), macro F1 with abstentions 0.780; every evaluated gate passes.
+  Calibration made ECE worse overall and on contended steps, and validation is small and shared
+  with early stopping, so this is weak evidence
+  ([calibration](model-calibration.md#results-on-dataset-v1)). Open: a second training task group
+  in the next release before calibration is read as evidence (Akshay, #70 review); and showing
+  uncertain results, which belongs to serving and the dashboard.
 - [ ] Load a versioned registered model in the correlation service.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
 
