@@ -1,6 +1,9 @@
 # A06 PR 3 Held-out scoring of the natural-overload evidence — design
 
-Status: approved in chat 2026-11-11 (Benoy), section by section. Branch
+Status: approved in chat 2026-11-11 (Benoy), section by section; implemented and run
+2026-11-11 ([capacity record](../../capacity-record.md#attribution-baseline)). One difference
+from the text below: live-confirmation runs are not replays and have no plan, so they get no
+truth records (the phase `live` never occurs) and are counted as runs without a plan. Branch
 `feature/a06-held-out-scoring`, from `main` at `50f393d`. Merge after #69, which moves the
 evidence to `data/held-out/a06-20261111/`. Parent design:
 [A06 natural overload](2026-11-10-natural-overload-capacity-sweep-design.md).

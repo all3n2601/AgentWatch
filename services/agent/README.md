@@ -635,6 +635,8 @@ uv run --package agentwatch-agent python -m agentwatch_agent sweep-record \
 journaled step of a held-out sweep's scored runs (ramp batches the analysis keeps, live,
 injected and control; warm-up is skipped) to `truth.jsonl`, and a summary with counts, the
 excluded ramp batches and the runs without evidence to `truth.json` (method `sweep-truth-v1`).
+Live-confirmation runs are not replays: they have no plan and so no step baseline, and they are
+counted in `runs_without_plan` instead of getting records.
 Three truths per step: `queue` (the step's measured vLLM queue time exceeds its noise
 threshold), `slower` (its duration exceeds its N = 1 baseline mean by more than that threshold)
 and `protocol_clean` (`none` for one-agent ramp and control batches). A step that cannot be
@@ -648,10 +650,13 @@ accepted protocol hashes, a run whose files cannot be read, and an output folder
 
 **Evidence status.** Natural-overload and prefill-flood runs are held-out test evidence
 (`held_out: true`): never use them for training, calibration, threshold selection or
-tuning. `rules-v1` predicts only `cpu_sandbox` or `none`; it cannot predict inference, and
-this command does not score it. Scoring rules and models on this evidence follows in a later
-change. Concurrent replays share prompt prefixes, so they load vLLM less than free agents;
-the live confirmation shows the difference.
+tuning. `rules-v1` predicts only `cpu_sandbox` or `none`; it cannot predict inference.
+This command writes truths only. `make score-held-out TRUTH="<truth dir> ..."` in
+`pipelines/model` scores `rules-v1` and the learned classifier against them
+([model training](../../docs/model-training.md#held-out-a06-scoring)); the result is the
+[capacity record](../../docs/capacity-record.md#attribution-baseline)'s attribution baseline.
+Concurrent replays share prompt prefixes, so they load vLLM less than free agents; the live
+confirmation shows the difference.
 
 ## Tests
 

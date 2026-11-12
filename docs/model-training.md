@@ -101,6 +101,32 @@ A malformed contract, rules or training file exits with code 2 before any attemp
   confidence. Unseen tasks, held-out injection methods, overhead and latency are not evaluated,
   with the same reasons as the rule baseline.
 
+## Held-out A06 scoring
+
+```sh
+make agent-capacity-sweep-truth SWEEP=data/held-out/a06-20261111/capacity-sweeps/<sweep folder>
+make score-held-out TRUTH=".data/a06-scoring/truth/<sweep folder> ..."
+```
+
+`score-held-out` scores `rules-v1` and the `training-v1` classifier on the per-step truths of
+the frozen A06 capacity sweeps
+([design](superpowers/specs/2026-11-11-a06-held-out-scoring-design.md)). It builds
+`steps-v1.3` feature rows from each run's journal, trains the classifier on dataset v1's train
+split (`HELD_OUT_SPLIT`, default `split-v2+febe942a2b59`) and applies calibration and
+abstention fitted on that split's validation rows, or reports them `unavailable` with the
+reason. The release's test split is never opened. The regressor is not scored. The A06
+evidence is never used for training, calibration or tuning, and there is no gate: the report
+is a descriptive baseline of miss and false-alarm rates, with 95% intervals that resample
+whole batches.
+
+Each attempt writes `.data/a06-scoring/scores/<attempt id>/` (`report.json`,
+`predictions.jsonl`, `models/`, `tracking.json`) and is logged to the separate MLflow
+experiment `a06-held-out-scoring`, failed attempts included. The attempt id is the UTC start
+time plus the first digits of the hash of every input. Exit codes: 0 completed, 1 failed (the
+reason is in the report), 3 not tracked, 2 for a malformed configuration or an output inside
+`data/held-out`. Scores stay local and belong in no release. The first real run is recorded in
+the [capacity record](capacity-record.md#attribution-baseline).
+
 ## Tracking
 
 Every attempt is an MLflow run in the `agentwatch-attribution` experiment, tagged with its

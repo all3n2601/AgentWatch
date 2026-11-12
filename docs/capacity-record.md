@@ -4,7 +4,9 @@ This is the record of the A06 natural-overload capacity sweeps run on 2026-11-11
 the result tables comes from the two sweeps' own `sweep.json` files, their injection logs and
 their run folders. The `sweep-record` command generated the Results and Sampling coverage tables
 from those files, and they are not edited by hand (see [Reproduce](#reproduce)). They describe this
-laptop and these two vLLM configurations only, never cloud capacity.
+laptop and these two vLLM configurations only, never cloud capacity. The
+[Attribution baseline](#attribution-baseline) scores the rules and the learned classifier on the
+same sweeps, and its numbers come from that scoring attempt's `report.json`.
 
 Design: [natural-overload capacity sweep](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md).
 Command: `capacity-sweep` ([agent README](../services/agent/README.md#capacity-sweep)).
@@ -40,6 +42,13 @@ Command: `capacity-sweep` ([agent README](../services/agent/README.md#capacity-s
   steps, as declared, but not at every level. N = 3, the measured capacity, is `not_validated`
   (precision 0.808), and N = 2 is `inconclusive`. Every level from N = 4 up is `validated`. Where
   the label would be used, at the capacity, it agrees least with queue time.
+- **Attribution baseline.** `rules-v1` missed every model call that vLLM queued (miss rate
+  1.000), as expected, since it has no inference class. The learned classifier missed 0.285 of
+  them (95% interval 0.162–0.475) and raised an alarm on 0.219 (0.144–0.284) of the model calls
+  vLLM did not queue above the noise threshold. On `cfg-hardware`, where contention did not
+  queue, it missed 0.910 (0.770–1.000) of the calls slower than their baseline. Dataset v1 gave
+  it no usable validation steps, so it is uncalibrated and never abstains (see
+  [Attribution baseline](#attribution-baseline)).
 
 ## Setup
 
@@ -128,8 +137,9 @@ Command: `capacity-sweep` ([agent README](../services/agent/README.md#capacity-s
      of 2,082–2,084 tokens against the 2,048 target, every reply exactly 1 token, and cleanup
      confirmed.
 
-   These are observed differences between paired batches, not a causal attribution. Scoring the
-   injected runs with the rule and the model is A06 PR 3.
+   These are observed differences between paired batches, not a causal attribution. The
+   [Attribution baseline](#prefill-flood-and-its-controls-queue-truth) scores the injected runs
+   with the rule and the model.
 5. **Live agents run at a similar rate to replays.**
    - **`cfg-default`:** free agents at the capacity (N = 3) ran at 37.2–45.9 runs per minute,
      against 47.4 for replays.
@@ -423,6 +433,355 @@ interval. Late and missed rounds are counted by the coverage method. The tables 
 | 16 | `c810108a` | vllm | 11 (13) | 2 | 2 | 0.313 / 0.453 / 0.460 |
 | 16 | `c810108a` | agentwatch-agent-runner | 16 (16) | 0 | 0 | 0.251 / 0.255 / 0.256 |
 
+## Attribution baseline
+
+This section scores today's attribution, `rules-v1` and the learned classifier, on both sweeps.
+It measures how often each one misses inference contention that vLLM measured, and how often it
+raises an alarm on a clean step. Neither scorer has an inference feature, so a blind spot was
+expected. The truths, measures and the absence of any pass/fail gate were declared before any
+scoring ran
+([design](superpowers/specs/2026-11-11-a06-held-out-scoring-design.md)). Every number below
+comes from the attempt's `report.json`. The tables were printed from it by a script that reads
+only and rounds to 3 decimals, and none was typed by hand. Nothing was tuned, promoted or
+trained on this evidence, and the report's gate is `none (descriptive baseline)`.
+
+### Run
+
+| Item | Value |
+| --- | --- |
+| Attempt | `20261112T022810Z-7eac8a`, status `completed`, in `.data/a06-scoring/scores/20261112T022810Z-7eac8a/` |
+| When | 2026-11-12 02:28–02:31 UTC (2026-11-11 local), on the laptop's CPU in WSL Ubuntu |
+| Code | Commit `4658849` on `feature/a06-held-out-scoring`, with no modified or staged tracked files (only the untracked frozen evidence in `data/held-out/`) |
+| MLflow | Experiment `a06-held-out-scoring`, run `a405951d12ee43f7a37b58e1339931a4` |
+| Evidence | `data/held-out/a06-20261111/capacity-sweeps/`, both sweeps; protocol `natural-overload-sweep-v1`, `protocol_sha256` `22e26dc7536f…` (`cfg-default`) and `1608deee2a3b…` (`cfg-hardware`); `held_out: true` |
+| Truths | `capacity-sweep-truth` (`sweep-truth-v1`) on each sweep, in `.data/a06-scoring/truth/<sweep folder>/` |
+| Input hashes (SHA-256) | split `f994e66576e5…`; `truth.jsonl` `86f89522f31a…` (`cfg-default`) and `c418e0c2f5cf…` (`cfg-hardware`); `truth.json` `2b48b923b196…` and `70b9432bcc5a…`; 696 run evidence and journal files, none missing (all listed in the report's `inputs`) |
+| Scored steps | 4,000; refused: none |
+| Scorers | `rules-v1+1bf54c19` (covers `none` and `cpu_sandbox`; `inference` and `retrieval` uncovered) and `lightgbm-classifier-training-v1` |
+| Classifier | `training-v1+a34ea0be` (config SHA-256 `ae695dbcd7e4…`), LightGBM 4.7.0, numpy 2.5.4, trained on dataset v1 `steps-v1.3+aafae73eb211` (`labels-v2+d803a9c6`) with split `split-v2+febe942a2b59`; classes `none`, `cpu_sandbox`, `inference`, `retrieval`; 300 rounds; model file SHA-256 `673d01f7ba02…` |
+| Calibration | `calibration-v1+08119e78`, not fitted: "0 usable validation steps; calibration-v1+08119e78 needs at least 100 to fit calibration". Abstention is `unavailable` |
+| Contract | `eval-contract-v2` (`9b55506c`) |
+| Intervals | 95% percentile bootstrap, 2,000 resamples, seed 0, resampling whole batches; a cell with fewer than 2 batches has none |
+
+The full hashes are in the report. The command was the recipe of `make score-held-out`, run
+after `make agent-capacity-sweep-truth` on each sweep (see [Reproduce](#reproduce)). It was the
+only scoring attempt, and it completed on the first try. An earlier launch minutes before called
+`make` inside WSL, which is not installed there, and stopped before any command ran; it wrote
+nothing.
+
+### How to read the tables
+
+- **Truths.** `queue` is `inference` when vLLM's measured queue time for the model call is above
+  the step's noise threshold, max(0.01 s, 3σ). `slower` is `inference` when the step is slower
+  than its N = 1 baseline by more than that threshold. `protocol_clean` is `none` for every step
+  of a one-agent batch: ramp N = 1, and the `cfg-default` control batches (`cfg-hardware`'s
+  control batches run 4 agents). `queue` and `slower` judge model calls only.
+- **Miss rate** is the share of `inference`-truth steps not predicted `inference`. **False-alarm
+  rate** is the share of `none`-truth steps predicted anything else. Each rate's batch count is
+  the number of batches in its denominator.
+- **Seen** is `fix-mean-empty`, whose task group is in dataset v1's train split (the report's
+  `seen_task_groups`). **Unseen** is `fix-median-even`, in no dataset v1 split. Only the unseen
+  rows test a task the classifier never trained on.
+- **Abstention.** `rules-v1` never abstains (rate 0.000 in every cell). The classifier's
+  abstention, and its rates on answered steps, are `n/a`: calibration could not be fitted, so
+  no threshold exists.
+
+### `queue` truth
+
+| Scope | Scorer | `inference` steps | Miss rate | 95% interval | Batches | `none` steps | False-alarm rate | 95% interval | Batches |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **overall** | `rules-v1` | 694 | 1.000 | 1.000–1.000 | 24 | 1046 | 0.000 | 0.000–0.000 | 66 |
+| `cfg-default` | `rules-v1` | 686 | 1.000 | 1.000–1.000 | 21 | 139 | 0.000 | 0.000–0.000 | 33 |
+| `cfg-hardware` | `rules-v1` | 8 | 1.000 | 1.000–1.000 | 3 | 907 | 0.000 | 0.000–0.000 | 33 |
+| unseen | `rules-v1` | 340 | 1.000 | 1.000–1.000 | 20 | 520 | 0.000 | 0.000–0.000 | 52 |
+| seen | `rules-v1` | 354 | 1.000 | 1.000–1.000 | 23 | 526 | 0.000 | 0.000–0.000 | 54 |
+| `cfg-default`, unseen | `rules-v1` | 338 | 1.000 | 1.000–1.000 | 19 | 67 | 0.000 | 0.000–0.000 | 22 |
+| `cfg-default`, seen | `rules-v1` | 348 | 1.000 | 1.000–1.000 | 20 | 72 | 0.000 | 0.000–0.000 | 24 |
+| `cfg-hardware`, unseen | `rules-v1` | 2 | 1.000 | n/a (1 batch, needs 2) | 1 | 453 | 0.000 | 0.000–0.000 | 30 |
+| `cfg-hardware`, seen | `rules-v1` | 6 | 1.000 | 1.000–1.000 | 3 | 454 | 0.000 | 0.000–0.000 | 30 |
+| **overall** | classifier | 694 | 0.285 | 0.162–0.475 | 24 | 1046 | 0.219 | 0.144–0.284 | 66 |
+| `cfg-default` | classifier | 686 | 0.289 | 0.167–0.473 | 21 | 139 | 0.173 | 0.089–0.286 | 33 |
+| `cfg-hardware` | classifier | 8 | 0.000 | 0.000–0.000 | 3 | 907 | 0.226 | 0.145–0.301 | 33 |
+| unseen | classifier | 340 | 0.268 | 0.146–0.465 | 20 | 520 | 0.258 | 0.181–0.336 | 52 |
+| seen | classifier | 354 | 0.302 | 0.183–0.481 | 23 | 526 | 0.181 | 0.115–0.248 | 54 |
+| `cfg-default`, unseen | classifier | 338 | 0.269 | 0.148–0.461 | 19 | 67 | 0.269 | 0.138–0.456 | 22 |
+| `cfg-default`, seen | classifier | 348 | 0.307 | 0.184–0.500 | 20 | 72 | 0.083 | 0.000–0.203 | 24 |
+| `cfg-hardware`, unseen | classifier | 2 | 0.000 | n/a (1 batch, needs 2) | 1 | 453 | 0.256 | 0.168–0.339 | 30 |
+| `cfg-hardware`, seen | classifier | 6 | 0.000 | 0.000–0.000 | 3 | 454 | 0.196 | 0.120–0.266 | 30 |
+
+### `slower` truth
+
+| Scope | Scorer | `inference` steps | Miss rate | 95% interval | Batches | `none` steps | False-alarm rate | 95% interval | Batches |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **overall** | `rules-v1` | 1378 | 1.000 | 1.000–1.000 | 53 | 362 | 0.000 | 0.000–0.000 | 58 |
+| `cfg-default` | `rules-v1` | 715 | 1.000 | 1.000–1.000 | 26 | 110 | 0.000 | 0.000–0.000 | 28 |
+| `cfg-hardware` | `rules-v1` | 663 | 1.000 | 1.000–1.000 | 27 | 252 | 0.000 | 0.000–0.000 | 30 |
+| unseen | `rules-v1` | 649 | 1.000 | 1.000–1.000 | 44 | 211 | 0.000 | 0.000–0.000 | 46 |
+| seen | `rules-v1` | 729 | 1.000 | 1.000–1.000 | 52 | 151 | 0.000 | 0.000–0.000 | 46 |
+| `cfg-default`, unseen | `rules-v1` | 348 | 1.000 | 1.000–1.000 | 19 | 57 | 0.000 | 0.000–0.000 | 19 |
+| `cfg-default`, seen | `rules-v1` | 367 | 1.000 | 1.000–1.000 | 25 | 53 | 0.000 | 0.000–0.000 | 21 |
+| `cfg-hardware`, unseen | `rules-v1` | 301 | 1.000 | 1.000–1.000 | 25 | 154 | 0.000 | 0.000–0.000 | 27 |
+| `cfg-hardware`, seen | `rules-v1` | 362 | 1.000 | 1.000–1.000 | 27 | 98 | 0.000 | 0.000–0.000 | 25 |
+| **overall** | classifier | 1378 | 0.599 | 0.439–0.773 | 53 | 362 | 0.094 | 0.053–0.140 | 58 |
+| `cfg-default` | classifier | 715 | 0.310 | 0.185–0.519 | 26 | 110 | 0.118 | 0.054–0.207 | 28 |
+| `cfg-hardware` | classifier | 663 | 0.910 | 0.770–1.000 | 27 | 252 | 0.083 | 0.036–0.140 | 30 |
+| unseen | classifier | 649 | 0.570 | 0.401–0.750 | 44 | 211 | 0.114 | 0.060–0.183 | 46 |
+| seen | classifier | 729 | 0.624 | 0.469–0.787 | 52 | 151 | 0.066 | 0.021–0.122 | 46 |
+| `cfg-default`, unseen | classifier | 348 | 0.284 | 0.160–0.480 | 19 | 57 | 0.211 | 0.097–0.390 | 19 |
+| `cfg-default`, seen | classifier | 367 | 0.335 | 0.213–0.531 | 25 | 53 | 0.019 | 0.000–0.068 | 21 |
+| `cfg-hardware`, unseen | classifier | 301 | 0.900 | 0.748–1.000 | 25 | 154 | 0.078 | 0.021–0.153 | 27 |
+| `cfg-hardware`, seen | classifier | 362 | 0.917 | 0.791–1.000 | 27 | 98 | 0.092 | 0.023–0.167 | 25 |
+
+### `protocol_clean` false alarms
+
+| Scope | Scorer | `none` steps | False-alarm rate | 95% interval | Batches |
+| --- | --- | --- | --- | --- | --- |
+| **overall** | `rules-v1` | 172 | 0.169 | 0.139–0.198 | 15 |
+| `cfg-default` | `rules-v1` | 103 | 0.175 | 0.135–0.214 | 9 |
+| `cfg-hardware` | `rules-v1` | 69 | 0.159 | 0.114–0.203 | 6 |
+| unseen | `rules-v1` | 84 | 0.167 | 0.119–0.214 | 7 |
+| seen | `rules-v1` | 88 | 0.170 | 0.136–0.205 | 8 |
+| `cfg-default`, unseen | `rules-v1` | 48 | 0.167 | 0.104–0.229 | 4 |
+| `cfg-default`, seen | `rules-v1` | 55 | 0.182 | 0.127–0.236 | 5 |
+| `cfg-hardware`, unseen | `rules-v1` | 36 | 0.167 | 0.083–0.250 | 3 |
+| `cfg-hardware`, seen | `rules-v1` | 33 | 0.152 | 0.091–0.182 | 3 |
+| **overall** | classifier | 172 | 0.087 | 0.085–0.089 | 15 |
+| `cfg-default` | classifier | 103 | 0.087 | 0.085–0.090 | 9 |
+| `cfg-hardware` | classifier | 69 | 0.087 | 0.085–0.090 | 6 |
+| unseen | classifier | 84 | 0.083 | 0.083–0.083 | 7 |
+| seen | classifier | 88 | 0.091 | 0.091–0.091 | 8 |
+| `cfg-default`, unseen | classifier | 48 | 0.083 | 0.083–0.083 | 4 |
+| `cfg-default`, seen | classifier | 55 | 0.091 | 0.091–0.091 | 5 |
+| `cfg-hardware`, unseen | classifier | 36 | 0.083 | 0.083–0.083 | 3 |
+| `cfg-hardware`, seen | classifier | 33 | 0.091 | 0.091–0.091 | 3 |
+
+### What the scorers predicted
+
+On `inference`-truth steps:
+
+| Truth | Scorer | Scope | Predicted (steps) |
+| --- | --- | --- | --- |
+| `queue` | `rules-v1` | **overall** | `none` 694 |
+| `queue` | `rules-v1` | `cfg-default` | `none` 686 |
+| `queue` | `rules-v1` | `cfg-hardware` | `none` 8 |
+| `queue` | `rules-v1` | unseen | `none` 340 |
+| `queue` | `rules-v1` | seen | `none` 354 |
+| `queue` | classifier | **overall** | `cpu_sandbox` 118, `inference` 496, `none` 70, `retrieval` 10 |
+| `queue` | classifier | `cfg-default` | `cpu_sandbox` 118, `inference` 488, `none` 70, `retrieval` 10 |
+| `queue` | classifier | `cfg-hardware` | `inference` 8 |
+| `queue` | classifier | unseen | `cpu_sandbox` 60, `inference` 249, `none` 27, `retrieval` 4 |
+| `queue` | classifier | seen | `cpu_sandbox` 58, `inference` 247, `none` 43, `retrieval` 6 |
+| `slower` | `rules-v1` | **overall** | `none` 1378 |
+| `slower` | `rules-v1` | `cfg-default` | `none` 715 |
+| `slower` | `rules-v1` | `cfg-hardware` | `none` 663 |
+| `slower` | `rules-v1` | unseen | `none` 649 |
+| `slower` | `rules-v1` | seen | `none` 729 |
+| `slower` | classifier | **overall** | `cpu_sandbox` 183, `inference` 553, `none` 559, `retrieval` 83 |
+| `slower` | classifier | `cfg-default` | `cpu_sandbox` 123, `inference` 493, `none` 88, `retrieval` 11 |
+| `slower` | classifier | `cfg-hardware` | `cpu_sandbox` 60, `inference` 60, `none` 471, `retrieval` 72 |
+| `slower` | classifier | unseen | `cpu_sandbox` 102, `inference` 279, `none` 226, `retrieval` 42 |
+| `slower` | classifier | seen | `cpu_sandbox` 81, `inference` 274, `none` 333, `retrieval` 41 |
+
+On `none`-truth steps:
+
+| Truth | Scorer | Scope | Predicted (steps) |
+| --- | --- | --- | --- |
+| `queue` | `rules-v1` | **overall** | `none` 1046 |
+| `queue` | `rules-v1` | `cfg-default` | `none` 139 |
+| `queue` | `rules-v1` | `cfg-hardware` | `none` 907 |
+| `queue` | classifier | **overall** | `cpu_sandbox` 80, `inference` 57, `none` 817, `retrieval` 92 |
+| `queue` | classifier | `cfg-default` | `cpu_sandbox` 17, `inference` 5, `none` 115, `retrieval` 2 |
+| `queue` | classifier | `cfg-hardware` | `cpu_sandbox` 63, `inference` 52, `none` 702, `retrieval` 90 |
+| `slower` | `rules-v1` | **overall** | `none` 362 |
+| `slower` | `rules-v1` | `cfg-default` | `none` 110 |
+| `slower` | `rules-v1` | `cfg-hardware` | `none` 252 |
+| `slower` | classifier | **overall** | `cpu_sandbox` 15, `none` 328, `retrieval` 19 |
+| `slower` | classifier | `cfg-default` | `cpu_sandbox` 12, `none` 97, `retrieval` 1 |
+| `slower` | classifier | `cfg-hardware` | `cpu_sandbox` 3, `none` 231, `retrieval` 18 |
+| `protocol_clean` | `rules-v1` | **overall** | `cpu_sandbox` 29, `none` 143 |
+| `protocol_clean` | `rules-v1` | `cfg-default` | `cpu_sandbox` 18, `none` 85 |
+| `protocol_clean` | `rules-v1` | `cfg-hardware` | `cpu_sandbox` 11, `none` 58 |
+| `protocol_clean` | classifier | **overall** | `inference` 15, `none` 157 |
+| `protocol_clean` | classifier | `cfg-default` | `inference` 9, `none` 94 |
+| `protocol_clean` | classifier | `cfg-hardware` | `inference` 6, `none` 63 |
+
+### Per concurrency level, ramp model calls
+
+`rules-v1`'s rates are given without intervals; they are 1.000 and 0.000 wherever defined.
+
+`queue` truth:
+
+| Configuration | N | Task | `inference` steps | `rules-v1` miss | Classifier miss | 95% interval | `none` steps | `rules-v1` false alarm | Classifier false alarm | 95% interval |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `cfg-default` | 1 | seen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 1 | unseen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 2 | seen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 2 | unseen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 3 | seen | 13 | 1.000 | 0.923 | 0.667–1.000 | 12 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 3 | unseen | 9 | 1.000 | 1.000 | 1.000–1.000 | 11 | 0.000 | 0.182 | 0.000–0.286 |
+| `cfg-default` | 4 | seen | 27 | 1.000 | 0.852 | 0.700–1.000 | 3 | 0.000 | 0.667 | 0.000–1.000 |
+| `cfg-default` | 4 | unseen | 22 | 1.000 | 0.909 | 0.714–1.000 | 8 | 0.000 | 0.625 | 0.333–1.000 |
+| `cfg-default` | 6 | seen | 42 | 1.000 | 0.810 | 0.571–1.000 | 3 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 6 | unseen | 42 | 1.000 | 0.762 | 0.714–0.857 | 3 | 0.000 | 1.000 | 1.000–1.000 |
+| `cfg-default` | 8 | seen | 57 | 1.000 | 0.404 | 0.222–0.650 | 3 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 8 | unseen | 57 | 1.000 | 0.368 | 0.250–0.611 | 3 | 0.000 | 1.000 | 1.000–1.000 |
+| `cfg-default` | 12 | seen | 89 | 1.000 | 0.067 | 0.033–0.133 | 1 | 0.000 | 0.000 | n/a (1 batch, needs 2) |
+| `cfg-default` | 12 | unseen | 85 | 1.000 | 0.024 | 0.000–0.071 | 5 | 0.000 | 0.600 | 0.000–1.000 |
+| `cfg-default` | 16 | seen | 114 | 1.000 | 0.070 | 0.053–0.105 | 6 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 16 | unseen | 120 | 1.000 | 0.050 | 0.050–0.050 | 0 | n/a | n/a | n/a (no steps) |
+| `cfg-hardware` | 1 | seen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 1 | unseen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 2 | seen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 2 | unseen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.067 | 0.000–0.200 |
+| `cfg-hardware` | 3 | seen | 0 | n/a | n/a | n/a (no steps) | 25 | 0.000 | 0.080 | 0.000–0.200 |
+| `cfg-hardware` | 3 | unseen | 0 | n/a | n/a | n/a (no steps) | 20 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 4 | seen | 0 | n/a | n/a | n/a (no steps) | 30 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 4 | unseen | 0 | n/a | n/a | n/a (no steps) | 30 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 6 | seen | 0 | n/a | n/a | n/a (no steps) | 45 | 0.000 | 0.022 | 0.000–0.067 |
+| `cfg-hardware` | 6 | unseen | 0 | n/a | n/a | n/a (no steps) | 45 | 0.000 | 0.089 | 0.000–0.133 |
+| `cfg-hardware` | 8 | seen | 0 | n/a | n/a | n/a (no steps) | 60 | 0.000 | 0.050 | 0.000–0.100 |
+| `cfg-hardware` | 8 | unseen | 0 | n/a | n/a | n/a (no steps) | 60 | 0.000 | 0.167 | 0.150–0.200 |
+| `cfg-hardware` | 12 | seen | 0 | n/a | n/a | n/a (no steps) | 90 | 0.000 | 0.244 | 0.200–0.300 |
+| `cfg-hardware` | 12 | unseen | 0 | n/a | n/a | n/a (no steps) | 90 | 0.000 | 0.244 | 0.200–0.267 |
+| `cfg-hardware` | 16 | seen | 0 | n/a | n/a | n/a (no steps) | 120 | 0.000 | 0.300 | 0.225–0.350 |
+| `cfg-hardware` | 16 | unseen | 0 | n/a | n/a | n/a (no steps) | 120 | 0.000 | 0.408 | 0.300–0.500 |
+
+`slower` truth:
+
+| Configuration | N | Task | `inference` steps | `rules-v1` miss | Classifier miss | 95% interval | `none` steps | `rules-v1` false alarm | Classifier false alarm | 95% interval |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `cfg-default` | 1 | seen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 1 | unseen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 2 | seen | 6 | 1.000 | 1.000 | 1.000–1.000 | 9 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 2 | unseen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 3 | seen | 16 | 1.000 | 0.938 | 0.750–1.000 | 9 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 3 | unseen | 10 | 1.000 | 1.000 | 1.000–1.000 | 10 | 0.000 | 0.300 | 0.000–0.400 |
+| `cfg-default` | 4 | seen | 28 | 1.000 | 0.857 | 0.700–1.000 | 2 | 0.000 | 0.500 | 0.000–1.000 |
+| `cfg-default` | 4 | unseen | 26 | 1.000 | 0.923 | 0.778–1.000 | 4 | 0.000 | 0.750 | 0.500–1.000 |
+| `cfg-default` | 6 | seen | 43 | 1.000 | 0.814 | 0.571–1.000 | 2 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 6 | unseen | 43 | 1.000 | 0.767 | 0.714–0.857 | 2 | 0.000 | 1.000 | 1.000–1.000 |
+| `cfg-default` | 8 | seen | 57 | 1.000 | 0.404 | 0.222–0.650 | 3 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 8 | unseen | 57 | 1.000 | 0.368 | 0.250–0.611 | 3 | 0.000 | 1.000 | 1.000–1.000 |
+| `cfg-default` | 12 | seen | 89 | 1.000 | 0.067 | 0.033–0.133 | 1 | 0.000 | 0.000 | n/a (1 batch, needs 2) |
+| `cfg-default` | 12 | unseen | 87 | 1.000 | 0.046 | 0.000–0.071 | 3 | 0.000 | 0.333 | 0.000–1.000 |
+| `cfg-default` | 16 | seen | 114 | 1.000 | 0.070 | 0.053–0.105 | 6 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 16 | unseen | 120 | 1.000 | 0.050 | 0.050–0.050 | 0 | n/a | n/a | n/a (no steps) |
+| `cfg-hardware` | 1 | seen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 1 | unseen | 0 | n/a | n/a | n/a (no steps) | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 2 | seen | 8 | 1.000 | 1.000 | 1.000–1.000 | 7 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 2 | unseen | 1 | 1.000 | 1.000 | n/a (1 batch, needs 2) | 14 | 0.000 | 0.071 | 0.000–0.200 |
+| `cfg-hardware` | 3 | seen | 17 | 1.000 | 1.000 | 1.000–1.000 | 8 | 0.000 | 0.250 | 0.000–1.000 |
+| `cfg-hardware` | 3 | unseen | 5 | 1.000 | 1.000 | 1.000–1.000 | 15 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 4 | seen | 20 | 1.000 | 1.000 | 1.000–1.000 | 10 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 4 | unseen | 10 | 1.000 | 1.000 | 1.000–1.000 | 20 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 6 | seen | 36 | 1.000 | 1.000 | 1.000–1.000 | 9 | 0.000 | 0.111 | 0.000–0.333 |
+| `cfg-hardware` | 6 | unseen | 27 | 1.000 | 1.000 | 1.000–1.000 | 18 | 0.000 | 0.111 | 0.000–0.200 |
+| `cfg-hardware` | 8 | seen | 47 | 1.000 | 1.000 | 1.000–1.000 | 13 | 0.000 | 0.077 | 0.000–0.250 |
+| `cfg-hardware` | 8 | unseen | 39 | 1.000 | 1.000 | 1.000–1.000 | 21 | 0.000 | 0.048 | 0.000–0.143 |
+| `cfg-hardware` | 12 | seen | 84 | 1.000 | 1.000 | 1.000–1.000 | 6 | 0.000 | 0.000 | n/a (1 batch, needs 2) |
+| `cfg-hardware` | 12 | unseen | 73 | 1.000 | 1.000 | 1.000–1.000 | 17 | 0.000 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 16 | seen | 99 | 1.000 | 1.000 | 1.000–1.000 | 21 | 0.000 | 0.238 | 0.000–0.600 |
+| `cfg-hardware` | 16 | unseen | 102 | 1.000 | 1.000 | 1.000–1.000 | 18 | 0.000 | 0.389 | 0.000–0.625 |
+
+### Prefill flood and its controls, `queue` truth
+
+| Configuration | N | Phase | Scorer | Task | `inference` steps | Miss rate | 95% interval | `none` steps | False-alarm rate | 95% interval |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `cfg-default` | 1 | injected | `rules-v1` | seen | 6 | 1.000 | 1.000–1.000 | 4 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 1 | injected | `rules-v1` | unseen | 3 | 1.000 | n/a (1 batch, needs 2) | 2 | 0.000 | n/a (1 batch, needs 2) |
+| `cfg-default` | 1 | injected | classifier | seen | 6 | 0.167 | 0.000–0.333 | 4 | 1.000 | 1.000–1.000 |
+| `cfg-default` | 1 | injected | classifier | unseen | 3 | 0.333 | n/a (1 batch, needs 2) | 2 | 1.000 | n/a (1 batch, needs 2) |
+| `cfg-default` | 1 | control | `rules-v1` | seen | 0 | n/a | n/a (no steps) | 10 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 1 | control | `rules-v1` | unseen | 0 | n/a | n/a (no steps) | 5 | 0.000 | n/a (1 batch, needs 2) |
+| `cfg-default` | 1 | control | classifier | seen | 0 | n/a | n/a (no steps) | 10 | 0.000 | 0.000–0.000 |
+| `cfg-default` | 1 | control | classifier | unseen | 0 | n/a | n/a (no steps) | 5 | 0.000 | n/a (1 batch, needs 2) |
+| `cfg-hardware` | 4 | injected | `rules-v1` | seen | 6 | 1.000 | 1.000–1.000 | 24 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 4 | injected | `rules-v1` | unseen | 2 | 1.000 | n/a (1 batch, needs 2) | 28 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 4 | injected | classifier | seen | 6 | 0.000 | 0.000–0.000 | 24 | 1.000 | 1.000–1.000 |
+| `cfg-hardware` | 4 | injected | classifier | unseen | 2 | 0.000 | n/a (1 batch, needs 2) | 28 | 1.000 | 1.000–1.000 |
+| `cfg-hardware` | 4 | control | `rules-v1` | seen | 0 | n/a | n/a (no steps) | 30 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 4 | control | `rules-v1` | unseen | 0 | n/a | n/a (no steps) | 30 | 0.000 | 0.000–0.000 |
+| `cfg-hardware` | 4 | control | classifier | seen | 0 | n/a | n/a (no steps) | 30 | 0.033 | 0.000–0.100 |
+| `cfg-hardware` | 4 | control | classifier | unseen | 0 | n/a | n/a (no steps) | 30 | 0.067 | 0.000–0.200 |
+
+### Unscored and refused
+
+| Item | `cfg-default` | `cfg-hardware` | Reason |
+| --- | --- | --- | --- |
+| Live-confirmation runs with no truth records | 9 | 24 | Not replays: no plan, so no step baseline |
+| Runs without evidence | 0 | 0 | |
+| Excluded batches | 0 | 0 | |
+
+Steps with no judged truth, both sweeps together: `queue` 2,260 and `slower` 2,260, all
+`not_applicable` (tool, retrieval and other steps, which have no measured queue or baseline
+reference); `protocol_clean` 3,828, all `not_applicable` (steps of batches with more than one
+agent). No step was refused at the feature join.
+
+### Observations
+
+These are observed differences on one sweep per configuration, not causal attributions.
+
+1. **`rules-v1` misses every inference-truth step.** Its miss rate is 1.000 under both truths,
+   in every slice, as expected: it covers only `none` and `cpu_sandbox`. On model calls it never
+   raised an alarm (0.000). On one-agent steps of every type it predicted `cpu_sandbox` for 29
+   of 172 (`protocol_clean` false-alarm rate 0.169, interval 0.139–0.198).
+2. **On `cfg-default` the classifier catches most queueing, and catches it better at higher N.**
+   Its `queue` miss rate is 0.289 (0.167–0.473). In the ramp it falls from 0.923 and 1.000 at
+   N = 3 (seen and unseen) to 0.067 and 0.024 at N = 12. Of the 686 queued model calls, it
+   predicted `cpu_sandbox` on 118, `none` on 70 and `retrieval` on 10. No `steps-v1.3` feature
+   describes GPU or vLLM state, so whatever it uses is in the timing features.
+3. **On `cfg-hardware` the classifier misses the slowdown that does not queue.** vLLM queued
+   only 8 model calls above the threshold, all in the prefill-flood batches, and the classifier
+   predicted `inference` on all 8. Of the 663 model calls slower than their baseline, it missed
+   0.910 (0.770–1.000), and 1.000 at every ramp level, predicting `none` on 471. The label check
+   could not judge this kind of contention either (see [Findings](#findings)).
+4. **Classifier alarms are highest at the top of the `cfg-hardware` ramp.** Its `queue`
+   false-alarm rate on ramp model calls is between 0.000 and 0.167 up to N = 8, and 0.244 to
+   0.408 at N = 12 and 16. vLLM did not queue there, but steps ran slower inside shared batches.
+   Overall it is 0.226 (0.145–0.301) on `cfg-hardware` and 0.173 (0.089–0.286) on
+   `cfg-default`.
+5. **Prefill-flood batches.** The classifier predicted something other than `none` for every
+   flood-batch model call that the `queue` truth calls `none` (false-alarm rate 1.000 in every
+   injected cell). Those calls were not queued above the threshold, but flood batches ran far
+   slower than their controls ([Finding 4](#findings)). On the control batches its false-alarm
+   rate is 0.000 on `cfg-default`, and 0.033 (seen) and 0.067 (unseen) on `cfg-hardware`.
+6. **Seen and unseen tasks.** Most rates differ little between the two tasks, with overlapping
+   intervals. The exception is the classifier's false alarms on `cfg-default`, which are higher
+   on the unseen task: `slower` 0.211 (0.097–0.390) against 0.019 (0.000–0.068) on the seen
+   task, intervals not overlapping; `queue` 0.269 (0.138–0.456) against 0.083 (0.000–0.203),
+   overlapping. The classifier's `protocol_clean` intervals collapse to single points (0.083
+   unseen, 0.091 seen) because every resample gave the same value, so that gap is not
+   informative.
+7. **Clean one-agent steps.** The classifier predicted `inference` on 15 of 172 `protocol_clean`
+   steps (0.087), against `rules-v1`'s 29 `cpu_sandbox`.
+
+### Limitations of this baseline
+
+From the report's own `limitations`:
+
+- one laptop, one sweep per configuration;
+- dataset v1's replays were recorded mostly on Ollama, A06 on vLLM;
+- no `steps-v1.3` feature describes GPU or vLLM state;
+- one of the two A06 tasks (`fix-mean-empty`) was seen in training, so only `fix-median-even`
+  tests an unseen task.
+
+And from the report's model and calibration fields:
+
+- **No early stopping and no calibration.** Dataset v1's validation split gave the classifier
+  no rows to stop on (`early_stopping` `not_used`, 300 of 300 rounds). Calibration and
+  abstention are `unavailable` for the reason in the Run table, so the classifier's confidences
+  are raw LightGBM probabilities, not calibrated confidence, and it never abstains. The
+  classifier also skipped 53 mixed training steps (`train_rows_not_classified`).
+- **Small cells.** Several cells rest on 1–3 batches, and intervals from 2–3 batches are coarse.
+  A cell with 1 batch has no interval.
+- **The truths are proxies.** `queue` sees only queueing. `slower` compares with the N = 1
+  replays, so it is partly circular at N = 1; the report still counts the N = 1 steps under
+  `slower` (all `none` in the ramp). Neither judges tool or retrieval steps.
+
+The scores stay local in `.data/a06-scoring/` and belong to no dataset release (see the
+[data card](data-card.md#held-out-a06-evidence-in-no-release)). M2 PR 4's inference rule will be
+scored as a further scorer by the same command.
+
 ## Every attempt, including failed and stopped ones
 
 Nothing was deleted. All of these are under `.data/a06-20261111/` and in the evidence bundle.
@@ -468,7 +827,9 @@ Nothing was deleted. All of these are under `.data/a06-20261111/` and in the evi
 - **Tool steps are labelled with no reference.** Tool steps have no vLLM queue time to check
   against, yet at N ≥ 2 the noise rule marks 26% of them contended in `cfg-default` (219 of 841)
   and 38% in `cfg-hardware` (320 of 841). This is the step-type spillover the
-  [data card](data-card.md) warns about, now measured under natural load. PR 3 should report it.
+  [data card](data-card.md) warns about, now measured under natural load. The attribution
+  baseline has no reference for these steps either: their `queue` and `slower` truths are
+  `not_applicable`, and it counts them as unscored.
 - **Held-out evidence.** All natural-overload and `prefill-flood-openai-chat-v1` runs are
   held-out test evidence. They must never be used for training, calibration or tuning, and none
   may enter a dataset release before `split-v3` lists them. `fix-median-even` is kept out of
@@ -492,7 +853,17 @@ python -m agentwatch_agent sweep-analyse .data/a06-20261111/capacity-sweeps/<swe
 S=.data/a06-20261111/capacity-sweeps
 python -m agentwatch_agent sweep-record $S/cfg-default-20261111T211237Z-2d75ea \
   $S/cfg-hardware-20261111T213039Z-b4ad4a --coverage-jsonl /tmp/coverage-per-level.jsonl
+# Attribution baseline, CPU only, on the frozen evidence in data/held-out/ (dataset v1 pulled):
+H=data/held-out/a06-20261111/capacity-sweeps
+make agent-capacity-sweep-truth SWEEP=$H/cfg-default-20261111T211237Z-2d75ea
+make agent-capacity-sweep-truth SWEEP=$H/cfg-hardware-20261111T213039Z-b4ad4a
+make score-held-out TRUTH=".data/a06-scoring/truth/cfg-default-20261111T211237Z-2d75ea \
+  .data/a06-scoring/truth/cfg-hardware-20261111T213039Z-b4ad4a"
 ```
 
 Checked on 2026-11-11: `sweep-record`'s output is identical to the tables above, and its
 coverage reports are byte-identical to `coverage-per-level.jsonl`.
+
+The attribution baseline's run used these targets' recipes as `make -n` prints them, because the
+WSL Ubuntu environment has no `make`. A rerun writes a new attempt folder; the attempt id
+includes the start time.

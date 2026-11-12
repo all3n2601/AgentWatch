@@ -759,7 +759,15 @@ frozen evaluation sets without tuning against them.
   `eval-contract-v1`, and logs every attempt, including blocked and failed ones, to MLflow
   ([model training](model-training.md), `pipelines/model/tests`). Not yet run on an
   evaluable release; open until one covering all four classes passes the leakage check.
-- [ ] Evaluate natural overload in addition to injector-driven experiments.
+  2026-11-11 (A06 PR 3, not yet merged): `make score-held-out` scores `rules-v1` and the
+  classifier on the same held-out A06 steps, against measured vLLM queue and slowdown truths.
+  On the frozen sweeps (attempt `20261112T022810Z-7eac8a`) `rules-v1` missed every queued model
+  call and the classifier 0.285 of them; on the unseen task `fix-median-even` the classifier
+  missed 0.268 (0.146–0.465) ([capacity record](capacity-record.md#attribution-baseline)). This is
+  a descriptive baseline with no gate, an uncalibrated classifier and one sweep per
+  configuration. Stays open for M2 PR 4's inference rule, which will be scored by the same
+  command, and for an evaluable release.
+- [x] Evaluate natural overload in addition to injector-driven experiments.
   2026-11-11 (A06, PR #65 on branch `feature/natural-overload-capacity-sweep`, not yet merged):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol
   `natural-overload-sweep-v1`
@@ -811,8 +819,20 @@ frozen evaluation sets without tuning against them.
   Results and Sampling coverage tables identically from the two sweep folders
   (`test_sweep_record.py`). Versioning the evidence outside `data/evidence/` is open.
 
-  Open until model and rule scoring of this evidence (A06 PR 3) is done. The capacity
-  describes this laptop and these two configurations only, from one sweep each.
+  2026-11-11 (A06 PR 3, branch `feature/a06-held-out-scoring`, not yet merged; after #69):
+  `capacity-sweep-truth` and `score-held-out` scored `rules-v1` and the `training-v1` classifier
+  on both frozen sweeps, attempt `20261112T022810Z-7eac8a` (run 2026-11-12 02:28 UTC) at commit
+  `4658849` with a clean tree. 4,000 steps scored, none refused; the 9 and 24 live-confirmation
+  runs have no truth records (no plan, so no baseline). `rules-v1` missed every queued model call
+  (miss rate 1.000). The classifier missed 0.285 (95% interval 0.162–0.475) of them, and 0.910
+  (0.770–1.000) of the `cfg-hardware` calls that were slower without queueing. Dataset v1 gave it
+  no usable validation steps, so calibration and abstention are `unavailable`. Results, intervals
+  by batch and limitations are in the
+  [capacity record](capacity-record.md#attribution-baseline); tests in
+  `services/agent/tests/test_sweep_truth.py` and `pipelines/model/tests/test_held_out_*.py`,
+  `test_score_held_out.py`. Closed: natural overload is now evaluated beside injector-driven
+  experiments. The capacity and the baseline describe this laptop and these two configurations
+  only, from one sweep each.
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
   2026-11-10 (M04): `make calibrate` fits `calibration-v1` temperature scaling and the abstention
   threshold on the validation split only, then reports test-split ECE, abstention rates, clean

@@ -309,6 +309,17 @@ The evidence is in `.data/a06-20261111/` and the bundle
 `C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`. Rohit and Akshay decide the `split-v3`
 assignment.
 
+**Held-out scores (2026-11-11, A06 PR 3).** `capacity-sweep-truth` and `score-held-out` scored
+`rules-v1` and the classifier on the frozen sweeps; the result is the capacity record's
+[attribution baseline](capacity-record.md#attribution-baseline) (attempt
+`20261112T022810Z-7eac8a`). The truths and scores stay local in `.data/a06-scoring/` (`truth/`
+and `scores/`), in no dataset release and outside `data/held-out/`. The classifier trains on
+dataset v1's train split only; no A06 row was used for training, calibration, threshold selection
+or tuning. `make add-evidence` refuses the truth and score folders
+(`pipelines/model/tests/test_score_held_out.py`), and `make dataset` reads only its configured
+sources (the evidence store and the API), so neither can take them in. Versioning the scores is
+out of scope.
+
 ## Sources
 
 Every row records its origin in `source`.
