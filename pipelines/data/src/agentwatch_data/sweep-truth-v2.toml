@@ -1,0 +1,40 @@
+# Held-out capacity-sweep truth rule, sweep-truth-v2. The values were taken from the scoring
+# branch's truths, which had already produced descriptive, no-gate results on these two sweeps
+# (attempt 20261112T025531Z-220363); nothing was changed in response. docs/data-card.md says
+# what changed since and why.
+# label_version fingerprints these values and the rule's code (sweep_truth.py and
+# sweep_steps_input.py), so retuned labels are never silent. Comments and formatting do not
+# change it.
+version = "sweep-truth-v2"
+
+[noise]
+# A model call is "inference" only when its measure exceeds max(min_seconds,
+# stdev_multiplier * baseline stdev). These two values must equal sweep_protocol.py's in
+# services/agent, which sweep-analyse uses for label_validation; change both together.
+stdev_multiplier = 3.0
+min_seconds = 0.01
+
+[baseline]
+# Minimum N = 1 ramp runs behind a step's baseline (the protocol's 3 batches per source).
+# Going below 3 changes nothing in practice: the recorder omits the baseline of any step with
+# fewer than BASELINE_BATCHES_PER_SOURCE (3) values.
+min_runs = 3
+
+[steps]
+# Only these step types have a queue reference; others are unscored.
+scored_types = ["model_call"]
+
+[protocol_clean]
+# Batches whose model calls are clean by protocol: these phases at this concurrency level.
+phases = ["ramp", "control"]
+level = 1
+
+[slower]
+# The baseline batches themselves are not judged against their own mean.
+baseline_phase = "ramp"
+baseline_level = 1
+
+[protocols]
+# Accepted protocol_sha256 per configuration, in full.
+cfg-default = "22e26dc7536fe5e88e3d9ea9f01445a754788ce587b1626d6a4eb055ec4524b9"
+cfg-hardware = "1608deee2a3bcb5245b07d73e13e73dcd1e82702ef14aa683ecd94144e0f18cd"
