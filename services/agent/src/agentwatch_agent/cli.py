@@ -129,6 +129,7 @@ from agentwatch_agent.sweep_protocol import (
     sweep_run_limits,
 )
 from agentwatch_agent.sweep_record import render_coverage_tables, render_sweep_tables
+from agentwatch_agent.sweep_steps import STEPS_FILE, SUMMARY_FILE, write_steps
 from agentwatch_agent.tasks import Task, TaskDefinitionError, load_task, task_names
 from agentwatch_agent.vllm import vllm_models
 from agentwatch_agent.vllm_launch import DEFAULT_VLLM_CONTAINER, read_launch_arguments
@@ -139,6 +140,7 @@ EXIT_RECORDS_REFUSED = 5
 EXIT_RUN_UNCLOSED = 6
 EXIT_USAGE = 2
 DEFAULT_API_URL = "http://127.0.0.1:8090"
+DEFAULT_STEPS_ROOT = Path(".data/a06-scoring/steps")
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_VLLM_URL = "http://127.0.0.1:8000"
 # The Compose service's served name, which carries the weights' revision (compose.yaml).
@@ -509,6 +511,19 @@ def parser() -> argparse.ArgumentParser:
         "--coverage-jsonl",
         type=Path,
         help="Also print the sampling coverage tables and write their raw reports to this file",
+    )
+
+    steps = commands.add_parser(
+        "capacity-sweep-steps",
+        help="Record each scored step of a held-out capacity sweep with its measurements, unjudged",
+    )
+    steps.add_argument("sweep_dir", type=Path, help="A capacity-sweep folder with sweep.json")
+    steps.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help=f"Folder for {STEPS_FILE} and {SUMMARY_FILE} "
+        f"(default {DEFAULT_STEPS_ROOT}/<sweep folder name>)",
     )
 
     overhead = commands.add_parser(
@@ -1231,6 +1246,18 @@ def sweep_record_command(args: argparse.Namespace) -> int:
     return EXIT_PASSED
 
 
+def capacity_sweep_steps_command(args: argparse.Namespace) -> int:
+    output = args.output or DEFAULT_STEPS_ROOT / args.sweep_dir.resolve().name
+    try:
+        written = write_steps(args.sweep_dir, output)
+    except (SweepFolderError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"Steps: {written / STEPS_FILE}")
+    print(f"Summary: {written / SUMMARY_FILE}")
+    return EXIT_PASSED
+
+
 def tasks_command() -> int:
     for name in task_names():
         task = load_task(name)
@@ -1444,6 +1471,8 @@ def main(argv: list[str] | None = None) -> int:
         return sweep_analyse_command(args)
     if args.command == "sweep-record":
         return sweep_record_command(args)
+    if args.command == "capacity-sweep-steps":
+        return capacity_sweep_steps_command(args)
     if args.command == "overhead":
         return overhead_command(args)
     if args.command == "sampling-overhead":
