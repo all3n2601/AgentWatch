@@ -44,6 +44,9 @@ in a comment.
 It is the scoring branch's `capacity-sweep-truth` with the judgement removed. The commits that
 expose the per-step reading (`83be357`, `807285c` on the scoring branch) come across unchanged.
 
+Changed 2026-11-12 (plan): the refactor commits are not carried; the recorder reads runs through
+`read_run` and `baselines` on `main`.
+
 **Accepted input.** Unchanged refusals (exit 2, nothing written): a protocol other than
 `natural-overload-sweep-v1`; a `protocol_sha256` that is not cfg-default `22e26dc7536f…` or
 cfg-hardware `1608deee2a3b…` (pinned in full), or that does not hash the recorded protocol; a

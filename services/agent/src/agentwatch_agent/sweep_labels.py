@@ -119,7 +119,8 @@ def _step_spans(evidence: dict) -> dict[str, dict]:
     return steps
 
 
-def _read_run(run_dir: Path) -> tuple[str | None, dict[str, dict], dict[str, dict]]:
+def read_run(run_dir: Path) -> tuple[str | None, dict[str, dict], dict[str, dict]]:
+    """The run's replay plan hash, `step_timings` and measured vLLM span per step."""
     evidence = _read_json(run_dir / "agent-evidence.json")
     return _plan_sha256(evidence), step_timings(run_dir), _step_spans(evidence)
 
@@ -136,7 +137,7 @@ def baselines(n1_runs: list[Path]) -> Baselines:
     services: dict[BaselineKey, list[float]] = {}
     step_types: dict[BaselineKey, str] = {}
     for run_dir in n1_runs:
-        plan, timings, spans = _read_run(run_dir)
+        plan, timings, spans = read_run(run_dir)
         if plan is None:
             result.runs_without_plan += 1
             continue
@@ -215,7 +216,7 @@ def _count(tally: dict, group: str, key: str) -> None:
 
 
 def _tally_run(tally: dict, run_dir: Path, reference: dict) -> None:
-    plan, timings, spans = _read_run(run_dir)
+    plan, timings, spans = read_run(run_dir)
     if plan is None:
         tally["runs_without_plan"] += 1
         return
