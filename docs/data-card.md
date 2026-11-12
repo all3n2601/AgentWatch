@@ -354,15 +354,19 @@ The [capacity record](capacity-record.md#reproduce) shows how to re-analyse it a
 its tables. Rohit decided the `split-v3` assignment with Benoy on 2026-11-11
 ([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md)).
 
-**Held-out scores (2026-11-11, A06 PR 3).** the agent's former per-step truth command (replaced by `sweep-truth-v2`) and `score-held-out` scored
-`rules-v1` and the classifier on the frozen sweeps; the result is the capacity record's
-[attribution baseline](capacity-record.md#attribution-baseline) (attempt
-`20261112T025531Z-220363`). The truths and scores stay local in `.data/a06-scoring/` (`truth/`,
-`scores/`, and `superseded/` for the superseded attempt's truths), in no dataset release and
-outside `data/held-out/`. The classifier trains on
-dataset v1's train split only; no A06 row was used for training, calibration, threshold selection
-or tuning. `make add-evidence` refuses the truth and score folders
-(`pipelines/model/tests/test_score_held_out.py`), and `make dataset` reads only its configured
+**Held-out scores (2026-11-12, A06 PR 3).** `score-held-out` scored `rules-v1` and the frozen
+M03 classifier with its M04 calibration (`training-v1+a34ea0be`, `calibration-v1+08119e78`, on
+`split-v3+932b2df410a7`) on the frozen sweeps' `sweep-truth-v2+c211f3e8` truths; the result is
+the capacity record's [attribution baseline](capacity-record.md#attribution-baseline) (attempt
+`20261112T222540Z-d3316f`, 1,740 model calls scored). It supersedes attempt
+`20261112T025531Z-220363` of 2026-11-11, which used the agent's former per-step truth command
+(`sweep-truth-v1`), a classifier retrained on `split-v2` and every step type. The truths and
+scores stay local in `.data/a06-scoring/` (`sweep-truth-v2/` for this attempt's steps and truths,
+`truth/` and `steps/` for the superseded attempt's, `scores/`, and `superseded/` for the earliest
+attempt's truths), in no dataset release and outside `data/held-out/`. The classifier was trained
+and calibrated on dataset v1's train and validation splits only; no A06 row was used for
+training, calibration, threshold selection or tuning. `make add-evidence` refuses the truth and
+score folders (`pipelines/model/tests/test_score_held_out.py`), and `make dataset` reads only its configured
 sources (the evidence store and the API), so neither can take them in. Versioning the scores is
 out of scope.
 
@@ -439,8 +443,10 @@ truth and input-validation code; comments and formatting in the TOML do not chan
 edit to `sweep_truth.py` or `sweep_steps_input.py`, comments included, does). The baseline
 statistics are computed by the recorder, outside that fingerprint, so a truth set is identified by
 `label_version` together with `steps_sha256`, `steps_summary_sha256` and `truth_sha256`, all
-recorded in `truth.json`. The A06 scoring PR is to refuse any other label version and to check
-`steps_sha256`, `steps_summary_sha256` and `truth_sha256`; that is planned, not yet done.
+recorded in `truth.json`. `score-held-out` (A06 PR 3) refuses any other label version, checks
+that `truth_sha256` is the hash of the `truth.jsonl` beside it and that `steps_sha256`,
+`steps_summary_sha256` and `recorder_sha256` are well-formed, and records the first three of
+them, with the label version, for each sweep.
 `steps.json` also carries `recorder_sha256`, the fingerprint of the recorder's own source and the
 code behind its baselines: `sweep_steps.py`, `sweep_labels.py`, `experiment.py`,
 `sweep_analysis.py` and `sweep_protocol.py`. Any edit to those five modules, comments included,

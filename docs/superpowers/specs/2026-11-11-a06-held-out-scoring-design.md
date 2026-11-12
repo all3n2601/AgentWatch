@@ -8,7 +8,9 @@ truth records (the phase `live` never occurs) and are counted as runs without a 
 evidence to `data/held-out/a06-20261111/`. Parent design:
 [A06 natural overload](2026-11-10-natural-overload-capacity-sweep-design.md).
 
-**Changed 2026-11-12, before the rerun. Proposed for Benoy's approval.** The section
+**Changed 2026-11-12, before the rerun; approved 2026-11-12 (Benoy); implemented and run
+2026-11-12 (attempt `20261112T222540Z-d3316f`,
+[capacity record](../../capacity-record.md#attribution-baseline)).** The section
 [Change after #70, #72 and #74](#change-after-70-72-and-74-2026-11-12) replaces Stage 1, the
 Candidates part of Stage 2, and parts of the record. The run of 2026-11-11 (attempt
 `20261112T025531Z-220363`) stays recorded as superseded.
@@ -187,7 +189,8 @@ stay local in `.data/a06-scoring/`; versioning them is out of scope.
 ## Change after #70, #72 and #74 (2026-11-12)
 
 Proposed 2026-11-12 for Benoy's approval, before the rerun and before any result that uses
-`sweep-truth-v1` is pushed. Three changes landed after the run of 2026-11-11:
+`sweep-truth-v1` is pushed; approved 2026-11-12 (Benoy). Three changes landed after the run of
+2026-11-11:
 
 - On #70, Rohit and Akshay accepted `sweep-truth-v1` as the held-out set's label rule. They
   required it to land as a versioned rule in `pipelines/data`, reviewed in its own PR, with

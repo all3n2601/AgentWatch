@@ -183,28 +183,43 @@ How far these results reach:
 ## Held-out A06 scoring
 
 ```sh
-make agent-capacity-sweep-truth SWEEP=data/held-out/a06-20261111/capacity-sweeps/<sweep folder>
-make score-held-out TRUTH=".data/a06-scoring/truth/<sweep folder> ..."
+make agent-capacity-sweep-steps SWEEP=data/held-out/a06-20261111/capacity-sweeps/<sweep folder>
+make sweep-truth STEPS=.data/a06-scoring/steps/<sweep folder>
+SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+932b2df410a7.json
+make train-candidates SPLIT=$SPLIT    # M03, into .data/candidates
+make calibrate SPLIT=$SPLIT           # M04, into .data/calibration
+make score-held-out TRUTH=".data/a06-scoring/truth/<sweep folder> ..." SPLIT=$SPLIT
 ```
 
-`score-held-out` scores `rules-v1` and the `training-v1` classifier on the per-step truths of
-the frozen A06 capacity sweeps
-([design](superpowers/specs/2026-11-11-a06-held-out-scoring-design.md)). It builds
-`steps-v1.3` feature rows from each run's journal, trains the classifier on dataset v1's train
-split (`HELD_OUT_SPLIT`, default `split-v2+febe942a2b59`) and applies calibration and
-abstention fitted on that split's validation rows, or reports them `unavailable` with the
-reason. The release's test split is never opened. The regressor is not scored. The A06
-evidence is never used for training, calibration or tuning, and there is no gate: the report
-is a descriptive baseline of miss and false-alarm rates, with 95% intervals that resample
-whole batches.
+`score-held-out` scores `rules-v1` and the frozen M03 classifier, with its M04 temperature and
+abstention threshold, on the `sweep-truth-v2` truths of the frozen A06 capacity sweeps
+([design](superpowers/specs/2026-11-11-a06-held-out-scoring-design.md), "Change after #70, #72
+and #74"). It trains and fits nothing. A model pair whose M03 report does not name the
+`--split` file and `eval-contract-v3`, or whose files do not hash to the values M03 and M04
+recorded, is a setup error (exit 2) and no attempt is written. A truth folder whose
+`label_version` is not `sweep-truth-v2+c211f3e8`, whose `truth_sha256` is not the hash of the
+`truth.jsonl` beside it, or whose step and recorder hashes are not 64 lowercase hex digits, a
+booster that does not reproduce M03's validation predictions, and a scored run or plan found in
+any row of the split each end the attempt as a recorded `failed` one. It builds `steps-v1.3`
+feature rows from each run's journal and scores model calls whose truth is a class; root, tool
+and retrieval steps, and model calls the rule leaves null, are counted by reason. The split's
+rows are read only for those checks (all three splits for the leakage check, validation for the
+reproduction check) and to decide which task groups are seen (train). The
+regressor is not scored. The A06 evidence is never used for training, calibration or tuning,
+and there is no gate: the report is a descriptive baseline of miss, false-alarm and abstention
+rates, with 95% intervals that resample whole batches.
 
 Each attempt writes `.data/a06-scoring/scores/<attempt id>/` (`report.json`,
-`predictions.jsonl`, `models/`, `tracking.json`) and is logged to the separate MLflow
-experiment `a06-held-out-scoring`, failed attempts included. The attempt id is the UTC start
-time plus the first digits of the hash of every input. Exit codes: 0 completed, 1 failed (the
-reason is in the report), 3 not tracked, 2 for a malformed configuration or an output inside
-`data/held-out`. Scores stay local and belong in no release. The first real run is recorded in
-the [capacity record](capacity-record.md#attribution-baseline).
+`predictions.jsonl`, `tracking.json`) and is logged to the separate MLflow experiment
+`a06-held-out-scoring`, failed attempts included. The attempt id is the UTC start time plus the
+first digits of the hash of every input, the model files included. Exit codes: 0 completed, 1
+failed (the reason is in the report), 3 not tracked, 2 for a malformed configuration, a model
+pair that does not match, or an output inside `data/held-out`. Scores stay local and belong in
+no release. The run of 2026-11-12, attempt `20261112T222540Z-d3316f` with this classifier
+(`b35152b7…`) and `calibration-v1+08119e78`, is recorded in the
+[capacity record](capacity-record.md#attribution-baseline). The earlier attempt
+`20261112T025531Z-220363`, which retrained a classifier on `split-v2` and used the former
+`sweep-truth-v1` truths, is listed there as superseded.
 
 ## Tracking
 
