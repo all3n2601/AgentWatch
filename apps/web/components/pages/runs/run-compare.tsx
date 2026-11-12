@@ -8,6 +8,10 @@ import { EmptyState } from "@/components/widgets/state-views";
 import { formatQuantity } from "@/lib/measurement-format";
 import { routes } from "@/lib/routes";
 import {
+  policyUnknown,
+  POLICY_NOT_RECORDED_WARNING,
+} from "@/lib/run-compatibility";
+import {
   compareSelection,
   type CompareSelection,
   type RunsPageRow,
@@ -21,9 +25,14 @@ function compareNote(selection: CompareSelection): string {
   if (selection.status === "incomplete")
     return "Tick two saved runs of the same kind to compare them. Live runs have no saved timings to compare.";
   if (selection.status === "incompatible") return selection.reason;
-  return selection.differences.length > 0
-    ? `Baseline is the older run. Differs in ${selection.differences.join(", ")}, so timing differences are not a controlled comparison.`
-    : "Baseline is the older run. Same workload and configuration; differences are observed, not causal.";
+  const { verdict, differing, unknown } = selection.compatibility;
+  if (verdict === "differs")
+    return `Baseline is the older run. Recorded settings differ (${differing.join(", ").toLowerCase()}), so Compare lists them and calculates no difference.`;
+  if (verdict === "unverified")
+    return policyUnknown(selection.compatibility)
+      ? `Baseline is the older run. Recorded settings match. ${POLICY_NOT_RECORDED_WARNING}.`
+      : `Baseline is the older run. Recorded settings match, but ${unknown.join(", ").toLowerCase()} is not recorded; full compatibility cannot be verified.`;
+  return "Baseline is the older run. Recorded settings match; differences are observed, not causal.";
 }
 
 /** Selection count, plus the compare link once two compatible runs are ticked. */

@@ -2,6 +2,12 @@ import { z } from "zod";
 import { evidenceUrl, stepsOf } from "./dashboard-data";
 import { experimentSchema, type Experiment } from "./experiment-schema";
 import type { LiveRunSummary } from "./live-feed-data";
+import {
+  compareConfiguration,
+  configurationOf,
+  type Compatibility,
+  type RecordedConfiguration,
+} from "./run-compatibility";
 import type { Tone } from "./tone";
 import {
   filterRuns,
@@ -50,7 +56,8 @@ export type SavedRunEvidence = {
   checks: { id: string; passed: boolean }[];
   workerCapacity: number;
   iterations: number;
-  cleanChecksum: string;
+  /** The settings the shared compatibility check compares (lib/run-compatibility.ts). */
+  configuration: RecordedConfiguration;
   evidenceHref: string;
 };
 
@@ -98,7 +105,7 @@ export function savedRow(run: Experiment): RunsPageRow {
         .map(([id, passed]) => ({ id, passed })),
       workerCapacity: run.experiment.worker_capacity,
       iterations: run.experiment.iterations,
-      cleanChecksum: run.clean.checksum,
+      configuration: configurationOf(run),
       evidenceHref: evidenceUrl(run),
     },
   };
@@ -261,11 +268,15 @@ export type CompareSelection =
       /** The older run, so differences read as "candidate versus baseline". */
       baseline: RunsPageRow;
       candidate: RunsPageRow;
-      /** Configuration that differs; shown so the comparison is not read as controlled. */
-      differences: string[];
+      /** The same check the Compare page applies to these two runs. */
+      compatibility: Compatibility;
     };
 
-/** The page compares exactly two saved runs of the same kind. */
+/**
+ * Two saved runs, older as baseline, checked with the Compare page's rule. A pair
+ * whose settings differ can still be opened: Compare then lists the differing
+ * settings and calculates no difference.
+ */
 export function compareSelection(
   selected: readonly RunsPageRow[],
 ): CompareSelection {
@@ -280,21 +291,15 @@ export function compareSelection(
       reason:
         "Only saved runs can be compared; live runs have no saved timings.",
     };
-  if (older.kind !== newer.kind)
-    return {
-      status: "incompatible",
-      reason: `A ${older.kind} run and a ${newer.kind} run measure different workloads.`,
-    };
-  const a = older.evidence;
-  const b = newer.evidence;
-  const differences = [
-    a.workload !== b.workload && "workload",
-    a.cleanChecksum !== b.cleanChecksum && "workload output",
-    a.iterations !== b.iterations && "iterations",
-    a.workerCapacity !== b.workerCapacity && "worker capacity",
-    a.model !== b.model && "model",
-  ].filter((value): value is string => typeof value === "string");
-  return { status: "ready", baseline: older, candidate: newer, differences };
+  return {
+    status: "ready",
+    baseline: older,
+    candidate: newer,
+    compatibility: compareConfiguration(
+      older.evidence.configuration,
+      newer.evidence.configuration,
+    ),
+  };
 }
 
 /** Selecting a run for comparison, keeping at most two. */
