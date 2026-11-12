@@ -440,7 +440,7 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   `held_out_injection_methods` (Akshay, review of PR #64). 2026-11-11: `split-v3` lists it
   (branch `feature/split-v3`, not merged). In the 2026-11-11 A06 preflight dry
   sweep on real vLLM, each flood had a median of 2,080 prompt tokens, every reply was exactly
-  1 completion token, and cleanup was confirmed (`.data/a06-20261111/preflight-dry-run/`).
+  1 completion token, and cleanup was confirmed (`data/held-out/a06-20261111/preflight-dry-run/`).
 
 **Exit test:** Known isolated workloads exercise each resource and a clean control. Measurements
 and attribution identify the affected class. Real GPU validation uses real inference hardware;
@@ -763,7 +763,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   `test_comparison.py`). Tested on synthetic rows only. Open: dataset v1's test split mixes two
   feature definitions, which evaluation refuses, so no rule metrics exist yet.
   2026-11-11 (M02, PR #71 on branch `docs/m02-rule-baseline-report`, stacked on PR #70
-  `feature/split-v3`, neither merged; rerun 2026-11-12 at commit `f229a4c`): first real rule
+  `feature/split-v3`, merged 2026-11-12; rerun 2026-11-12 at commit `f229a4c`): first real rule
   report, `rules-v1+1bf54c19` on `split-v3+932b2df410a7` under `eval-contract-v3` (`1cab0cbe`,
   accepted), 3,575 `fix-window-count` test steps. Macro
   F1 0.200 (no interval: one test task); clean `none` rate 0.731 and baseline-and-clean 0.749,
@@ -771,8 +771,7 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   excess-latency fraction (constant-reference MAE 0.194 and 0.233 against the 0.10 limit); 9
   gates `not_evaluated`. Two runs gave byte-identical reports, and the predictions match the
   first runs under the proposed contract
-  ([rule baseline](rule-baseline.md#results-on-dataset-v1)). Open: review and merge of #70 and
-  #71.
+  ([rule baseline](rule-baseline.md#results-on-dataset-v1)). PR #71 merged 2026-11-12.
 
 **Exit test:** Rebuild labels and features from recorded evidence. Validate schema, missingness,
 class balance, baseline noise, split independence, and feature leakage. Report rule metrics on the
@@ -788,8 +787,8 @@ frozen evaluation sets without tuning against them.
   `eval-contract-v1`, and logs every attempt, including blocked and failed ones, to MLflow
   ([model training](model-training.md), `pipelines/model/tests`). At that date no evaluable
   release existed; the first real run follows.
-  2026-11-11 (M03, PR #72 on branch `docs/m03-m04-first-results`, stacked on #71 and #70, none
-  merged; rerun 2026-11-12 on #70's code at `f229a4c`):
+  2026-11-11 (M03, PR #72 on branch `docs/m03-m04-first-results`, stacked on #71 and #70, both
+  merged 2026-11-12; rerun 2026-11-12 on #70's code at `f229a4c`):
   first real run, `training-v1+a34ea0be` on `split-v3+932b2df410a7` (`eval-contract-v3`
   `1cab0cbe`, accepted), in a Linux container with LightGBM 4.7.0, MLflow run
   `b7afc8c3c2c04ec39ff9accba103e255` (local). Macro F1 0.790 against the rules' 0.200 on the
@@ -802,12 +801,12 @@ frozen evaluation sets without tuning against them.
   interval and no causal claim. Open: review and merge, and more than one task group in
   training and test.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
-  2026-11-11 (A06, PR #65 on branch `feature/natural-overload-capacity-sweep`, not yet merged):
+  2026-11-11 (A06, PR #65, merged to `main` as `50f393d` on 2026-11-12 UTC):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol
   `natural-overload-sweep-v1`
   ([design](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md)). It
   decides capacity by the declared rules and validates the contention label against vLLM's
-  measured queue time. The GPU preflight on 2026-11-11 (evidence `.data/a06-20261111/`) led to
+  measured queue time. The GPU preflight on 2026-11-11 (evidence `data/held-out/a06-20261111/`) led to
   two protocol changes, approved by Benoy before any protocol evidence existed:
   - **Run limit 900 s → 450 s.** With vLLM, DCGM and GPM sampled every 0.25 s, the per-run
     sample budget (80,000 records, under the live API's 100,000) fits only about 465 s. Every
@@ -835,8 +834,7 @@ frozen evaluation sets without tuning against them.
     preflight evidence it is not a capacity result.
 
   Protocol sweeps, 2026-11-11, at commit `d5eb41a` with a clean tree
-  ([capacity record](capacity-record.md); evidence `.data/a06-20261111/capacity-sweeps/` and
-  `C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`):
+  ([capacity record](capacity-record.md); evidence `data/held-out/a06-20261111/capacity-sweeps/`):
   - **`cfg-default`** (sweep `c5a40c4c-e4b3-4dc1-b660-21ca4c88bc93`): capacity **3** agents
     (`measured`). Throughput at 4 agents was 6.4% below 3 agents. Label `validated` (precision
     0.971, recall 0.999).
@@ -849,9 +847,11 @@ frozen evaluation sets without tuning against them.
     passed (175 and 208 runs). The prefill flood was active and cleaned up in all 6 injected
     batches.
 
-  Tables (2026-11-11, review of PR #65): the new `sweep-record` command regenerates the record's
-  Results and Sampling coverage tables identically from the two sweep folders
-  (`test_sweep_record.py`). Versioning the evidence outside `data/evidence/` is open.
+  Evidence and tables (2026-11-11, review of PR #65): the whole A06 bundle is versioned with DVC
+  as held-out evidence in `data/held-out/a06-20261111/`, outside `data/evidence/`, and is not
+  pulled by default. `sweep-analyse` on a copy of it reproduces both recorded analyses. The new
+  `sweep-record` command regenerates the record's Results and Sampling coverage tables
+  identically (`test_sweep_record.py`).
 
   Open until model and rule scoring of this evidence (A06 PR 3) is done. The capacity
   describes this laptop and these two configurations only, from one sweep each.
