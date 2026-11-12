@@ -30,6 +30,7 @@ from agentwatch_agent.sweep_protocol import (
 )
 from agentwatch_agent.vllm_launch import DEFAULT_VLLM_CONTAINER
 from agentwatch_worker.nvml import GpuIdentity, NvmlUnavailable
+from test_sweep_truth import synthetic_sweep
 
 
 def test_tasks_command_lists_pinned_identities(capsys):
@@ -904,6 +905,31 @@ def test_sweep_analyse_refuses_a_folder_without_a_sweep_record(tmp_path, capsys)
     assert cli.main(["sweep-analyse", str(tmp_path)]) == cli.EXIT_USAGE
     assert "sweep.json" in capsys.readouterr().err
     assert not (tmp_path / "analysis.json").exists()
+
+
+def test_cli_capacity_sweep_truth_writes_both_files_and_exits_0(tmp_path, monkeypatch, capsys):
+    # The sweep is synthetic: the stub driver's folder with fixture run folders.
+    sweep_dir = synthetic_sweep(tmp_path, monkeypatch)
+    output = tmp_path / "truth-out"
+    argv = ["capacity-sweep-truth", str(sweep_dir), "--output", str(output)]
+    assert cli.main(argv) == cli.EXIT_PASSED
+    assert (output / "truth.jsonl").is_file() and (output / "truth.json").is_file()
+    assert str(output) in capsys.readouterr().out
+
+
+def test_cli_capacity_sweep_truth_refuses_a_folder_without_a_sweep_record(tmp_path, capsys):
+    output = tmp_path / "truth-out"
+    argv = ["capacity-sweep-truth", str(tmp_path), "--output", str(output)]
+    assert cli.main(argv) == cli.EXIT_USAGE
+    assert "error:" in capsys.readouterr().err
+    assert not output.exists()
+
+
+def test_cli_capacity_sweep_truth_defaults_to_a_folder_named_for_the_sweep(tmp_path, monkeypatch):
+    sweep_dir = synthetic_sweep(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["capacity-sweep-truth", str(sweep_dir)]) == cli.EXIT_PASSED
+    assert (tmp_path / ".data/a06-scoring/truth" / sweep_dir.name / "truth.json").is_file()
 
 
 def test_a_completed_sweep_whose_analysis_failed_does_not_exit_0(tmp_path, sweep_stubs, capsys):

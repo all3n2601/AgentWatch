@@ -129,6 +129,7 @@ from agentwatch_agent.sweep_protocol import (
     sweep_run_limits,
 )
 from agentwatch_agent.sweep_record import render_coverage_tables, render_sweep_tables
+from agentwatch_agent.sweep_truth import SUMMARY_FILE, TRUTH_FILE, write_truths
 from agentwatch_agent.tasks import Task, TaskDefinitionError, load_task, task_names
 from agentwatch_agent.vllm import vllm_models
 from agentwatch_agent.vllm_launch import DEFAULT_VLLM_CONTAINER, read_launch_arguments
@@ -139,6 +140,7 @@ EXIT_RECORDS_REFUSED = 5
 EXIT_RUN_UNCLOSED = 6
 EXIT_USAGE = 2
 DEFAULT_API_URL = "http://127.0.0.1:8090"
+DEFAULT_TRUTH_ROOT = Path(".data/a06-scoring/truth")
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_VLLM_URL = "http://127.0.0.1:8000"
 # The Compose service's served name, which carries the weights' revision (compose.yaml).
@@ -509,6 +511,19 @@ def parser() -> argparse.ArgumentParser:
         "--coverage-jsonl",
         type=Path,
         help="Also print the sampling coverage tables and write their raw reports to this file",
+    )
+
+    truth = commands.add_parser(
+        "capacity-sweep-truth",
+        help="Write per-step queue, slower and protocol-clean truths for a held-out capacity sweep",
+    )
+    truth.add_argument("sweep_dir", type=Path, help="A capacity-sweep folder with sweep.json")
+    truth.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help=f"Folder for {TRUTH_FILE} and {SUMMARY_FILE} "
+        f"(default {DEFAULT_TRUTH_ROOT}/<sweep folder name>)",
     )
 
     overhead = commands.add_parser(
@@ -1231,6 +1246,18 @@ def sweep_record_command(args: argparse.Namespace) -> int:
     return EXIT_PASSED
 
 
+def capacity_sweep_truth_command(args: argparse.Namespace) -> int:
+    output = args.output or DEFAULT_TRUTH_ROOT / args.sweep_dir.resolve().name
+    try:
+        written = write_truths(args.sweep_dir, output)
+    except (SweepFolderError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"Truths: {written / TRUTH_FILE}")
+    print(f"Summary: {written / SUMMARY_FILE}")
+    return EXIT_PASSED
+
+
 def tasks_command() -> int:
     for name in task_names():
         task = load_task(name)
@@ -1444,6 +1471,8 @@ def main(argv: list[str] | None = None) -> int:
         return sweep_analyse_command(args)
     if args.command == "sweep-record":
         return sweep_record_command(args)
+    if args.command == "capacity-sweep-truth":
+        return capacity_sweep_truth_command(args)
     if args.command == "overhead":
         return overhead_command(args)
     if args.command == "sampling-overhead":

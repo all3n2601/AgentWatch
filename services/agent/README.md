@@ -631,6 +631,21 @@ uv run --package agentwatch-agent python -m agentwatch_agent sweep-record \
   --coverage-jsonl .data/coverage-per-level.jsonl > tables.md
 ```
 
+**Per-step truths.** `capacity-sweep-truth <sweep folder> [--output DIR]` writes one record per
+journaled step of a held-out sweep's scored runs (ramp batches the analysis keeps, live,
+injected and control; warm-up is skipped) to `truth.jsonl`, and a summary with counts, the
+excluded ramp batches and the runs without evidence to `truth.json` (method `sweep-truth-v1`).
+Three truths per step: `queue` (the step's measured vLLM queue time exceeds its noise
+threshold), `slower` (its duration exceeds its N = 1 baseline mean by more than that threshold)
+and `protocol_clean` (`none` for one-agent ramp and control batches). A step that cannot be
+judged keeps a null truth with its reason (`span_not_measured`, `no_baseline`,
+`not_completed`, `malformed`, `not_applicable`), never a zero. Each record names its run folder
+relative to the sweep folder. Output defaults to `.data/a06-scoring/truth/<sweep folder name>`;
+`make agent-capacity-sweep-truth SWEEP=<folder>` runs it. It refuses (exit 2, nothing written) a
+sweep that is not `natural-overload-sweep-v1`, `held_out: true` and carrying one of the two
+accepted protocol hashes, a run whose files cannot be read, and an output folder inside
+`data/held-out`.
+
 **Evidence status.** Natural-overload and prefill-flood runs are held-out test evidence
 (`held_out: true`): never use them for training, calibration, threshold selection or
 tuning. `rules-v1` predicts only `cpu_sandbox` or `none`; it cannot predict inference, and
