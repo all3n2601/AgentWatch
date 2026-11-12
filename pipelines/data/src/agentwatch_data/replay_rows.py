@@ -225,17 +225,10 @@ def counter_delta(value: float | None) -> int | float | None:
     return int(value) if value is not None and value.is_integer() else value
 
 
-def release_row(
-    experiment: Experiment, label: dict, feature: FeatureRow, features: ReplayFeatures
-) -> dict:
+def feature_values(feature: FeatureRow) -> dict[str, object]:
+    """The steps feature columns of a release row; replay evidence lacks the workload ones."""
     values = feature.features
     return {
-        "run_id": label["run_id"],
-        "step_id": label["step_id"],
-        "task_id": label["task_id"],
-        "kind": REPLAY_KIND,
-        "source": "measured",
-        "recorded_at": features.recorded_at,
         "queue_seconds": values.queue_seconds,
         "execution_seconds": values.execution_seconds,
         "duration_seconds": values.duration_seconds,
@@ -250,6 +243,20 @@ def release_row(
         "cgroup_available": values.cgroup_available,
         "telemetry_sample_count": values.telemetry_sample_count,
         "telemetry_coverage": values.telemetry_coverage,
+    }
+
+
+def release_row(
+    experiment: Experiment, label: dict, feature: FeatureRow, features: ReplayFeatures
+) -> dict:
+    return {
+        "run_id": label["run_id"],
+        "step_id": label["step_id"],
+        "task_id": label["task_id"],
+        "kind": REPLAY_KIND,
+        "source": "measured",
+        "recorded_at": features.recorded_at,
+        **feature_values(feature),
         "label_resource": label["label_resource"],
         "label_excess_fraction": label["label_excess_fraction"],
         "rule_prediction": None,  # replay evidence has no rule output
