@@ -330,6 +330,24 @@ def test_model_steps_that_did_not_complete_are_counted_by_final_state(tmp_path):
     assert levels["excluded_not_completed"] == {"failed": 1}
 
 
+def test_a_completed_model_step_without_a_duration_is_counted_by_that_reason(tmp_path, monkeypatch):
+    reference = baselines(baseline_runs(tmp_path))
+    run = tmp_path / "no-duration"
+    write_run(run, [(MODEL_STEP, "model_call", 1.0, span_call(MODEL_STEP))])
+    import agentwatch_agent.sweep_labels as labels
+
+    monkeypatch.setattr(
+        labels,
+        "step_timings",
+        lambda _run: {
+            MODEL_STEP: {"step_type": "model_call", "state": "completed", "total_seconds": None}
+        },
+    )
+    overall = label_validation([run], reference)["overall"]
+    assert overall["excluded_not_completed"] == {"completed_without_duration": 1}
+    assert overall["excluded"] == {"not_completed": 1}
+
+
 def test_baselines_count_steps_that_did_not_complete(tmp_path):
     runs = baseline_runs(tmp_path)
     failed = tmp_path / "base-failed"

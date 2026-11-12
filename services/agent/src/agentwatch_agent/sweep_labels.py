@@ -244,7 +244,11 @@ class StepTruth:
 def _judge_step(
     step_id: str, timing: dict, baseline: dict | None, span: dict
 ) -> tuple[StepTruth, str | None]:
-    """The step's truth and, for a model step with an unmeasured span, that span's status."""
+    """The step's truth and the detail the tally counts it under.
+
+    The detail is the final-state name of a step that did not complete, or the span status of a
+    model step whose span is unmeasured; None otherwise.
+    """
     total = timing["total_seconds"]
     fields = {
         "step_id": step_id,
@@ -265,8 +269,9 @@ def _judge_step(
     def truth(reason: str | None, **extra: object) -> StepTruth:
         return StepTruth(**(fields | extra), reason=reason)
 
-    if _not_completed_state(timing) is not None:
-        return truth("not_completed"), None
+    not_completed = _not_completed_state(timing)
+    if not_completed is not None:
+        return truth("not_completed"), not_completed
     if not _valid_seconds(total):
         return truth("malformed"), None
     if baseline is None:
@@ -316,7 +321,7 @@ def _judge_run(
 def step_truths(run_dir: Path, reference: Baselines | dict) -> tuple[str | None, list[StepTruth]]:
     """The run's plan SHA-256 and one `StepTruth` per journaled step (none without a plan)."""
     plan, judged = _judge_run(run_dir, reference)
-    return plan, [truth for truth, _span_status in judged]
+    return plan, [truth for truth, _detail in judged]
 
 
 def _tally_run(tally: dict, run_dir: Path, reference: dict) -> None:
@@ -324,11 +329,11 @@ def _tally_run(tally: dict, run_dir: Path, reference: dict) -> None:
     if plan is None:
         tally["runs_without_plan"] += 1
         return
-    for truth, span_status in judged:
+    for truth, detail in judged:
         is_model = truth.step_type == MODEL_STEP_TYPE
         if truth.reason == "not_completed":
             if is_model:
-                _count(tally, "not_completed", truth.state)
+                _count(tally, "not_completed", detail)
                 _count(tally, "excluded", "not_completed")
         elif truth.reason == "malformed":
             if is_model:
@@ -339,7 +344,7 @@ def _tally_run(tally: dict, run_dir: Path, reference: dict) -> None:
             tally["tool"]["steps"] += 1
             tally["tool"]["contended"] += truth.excess_seconds > truth.noise_threshold_seconds
         elif truth.reason == "span_not_measured":
-            _count(tally, "excluded", span_status)
+            _count(tally, "excluded", detail)
         elif is_model:
             _tally_model_step(tally, truth, reference[(plan, truth.step_id)])
 
