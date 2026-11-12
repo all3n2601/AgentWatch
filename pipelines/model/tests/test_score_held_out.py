@@ -19,6 +19,7 @@ import mlflow
 from agentwatch_data import evidence
 from agentwatch_model.candidates import TrainingError
 from agentwatch_model.held_out_model import CLASSIFIER_SCORER
+from agentwatch_model.held_out_rows import ACCEPTED_TRUTH_LABEL_VERSION
 from agentwatch_model.score_held_out import (
     EXPERIMENT,
     OutputError,
@@ -29,7 +30,13 @@ from agentwatch_model.score_held_out import (
     scored_overlap,
 )
 from frozen_model_fixtures import write_frozen_pair
-from test_held_out_rows import sweep, write_summary, write_truths  # noqa: F401
+from test_held_out_rows import (  # noqa: F401
+    STEPS_SHA256,
+    STEPS_SUMMARY_SHA256,
+    sweep,
+    write_summary,
+    write_truths,
+)
 
 
 def split_loader(validation, extra_train_rows=()):
@@ -154,7 +161,14 @@ def test_run_scores_both_scorers_and_writes_no_models(prepared, tracking):
     assert frozen["temperature"] == 0.9 and frozen["threshold"] == 0.6
     assert report["split"]["sha256"] == hashlib.sha256(b"{}").hexdigest()
     (truth,) = report["truths"].values()
-    assert set(truth) == {"label_version", "steps_sha256", "steps_summary_sha256", "truth_sha256"}
+    assert truth == {
+        "label_version": ACCEPTED_TRUTH_LABEL_VERSION,
+        "steps_sha256": STEPS_SHA256,
+        "steps_summary_sha256": STEPS_SUMMARY_SHA256,
+        "truth_sha256": hashlib.sha256(
+            (prepared["truth"] / "truth.jsonl").read_bytes()
+        ).hexdigest(),
+    }
     inputs = report["inputs"]
     assert inputs["split"] == report["split"]["sha256"]
     assert all(inputs["truth"].values())

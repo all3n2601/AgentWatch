@@ -201,7 +201,9 @@ What follows replaces the corresponding parts above. Everything not named here i
 the feature rows, the batch-grouped bootstrap, the measures and their breakdowns, the absence of
 a gate, the outputs, and the separate MLflow experiment.
 
-### Truths come from `sweep-truth-v1` (replaces Stage 1)
+Updated 2026-11-12: #74 became `sweep-truth-v2+c211f3e8` after Akshay's review; the scorer accepts only that version and requires the three step and recorder hashes.
+
+### Truths come from `sweep-truth-v2` (replaces Stage 1)
 
 - `capacity-sweep-truth`, `services/agent/src/agentwatch_agent/sweep_truth.py`, its Make target
   and its tests are removed. So is the `step_truths` refactor of `sweep_labels` (83be357, and
@@ -211,8 +213,10 @@ a gate, the outputs, and the separate MLflow experiment.
   then `make sweep-truth STEPS=<steps folder>`. They write `.data/a06-scoring/truth/<sweep>/`
   with `truth.jsonl` and `truth.json`.
 - `score-held-out` refuses a truth folder, writing nothing, unless all of these hold:
-  - `truth.json`'s `label_version` is `sweep-truth-v1+d0ded6b6`;
+  - `truth.json`'s `label_version` is `sweep-truth-v2+c211f3e8`;
   - its `truth_sha256` is the hash of the `truth.jsonl` beside it;
+  - its `steps_sha256`, `steps_summary_sha256` and `recorder_sha256` are each 64 lowercase hex
+    characters;
   - `held_out` is true;
   - its protocol hash is one of the two accepted ones.
 - The report records `label_version`, `steps_sha256`, `steps_summary_sha256` and `truth_sha256`

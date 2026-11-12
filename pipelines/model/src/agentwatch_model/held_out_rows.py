@@ -15,13 +15,14 @@ terminal row for the step), `feature_timing_mismatch` (the journal's timings dif
 truth record's), `declared_interval_invalid`.
 
 Truth files are another package's output, so they are checked at this boundary before any
-join: a summary or record outside the `sweep-truth-v1` format, a summary of another label
+join: a summary or record outside the `sweep-truth-v2` format, a summary of another label
 version or that does not match its records (step count, `truth.jsonl` hash), or a sweep or step passed twice raises HeldOutError, which fails the attempt.
 """
 
 import hashlib
 import json
 import math
+import re
 from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
@@ -45,11 +46,11 @@ from agentwatch_data.replay_rows import (
 from agentwatch_data.sweep_truth import TRUTH_FILE, TRUTH_NAMES, TRUTH_SUMMARY_FILE
 from agentwatch_features import compute_feature_rows
 
-# The `sweep-truth-v1` rule's label version: the rule's name plus the fingerprint of its values
+# The `sweep-truth-v2` rule's label version: the rule's name plus the fingerprint of its values
 # and logic (`load_truth_rule().label_version`; a test keeps this equal to it). Truths labelled
 # by any other rule are refused.
-ACCEPTED_TRUTH_LABEL_VERSION = "sweep-truth-v1+d0ded6b6"
-# The protocol hashes of the two held-out configurations, as pinned in sweep-truth-v1.toml.
+ACCEPTED_TRUTH_LABEL_VERSION = "sweep-truth-v2+c211f3e8"
+# The protocol hashes of the two held-out configurations, as pinned in sweep-truth-v2.toml.
 ACCEPTED_PROTOCOL_SHA256: dict[str, str] = {
     "cfg-default": "22e26dc7536fe5e88e3d9ea9f01445a754788ce587b1626d6a4eb055ec4524b9",
     "cfg-hardware": "1608deee2a3bcb5245b07d73e13e73dcd1e82702ef14aa683ecd94144e0f18cd",
@@ -58,6 +59,9 @@ TRUTH_CLASSES = frozenset({"inference", "none"})
 TRUTH_PHASES = frozenset({"ramp", "live", "injected", "control"})
 RECORD_STRINGS = ("run_id", "step_id", "run_folder", "batch_id", "step_type", "task_id")
 SUMMARY_COUNTERS = ("runs_without_plan", "runs_without_evidence")
+# Hashes `make sweep-truth` records of the steps it read and of the recorder that wrote them.
+SUMMARY_HASHES = ("steps_sha256", "steps_summary_sha256", "recorder_sha256")
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 
 class HeldOutError(ValueError):
@@ -76,7 +80,7 @@ def is_seconds(value: object) -> bool:
 
 
 def summary_problem(summary: dict, record_count: int, truth_sha256: str) -> str | None:
-    """Why the summary is not an accepted `sweep-truth-v1` summary of `record_count` records."""
+    """Why the summary is not an accepted `sweep-truth-v2` summary of `record_count` records."""
     if summary.get("held_out") is not True:
         return "truths are not marked held_out"
     if summary.get("label_version") != ACCEPTED_TRUTH_LABEL_VERSION:
@@ -109,6 +113,10 @@ def summary_problem(summary: dict, record_count: int, truth_sha256: str) -> str 
             return f"{name} must be a non-negative integer, found {summary.get(name)!r}"
     if not isinstance(summary.get("excluded_batches"), list):
         return f"excluded_batches must be a list, found {summary.get('excluded_batches')!r}"
+    for name in SUMMARY_HASHES:
+        value = summary.get(name)
+        if not isinstance(value, str) or not SHA256_HEX.fullmatch(value):
+            return f"{name} must be 64 lowercase hex characters, found {value!r}"
     steps = summary.get("steps")
     if not is_count(steps) or steps != record_count:
         return (
@@ -142,7 +150,7 @@ def truths_problem(record: dict) -> str | None:
 
 
 def record_problem(record: dict, configuration: str) -> str | None:
-    """Why the record is not a `sweep-truth-v1` step record of the summary's configuration."""
+    """Why the record is not a `sweep-truth-v2` step record of the summary's configuration."""
     for field in RECORD_STRINGS:
         if not isinstance(record.get(field), str):
             return f"{field} must be a string, found {record.get(field)!r}"

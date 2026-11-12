@@ -62,12 +62,20 @@ def record(run_id: str, run_folder: str, step_id: str, **overrides) -> dict:
     return base | overrides
 
 
+STEPS_SHA256 = "a1" * 32
+STEPS_SUMMARY_SHA256 = "b2" * 32
+RECORDER_SHA256 = "c3" * 32
+
+
 def write_summary(directory: Path, **overrides) -> dict:
     truth_file = directory / "truth.jsonl"
     truth_bytes = truth_file.read_bytes() if truth_file.exists() else b""
     summary = {
         "label_version": ACCEPTED_TRUTH_LABEL_VERSION,
         "truth_sha256": hashlib.sha256(truth_bytes).hexdigest(),
+        "steps_sha256": STEPS_SHA256,
+        "steps_summary_sha256": STEPS_SUMMARY_SHA256,
+        "recorder_sha256": RECORDER_SHA256,
         "sweep_id": "synthetic",
         "configuration": "cfg-default",
         "protocol_version": "synthetic",
@@ -339,7 +347,7 @@ def test_the_accepted_label_version_is_the_packaged_rules():
 
 
 def test_a_summary_of_another_label_version_is_refused(sweep):
-    write_summary(sweep["truth"], label_version="sweep-truth-v1+00000000")
+    write_summary(sweep["truth"], label_version="sweep-truth-v2+00000000")
     with pytest.raises(HeldOutError, match="label_version"):
         load_truths(sweep["truth"])
 
@@ -358,6 +366,27 @@ def test_a_summary_without_a_truth_sha256_is_refused(sweep):
     del summary["truth_sha256"]
     (sweep["truth"] / "truth.json").write_text(json.dumps(summary))
     with pytest.raises(HeldOutError, match="truth_sha256"):
+        load_truths(sweep["truth"])
+
+
+@pytest.mark.parametrize("field", ["steps_sha256", "steps_summary_sha256", "recorder_sha256"])
+def test_a_summary_without_a_step_or_recorder_hash_is_refused(sweep, field):
+    summary = json.loads((sweep["truth"] / "truth.json").read_text())
+    del summary[field]
+    (sweep["truth"] / "truth.json").write_text(json.dumps(summary))
+    with pytest.raises(HeldOutError, match=field):
+        load_truths(sweep["truth"])
+
+
+@pytest.mark.parametrize("field", ["steps_sha256", "steps_summary_sha256", "recorder_sha256"])
+@pytest.mark.parametrize(
+    "malformed",
+    [None, 7, "", "ab" * 31, "ab" * 33, "AB" * 32, "zz" * 32],
+    ids=["null", "number", "empty", "short", "long", "uppercase", "not-hex"],
+)
+def test_a_summary_with_a_malformed_step_or_recorder_hash_is_refused(sweep, field, malformed):
+    write_summary(sweep["truth"], **{field: malformed})
+    with pytest.raises(HeldOutError, match=field):
         load_truths(sweep["truth"])
 
 

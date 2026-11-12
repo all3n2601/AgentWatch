@@ -3,7 +3,7 @@
     python -m agentwatch_model.score_held_out --truth DIR [DIR ...] --sweep-root DIR \
         --split FILE [--candidates DIR] [--calibrated DIR] [--output DIR]
 
-`--truth` folders are `sweep-truth-v1` outputs, one per sweep. `--candidates` is the M03
+`--truth` folders are `sweep-truth-v2` outputs, one per sweep. `--candidates` is the M03
 `make train-candidates` folder and `--calibrated` the M04 `make calibrate` folder; nothing is
 trained or fitted here. The pair is loaded and checked against the split first: a pair that
 does not match is a setup error (exit 2) and no attempt is written. Then the split's rows are

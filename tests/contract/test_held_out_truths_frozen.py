@@ -1,4 +1,4 @@
-"""Held-out scoring accepts the truth folders `sweep-truth-v1` writes for the frozen A06 sweeps.
+"""Held-out scoring accepts the truth folders `sweep-truth-v2` writes for the frozen A06 sweeps.
 
 The scorer (`pipelines/model`) re-checks the truth format it reads instead of importing the
 agent service, so this test, which may import both packages, records each frozen sweep's steps,
