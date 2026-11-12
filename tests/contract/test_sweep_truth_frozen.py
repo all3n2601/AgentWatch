@@ -1,10 +1,12 @@
-"""sweep-truth-v1 keeps agreeing with the recorder and with the frozen A06 sweeps.
+"""sweep-truth-v2 keeps agreeing with the recorder and with the frozen A06 sweeps.
 
 The recorder (`services/agent`) and the rule (`pipelines/data`) declare the steps format
 separately because the data pipeline must not import the agent service; the first test keeps the
 two declarations equal. The pinned counts below are those of the scoring branch's attempt
 `20261112T025531Z-220363` for model calls, plus the spec's root-step and no-queue-reference rows.
-They are measured numbers: a mismatch is a defect to diagnose, not a value to update.
+They are measured numbers: a mismatch is a defect to diagnose, not a value to update. The three
+hashes are different: they change legitimately with any edit to the fingerprinted modules or the
+recorder modules, and are then recomputed deliberately in the same PR.
 """
 
 import hashlib
@@ -25,7 +27,8 @@ MODEL_CALL = "model_call"
 # folder -> (steps, model calls, queue, slower, protocol_clean, root_step, no_queue_reference,
 # and the recorder's excluded batches and runs it could not record). queue / slower /
 # protocol_clean map "class or reason" to a model-call count. runs_without_plan counts the live
-# runs, which have no replay plan.
+# runs, which have no replay plan. The three hashes identify the written files: steps.jsonl,
+# steps.json (which carries the recorder's code fingerprint) and truth.jsonl.
 PINNED = {
     "cfg-default-20261111T211237Z-2d75ea": {
         "steps": 1896,
@@ -38,6 +41,9 @@ PINNED = {
         "excluded_batches": [],
         "runs_without_evidence": 0,
         "runs_without_plan": 9,
+        "steps_sha256": "7598a42e00fc0a3cf46dcc945646bf723339e280b0f008a0005c527796e81162",
+        "steps_summary_sha256": "8f49eb141ff4867f974e6411cac3835072e414a05771a7f65b58811665384560",
+        "truth_sha256": "92da54bca1be5b897e32ec72e6dc1f34dad1bb6695fd8a643b84bf3d19d0debe",
     },
     "cfg-hardware-20261111T213039Z-b4ad4a": {
         "steps": 2104,
@@ -50,6 +56,9 @@ PINNED = {
         "excluded_batches": [],
         "runs_without_evidence": 0,
         "runs_without_plan": 24,
+        "steps_sha256": "0ebe5446d0ef9a571d211dff32174ff8dece618dd1e302926bbf495c2d496bfe",
+        "steps_summary_sha256": "9c797b5920975716fccb2493dae36eeb32295c2b1e91fbfba25b04328c33349c",
+        "truth_sha256": "069a8303ac376c58a821b453ade440347fee94d591ce92a5f22f06a838b71308",
     },
 }
 
@@ -95,6 +104,14 @@ def test_frozen_sweeps_keep_their_model_call_truths(folder, tmp_path):
     assert summary["rule"] == rule.values
     truth_bytes = (truth_dir / "truth.jsonl").read_bytes()
     assert summary["truth_sha256"] == hashlib.sha256(truth_bytes).hexdigest()
+    steps_bytes = (steps_dir / "steps.jsonl").read_bytes()
+    steps_summary_bytes = (steps_dir / "steps.json").read_bytes()
+    assert summary["steps_sha256"] == hashlib.sha256(steps_bytes).hexdigest()
+    assert summary["steps_summary_sha256"] == hashlib.sha256(steps_summary_bytes).hexdigest()
+    assert summary["recorder_sha256"] == recorder.recorder_sha256()
+    assert hashlib.sha256(steps_bytes).hexdigest() == expected["steps_sha256"]
+    assert hashlib.sha256(steps_summary_bytes).hexdigest() == expected["steps_summary_sha256"]
+    assert summary["truth_sha256"] == expected["truth_sha256"]
     for name in ("excluded_batches", "runs_without_evidence", "runs_without_plan"):
         assert summary[name] == expected[name], name
     assert len(records) == expected["steps"]

@@ -1,6 +1,6 @@
-"""The sweep-truth-v1 label rule for held-out capacity-sweep steps.
+"""The sweep-truth-v2 label rule for held-out capacity-sweep steps.
 
-Values live in sweep-truth-v1.toml, frozen before any evaluation. `judge` decides, for one
+Values live in sweep-truth-v2.toml; docs/data-card.md records their provenance. `judge` decides, for one
 validated step record from `sweep_steps_input`, each truth as a class or as null with a
 reason, never both. Missing readings stay null; they are never compared as zero.
 """
@@ -38,6 +38,7 @@ CARRIED_SUMMARY_FIELDS = (
     "protocol_version",
     "protocol_sha256",
     "sweep_json_sha256",
+    "recorder_sha256",
     "excluded_batches",
     "runs_without_evidence",
     "runs_without_plan",
@@ -102,7 +103,7 @@ def _require_protocols(table) -> dict[str, str]:
 
 
 def load_truth_rule(path: Path | None = None) -> SweepTruthRule:
-    source = path if path is not None else files("agentwatch_data").joinpath("sweep-truth-v1.toml")
+    source = path if path is not None else files("agentwatch_data").joinpath("sweep-truth-v2.toml")
     try:
         raw = source.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
@@ -193,7 +194,11 @@ def _judge_model_call(record: dict, rule: SweepTruthRule) -> dict:
     threshold = excess = None
 
     if record["phase"] in rule.clean_phases and record["n"] == rule.clean_level:
-        truths["protocol_clean"] = CLASS_NONE
+        # A call that never finished cannot be called clean: its duration is not a measurement.
+        if record["state"] == "completed" and record["duration_seconds"] is not None:
+            truths["protocol_clean"] = CLASS_NONE
+        else:
+            reasons["protocol_clean"] = "not_completed"
     else:
         reasons["protocol_clean"] = "not_applicable"
     # The baseline batches are not judged against their own mean.

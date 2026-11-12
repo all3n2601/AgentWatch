@@ -66,7 +66,7 @@ EVALUATION_CONTRACT ?= pipelines/model/evaluation-contract.toml
 split-dataset: ## Freeze train/validation/test splits of the newest release (refused unless its latest gate verdict passed), with the leakage check
 	release=$$($(LATEST_RELEASE)) && $(DATA).splits --release "$$release" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA)
 
-sweep-truth: ## Label recorded capacity-sweep steps with the sweep-truth-v1 rule (STEPS=<steps folder> [OUTPUT=<folder>])
+sweep-truth: ## Label recorded capacity-sweep steps with the sweep-truth-v2 rule (STEPS=<steps folder> [OUTPUT=<folder>])
 	@test -n "$(STEPS)" || { echo "usage: make sweep-truth STEPS=<steps folder> [OUTPUT=<folder>]" >&2; exit 2; }
 	$(DATA).sweep_truth "$(STEPS)" $(if $(OUTPUT),--output "$(OUTPUT)")
 

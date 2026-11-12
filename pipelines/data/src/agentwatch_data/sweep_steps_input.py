@@ -76,6 +76,7 @@ SUMMARY_KEYS = frozenset(
         "protocol_version",
         "protocol_sha256",
         "sweep_json_sha256",
+        "recorder_sha256",
         "held_out",
         "steps",
         "steps_sha256",
@@ -162,7 +163,7 @@ def _summary_problem(
         return "steps", f"says {summary['steps']} but {STEPS_FILE} has {line_count} records"
     if not _is_text(summary["sweep_folder"]):
         return "sweep_folder", f"must be a nonempty string, got {summary['sweep_folder']!r}"
-    for field in ("sweep_json_sha256", "steps_sha256"):
+    for field in ("sweep_json_sha256", "recorder_sha256", "steps_sha256"):
         if not isinstance(summary[field], str) or not SHA256_HEX.fullmatch(summary[field]):
             return field, f"must be 64 lowercase hex digits, got {summary[field]!r}"
     if summary["sweep_id"] is not None and not isinstance(summary["sweep_id"], str):

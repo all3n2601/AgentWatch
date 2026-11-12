@@ -22,6 +22,7 @@ folder relative to the sweep folder, so a consumer finds the run at
 import hashlib
 import json
 import os
+from importlib.resources import files
 from pathlib import Path
 
 from agentwatch_agent.coverage import read_journal
@@ -75,6 +76,17 @@ RECORD_KEYS = frozenset(
         "baseline",
     }
 )
+# The code behind every record and baseline, fingerprinted into every steps.json: a truth set is
+# traceable to the code that produced its steps, not only to the sweep and the rule that read them.
+# `sweep_labels.baselines` takes durations and mean/stdev from `experiment`, the kept N = 1 batches
+# come from `sweep_analysis`, and the batch count per source from `sweep_protocol`.
+RECORDER_MODULES = (
+    "experiment.py",
+    "sweep_analysis.py",
+    "sweep_labels.py",
+    "sweep_protocol.py",
+    "sweep_steps.py",
+)
 # The keys of the written steps.json: the summary `sweep_steps` returns plus `steps_sha256`,
 # the SHA-256 of steps.jsonl, which `write_steps` adds.
 SUMMARY_KEYS = frozenset(
@@ -86,6 +98,7 @@ SUMMARY_KEYS = frozenset(
         "protocol_version",
         "protocol_sha256",
         "sweep_json_sha256",
+        "recorder_sha256",
         "held_out",
         "steps",
         "steps_sha256",
@@ -225,6 +238,23 @@ def _run_records(
     return records
 
 
+def hash_recorder_sources(sources: dict[str, str]) -> str:
+    """SHA-256 of the sources by module name, independent of line endings."""
+    normalised = {name: text.replace("\r\n", "\n") for name, text in sources.items()}
+    text = json.dumps(normalised, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def recorder_sha256() -> str:
+    """The fingerprint of `RECORDER_MODULES`' source as installed."""
+    return hash_recorder_sources(
+        {
+            name: files("agentwatch_agent").joinpath(name).read_text("utf-8")
+            for name in RECORDER_MODULES
+        }
+    )
+
+
 def sweep_steps(sweep_dir: Path) -> tuple[dict, list[dict]]:
     """The summary and one record per journaled step of the sweep's scored runs.
 
@@ -274,6 +304,7 @@ def sweep_steps(sweep_dir: Path) -> tuple[dict, list[dict]]:
         "protocol_version": record["protocol"]["version"],
         "protocol_sha256": record["protocol_sha256"],
         "sweep_json_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "recorder_sha256": recorder_sha256(),
         "held_out": True,
         "steps": len(records),
         "excluded_batches": excluded,
