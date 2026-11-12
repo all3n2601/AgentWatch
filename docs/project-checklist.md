@@ -437,9 +437,10 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   with the per-request nonce digits first (1,680 of 220,778 and 1,648 of 216,612 queried tokens
   hit when the run token came first). A formal hold-out needs `split-v3`, accepted by Rohit and
   Akshay; no evidence using this method may enter a dataset release before `split-v3` lists it in
-  `held_out_injection_methods` (Akshay, review of PR #64). In the 2026-11-11 A06 preflight dry
+  `held_out_injection_methods` (Akshay, review of PR #64). 2026-11-11: `split-v3` lists it
+  (branch `feature/split-v3`, not merged). In the 2026-11-11 A06 preflight dry
   sweep on real vLLM, each flood had a median of 2,080 prompt tokens, every reply was exactly
-  1 completion token, and cleanup was confirmed (`.data/a06-20261111/preflight-dry-run/`).
+  1 completion token, and cleanup was confirmed (`data/held-out/a06-20261111/preflight-dry-run/`).
 
 **Exit test:** Known isolated workloads exercise each resource and a clean control. Measurements
 and attribution identify the affected class. Real GPU validation uses real inference hardware;
@@ -729,6 +730,23 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   `worker_queue_blocker` and task group `fix-window-count` (held-out check met, independence
   passed). Open: training has one task group and validation is empty, so unseen-task results
   rest on one task.
+  2026-11-11 (split-v3, branch `feature/split-v3`, not merged): `split-v3`
+  (`split-assignment-v3.toml`, `dc2c4c92`) under `eval-contract-v3` (`1cab0cbe`) holds out
+  `worker_queue_blocker` and `prefill-flood-openai-chat-v1`, declares test task groups
+  `fix-window-count` and `fix-median-even`, holds the A06 natural-overload sweeps out of every
+  split by protocol hash, splits only `step-features-v1` rows, and sends whole experiments of the
+  training task to validation by hash ([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md),
+  `pipelines/data/tests/test_split_v3.py`, `test_dataset_splits.py`). On dataset v1,
+  `split-v3+932b2df410a7`: train 1,755, validation 273, test 3,575; leakage, class balance,
+  independence and mixed in test passed. The held-out-method check is `not_met`: neither method
+  has a `step-features-v1` row in this release. Validation holds three experiments of the
+  training task (weak calibration evidence; see the ADR). 2026-11-12: `eval-contract-v3` set
+  to `accepted` in #70 at Akshay's request (identifier `b9f20820` to `1cab0cbe`, split
+  `split-v3+95309c38a53e` to `split-v3+932b2df410a7`, same rows). Open: approval of #70 on this
+  version; training still has one task group; the natural-overload rule runs on synthetic
+  rows only. A split row with no experiment is refused (2026-11-12, after Benoy's review), so an
+  untagged sweep row cannot reach train; the PR that ingests sweep replays must still write
+  `protocol_version` and `protocol_sha256` on every row and test that they are held out.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
 - [ ] Evaluate the expanded rule baseline before training the learned model.
@@ -766,12 +784,12 @@ frozen evaluation sets without tuning against them.
   `tests/contract/test_sweep_truth_frozen.py` pins both sweeps' truth counts (skipped when the DVC
   data is not pulled). It labels only; no model has been scored with it, so the item stays open.
 - [ ] Evaluate natural overload in addition to injector-driven experiments.
-  2026-11-11 (A06, PR #65 on branch `feature/natural-overload-capacity-sweep`, not yet merged):
+  2026-11-11 (A06, PR #65, merged to `main` as `50f393d` on 2026-11-12 UTC):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol
   `natural-overload-sweep-v1`
   ([design](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md)). It
   decides capacity by the declared rules and validates the contention label against vLLM's
-  measured queue time. The GPU preflight on 2026-11-11 (evidence `.data/a06-20261111/`) led to
+  measured queue time. The GPU preflight on 2026-11-11 (evidence `data/held-out/a06-20261111/`) led to
   two protocol changes, approved by Benoy before any protocol evidence existed:
   - **Run limit 900 s → 450 s.** With vLLM, DCGM and GPM sampled every 0.25 s, the per-run
     sample budget (80,000 records, under the live API's 100,000) fits only about 465 s. Every
@@ -786,9 +804,9 @@ frozen evaluation sets without tuning against them.
       only with `average-middle-pair`) was declared with one design and at most 3 attempts.
       It passed on vLLM on the first attempt.
     - It is to stay out of training (Benoy, 2026-11-11). `split-v2` does not name it and its
-      hash would place it in train (position 0.622), so `split-v3` is to list it in
-      `test_task_groups`. Until then no `fix-median-even` rows may enter a release; the
-      `split-v2` code does not enforce this.
+      hash would place it in train (position 0.622), so `split-v3` lists it in
+      `test_task_groups` (2026-11-11, branch `feature/split-v3`, not merged). A release split
+      under `split-v2` must still hold no `fix-median-even` rows; that code does not enforce it.
 
   The preflight also checked the live path and the full sweep flow:
   - **16-agent live batch:** all 63,427 events delivered; CPU/NVML sampler 0 late of 1,495
@@ -799,8 +817,7 @@ frozen evaluation sets without tuning against them.
     preflight evidence it is not a capacity result.
 
   Protocol sweeps, 2026-11-11, at commit `d5eb41a` with a clean tree
-  ([capacity record](capacity-record.md); evidence `.data/a06-20261111/capacity-sweeps/` and
-  `C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`):
+  ([capacity record](capacity-record.md); evidence `data/held-out/a06-20261111/capacity-sweeps/`):
   - **`cfg-default`** (sweep `c5a40c4c-e4b3-4dc1-b660-21ca4c88bc93`): capacity **3** agents
     (`measured`). Throughput at 4 agents was 6.4% below 3 agents. Label `validated` (precision
     0.971, recall 0.999).
@@ -813,9 +830,11 @@ frozen evaluation sets without tuning against them.
     passed (175 and 208 runs). The prefill flood was active and cleaned up in all 6 injected
     batches.
 
-  Tables (2026-11-11, review of PR #65): the new `sweep-record` command regenerates the record's
-  Results and Sampling coverage tables identically from the two sweep folders
-  (`test_sweep_record.py`). Versioning the evidence outside `data/evidence/` is open.
+  Evidence and tables (2026-11-11, review of PR #65): the whole A06 bundle is versioned with DVC
+  as held-out evidence in `data/held-out/a06-20261111/`, outside `data/evidence/`, and is not
+  pulled by default. `sweep-analyse` on a copy of it reproduces both recorded analyses. The new
+  `sweep-record` command regenerates the record's Results and Sampling coverage tables
+  identically (`test_sweep_record.py`).
 
   Open until model and rule scoring of this evidence (A06 PR 3) is done. The capacity
   describes this laptop and these two configurations only, from one sweep each.

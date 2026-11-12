@@ -8,6 +8,8 @@ laptop and these two vLLM configurations only, never cloud capacity.
 
 Design: [natural-overload capacity sweep](superpowers/specs/2026-11-10-natural-overload-capacity-sweep-design.md).
 Command: `capacity-sweep` ([agent README](../services/agent/README.md#capacity-sweep)).
+Evidence: `data/held-out/a06-20261111/`, versioned with DVC and held out of every dataset release
+(see [Reproduce](#reproduce)).
 
 ## Summary
 
@@ -331,7 +333,7 @@ Baselines: 10 source steps from the N = 1 replays (0 omitted). Tool steps have n
 sampling rounds recorded, against those expected for the run's length at the declared 0.25 s
 interval. Late and missed rounds are counted by the coverage method. The tables are
 `sweep-record --coverage-jsonl`'s output, and the raw reports it wrote are in
-`.data/a06-20261111/coverage-per-level.jsonl`.
+`data/held-out/a06-20261111/coverage-per-level.jsonl`.
 
 ### `cfg-default`
 
@@ -425,7 +427,7 @@ interval. Late and missed rounds are counted by the coverage method. The tables 
 
 ## Every attempt, including failed and stopped ones
 
-Nothing was deleted. All of these are under `.data/a06-20261111/` and in the evidence bundle.
+Nothing was deleted. All of these are in `data/held-out/a06-20261111/`.
 
 | When (UTC) | Attempt | Outcome |
 | --- | --- | --- |
@@ -477,22 +479,40 @@ Nothing was deleted. All of these are under `.data/a06-20261111/` and in the evi
 
 ## Reproduce
 
+The evidence is versioned with DVC in `data/held-out/a06-20261111/` (1,917 files, 950 MB,
+pointer `data/held-out/a06-20261111.dvc`). Its `README.txt` lists the contents, and
+`SHA256SUMS` covers every file. It is held-out test evidence: `make pull-dataset` downloads it
+only when it is named, and the dataset build never reads it (see the
+[data card](data-card.md#held-out-a06-evidence-in-no-release)).
+
 ```sh
-# In WSL Ubuntu, with the live API, vLLM and its collector, DCGM and the Windows GPM exporter
-# running (see services/agent/README.md, "Capacity sweep"):
+# Download it (public HTTPS, no login) and check it:
+make pull-dataset TARGET=data/held-out/a06-20261111
+(cd data/held-out/a06-20261111 && sha256sum -c --quiet SHA256SUMS)
+
+# Re-run the analysis without the GPU. sweep-analyse writes analysis.json into the folder it
+# reads, so analyse a copy and leave the versioned store unchanged:
+cp -r data/held-out/a06-20261111/capacity-sweeps /tmp/a06-sweeps
+python -m agentwatch_agent sweep-analyse /tmp/a06-sweeps/<sweep folder>
+
+# Regenerate this record's Results and Sampling coverage tables (reads only):
+S=data/held-out/a06-20261111/capacity-sweeps
+python -m agentwatch_agent sweep-record $S/cfg-default-20261111T211237Z-2d75ea \
+  $S/cfg-hardware-20261111T213039Z-b4ad4a --coverage-jsonl /tmp/coverage-per-level.jsonl
+
+# Run the sweeps again. In WSL Ubuntu, with the live API, vLLM and its collector, DCGM and the
+# Windows GPM exporter running (see services/agent/README.md, "Capacity sweep"):
+H=data/held-out/a06-20261111/sources
 python -m agentwatch_agent capacity-sweep --configuration cfg-default \
-  --source .data/a06-20261111/sources/fix-mean-empty-20261111T160216Z-b526ca \
-  --source .data/a06-20261111/sources/fix-median-even-20261111T184016Z-64d338 \
+  --source $H/fix-mean-empty-20261111T160216Z-b526ca \
+  --source $H/fix-median-even-20261111T184016Z-64d338 \
   --model-backend vllm --gpm-file .data/gpm/gpm.prom --dcgm-url http://127.0.0.1:9400/metrics
 # cfg-hardware: restart vLLM with VLLM_MAX_NUM_SEQS=16 VLLM_GPU_MEMORY_UTILIZATION=0.8 first,
 # then the same command with --configuration cfg-hardware --start-attempt "0.8:started".
-# Re-run the analysis of a recorded sweep offline, without the GPU:
-python -m agentwatch_agent sweep-analyse .data/a06-20261111/capacity-sweeps/<sweep folder>
-# Regenerate this record's Results and Sampling coverage tables (reads only):
-S=.data/a06-20261111/capacity-sweeps
-python -m agentwatch_agent sweep-record $S/cfg-default-20261111T211237Z-2d75ea \
-  $S/cfg-hardware-20261111T213039Z-b4ad4a --coverage-jsonl /tmp/coverage-per-level.jsonl
 ```
 
-Checked on 2026-11-11: `sweep-record`'s output is identical to the tables above, and its
-coverage reports are byte-identical to `coverage-per-level.jsonl`.
+Checked on 2026-11-11 against the DVC copy: `sweep-analyse` reproduces both sweeps' recorded
+level summaries, capacity decisions, excluded batches and label validation, with
+`protocol_sha256_matches: true`. `sweep-record`'s output is identical to the tables above, and
+its coverage reports are byte-identical to `coverage-per-level.jsonl`. A new sweep writes to
+`.data/capacity-sweeps/` by default, never into the versioned store.

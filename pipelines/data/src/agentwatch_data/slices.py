@@ -38,6 +38,7 @@ import pyarrow.parquet as pq
 
 from agentwatch_data.build import DATASET_FILE
 from agentwatch_data.files import json_text, write_atomic
+from agentwatch_data.split_assignment import MISSING_FEATURE_VERSION
 from agentwatch_data.splits import GROUP_KEYS, SPLITS, SPLITS_DIR
 
 SLICE_METHOD = "slices-v2"  # bump when attributes, metrics, or thresholds change
@@ -89,7 +90,12 @@ READING_AVAILABILITY = {
 # an attribute whose real values could equal one of them would need distinct markers.
 UNRECORDED = "(unrecorded)"  # a null attribute, such as agent_model on non-agent runs
 UNASSIGNED = "unassigned"  # rows whose task the split file does not place
-EXCLUDED = "excluded"  # rows of runs the split excluded (a source not allowed in test)
+# Rows in no split: runs of a source not allowed in test, and under split-v3 rows of another
+# feature definition or of the held-out natural-overload set.
+EXCLUDED = "excluded"
+SPLIT_V3_CHECKS = "split_v3_checks"
+# Read when the release has them, so a split-v3 split places rows as make_split did.
+SPLIT_V3_COLUMNS = ("experiment", "feature_version", "protocol_sha256")
 
 # Declared 2026-10-26, before any model is evaluated; never tuned to clear a flag.
 MIN_SLICE_ROWS = 30  # fewer rows cannot support a per-slice metric
@@ -133,16 +139,30 @@ class SliceError(RuntimeError):
 @dataclass(frozen=True)
 class Assignment:
     """Where a split file put each row: by its group (the split's group key), unless its run
-    was excluded."""
+    was excluded. A split-v3 file also names the training experiments it sent to validation,
+    the feature definitions it left out and the held-out protocol hashes."""
 
     groups: dict[str, str]
     excluded_runs: frozenset[str]
     group_key: str = GROUP_KEYS[0]
+    validation_experiments: frozenset[str] = frozenset()
+    left_out_feature_versions: frozenset[str] = frozenset()
+    held_out_protocol_sha256: frozenset[str] = frozenset()
 
     def split_of(self, row: dict[str, object]) -> str:
         if row["run_id"] in self.excluded_runs:
             return EXCLUDED
-        return self.groups.get(str(row[self.group_key]), UNASSIGNED)
+        if row.get("protocol_sha256") in self.held_out_protocol_sha256:
+            return EXCLUDED
+        version = row.get("feature_version")
+        if (MISSING_FEATURE_VERSION if version is None else str(version)) in (
+            self.left_out_feature_versions
+        ):
+            return EXCLUDED
+        split = self.groups.get(str(row[self.group_key]), UNASSIGNED)
+        if split == "train" and row.get("experiment") in self.validation_experiments:
+            return "validation"
+        return split
 
 
 @dataclass(frozen=True)
@@ -163,7 +183,8 @@ def load_rows(release: Path) -> list[dict[str, object]]:
         raise SliceError(f"{path} lacks columns the slices need: {missing}")
     if table.num_rows == 0:
         raise SliceError(f"{path} has no rows to slice")
-    present = [name for name in OPTIONAL_COLUMNS if name in table.column_names]
+    optional = dict.fromkeys((*OPTIONAL_COLUMNS, *SPLIT_V3_COLUMNS))
+    present = [name for name in optional if name in table.column_names]
     return table.select([*REQUIRED_COLUMNS, *present]).to_pylist()
 
 
@@ -175,6 +196,7 @@ def load_assignment(split: Path, release: Path) -> Assignment:
         split_release = document["release"]
         group_key = document["contract"]["group_key"]
         excluded_runs = frozenset(str(run["run_id"]) for run in document["excluded_runs"])
+        v3 = split_v3_placement(document.get(SPLIT_V3_CHECKS))
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise SliceError(f"split file {split} is unreadable: {error}") from error
     if split_release != release.name:
@@ -189,7 +211,20 @@ def load_assignment(split: Path, release: Path) -> Assignment:
         or not all(isinstance(task, str) and name in SPLITS for task, name in groups.items())
     ):
         raise SliceError(f"split file {split} has an invalid task assignment")
-    return Assignment(groups, excluded_runs, group_key)
+    return Assignment(groups, excluded_runs, group_key, *v3)
+
+
+def split_v3_placement(checks: object) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Validation experiments, left-out feature definitions and held-out hashes of split-v3."""
+    if checks is None:
+        return frozenset(), frozenset(), frozenset()
+    if not isinstance(checks, dict):
+        raise TypeError(f"{SPLIT_V3_CHECKS} must be an object")
+    return (
+        frozenset(map(str, checks["validation_experiments"])),
+        frozenset(map(str, checks["excluded_feature_versions"])),
+        frozenset(map(str, checks["held_out_evaluation"]["protocol_sha256"])),
+    )
 
 
 def newest_split(release: Path) -> Path | None:
