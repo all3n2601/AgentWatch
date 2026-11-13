@@ -14,20 +14,22 @@ are represented in the URL. See [the UI redesign plan](ui-redesign-plan.md) for 
 |---|---|
 | `/` (`/overview` redirects here) | On screens at least 1280×760, one screen with no page scroll, as in the approved design (title and callouts over the scene, evidence panel overlapping its foot); stacked below that. The glass-shell Overview for one agent model's runs in the newest dataset release (`docs/design-system.md`): an interactive 3D campus (three.js) whose building halos and moving traffic show each stage's measured excess-wait share and the failed-run share, with hover/click stage cards and a static fallback; callouts for run outcomes, the largest observed slowdown (median over experiments of injected-replay time over the same experiment's clean replays) and steps with host telemetry; call types, steps labelled with excess wait by resource, and a run-outcome ring; and the investigation assistant chat in the right rail, which opens with three suggested questions centred in an otherwise empty conversation. Computed on the server by `lib/model-overview.ts`. Defaults to the model with the most runs; `?model=<id>` selects another when the release has several. Runs that record no model (coding and CPU experiments) are excluded and counted in a note. A failed run opens its record only when `.data/live-import-map.json` (or `AGENTWATCH_IMPORT_MAP`) maps it to a live run; otherwise it is marked "Not imported". The earlier command-center panels (replay dot plot, slowest runs, per-task slowdown) are not on this page |
 | `/runs` | One list of live and saved runs (one page of newest live runs, loaded saved runs): search, source, state group and kind filters, paging, "Older live runs" and "Older saved runs". Live rows show "—" for steps and waiting because the live list API does not carry them |
-| `/runs/UUID` | One run's page, whichever store holds it (the live API is asked first, then saved history; an unknown UUID is 404). Tabs: **Diagnosis** (steps ranked by queue delay, the resource involved and what that rests on), **Summary and scope**, **Timeline** (every step on one time axis beside the selected step's readings), **Resources** and **Evidence**. Saved runs add **Agent** (agent runs); their Resources tab charts CPU pressure from `samples.jsonl` with the clean and contended windows marked, and Evidence lists the three artifacts, the acceptance checks and the attribution settings. Live runs add **Live status** (connection, run state, feed freshness, totals, policy); all four live tabs share one poll of the live API, and the live timeline uses the producer's wall clock (approximate) while step readings use the runner's monotonic ticks. `?tab=` selects a tab |
+| `/runs/UUID` | One run's page, whichever store holds it (the live API is asked first, then saved history; an unknown UUID is 404). Tabs: **Diagnosis** (steps ranked by queue delay, the resource involved and what that rests on), **Summary and scope**, **Timeline** (every step on one time axis beside the selected step's readings), **Resources** and **Evidence**. Saved runs add **Agent** (agent runs); their Resources tab charts CPU pressure from `samples.jsonl` with the clean and contended windows marked, and Evidence lists the three artifacts, the acceptance checks and the attribution settings. Live runs add **Live status** (connection, run state, feed freshness, totals, and the concurrency policy: versions linked while open, limits the runner applied (not recorded), current policy with its read time, read again every 10 s while the run is open and once when it closes; a read whose active version and newest history entry disagree is shown as not confirmed and retried, never as current); all four live tabs share one poll of the live API, and the live timeline uses the producer's wall clock (approximate) while step readings use the runner's monotonic ticks. `?tab=` selects a tab |
 | `/experiments` | Replay experiments from the dataset release: median step time per condition against the same experiment's clean replays, and the median slowdown per condition across experiments (ratios, observed, not causal) |
-| `/compare?run=UUID&baseline=UUID` | Baseline/candidate selection, matching-workload check, measured differences and percent changes |
+| `/compare?run=UUID&baseline=UUID` | Exactly the two saved runs named by UUID (a missing or invalid UUID is reported, never replaced); a baseline and candidate picker and swap; tabs **Summary** (where time changed, interpretation, quality and coverage, largest step differences, evidence exports), **Configuration** and **Steps**. One compatibility check, shared with the Runs selection (`lib/run-compatibility.ts`), lists every setting as match, mismatch or unknown, including competing iterations (contention), the agent model (unknown for a coding run without agent evidence; not applicable for CPU runs) and the concurrency policy. A mismatch suppresses every delta, ratio and headline, draws no paired bars (a shared bar scale would still show the ratio; each run's values are listed as text) and lists the differing settings; when every recorded setting matches but the policy is not recorded (true of every saved run today), neutral observed differences are shown with "Policy not recorded; full compatibility cannot be verified", never "Configuration match". No faster/slower claims or better/worse colouring; throughput and p95 task latency are "Not recorded" |
 | `/quality` | The dataset release summary: labels, label basis, workload mix, telemetry coverage, `split-v2` composition, held-out checks, single-feature AUC, empty-value shares, quality-gate result. Reads `data/datasets` (or `AGENTWATCH_DATASET_DIR`); shows "Dataset unavailable" with a `make pull-dataset` hint when files are missing, malformed, or disagree with the manifest counts |
-| `/controls` | Versioned concurrency policy |
+| `/controls` | Versioned manual concurrency limits for coding-agent runs (`docs/concurrency-policy.md`): the active version with its read time and Read again, limits applied by runners (not recorded by the API), a form that starts from the active limits and previews the change, disable and restore with confirmation, paginated history; conflicts, rejected and unconfirmed changes as banners, each described to the inputs it is about (`aria-describedby`); Retry states the change it resends; Read again keeps keyboard focus. Nothing changes limits automatically |
 | `/settings` | Persistent table density, sidebar and automatic completed-history refresh preferences, observed source/connection details |
 | `/live?liveRun=UUID` | Live runs (in the sidebar): the newest runs from the live API beside the selected run's Status, Timeline, Resources and Evidence tabs (`?tab=`). Follows the newest run when no `liveRun` is given; an unknown or invalid UUID is reported, never replaced by another run |
 
 ### Routing
 
-- Each page is its own App Router segment: `app/page.tsx` (Overview), `app/runs`,
-  `app/runs/[runId]`, `app/experiments`, `app/compare`, `app/quality`, `app/controls`,
-  `app/settings`, `app/live` and the development-only `app/design-system`. The earlier
-  dashboard sections share their loading rules through `components/dashboard-section.tsx`.
+- Each page is its own App Router segment in the `app/(workspace)/` route group, whose layout
+  keeps the shell mounted: `page.tsx` (Overview), `runs`, `runs/[runId]`, `experiments`,
+  `compare`, `quality`, `controls`, `settings`, `live` and the development-only
+  `design-system`. Pages read their data on the server through the loaders in `lib/`
+  (`runs-page-load.ts`, `run-load.ts`, `experiments-page-load.ts`, `dataset-load.ts`, and
+  `experiments.ts` for saved history and requested runs).
 - Links are built from `lib/routes.ts`. `typedRoutes` is on in `next.config.ts`, and
   `pnpm typecheck` runs `next typegen` first, so a link to a page that does not exist fails the
   typecheck.
@@ -103,8 +105,10 @@ If the API returns more history, use the Runs page's older-history control.
 - Model requests and inference wall time: preserved agent requests; tracked separately
   from worker timings so inference is not counted as tool execution.
 - Token totals: server-reported counts; missing values remain unavailable rather than zero.
-- Comparison: candidate minus baseline. Matching output, workload iterations, and worker
-  capacity are checked. A mismatch is visibly flagged and does not establish a regression.
+- Comparison: candidate minus baseline, observed and not causal. Every recorded setting
+  (workload kind, workload, model, worker capacity, iterations, competing iterations, tests per
+  step, baseline repeats, output checksum, attribution rule) and the concurrency policy are
+  checked. A mismatch suppresses differences; an unknown setting is never counted as a match.
 - PSI: raw Linux CPU pressure avg10 readings, not queue fractions. Unsupported local Mac
   readings are shown as unavailable, while recorded sample and valid-reading counts are shown.
 
@@ -133,5 +137,7 @@ pnpm --filter @agentwatch/web build
 
 The schema and aggregation tests cover invalid measurements, missing versus zero values,
 tool-call retention, ordered span timestamps, mixed tool/inference totals, recorded-time scopes,
-and matching comparison workloads. Browser checks exercise page navigation, run filtering,
-span inspection, recorded samples, preference persistence, and mobile layout.
+and the shared comparison compatibility check. Browser checks exercise page navigation, run
+filtering, span inspection, recorded samples, preference persistence, mobile layout, policy
+controls (`e2e/concurrency-controls.spec.ts`), a run's policy (`e2e/run-policy.spec.ts`) and
+Compare (`e2e/compare-runs.spec.ts`, against synthetic saved runs from the fixture API).

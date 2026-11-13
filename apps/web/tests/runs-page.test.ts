@@ -17,6 +17,7 @@ import {
   toggleCompare,
   UNATTRIBUTED,
 } from "../lib/runs-page";
+import { buildComparison } from "../lib/compare-page";
 
 // Synthetic runs for tests only; they are not recorded-run evidence.
 const telemetry = (status: string) => ({
@@ -218,19 +219,13 @@ test("summaries count each state group once", () => {
   });
 });
 
-test("comparison needs two saved runs of one kind and names differing configuration", () => {
-  const older = savedRow(experiment("older", 1_000));
-  const newer = savedRow(
-    experiment("newer", 5_000, {
-      experiment: {
-        worker_capacity: 2,
-        iterations: 3,
-        baseline_repeats: 3,
-        workload: "fixed Python project: run three tests",
-        tests_per_step: 3,
-      },
-    }),
-  );
+test("comparison needs two saved runs and names differing configuration", () => {
+  const olderRun = experiment("older", 1_000);
+  const newerRun = experiment("newer", 5_000, {
+    experiment: { ...olderRun.experiment, worker_capacity: 2 },
+  });
+  const older = savedRow(olderRun);
+  const newer = savedRow(newerRun);
   assert.deepEqual(compareSelection([older]), {
     status: "incomplete",
     selected: 1,
@@ -241,15 +236,39 @@ test("comparison needs two saved runs of one kind and names differing configurat
   if (ready.status === "ready") {
     assert.equal(ready.baseline.id, "older");
     assert.equal(ready.candidate.id, "newer");
-    assert.deepEqual(ready.differences, ["worker capacity"]);
+    assert.equal(ready.compatibility.verdict, "differs");
+    assert.deepEqual(ready.compatibility.differing, ["Worker capacity"]);
+    // The Runs selection and a direct Compare URL apply one rule to the pair.
+    assert.deepEqual(
+      ready.compatibility,
+      buildComparison(olderRun, newerRun).compatibility,
+    );
   }
 
-  const cpu = savedRow(experiment("cpu", 2_000, { kind: "cpu" }));
-  assert.equal(compareSelection([older, cpu]).status, "incompatible");
+  // A different kind is a recorded mismatch that Compare lists, not a hidden pair.
+  const cpu = compareSelection([
+    older,
+    savedRow(experiment("cpu", 2_000, { kind: "cpu" })),
+  ]);
+  assert.equal(cpu.status, "ready");
+  if (cpu.status === "ready")
+    assert.ok(cpu.compatibility.differing.includes("Workload kind"));
   assert.equal(
     compareSelection([older, live("l", "2026-11-05T17:00:00Z")]).status,
     "incompatible",
   );
+});
+
+test("matching recorded settings stay unverified while the policy is unknown", () => {
+  const selection = compareSelection([
+    savedRow(experiment("a", 1_000)),
+    savedRow(experiment("b", 2_000)),
+  ]);
+  assert.equal(selection.status, "ready");
+  if (selection.status === "ready") {
+    assert.equal(selection.compatibility.verdict, "unverified");
+    assert.ok(selection.compatibility.unknown.includes("Concurrency policy"));
+  }
 });
 
 test("comparison selection keeps at most two runs", () => {

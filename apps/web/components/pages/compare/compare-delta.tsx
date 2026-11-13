@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 /**
  * Candidate minus baseline. DeltaChip prints sub-second differences in ms/µs
  * and keeps the absolute change when a measured-zero baseline has no ratio.
+ * Neutral: an observed difference between two uncontrolled runs is neither
+ * better nor worse.
  */
 export function CompareDelta({
   delta,
@@ -19,6 +21,7 @@ export function CompareDelta({
     <DeltaChip
       deltaSeconds={delta.deltaSeconds}
       ratio={delta.ratio}
+      neutral
       className={className}
     />
   );

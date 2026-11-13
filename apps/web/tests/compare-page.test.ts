@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   alignSteps,
   buildComparePage,
-  compareConfiguration,
+  buildComparison,
   compareHref,
   compareTab,
   formatStoredAt,
@@ -11,10 +11,20 @@ import {
   interpretation,
   largestDifferences,
   metricDeltas,
+  pairedBarLengths,
+  qualityRows,
+  SINGLE_RUN_LIMITATION,
   stepLabel,
   timingDelta,
 } from "../lib/compare-page";
 import type { DashboardData, Experiment, Step } from "../lib/experiment-schema";
+import {
+  compareConfiguration,
+  configurationOf,
+  POLICY_NOT_RECORDED_WARNING,
+  policyUnknown,
+  verdictBadge,
+} from "../lib/run-compatibility";
 
 // Synthetic runs for tests only; they are not recorded-run evidence.
 function step(stepId: string, queue: number, execution: number): Step {
@@ -47,6 +57,7 @@ function run(
     experiment: {
       worker_capacity: 1,
       iterations: 600000,
+      competing_iterations: 4800000,
       baseline_repeats: 3,
       workload: "fixed Python project",
       tests_per_step: 3,
@@ -65,6 +76,14 @@ function run(
     ...overrides,
   };
 }
+
+const configurations = (baseline: Experiment, candidate: Experiment) =>
+  compareConfiguration(configurationOf(baseline), configurationOf(candidate));
+
+const withExperiment = (
+  id: string,
+  experiment: Partial<Experiment["experiment"]>,
+) => run(id, { experiment: { ...run(id).experiment, ...experiment } });
 
 const data = (experiments: Experiment[]): DashboardData => ({
   experiments,
@@ -90,11 +109,15 @@ test("timingDelta keeps missing readings distinct from zero", () => {
   assert.equal(timingDelta(2, 5).ratio, 2.5);
 });
 
-test("compareConfiguration matches identical settings", () => {
-  const result = compareConfiguration(run("a"), run("b"));
-  assert.equal(result.allMatch, true);
-  assert.equal(result.matchingWorkload, true);
+test("identical recorded settings are unverified, never a match, while policy is unknown", () => {
+  const result = configurations(run("a"), run("b"));
+  assert.equal(result.verdict, "unverified");
   assert.deepEqual(result.differing, []);
+  // These coding runs have no agent evidence, so their model is not recorded either.
+  assert.deepEqual(result.unknown, ["Agent model", "Concurrency policy"]);
+  const policy = result.checks.find((c) => c.id === "policy");
+  assert.equal(policy?.status, "unknown");
+  assert.equal(policy?.baseline, "Not recorded");
 });
 
 test("compareConfiguration exposes each differing setting", () => {
@@ -109,9 +132,8 @@ test("compareConfiguration exposes each differing setting", () => {
     },
     clean: { ...step("clean", 0.001, 0.5), checksum: "def" },
   });
-  const result = compareConfiguration(run("a"), candidate);
-  assert.equal(result.sameKind, false);
-  assert.equal(result.matchingWorkload, false);
+  const result = configurations(run("a"), candidate);
+  assert.equal(result.verdict, "differs");
   assert.deepEqual(result.differing, [
     "Workload kind",
     "Workload",
@@ -122,6 +144,38 @@ test("compareConfiguration exposes each differing setting", () => {
   const capacity = result.checks.find((c) => c.id === "capacity");
   assert.equal(capacity?.baseline, "1 worker");
   assert.equal(capacity?.candidate, "2 workers");
+  // The candidate records no contention, which is unknown rather than different.
+  assert.equal(
+    result.checks.find((c) => c.id === "contention")?.status,
+    "unknown",
+  );
+});
+
+test("differing contention is a recorded mismatch", () => {
+  const result = configurations(
+    run("a"),
+    withExperiment("b", { competing_iterations: 9600000 }),
+  );
+  assert.equal(result.verdict, "differs");
+  assert.deepEqual(result.differing, ["Competing iterations (contention)"]);
+});
+
+test("contention missing on one run is unknown, never a match", () => {
+  const withoutContention = { ...run("b").experiment };
+  delete withoutContention.competing_iterations;
+  const result = configurations(
+    run("a"),
+    run("b", { experiment: withoutContention }),
+  );
+  const contention = result.checks.find((c) => c.id === "contention");
+  assert.equal(contention?.status, "unknown");
+  assert.equal(contention?.candidate, "Not recorded");
+  assert.deepEqual(result.unknown, [
+    "Agent model",
+    "Competing iterations (contention)",
+    "Concurrency policy",
+  ]);
+  assert.equal(result.verdict, "unverified");
 });
 
 test("checksum compares full values though it displays shortened", () => {
@@ -133,15 +187,101 @@ test("checksum compares full values though it displays shortened", () => {
   const b = run("b", {
     clean: { ...step("clean", 0, 1), checksum: long("bb") },
   });
-  const check = compareConfiguration(a, b).checks.find(
-    (c) => c.id === "checksum",
-  );
+  const check = configurations(a, b).checks.find((c) => c.id === "checksum");
   assert.equal(check?.baseline, check?.candidate);
-  assert.equal(check?.matches, false);
+  assert.equal(check?.status, "differs");
   assert.equal(check?.baselineTitle, long("aa"));
 });
 
-test("agent model mismatch when only one run has agent evidence", () => {
+test("two coding runs without agent evidence leave the model unknown, not a match", () => {
+  const result = configurations(run("a"), run("b"));
+  const model = result.checks.find((c) => c.id === "model");
+  assert.equal(model?.status, "unknown");
+  assert.equal(model?.baseline, "Not recorded");
+  assert.equal(model?.candidate, "Not recorded");
+  assert.ok(result.unknown.includes("Agent model"));
+  assert.equal(result.verdict, "unverified");
+});
+
+test("CPU runs have no agent by design, so their model is a recorded match", () => {
+  const cpu = (id: string) =>
+    run(id, {
+      kind: "cpu",
+      experiment: { ...run(id).experiment, tests_per_step: null },
+    });
+  const model = configurations(cpu("a"), cpu("b")).checks.find(
+    (c) => c.id === "model",
+  );
+  assert.equal(model?.status, "same");
+  assert.equal(model?.candidate, "Not applicable");
+});
+
+test("the policy check is found by its ID, whatever its label", () => {
+  const result = configurations(run("a"), run("b"));
+  assert.equal(policyUnknown(result), true);
+  const relabelled = {
+    ...result,
+    checks: result.checks.map((c) =>
+      c.id === "policy" ? { ...c, label: "Policy" } : c,
+    ),
+    unknown: result.unknown.map((label) =>
+      label === "Concurrency policy" ? "Policy" : label,
+    ),
+  };
+  assert.equal(policyUnknown(relabelled), true);
+  const known = {
+    ...result,
+    checks: result.checks.map((c) =>
+      c.id === "policy" ? { ...c, status: "same" as const } : c,
+    ),
+  };
+  assert.equal(policyUnknown(known), false);
+});
+
+test("verdictBadge is the one count label and tone for each verdict", () => {
+  assert.deepEqual(verdictBadge(configurations(run("a"), run("b"))), {
+    label: "2 unknown",
+    tone: "warning",
+  });
+  assert.deepEqual(
+    verdictBadge(
+      configurations(run("a"), withExperiment("b", { iterations: 1 })),
+    ),
+    { label: "1 differ", tone: "danger" },
+  );
+  assert.deepEqual(
+    verdictBadge({ checks: [], verdict: "match", differing: [], unknown: [] }),
+    { label: "Match", tone: "success" },
+  );
+});
+
+test("paired bars share a scale only while differences are shown", () => {
+  const metric = timingDelta(10, 100);
+  assert.deepEqual(pairedBarLengths(metric, true), {
+    baseline: 0.1,
+    candidate: 1,
+  });
+  // A mismatch withholds the ratio, so no bar may encode 10 s against 100 s as 10×.
+  assert.equal(pairedBarLengths(metric, false), null);
+  assert.deepEqual(pairedBarLengths(timingDelta(null, 2), true), {
+    baseline: null,
+    candidate: 1,
+  });
+});
+
+test("a mismatched comparison keeps each run's values but no bar scale", () => {
+  const comparison = buildComparison(
+    run("a"),
+    withExperiment("b", { iterations: 1 }),
+  );
+  assert.equal(comparison.differencesShown, false);
+  const total = comparison.metrics.find((m) => m.id === "total");
+  assert.ok(total?.baselineSeconds && total.candidateSeconds);
+  assert.equal(total.ratio, null);
+  assert.equal(pairedBarLengths(total, comparison.differencesShown), null);
+});
+
+test("agent model is unknown when only one coding run has agent evidence", () => {
   const agent = {
     model: "qwen3:1.7b",
     status: "passed" as const,
@@ -153,8 +293,13 @@ test("agent model mismatch when only one run has agent evidence", () => {
     ],
   };
   const withAgent = run("b", { agent });
-  const result = compareConfiguration(run("a"), withAgent);
-  assert.deepEqual(result.differing, ["Agent model"]);
+  const result = configurations(run("a"), withAgent);
+  assert.deepEqual(result.differing, []);
+  assert.deepEqual(result.unknown, ["Agent model", "Concurrency policy"]);
+  assert.equal(
+    result.checks.find((c) => c.id === "model")?.baseline,
+    "Not recorded",
+  );
   const inference = metricDeltas(run("a"), withAgent).find(
     (m) => m.id === "inference",
   );
@@ -241,7 +386,7 @@ test("stepLabel names recorded step ids", () => {
   assert.equal(stepLabel("custom"), "custom");
 });
 
-test("headline states direction at display precision", () => {
+test("the headline states the observed total without faster or slower", () => {
   const metric = (ratio: number | null) => ({
     id: "total",
     label: "Total",
@@ -251,31 +396,91 @@ test("headline states direction at display precision", () => {
     deltaSeconds: ratio === null ? null : ratio - 1,
     ratio,
   });
-  assert.equal(headline(metric(11.4))?.title, "Candidate is 11.4× slower");
-  assert.equal(headline(metric(0.5))?.title, "Candidate is 2.0× faster");
-  assert.equal(headline(metric(1.02))?.direction, "same");
+  for (const ratio of [11.4, 0.5, 1.02]) {
+    const title = headline(metric(ratio))?.title ?? "";
+    assert.match(title, /^Total step time [+−±]/);
+    assert.doesNotMatch(title, /faster|slower|better|worse/i);
+  }
+  assert.match(headline(metric(11.4))?.title ?? "", /\(11\.4× of baseline\)$/);
   assert.equal(headline(metric(null)), null);
 });
 
 test("interpretation is observational and names differing settings", () => {
   const same = run("a");
   const metrics = metricDeltas(same, run("b", {}, 2));
-  const matched = interpretation(compareConfiguration(same, run("b")), metrics);
-  assert.match(matched, /observed, not causal/);
-  assert.doesNotMatch(matched, /because|caused/i);
+  const unverified = interpretation(configurations(same, run("b")), metrics);
+  assert.match(unverified, /observed, not causal/);
+  assert.ok(unverified.includes(POLICY_NOT_RECORDED_WARNING));
+  assert.doesNotMatch(unverified, /because|caused|settings match\./i);
   const differing = interpretation(
-    compareConfiguration(
-      same,
-      run("b", { experiment: { ...same.experiment, worker_capacity: 4 } }),
-    ),
+    configurations(same, withExperiment("b", { worker_capacity: 4 })),
     metrics,
   );
-  assert.match(differing, /Settings differ \(worker capacity\)/);
+  assert.match(differing, /Recorded settings differ: Worker capacity\./);
+  // A blocked pair states no observed difference at all.
+  assert.doesNotMatch(differing, /candidate minus baseline|\+/);
   const otherKind = interpretation(
-    compareConfiguration(same, run("b", { kind: "cpu" })),
+    configurations(same, run("b", { kind: "cpu" })),
     metrics,
   );
-  assert.match(otherKind, /not comparable/);
+  assert.match(otherKind, /Workload kind/);
+});
+
+test("a recorded mismatch suppresses every delta, ratio and headline", () => {
+  const comparison = buildComparison(
+    run("a"),
+    run("b", { experiment: { ...run("b").experiment, iterations: 1 } }, 2),
+  );
+  assert.equal(comparison.differencesShown, false);
+  assert.equal(comparison.headline, null);
+  assert.deepEqual(comparison.largestStepDifferences, []);
+  for (const delta of [
+    ...comparison.metrics,
+    ...comparison.steps.map((s) => s.duration),
+  ]) {
+    assert.equal(delta.deltaSeconds, null);
+    assert.equal(delta.ratio, null);
+  }
+  // Each run's own values stay visible.
+  const total = comparison.metrics.find((m) => m.id === "total");
+  assert.ok((total?.baselineSeconds ?? 0) > 0);
+  assert.ok((total?.candidateSeconds ?? 0) > 0);
+});
+
+test("unknown policy keeps neutral observed differences when recorded settings match", () => {
+  const comparison = buildComparison(run("a"), run("b", {}, 2));
+  assert.equal(comparison.compatibility.verdict, "unverified");
+  assert.equal(comparison.differencesShown, true);
+  const total = comparison.metrics.find((m) => m.id === "total");
+  assert.ok(Math.abs((total?.deltaSeconds ?? 0) - 3) < 1e-9);
+  assert.doesNotMatch(comparison.headline?.title ?? "", /faster|slower/i);
+});
+
+test("quality rows report unrecorded throughput and tail latency and keep coverage per run", () => {
+  const candidate = run("b", {
+    checks: { passed: false },
+    clean: {
+      ...step("clean", 0.001, 0.5),
+      telemetry: {
+        sample_count: 4,
+        valid_pressure_samples: 0,
+        max_cpu_pressure_avg10_percent: null,
+        status: "unsupported",
+      },
+    },
+  });
+  const rows = Object.fromEntries(
+    qualityRows(run("a"), candidate).map((row) => [row.id, row]),
+  );
+  assert.equal(rows.throughput.baseline, "Not recorded");
+  assert.equal(rows.p95.candidate, "Not recorded");
+  assert.equal(rows.checks.baseline, "Passed");
+  assert.equal(rows.checks.candidate, "Failed");
+  assert.equal(rows["clean-telemetry"].baseline, "No telemetry recorded");
+  assert.equal(
+    rows["clean-telemetry"].candidate,
+    "4 samples · 0 valid pressure readings (unsupported)",
+  );
 });
 
 test("compareTab accepts only the page's tab ids", () => {
@@ -346,13 +551,14 @@ test("buildComparePage compares two chosen runs", () => {
   });
   assert.equal(page.comparison?.candidate.id, "b");
   assert.equal(page.comparison?.baseline.id, "a");
-  assert.equal(page.comparison?.headline?.direction, "slower");
+  assert.match(page.comparison?.headline?.title ?? "", /^Total step time \+/);
   assert.equal(
     page.comparison?.baseline.evidenceHref,
     "/api/experiments/coding/artifact?file=results.json&run_id=a",
   );
   assert.deepEqual(page.comparison?.limitations, [
     "CPU worker queue only; not host saturation",
+    SINGLE_RUN_LIMITATION,
   ]);
 });
 

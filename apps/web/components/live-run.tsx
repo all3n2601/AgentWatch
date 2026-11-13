@@ -25,11 +25,22 @@ import {
   PanelHeader,
 } from "@/components/ui/glass-panel";
 import { StatusBadge, TONE_TEXT } from "@/components/ui/status-badge";
-import type { KeyValueItem } from "@/components/widgets/evidence-lists";
+import {
+  KeyValueList,
+  type KeyValueItem,
+} from "@/components/widgets/evidence-lists";
+import { startPolling } from "@/components/use-live-feed";
 import { duration } from "@/lib/dashboard-data";
 import { createPolicyBrowserApi, type PolicyResult } from "@/lib/policy-api";
-import type { RunPolicyView } from "@/lib/policy-api-schema";
-import { runPolicyText } from "@/lib/policy-view";
+import type { PolicyControls, RunPolicyView } from "@/lib/policy-api-schema";
+import {
+  controlsConsistent,
+  currentPolicyText,
+  INCONSISTENT_POLICY_RETRY_MS,
+  nextRunPolicyReadMs,
+  runAppliedLimitsText,
+  runPolicyText,
+} from "@/lib/policy-view";
 import {
   activeSteps,
   failedSteps,
@@ -495,28 +506,102 @@ function useBrowserClock(ticking: boolean) {
   return now;
 }
 
+type RunPolicyRead = {
+  key: string;
+  run: PolicyResult<RunPolicyView>;
+  current: PolicyResult<PolicyControls>;
+  /** Browser wall time of the latest read whose current policy was consistent. */
+  currentReadAt: string | null;
+  retrying: boolean;
+};
+
 /**
- * The concurrency policy versions active while the run was open. Read again when the run
- * closes, since a policy change while it is open adds a version.
+ * The policy versions linked to the run, what its runner applied, and the current policy.
+ * Read again on the live view's poll loop while the run is open, since a policy change then
+ * links a new version and replaces the current one, and once more when it closes.
  */
-function RunPolicyLine({ runId, closed }: { runId: string; closed: boolean }) {
+function RunPolicy({ runId, closed }: { runId: string; closed: boolean }) {
   const key = `${runId}:${closed}`;
-  const [policy, setPolicy] = useState<{
-    key: string;
-    result: PolicyResult<RunPolicyView>;
-  } | null>(null);
+  const [policy, setPolicy] = useState<RunPolicyRead | null>(null);
   useEffect(() => {
-    const controller = new AbortController();
-    void policyApi.runPolicy(runId, controller.signal).then((result) => {
-      if (!controller.signal.aborted) setPolicy({ key, result });
+    let inconsistentReads = 0;
+    let currentReadAt: string | null = null;
+    const polling = startPolling(async (signal) => {
+      const [run, current] = await Promise.all([
+        policyApi.runPolicy(runId, signal),
+        policyApi.current(signal),
+      ]);
+      if (signal.aborted) return null;
+      const inconsistent = current.ok && !controlsConsistent(current.data);
+      inconsistentReads = inconsistent ? inconsistentReads + 1 : 0;
+      if (current.ok && !inconsistent) currentReadAt = new Date().toISOString();
+      const next = nextRunPolicyReadMs({ closed, inconsistentReads });
+      setPolicy({
+        key,
+        run,
+        current,
+        currentReadAt,
+        retrying: inconsistent && next === INCONSISTENT_POLICY_RETRY_MS,
+      });
+      return next;
     });
-    return () => controller.abort();
-  }, [key, runId]);
+    return () => polling.stop();
+  }, [key, runId, closed]);
+  // Results for a previously selected run are never shown for this one.
+  const shown = policy?.key === key ? policy : null;
+  const run = shown?.run ?? null;
+  const notApplicable = run?.ok === true && !run.data.applicable;
+  const current = shown?.current ?? null;
+  const currentConsistent =
+    current?.ok === true && controlsConsistent(current.data);
+  const items: KeyValueItem[] = [
+    {
+      id: "linked",
+      label: "Policy active while open",
+      value: runPolicyText(run),
+    },
+    {
+      id: "applied",
+      label: "Limits applied by the runner",
+      value: notApplicable ? "Not applicable" : "Not available",
+      ...(!notApplicable && {
+        status: { label: "Not recorded", tone: "warning" as const },
+      }),
+    },
+    {
+      id: "current",
+      label: "Current policy",
+      value: currentPolicyText(current, { retrying: shown?.retrying ?? false }),
+      ...(current?.ok &&
+        !currentConsistent && {
+          status: { label: "Not confirmed", tone: "warning" as const },
+        }),
+    },
+    {
+      id: "current-read-at",
+      // A dated snapshot: the policy can change between reads.
+      label: currentConsistent
+        ? "Current policy read at"
+        : "Last confirmed read",
+      value: shown?.currentReadAt ? (
+        <Timestamp iso={shown.currentReadAt} />
+      ) : (
+        "Not read yet"
+      ),
+    },
+  ];
   return (
-    <p className="flex items-start gap-2 text-sm text-ink-muted">
-      <Scale className="mt-0.5 size-4 shrink-0" aria-hidden />
-      {runPolicyText(policy?.key === key ? policy.result : null)}
-    </p>
+    <InsetCard role="region" aria-labelledby={`run-policy-${runId}`}>
+      <h3
+        id={`run-policy-${runId}`}
+        className="mb-2 flex items-center gap-2 text-[15px] font-semibold text-ink"
+      >
+        <Scale className="size-4 shrink-0" aria-hidden />
+        Concurrency policy
+      </h3>
+      <KeyValueList items={items} dense className="[&_dd]:break-words" />
+      <p className="mt-2 text-sm text-ink-muted">{runAppliedLimitsText(run)}</p>
+    </InsetCard>
   );
 }
 
@@ -622,7 +707,7 @@ export function LiveRunStatus({
         <LiveGaps view={view} />
         <FailedSteps steps={failed} />
         <Totals view={view} run={run} />
-        <RunPolicyLine
+        <RunPolicy
           runId={runId}
           closed={outcome !== "active" && outcome !== "unknown"}
         />

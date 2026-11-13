@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
   ChartColumn,
+  ClipboardCheck,
   Download,
   ExternalLink,
   Info,
@@ -17,27 +18,69 @@ import {
   type KeyValueItem,
 } from "@/components/widgets/evidence-lists";
 import { Measurement } from "@/components/widgets/measurement";
-import type {
-  AlignedStep,
-  Comparison,
-  Compatibility,
-  CompatibilityCheck,
-  MetricDelta,
-  RunSummary,
-  StepTiming,
+import {
+  pairedBarLengths,
+  type AlignedStep,
+  type Comparison,
+  type MetricDelta,
+  type QualityRow,
+  type RunSummary,
+  type StepTiming,
 } from "@/lib/compare-page";
 import { routes } from "@/lib/routes";
-import { relativeLengths } from "@/lib/segments";
+import {
+  policyUnknown,
+  POLICY_NOT_RECORDED_WARNING,
+  type CheckStatus,
+  type Compatibility,
+  type CompatibilityCheck,
+  verdictBadge,
+} from "@/lib/run-compatibility";
 import { cn } from "@/lib/utils";
 import { CompareDelta, TimingText } from "./compare-delta";
 
-/** "Match" / "Mismatch" use the shared status tones (lib/tone.ts). */
-const matchStatus = (matches: boolean) => ({
-  label: matches ? "Match" : "Mismatch",
-});
+/** "Match" / "Mismatch" use the shared status tones (lib/tone.ts); unknown is neither. */
+const CHECK_STATUS: Record<CheckStatus, { label: string; tone?: "info" }> = {
+  same: { label: "Match" },
+  differs: { label: "Mismatch" },
+  unknown: { label: "Unknown", tone: "info" },
+};
+
+/** Baseline and candidate values, one per line, with the full value on hover. */
+function PairValue({
+  baseline,
+  candidate,
+  baselineTitle,
+  candidateTitle,
+  className,
+}: {
+  baseline: React.ReactNode;
+  candidate: React.ReactNode;
+  baselineTitle?: string;
+  candidateTitle?: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "block space-y-0.5 text-right [overflow-wrap:anywhere]",
+        className,
+      )}
+    >
+      <span className="block" title={baselineTitle}>
+        <span className="text-ink-muted">Baseline </span>
+        {baseline}
+      </span>
+      <span className="block" title={candidateTitle}>
+        <span className="text-ink-muted">Candidate </span>
+        {candidate}
+      </span>
+    </span>
+  );
+}
 
 function CheckValue({ check }: { check: CompatibilityCheck }) {
-  if (check.matches)
+  if (check.status === "same")
     return (
       <span
         title={check.candidateTitle}
@@ -46,18 +89,7 @@ function CheckValue({ check }: { check: CompatibilityCheck }) {
         {check.candidate}
       </span>
     );
-  return (
-    <span className="block space-y-0.5 text-right [overflow-wrap:anywhere]">
-      <span className="block" title={check.baselineTitle}>
-        <span className="text-ink-muted">Baseline </span>
-        {check.baseline}
-      </span>
-      <span className="block" title={check.candidateTitle}>
-        <span className="text-ink-muted">Candidate </span>
-        {check.candidate}
-      </span>
-    </span>
-  );
+  return <PairValue {...check} />;
 }
 
 export function ConfigurationPanel({
@@ -71,8 +103,9 @@ export function ConfigurationPanel({
     id: check.id,
     label: check.label,
     value: <CheckValue check={check} />,
-    status: matchStatus(check.matches),
+    status: CHECK_STATUS[check.status],
   }));
+  const verdict = verdictBadge(compatibility);
   return (
     <GlassPanel
       as="section"
@@ -84,16 +117,7 @@ export function ConfigurationPanel({
         icon={ShieldCheck}
         title="Configuration check"
         description="Settings recorded on both runs"
-        actions={
-          <StatusBadge
-            label={
-              compatibility.allMatch
-                ? "Configuration match"
-                : `${compatibility.differing.length} differ`
-            }
-            tone={compatibility.allMatch ? "success" : "warning"}
-          />
-        }
+        actions={<StatusBadge label={verdict.label} tone={verdict.tone} />}
         className="shrink-0"
       />
       <div
@@ -104,11 +128,26 @@ export function ConfigurationPanel({
       >
         <KeyValueList items={items} dense />
       </div>
+      {policyUnknown(compatibility) && (
+        <p className="mt-3 shrink-0 text-sm text-ink-muted">
+          {POLICY_NOT_RECORDED_WARNING}: saved runs do not record which
+          concurrency policy they ran under.
+        </p>
+      )}
     </GlassPanel>
   );
 }
 
 const BAR_MIN_VISIBLE_PERCENT = 1;
+
+/** Shown where a difference would be when recorded settings differ. */
+function NotCompared({ className }: { className?: string }) {
+  return (
+    <span className={cn("text-sm text-ink-subtle", className)}>
+      <span aria-hidden>—</span> Not compared
+    </span>
+  );
+}
 
 function PairedBar({
   label,
@@ -148,32 +187,48 @@ function PairedBar({
   );
 }
 
-function MetricRow({ metric }: { metric: MetricDelta }) {
-  const [baselineLength, candidateLength] = relativeLengths([
-    metric.baselineSeconds ?? Number.NaN,
-    metric.candidateSeconds ?? Number.NaN,
-  ]);
+function MetricRow({
+  metric,
+  differencesShown,
+}: {
+  metric: MetricDelta;
+  differencesShown: boolean;
+}) {
+  const lengths = pairedBarLengths(metric, differencesShown);
   return (
     <li className="grid gap-x-4 gap-y-1.5 py-2.5 fit:py-2 sm:grid-cols-[minmax(9rem,11rem)_minmax(0,1fr)_auto] sm:items-center">
       <div className="min-w-0">
         <p className="text-sm font-medium text-ink">{metric.label}</p>
         <p className="text-xs text-ink-muted">{metric.scope}</p>
       </div>
-      <div className="min-w-0 space-y-1">
-        <PairedBar
-          label="Baseline"
-          seconds={metric.baselineSeconds}
-          length={baselineLength ?? null}
-          tone="baseline"
+      {lengths ? (
+        <div className="min-w-0 space-y-1">
+          <PairedBar
+            label="Baseline"
+            seconds={metric.baselineSeconds}
+            length={lengths.baseline}
+            tone="baseline"
+          />
+          <PairedBar
+            label="Candidate"
+            seconds={metric.candidateSeconds}
+            length={lengths.candidate}
+            tone="candidate"
+          />
+        </div>
+      ) : (
+        // Values only: bars on any shared scale would still show the ratio withheld here.
+        <PairValue
+          baseline={<TimingText seconds={metric.baselineSeconds} />}
+          candidate={<TimingText seconds={metric.candidateSeconds} />}
+          className="text-left text-[13px] text-ink"
         />
-        <PairedBar
-          label="Candidate"
-          seconds={metric.candidateSeconds}
-          length={candidateLength ?? null}
-          tone="candidate"
-        />
-      </div>
-      <CompareDelta delta={metric} className="sm:justify-self-end" />
+      )}
+      {differencesShown ? (
+        <CompareDelta delta={metric} className="sm:justify-self-end" />
+      ) : (
+        <NotCompared className="sm:justify-self-end" />
+      )}
     </li>
   );
 }
@@ -196,8 +251,10 @@ function PairLegend() {
 /** On `fit` screens the panel fills its column and the rows scroll inside it. */
 export function TimeChangesPanel({
   metrics,
+  differencesShown,
 }: {
   metrics: readonly MetricDelta[];
+  differencesShown: boolean;
 }) {
   return (
     <GlassPanel
@@ -208,9 +265,13 @@ export function TimeChangesPanel({
       <PanelHeader
         titleId="compare-changes"
         icon={ChartColumn}
-        title="Where time changed"
-        description="Candidate minus baseline · bars scale within each row"
-        actions={<PairLegend />}
+        title={differencesShown ? "Where time changed" : "Recorded times"}
+        description={
+          differencesShown
+            ? "Candidate minus baseline · bars scale within each row"
+            : "Each run's values, without bars or differences, because recorded settings differ"
+        }
+        actions={differencesShown ? <PairLegend /> : undefined}
         className="shrink-0"
       />
       <div
@@ -221,7 +282,11 @@ export function TimeChangesPanel({
       >
         <ul className="divide-y divide-line">
           {metrics.map((metric) => (
-            <MetricRow key={metric.id} metric={metric} />
+            <MetricRow
+              key={metric.id}
+              metric={metric}
+              differencesShown={differencesShown}
+            />
           ))}
         </ul>
       </div>
@@ -284,8 +349,10 @@ const TD = "px-3 py-2.5 align-top";
  */
 export function AlignedStepsPanel({
   steps,
+  differencesShown,
 }: {
   steps: readonly AlignedStep[];
+  differencesShown: boolean;
 }) {
   return (
     <GlassPanel
@@ -327,9 +394,11 @@ export function AlignedStepsPanel({
               <th scope="col" className={TH}>
                 Candidate wait share
               </th>
-              <th scope="col" className={cn(TH, "text-right")}>
-                Duration delta
-              </th>
+              {differencesShown && (
+                <th scope="col" className={cn(TH, "text-right")}>
+                  Duration delta
+                </th>
+              )}
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
@@ -347,9 +416,11 @@ export function AlignedStepsPanel({
                 <td className={TD}>
                   <WaitShare timing={step.candidate} />
                 </td>
-                <td className={cn(TD, "text-right")}>
-                  <CompareDelta delta={step.duration} />
-                </td>
+                {differencesShown && (
+                  <td className={cn(TD, "text-right")}>
+                    <CompareDelta delta={step.duration} />
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -394,7 +465,11 @@ export function LargestDifferencesPanel({
         title="Largest differences"
         description="Steps recorded on both runs, by absolute duration change"
       />
-      {ranked.length > 0 ? (
+      {!comparison.differencesShown ? (
+        <p className="text-sm text-ink-muted">
+          Not calculated: recorded settings differ.
+        </p>
+      ) : ranked.length > 0 ? (
         <RankedList
           items={ranked.map((step) => ({
             id: step.stepId,
@@ -411,6 +486,30 @@ export function LargestDifferencesPanel({
         <RunActions run={comparison.baseline} role="baseline" />
         <RunActions run={comparison.candidate} role="candidate" />
       </div>
+    </GlassPanel>
+  );
+}
+
+/** Quality and coverage per run, side by side; never differenced. */
+export function QualityPanel({ rows }: { rows: readonly QualityRow[] }) {
+  return (
+    <GlassPanel as="section" aria-labelledby="compare-quality">
+      <PanelHeader
+        titleId="compare-quality"
+        icon={ClipboardCheck}
+        title="Quality and coverage"
+        description="Recorded on each run, shown side by side"
+      />
+      <KeyValueList
+        dense
+        items={rows.map((row) => ({
+          id: row.id,
+          label: row.label,
+          value: (
+            <PairValue baseline={row.baseline} candidate={row.candidate} />
+          ),
+        }))}
+      />
     </GlassPanel>
   );
 }

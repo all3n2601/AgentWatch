@@ -6,12 +6,25 @@ import {
   policyFailureStatus,
 } from "../lib/policy-api";
 import {
+  changeText,
+  conflictCause,
+  controlsConsistent,
+  currentPolicyText,
+  EFFECTIVE_LIMITS_UNAVAILABLE,
+  INCONSISTENT_POLICY_RETRY_MS,
+  MAX_INCONSISTENT_POLICY_READS,
+  nextRunPolicyReadMs,
+  RUN_POLICY_REFRESH_MS,
+  formFromLimits,
+  limitChanges,
   limitsFromForm,
   limitsText,
   policyStatusText,
+  runAppliedLimitsText,
   runPolicyText,
   versionLimitsText,
 } from "../lib/policy-view";
+import { policyControlsSchema } from "../lib/policy-api-schema";
 import { fakeFetch, RUN_ID } from "./live-fixtures";
 
 const API_ROOT = "http://worker.test";
@@ -242,10 +255,159 @@ test("form limits omit empty inputs and reject values outside 1–1024", () => {
   for (const bad of ["0", "-1", "1.5", "abc", "1025", "1e2"]) {
     const result = limitsFromForm({ inference: bad, tests: "" });
     assert.equal(result.ok, false, bad);
+    // The message names the input it is about, so the form can link the two.
+    assert.deepEqual(!result.ok && result.fields, ["inference"], bad);
   }
+  const badTests = limitsFromForm({ inference: "2", tests: "0" });
+  assert.deepEqual(!badTests.ok && badTests.fields, ["tests"]);
   const empty = limitsFromForm({ inference: "", tests: "" });
   assert.equal(empty.ok, false);
   assert.match(!empty.ok ? empty.message : "", /Disable/);
+  assert.deepEqual(!empty.ok && empty.fields, ["inference", "tests"]);
+});
+
+test("changeText says which change a retry resends", () => {
+  assert.equal(
+    changeText({
+      action: "set",
+      expected_version: 3,
+      limits: { inference_requests: 2 },
+    }),
+    "Set limits to Inference: 2 · Tests: no limit, against version 3",
+  );
+  assert.equal(
+    changeText({ action: "disable", expected_version: 4 }),
+    "Disable all limits, against version 4",
+  );
+  assert.equal(
+    changeText({ action: "restore", expected_version: 5, restored_from: 1 }),
+    "Restore the limits of version 1, against version 5",
+  );
+});
+
+test("the form starts from the active limits so unchanged controls are kept", () => {
+  assert.deepEqual(formFromLimits({}), { inference: "", tests: "" });
+  assert.deepEqual(formFromLimits({ test_jobs: 2 }), {
+    inference: "",
+    tests: "2",
+  });
+  const form = { ...formFromLimits({ test_jobs: 2 }), inference: "8" };
+  assert.deepEqual(limitsFromForm(form), {
+    ok: true,
+    limits: { inference_requests: 8, test_jobs: 2 },
+  });
+});
+
+test("limit changes list only the controls that differ", () => {
+  assert.deepEqual(limitChanges({ test_jobs: 2 }, { test_jobs: 2 }), []);
+  assert.deepEqual(limitChanges({ test_jobs: 2 }, { inference_requests: 1 }), [
+    { control: "Inference requests", active: "no limit", proposed: "1" },
+    { control: "Test jobs", active: "2", proposed: "no limit" },
+  ]);
+});
+
+test("conflicts are told apart by the service's detail text", () => {
+  assert.equal(
+    conflictCause("Policy changed: expected version 2, active version is 3"),
+    "stale_version",
+  );
+  assert.equal(
+    conflictCause("Policy request reused with a different body"),
+    "request_reused",
+  );
+  assert.equal(conflictCause("Policy is at version 3, not 2"), "unknown");
+});
+
+test("a read whose history does not start at the active version is inconsistent", () => {
+  const read = (active: number, newest: number[]) => ({
+    active: { version: active },
+    history: { versions: newest.map((version) => ({ version })) },
+  });
+  assert.equal(controlsConsistent(read(2, [2, 1, 0])), true);
+  assert.equal(controlsConsistent(read(2, [3, 2, 1, 0])), false);
+  assert.equal(controlsConsistent(read(3, [2, 1, 0])), false);
+  assert.equal(controlsConsistent(read(0, [])), false);
+});
+
+test("the current policy is shown only from a consistent read", () => {
+  const read = (active: number, newest: number) => ({
+    ok: true as const,
+    data: policyControlsSchema.parse({
+      active: { ...version2, version: active },
+      history: {
+        versions: [{ ...version2, version: newest }],
+        next_before: null,
+      },
+    }),
+  });
+  assert.equal(
+    currentPolicyText(read(2, 2), { retrying: false }),
+    "Version 2: Inference: no limit · Tests: 2",
+  );
+  // A change landed between the two reads: neither version is labelled current.
+  for (const retrying of [true, false]) {
+    const text = currentPolicyText(read(2, 3), { retrying });
+    assert.doesNotMatch(text, /Version \d/);
+    assert.match(text, retrying ? /reading again/ : /not confirmed/);
+  }
+  assert.equal(currentPolicyText(null, { retrying: false }), "Loading policy…");
+  assert.equal(
+    currentPolicyText(
+      { ok: false, kind: "unavailable", message: "down" },
+      { retrying: false },
+    ),
+    "Policy service unavailable",
+  );
+});
+
+test("an open run's policy is read again; a closed run's stops once settled", () => {
+  assert.equal(
+    nextRunPolicyReadMs({ closed: false, inconsistentReads: 0 }),
+    RUN_POLICY_REFRESH_MS,
+  );
+  assert.equal(
+    nextRunPolicyReadMs({ closed: true, inconsistentReads: 0 }),
+    null,
+  );
+  for (const closed of [true, false])
+    assert.equal(
+      nextRunPolicyReadMs({ closed, inconsistentReads: 1 }),
+      INCONSISTENT_POLICY_RETRY_MS,
+    );
+  // Inconsistent retries are bounded; an open run falls back to its normal interval.
+  const exhausted = MAX_INCONSISTENT_POLICY_READS;
+  assert.equal(
+    nextRunPolicyReadMs({ closed: true, inconsistentReads: exhausted }),
+    null,
+  );
+  assert.equal(
+    nextRunPolicyReadMs({ closed: false, inconsistentReads: exhausted }),
+    RUN_POLICY_REFRESH_MS,
+  );
+});
+
+test("the browser reads the current policy without a full history page", async () => {
+  const { fetchImpl, requested } = fakeFetch(() =>
+    json({
+      active: version2,
+      history: { versions: [version2], next_before: null },
+    }),
+  );
+  const result = await createPolicyBrowserApi({
+    baseUrl: "http://web.test",
+    fetchImpl,
+  }).current();
+  assert.ok(result.ok);
+  assert.equal(requested.at(-1)!.pathname, "/api/policies/concurrency/current");
+});
+
+test("history pages can be limited to the newest entry", async () => {
+  const { fetchImpl, requested } = fakeFetch(() =>
+    json({ versions: [version2], next_before: 1 }),
+  );
+  await createPolicyApi(URLS, { fetchImpl }).history(undefined, undefined, 1);
+  assert.equal(requested.at(-1)!.searchParams.get("limit"), "1");
+  assert.equal(requested.at(-1)!.searchParams.has("before"), false);
 });
 
 test("run policy is read by UUID and summarised", async () => {
@@ -260,7 +422,10 @@ test("run policy is read by UUID and summarised", async () => {
   const result = await createPolicyApi(URLS, { fetchImpl }).runPolicy(RUN_ID);
   assert.ok(result.ok);
   assert.equal(requested[0].pathname, `/v1/live/runs/${RUN_ID}/policy`);
-  assert.equal(runPolicyText(result), "Policy while open: v0 → v1");
+  assert.equal(
+    runPolicyText(result),
+    "v0 (No limits (baseline)) → v1 (Inference: no limit · Tests: 2)",
+  );
 
   assert.equal(
     runPolicyText({
@@ -276,6 +441,31 @@ test("run policy is read by UUID and summarised", async () => {
   assert.equal(
     runPolicyText({ ok: false, kind: "unavailable", message: "down" }),
     "Policy service unavailable",
+  );
+});
+
+test("no run claims limits were applied; non-agent runs admit nothing", () => {
+  const run = {
+    run_id: RUN_ID,
+    target: "coding-agent",
+    applicable: true,
+    versions: [],
+  };
+  assert.equal(
+    runAppliedLimitsText({ ok: true, data: run }),
+    EFFECTIVE_LIMITS_UNAVAILABLE,
+  );
+  assert.equal(
+    runAppliedLimitsText({ ok: false, kind: "unavailable", message: "down" }),
+    EFFECTIVE_LIMITS_UNAVAILABLE,
+  );
+  assert.equal(runAppliedLimitsText(null), EFFECTIVE_LIMITS_UNAVAILABLE);
+  assert.match(
+    runAppliedLimitsText({
+      ok: true,
+      data: { ...run, applicable: false, versions: [] },
+    }),
+    /^Not applicable/,
   );
 });
 
