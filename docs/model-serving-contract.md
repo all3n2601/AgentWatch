@@ -29,12 +29,21 @@ the reproduction notes in both documents).
 | `preprocessing.json` | M03 | Feature order, encoding, class order, clip range, model file hashes, versions |
 | `calibration.json` | M04 | Temperature, abstention threshold and rule, gate outcomes, `blocks_promotion` |
 
-Before serving, check that both files' `model_files` SHA-256 values match the model files, that
-`calibration.json`'s `training_version` equals `preprocessing.json`'s, that `status` is
-`evaluated` in both and `fitted` is true, and that `probability_columns` agree. Refuse to serve
-on any mismatch. PR #76 adds `load_frozen_classifier`
-(`pipelines/model/src/agentwatch_model/held_out_model.py`), which performs these checks and
-can be reused once it merges.
+Before serving, refuse on any mismatch in these checks:
+
+- `classifier.txt` and `regressor.txt` hash to the `model_files` SHA-256 values in both
+  `preprocessing.json` and `calibration.json`;
+- `calibration.json`'s `training_version` equals `preprocessing.json`'s, `status` is
+  `evaluated` in both, and `fitted` is true;
+- `preprocessing.json`'s `probability_columns` equal its `class_order`, and
+  `calibration.json`'s `probability_columns` equal `preprocessing.json`'s.
+
+PR #76 adds `load_frozen_classifier` (`pipelines/model/src/agentwatch_model/held_out_model.py`)
+for held-out scoring. It covers the classifier side only: the `classifier.txt` hash, the
+versions and statuses, `fitted`, and `probability_columns` against `class_order` within
+`preprocessing.json`. It never reads `regressor.txt` and does not compare `calibration.json`'s
+`probability_columns` with `preprocessing.json`'s, so a server reusing it must add the
+`regressor.txt` hash checks and that cross-artifact column check itself.
 
 ## Inputs
 
