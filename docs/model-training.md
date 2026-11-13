@@ -235,7 +235,9 @@ rows it was fitted on (single-class steps; mixed steps are counted as `train_not
 and on the held-out rows `score-held-out` scores, overall and per configuration. For each
 feature it reports the missing count and fraction (a null reading, encoded as NaN exactly as the
 classifier receives it; a measured zero is present), the number of distinct present values, and
-the feature's share of the classifier's split gain. It flags `missing_on_held_out_only` (some
+the feature's share of the classifier's split gain. For present values it also reports p05, p50
+and p95 (linear interpolation), the minimum and maximum, and the shares of held-out values below
+the train minimum and above the train maximum. It flags `missing_on_held_out_only` (some
 train value present, every held-out value missing) and `constant_on_held_out_only` (train values
 vary, held-out values are constant); no threshold is tuned. It reads the model through the same
 checked loader as `score-held-out` and runs its validation-reproduction and split-overlap
@@ -248,7 +250,7 @@ refused split or an output inside `data/held-out`). The same inputs give byte-id
 Run of 2026-11-12 on the 1,740 scored model calls (825 `cfg-default`, 915 `cfg-hardware`) against
 the 1,707 single-class train rows (48 mixed train steps not classified), with classifier
 `b35152b7…` and `calibration-v1+08119e78`, truths `92da54bc…` and `069a8303…` (report SHA-256
-`6e3caf98aa49ae35…`, local):
+`91b38c423139b36d…`, local):
 
 - **Present everywhere:** `execution_seconds`, `queue_seconds`, `duration_seconds` and
   `queue_fraction` hold 0.894 of the gain and are present on every train and held-out row.
@@ -259,11 +261,28 @@ the 1,707 single-class train rows (48 mixed train steps not classified), with cl
   `telemetry_sample_count`, with no gain.
 - `workload_iterations`, `tests_per_step` and `worker_capacity` are missing on every row of both.
 
+Value ranges of the four timing features, train against held-out (p05 / p50 / p95, seconds or
+fraction):
+
+| Feature | Train | Held-out | Held-out above train max |
+|---|---|---|---|
+| `execution_seconds` | 0.00065 / 0.153 / 0.952 | 0.248 / 0.706 / 3.51 | 0.8% |
+| `duration_seconds` | 0.00159 / 0.154 / 0.954 | 0.251 / 0.712 / 3.52 | 0.8% |
+| `queue_seconds` | 0.00045 / 0.00112 / 0.0214 | 0.00063 / 0.00302 / 0.0259 | 0.0% |
+| `queue_fraction` | 0.00069 / 0.0114 / 0.770 | 0.00037 / 0.00394 / 0.0382 | 0.0% |
+
+No held-out timing value is below the train minimum. The held-out median `execution_seconds` is
+1.71 s on `cfg-default` and 0.43 s on `cfg-hardware`.
+
 So the high-gain timing features are present on every held-out row, and the features missing on
-every held-out row were mostly missing in training too. No test was made of what either does to
-the held-out misses (queue 0.288, slower 0.599): LightGBM routes a missing value down a learned
-default branch, so the 0.106 of gain on all-missing features can still matter. Nor does this
-measure a shift in the timing values between dataset v1 (mostly Ollama) and the A06 vLLM sweeps.
+every held-out row were mostly missing in training too. The held-out model calls are slower
+(median `execution_seconds` 0.71 s against 0.15 s, p95 3.5 s against 0.95 s) and spend a smaller
+fraction of their time queued than the train steps, yet almost all of them lie inside the train
+range: they sit where train rows were sparse rather than outside it. No test was made of what
+missing inputs or this shift do to the held-out misses (queue 0.288, slower 0.599); LightGBM
+routes a missing value down a learned default branch, so the 0.106 of gain on all-missing
+features can still matter. Train rows are mostly Ollama runs and held-out rows vLLM runs, so
+these are different workloads as well as different servers.
 
 ## Tracking
 
