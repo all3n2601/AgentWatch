@@ -819,6 +819,14 @@ frozen evaluation sets without tuning against them.
   unseen task `fix-median-even` missed 0.276 (0.150–0.480). It is a descriptive baseline
   with no gate, one sweep per configuration and one unseen task. Stays open for M2 PR 4's
   inference rule, which will be scored by the same command, and for an evaluable release.
+  2026-11-12 (branch `feature/held-out-feature-availability`, stacked on A06 PR 3, not yet
+  merged): `make held-out-feature-availability` compares the frozen classifier's features on its
+  1,707 single-class train rows and the same 1,740 held-out rows, descriptive only
+  ([model training](model-training.md#feature-availability-on-held-out-rows),
+  `pipelines/model/tests/test_feature_availability*.py`). The timing features holding 0.894 of
+  the gain are present on every held-out row; the four missing on every held-out row hold 0.106
+  and were mostly missing in train too. Their effect on the held-out misses was not tested, and
+  a shift in timing values between Ollama and vLLM is not yet measured.
 - [x] Evaluate natural overload in addition to injector-driven experiments.
   2026-11-11 (A06, PR #65, merged to `main` as `50f393d` on 2026-11-12 UTC):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol

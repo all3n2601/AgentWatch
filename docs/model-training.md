@@ -224,6 +224,47 @@ no release. The run of 2026-11-12, attempt `20261112T222540Z-d3316f` with this c
 `20261112T025531Z-220363`, which retrained a classifier on `split-v2` and used the former
 `sweep-truth-v1` truths, is listed there as superseded.
 
+### Feature availability on held-out rows
+
+```sh
+make held-out-feature-availability TRUTH=".data/a06-scoring/truth/<sweep folder> ..." SPLIT=$SPLIT
+```
+
+`held-out-feature-availability` compares the frozen classifier's inputs on the `split-v3` train
+rows it was fitted on (single-class steps; mixed steps are counted as `train_not_classified`)
+and on the held-out rows `score-held-out` scores, overall and per configuration. For each
+feature it reports the missing count and fraction (a null reading, encoded as NaN exactly as the
+classifier receives it; a measured zero is present), the number of distinct present values, and
+the feature's share of the classifier's split gain. It flags `missing_on_held_out_only` (some
+train value present, every held-out value missing) and `constant_on_held_out_only` (train values
+vary, held-out values are constant); no threshold is tuned. It reads the model through the same
+checked loader as `score-held-out` and runs its validation-reproduction and split-overlap
+checks, scores, trains and fits nothing, and writes
+`feature-availability.json` and a Markdown table to `.data/a06-scoring/feature-availability/`
+(exit 2, and nothing written, for a mismatched model pair, a booster that does not reproduce
+M03's validation predictions, a held-out run or plan found in the split, no judged step, a
+refused split or an output inside `data/held-out`). The same inputs give byte-identical output.
+
+Run of 2026-11-12 on the 1,740 scored model calls (825 `cfg-default`, 915 `cfg-hardware`) against
+the 1,707 single-class train rows (48 mixed train steps not classified), with classifier
+`b35152b7…` and `calibration-v1+08119e78`, truths `92da54bc…` and `069a8303…` (report SHA-256
+`6e3caf98aa49ae35…`, local):
+
+- **Present everywhere:** `execution_seconds`, `queue_seconds`, `duration_seconds` and
+  `queue_fraction` hold 0.894 of the gain and are present on every train and held-out row.
+- **Missing on every held-out row:** `cpu_seconds` (gain 0.070), `telemetry_coverage` (0.019),
+  `cpu_pressure_max_avg10` (0.018) and `cgroup_throttled_usec_delta` (0.000), 0.106 of the gain
+  together. They are mostly missing in train as well (84.2%, 98.1%, 89.6% and 99.2%).
+- **Constant on held-out:** `cgroup_available`, `cpu_pressure_available` and
+  `telemetry_sample_count`, with no gain.
+- `workload_iterations`, `tests_per_step` and `worker_capacity` are missing on every row of both.
+
+So the high-gain timing features are present on every held-out row, and the features missing on
+every held-out row were mostly missing in training too. No test was made of what either does to
+the held-out misses (queue 0.288, slower 0.599): LightGBM routes a missing value down a learned
+default branch, so the 0.106 of gain on all-missing features can still matter. Nor does this
+measure a shift in the timing values between dataset v1 (mostly Ollama) and the A06 vLLM sweeps.
+
 ## Tracking
 
 Every attempt is an MLflow run in the `agentwatch-attribution` experiment, tagged with its
