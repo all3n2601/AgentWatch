@@ -6,6 +6,7 @@ import {
   policyFailureStatus,
 } from "../lib/policy-api";
 import {
+  changeText,
   conflictCause,
   controlsConsistent,
   currentPolicyText,
@@ -254,10 +255,34 @@ test("form limits omit empty inputs and reject values outside 1–1024", () => {
   for (const bad of ["0", "-1", "1.5", "abc", "1025", "1e2"]) {
     const result = limitsFromForm({ inference: bad, tests: "" });
     assert.equal(result.ok, false, bad);
+    // The message names the input it is about, so the form can link the two.
+    assert.deepEqual(!result.ok && result.fields, ["inference"], bad);
   }
+  const badTests = limitsFromForm({ inference: "2", tests: "0" });
+  assert.deepEqual(!badTests.ok && badTests.fields, ["tests"]);
   const empty = limitsFromForm({ inference: "", tests: "" });
   assert.equal(empty.ok, false);
   assert.match(!empty.ok ? empty.message : "", /Disable/);
+  assert.deepEqual(!empty.ok && empty.fields, ["inference", "tests"]);
+});
+
+test("changeText says which change a retry resends", () => {
+  assert.equal(
+    changeText({
+      action: "set",
+      expected_version: 3,
+      limits: { inference_requests: 2 },
+    }),
+    "Set limits to Inference: 2 · Tests: no limit, against version 3",
+  );
+  assert.equal(
+    changeText({ action: "disable", expected_version: 4 }),
+    "Disable all limits, against version 4",
+  );
+  assert.equal(
+    changeText({ action: "restore", expected_version: 5, restored_from: 1 }),
+    "Restore the limits of version 1, against version 5",
+  );
 });
 
 test("the form starts from the active limits so unchanged controls are kept", () => {

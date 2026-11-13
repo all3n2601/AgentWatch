@@ -119,6 +119,34 @@ test("malformed numeric input cannot remove an existing limit", async ({
     page.getByText(/Test jobs must be a whole number/),
   ).toBeVisible();
   await expect(page.getByLabel("Test jobs")).toHaveValue("1e");
+  // The notice describes the input it is about, and only that one.
+  await expect(page.getByLabel("Test jobs")).toHaveAccessibleDescription(
+    /Test jobs must be a whole number/,
+  );
+  await expect(page.getByLabel("Test jobs")).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
+  await expect(
+    page.getByLabel("Inference requests"),
+  ).toHaveAccessibleDescription("");
+  expect(writes).toHaveLength(0);
+});
+
+test("a missing attribution notice describes only the empty inputs", async ({
+  page,
+}) => {
+  const writes = await servePolicy(page, {
+    reads: [{ active: v1, versions: [v1, v0] }],
+  });
+  await page.goto("/controls");
+  await page.getByLabel("Test jobs").fill("4");
+  await page.getByLabel("Reason").fill("Check limits");
+  await page.getByRole("button", { name: "Set limits" }).click();
+  await expect(page.getByLabel("Operator")).toHaveAccessibleDescription(
+    /Enter an operator name and a reason/,
+  );
+  await expect(page.getByLabel("Reason")).toHaveAccessibleDescription("");
   expect(writes).toHaveLength(0);
 });
 
@@ -317,6 +345,15 @@ test("an unconfirmed change is retried with the same request ID", async ({
   await expect(changeNotice(page, "Not confirmed")).toContainText(
     "Database unavailable",
   );
+  // Retry says which change it resends.
+  const resends =
+    "Set limits to Inference: 1 · Tests: 2, against version 1 (Check limits)";
+  await expect(page.getByText(resends)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Retry" }),
+  ).toHaveAccessibleDescription(
+    `Retry resends the unconfirmed change: ${resends}.`,
+  );
   await page.getByRole("button", { name: "Retry" }).click();
   await expect(page.getByText("Already recorded as version 2.")).toBeVisible();
   expect(writes).toHaveLength(2);
@@ -338,9 +375,13 @@ test("an inconsistent read pauses changes until the policy is read again", async
   await expect(
     page.getByRole("button", { name: "Disable limits" }),
   ).toBeDisabled();
-  await page.getByRole("button", { name: "Read again" }).click();
+  const readAgain = page.getByRole("button", { name: "Read again" });
+  await readAgain.focus();
+  await page.keyboard.press("Enter");
   await expect(page.getByText(/Stale read/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Set limits" })).toBeEnabled();
+  // Reading again keeps keyboard focus on the button instead of dropping it to the page.
+  await expect(readAgain).toBeFocused();
 });
 
 test("an unavailable policy is never shown as no limits", async ({ page }) => {

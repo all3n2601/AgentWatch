@@ -64,6 +64,22 @@ export function runAppliedLimitsText(
   return EFFECTIVE_LIMITS_UNAVAILABLE;
 }
 
+/** What a change request does, in words, e.g. to say what Retry will resend. */
+export function changeText(change: {
+  action: "set" | "disable" | "restore";
+  expected_version: number;
+  limits?: PolicyLimitsView;
+  restored_from?: number;
+}) {
+  const what =
+    change.action === "set"
+      ? `Set limits to ${limitsText(change.limits ?? {})}`
+      : change.action === "disable"
+        ? "Disable all limits"
+        : `Restore the limits of version ${change.restored_from ?? "unknown"}`;
+  return `${what}, against version ${change.expected_version}`;
+}
+
 /** Form inputs holding a version's limits, so a `set` keeps controls the operator left alone. */
 export function formFromLimits(limits: PolicyLimitsView) {
   return {
@@ -177,7 +193,10 @@ export const EFFECTIVE_LIMITS_UNAVAILABLE =
 /** Strict whole numbers only: "1.5", "1e2" and " " are not limits. */
 const WHOLE_NUMBER = /^\d+$/;
 
-function limitInput(label: string, raw: string) {
+/** The form's limit inputs, so a validation message can name the inputs it is about. */
+export type LimitField = "inference" | "tests";
+
+function limitInput(field: LimitField, label: string, raw: string) {
   const value = raw.trim();
   if (value === "") return { ok: true as const, value: undefined };
   const parsed = Number(value);
@@ -186,6 +205,7 @@ function limitInput(label: string, raw: string) {
     : {
         ok: false as const,
         message: `${label} must be a whole number from 1 to ${MAX_POLICY_LIMIT}, or empty for no limit.`,
+        fields: [field],
       };
 }
 
@@ -193,16 +213,23 @@ function limitInput(label: string, raw: string) {
 export function limitsFromForm(form: {
   inference: string;
   tests: string;
-}): { ok: true; limits: PolicyLimitsView } | { ok: false; message: string } {
-  const inference = limitInput("Inference requests", form.inference);
+}):
+  | { ok: true; limits: PolicyLimitsView }
+  | { ok: false; message: string; fields: LimitField[] } {
+  const inference = limitInput(
+    "inference",
+    "Inference requests",
+    form.inference,
+  );
   if (!inference.ok) return inference;
-  const tests = limitInput("Test jobs", form.tests);
+  const tests = limitInput("tests", "Test jobs", form.tests);
   if (!tests.ok) return tests;
   if (inference.value === undefined && tests.value === undefined)
     return {
       ok: false,
       message:
         "Enter at least one limit, or use Disable limits to remove all limits.",
+      fields: ["inference", "tests"],
     };
   return {
     ok: true,

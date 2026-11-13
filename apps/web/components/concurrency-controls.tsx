@@ -20,6 +20,7 @@ import {
   type PolicyVersionView,
 } from "@/lib/policy-api-schema";
 import {
+  changeText,
   conflictCause,
   controlsConsistent,
   EFFECTIVE_LIMITS_UNAVAILABLE,
@@ -36,10 +37,13 @@ import {
 const policyApi = createPolicyBrowserApi();
 
 type ChangeIntent = Omit<PolicyChangeRequest, "request_id">;
+type FormField = "inference" | "tests" | "operator" | "reason";
 type Notice = {
   tone: "danger" | "success";
   title: string;
   detail?: string;
+  /** Inputs the notice is about; they reference it with `aria-describedby`. */
+  fields?: FormField[];
 } | null;
 type History = { versions: PolicyVersionView[]; nextBefore: number | null };
 
@@ -244,6 +248,10 @@ export function ConcurrencyControls() {
       tone: "danger",
       title: "Not saved",
       detail: "Enter an operator name and a reason before changing the policy.",
+      fields: [
+        ...(operator ? [] : (["operator"] as const)),
+        ...(reason ? [] : (["reason"] as const)),
+      ],
     });
     return null;
   }
@@ -257,12 +265,14 @@ export function ConcurrencyControls() {
         tone: "danger",
         title: "Not saved",
         detail: limits.message,
+        fields: limits.fields,
       });
     if (limitChanges(active.limits, limits.limits).length === 0)
       return setNotice({
         tone: "danger",
         title: "Not saved",
         detail: `These limits match active version ${active.version}; nothing to change.`,
+        fields: ["inference", "tests"],
       });
     const who = attribution();
     if (who)
@@ -331,13 +341,20 @@ export function ConcurrencyControls() {
   }
 
   const idPrefix = useId();
-  const field = (name: keyof typeof form) => ({
-    id: `${idPrefix}-${name}`,
-    value: form[name],
-    disabled: pending || !active,
-    onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
-      setForm((old) => ({ ...old, [name]: event.target.value })),
-  });
+  const noticeId = `${idPrefix}-notice`;
+  const retryId = `${idPrefix}-retry`;
+  const field = (name: FormField) => {
+    const described = notice?.fields?.includes(name) === true;
+    return {
+      id: `${idPrefix}-${name}`,
+      value: form[name],
+      disabled: pending || !active,
+      "aria-describedby": described ? noticeId : undefined,
+      "aria-invalid": described || undefined,
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
+        setForm((old) => ({ ...old, [name]: event.target.value })),
+    };
+  };
 
   const state = readState(loaded, inconsistent);
   return (
@@ -356,11 +373,16 @@ export function ConcurrencyControls() {
               agent runner process for its own work, not globally
             </p>
           </div>
+          {/* aria-disabled, not disabled, while reading: disabling the focused button would
+              drop keyboard focus to the page. */}
           <Button
             variant="glass"
             size="pill"
-            disabled={pending || loaded === null}
+            disabled={pending}
+            aria-disabled={loaded === null}
+            className="aria-disabled:opacity-50"
             onClick={() => {
+              if (loaded === null) return;
               setLoaded(null);
               void load();
             }}
@@ -519,20 +541,29 @@ export function ConcurrencyControls() {
                 variant="glass"
                 size="pill"
                 disabled={pending}
+                aria-describedby={retryId}
                 onClick={() => void submit(retry)}
               >
                 Retry
               </Button>
             )}
           </div>
+          {retry && (
+            <p id={retryId} className="text-sm text-ink-muted">
+              Retry resends the unconfirmed change: {changeText(retry)} (
+              {retry.reason}).
+            </p>
+          )}
           {notice && (
-            <AlertBanner
-              tone={notice.tone}
-              headingLevel="h3"
-              title={notice.title}
-              detail={notice.detail}
-              className="py-3"
-            />
+            <div id={noticeId}>
+              <AlertBanner
+                tone={notice.tone}
+                headingLevel="h3"
+                title={notice.title}
+                detail={notice.detail}
+                className="py-3"
+              />
+            </div>
           )}
         </form>
       </InsetCard>
