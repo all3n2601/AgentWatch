@@ -198,9 +198,17 @@ abstention threshold, on the `sweep-truth-v2` truths of the frozen A06 capacity 
 ([design](superpowers/specs/2026-11-11-a06-held-out-scoring-design.md), "Change after #70, #72
 and #74"). It trains and fits nothing. A model pair whose M03 report does not name the
 `--split` file and `eval-contract-v3`, or whose files do not hash to the values M03 and M04
-recorded, is a setup error (exit 2) and no attempt is written. A truth folder whose
+recorded, is a setup error (exit 2) and no attempt is written. So is any pair but the pinned
+one: M03's preprocessing and report (`model.version`) and M04's `calibration.json` must name
+`training-v1+a34ea0be`, and `calibration.json` must be `calibration-v1+08119e78`; there is no
+option to accept another. M04's `report.json` must also carry `calibration.json`'s version,
+temperature and abstention threshold, name the `--split` file, hash the `predictions.jsonl`
+beside it, and record positive `fit.steps` and `scored_steps`, and `calibration.json` must hash
+M03's `report.json`. Every M04 file enters the attempt's input hashes, keyed `candidates/<file>`
+and `calibration/<file>`. A truth folder whose
 `label_version` is not `sweep-truth-v2+c211f3e8`, whose `truth_sha256` is not the hash of the
-`truth.jsonl` beside it, or whose step and recorder hashes are not 64 lowercase hex digits, a
+`truth.jsonl` beside it, whose step and recorder hashes are not 64 lowercase hex digits, or with
+a record whose `plan_sha256` is absent or neither null nor 64 lowercase hex digits, a
 booster that does not reproduce M03's validation predictions, a pair that does not reproduce
 M04's test predictions, and a scored run or plan found in any row of the split each end the
 attempt as a recorded `failed` one. Neither reproduction check can pass on an empty or partial

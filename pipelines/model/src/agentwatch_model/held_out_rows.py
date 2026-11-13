@@ -17,7 +17,9 @@ truth record's), `declared_interval_invalid`.
 Truth files are another package's output, so they are checked at this boundary before any
 join: a summary or record outside the `sweep-truth-v2` format, a summary of another label
 version or that does not match its records (step count, `truth.jsonl` hash), or a sweep or step
-passed twice raises HeldOutError, which fails the attempt.
+passed twice raises HeldOutError, which fails the attempt. Every record must carry
+`plan_sha256`, null or 64 lowercase hex digits: the leakage check compares it with the split's
+plans, so a record without the key would pass that check unexamined.
 """
 
 import hashlib
@@ -167,6 +169,11 @@ def record_problem(record: dict, configuration: str) -> str | None:
     for field in JOINED_TIMINGS:
         if field not in record or not is_seconds(record[field]):
             return f"{field} must be a finite number or null, found {record.get(field)!r}"
+    if "plan_sha256" not in record:
+        return "plan_sha256 is missing; it must be null or 64 lowercase hex characters"
+    plan = record["plan_sha256"]
+    if plan is not None and (not isinstance(plan, str) or not SHA256_HEX.fullmatch(plan)):
+        return f"plan_sha256 must be null or 64 lowercase hex characters, found {plan!r}"
     return truths_problem(record)
 
 

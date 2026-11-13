@@ -6,7 +6,9 @@
 `--truth` folders are `sweep-truth-v2` outputs, one per sweep. `--candidates` is the M03
 `make train-candidates` folder and `--calibrated` the M04 `make calibrate` folder; nothing is
 trained or fitted here. The pair is loaded and checked against the split first: a pair that
-does not match is a setup error (exit 2) and no attempt is written. Then the split's rows are
+does not match, or is not the pinned `training-v1+a34ea0be` / `calibration-v1+08119e78` pair
+(there is no option to accept another), is a setup error (exit 2) and no attempt is written.
+Then the split's rows are
 loaded with the leakage check on. The model must reproduce every M03 validation prediction, in
 a record of exactly the `fit.steps` M04 fitted on, and every M04 test prediction (label,
 abstention, calibrated confidence and class probabilities), in a record of exactly the
@@ -37,9 +39,13 @@ from agentwatch_data.splits import SplitError, load_split
 from agentwatch_model.candidates import TrainingError
 from agentwatch_model.contract import DEFAULT_CONTRACT, Contract, ContractError, load_contract
 from agentwatch_model.held_out_model import (
+    CALIBRATED_PREDICTIONS,
     CALIBRATION,
+    CALIBRATION_REPORT,
     CLASSIFIER_SCORER,
+    FROZEN_VERSIONS,
     FrozenClassifier,
+    FrozenVersions,
     HeldOutModelError,
     check_reproduces_calibration,
     check_reproduces_validation,
@@ -138,15 +144,18 @@ def hash_of(path: Path) -> str | None:
 
 
 def model_hashes(candidates_dir: Path, calibrated_dir: Path) -> dict:
-    """SHA-256 of each frozen M03/M04 file the attempt depends on; a missing file is None."""
-    files = (
-        candidates_dir / MODEL_FILES["classifier"],
-        candidates_dir / PREPROCESSING,
-        candidates_dir / CANDIDATES_REPORT,
-        candidates_dir / VALIDATION_PREDICTIONS,
-        calibrated_dir / CALIBRATION,
+    """SHA-256 of each frozen M03/M04 file the attempt depends on, keyed `candidates/<name>`
+    or `calibration/<name>` (both folders hold a report.json); a missing file is None."""
+    candidates = (
+        MODEL_FILES["classifier"],
+        PREPROCESSING,
+        CANDIDATES_REPORT,
+        VALIDATION_PREDICTIONS,
     )
-    return {path.name: hash_of(path) for path in files}
+    calibration = (CALIBRATION, CALIBRATION_REPORT, CALIBRATED_PREDICTIONS)
+    return {f"candidates/{name}": hash_of(candidates_dir / name) for name in candidates} | {
+        f"calibration/{name}": hash_of(calibrated_dir / name) for name in calibration
+    }
 
 
 def input_hashes(
@@ -330,6 +339,7 @@ def run_attempt(
     *,
     candidates_dir: Path = DEFAULT_CANDIDATES,
     calibrated_dir: Path = DEFAULT_CALIBRATED,
+    versions: FrozenVersions = FROZEN_VERSIONS,
     contract_path: Path = DEFAULT_CONTRACT,
     frozen_schema: Path = DEFAULT_SCHEMA,
     rules_path: Path = DEFAULT_RULES,
@@ -341,14 +351,15 @@ def run_attempt(
 ) -> Outcome:
     """One scoring attempt; data and model-check failures end as a recorded failed attempt.
 
-    A frozen pair that cannot be loaded or does not match the split is a setup error, raised
-    before any attempt folder exists. A recorded failed report carries the rules identity and
+    A frozen pair that cannot be loaded, does not match the split, or is not the pinned pair
+    (`versions`; the CLI always uses FROZEN_VERSIONS) is a setup error, raised before any
+    attempt folder exists. A recorded failed report carries the rules identity and
     the frozen identity under `model.frozen`; nothing was trained, so there is no training
     config to name.
     """
     check_output(output)
     contract, rules = load_configuration(contract_path, rules_path)
-    model = load_frozen_classifier(candidates_dir, calibrated_dir, split)
+    model = load_frozen_classifier(candidates_dir, calibrated_dir, split, versions)
     recorded_failures = (*attempt_errors(), HeldOutError, HeldOutModelError, SplitError)
     hashes = input_hashes(truth_dirs, sweep_root, split, candidates_dir, calibrated_dir)
     directory = output / attempt_id(hashes, datetime.now(UTC))

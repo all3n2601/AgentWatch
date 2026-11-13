@@ -20,6 +20,7 @@ from agentwatch_model.candidates import (
     predict,
 )
 from agentwatch_model.features import FEATURES
+from agentwatch_model.held_out_model import FrozenVersions
 from agentwatch_model.rule_baseline import split_identity
 from agentwatch_model.train_candidates import (
     MODEL_FILES,
@@ -35,6 +36,14 @@ CALIBRATION = "calibration.json"
 CALIBRATED_PREDICTIONS = "predictions.jsonl"
 TEMPERATURE = 0.9
 THRESHOLD = 0.6
+SYNTHETIC_CALIBRATION_VERSION = "calibration-v1+synthetic"
+# The versions a synthetic pair records. Its training version is the packaged training
+# config's, as for a real M03 run; its calibration version is never a real one, so the pinned
+# FROZEN_VERSIONS refuse every synthetic pair.
+SYNTHETIC_VERSIONS = FrozenVersions(
+    training=load_training_config(DEFAULT_TRAINING).version,
+    calibration=SYNTHETIC_CALIBRATION_VERSION,
+)
 
 
 @dataclass(frozen=True)
@@ -125,6 +134,7 @@ def write_frozen_pair(directory: Path, split: Path) -> FrozenPair:
             "status": "evaluated",
             "split": split_identity(split),
             "contract": CONTRACT,
+            "model": {"version": candidate.training_version},
             "model_files": hashes,
             "preprocessing": {
                 "file": PREPROCESSING,
@@ -144,11 +154,12 @@ def write_frozen_pair(directory: Path, split: Path) -> FrozenPair:
             "temperature": TEMPERATURE,
             "abstention_threshold": THRESHOLD,
             "training_version": candidate.training_version,
-            "version": "calibration-v1+synthetic",
+            "version": SYNTHETIC_CALIBRATION_VERSION,
             "contract": CONTRACT,
             "model_files": {
                 "classifier": {"file": MODEL_FILES["classifier"], "sha256": hashes["classifier"]}
             },
+            "candidates": {"report_sha256": file_sha256(candidates_dir / REPORT)},
         },
     )
     (calibrated_dir / CALIBRATED_PREDICTIONS).write_text(
@@ -157,6 +168,11 @@ def write_frozen_pair(directory: Path, split: Path) -> FrozenPair:
     write_json(
         calibrated_dir / REPORT,
         {
+            "calibration": {
+                "version": SYNTHETIC_CALIBRATION_VERSION,
+                "temperature": TEMPERATURE,
+                "abstention_threshold": THRESHOLD,
+            },
             "split": split_identity(split),
             "fit": {"steps": len(validation)},
             "scored_steps": len(test),

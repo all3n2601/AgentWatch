@@ -18,7 +18,7 @@ require_lightgbm()
 import mlflow
 from agentwatch_data import evidence
 from agentwatch_model.candidates import TrainingError
-from agentwatch_model.held_out_model import CLASSIFIER_SCORER
+from agentwatch_model.held_out_model import CLASSIFIER_SCORER, HeldOutModelError
 from agentwatch_model.held_out_rows import ACCEPTED_TRUTH_LABEL_VERSION
 from agentwatch_model.score_held_out import (
     EXPERIMENT,
@@ -29,7 +29,7 @@ from agentwatch_model.score_held_out import (
     run_attempt,
     scored_overlap,
 )
-from frozen_model_fixtures import write_frozen_pair
+from frozen_model_fixtures import SYNTHETIC_VERSIONS, write_frozen_pair
 from test_held_out_rows import (  # noqa: F401
     STEPS_SHA256,
     STEPS_SUMMARY_SHA256,
@@ -112,6 +112,7 @@ def run_synthetic(prepared, tracking, **overrides):
         candidates_dir=prepared["pair"].candidates_dir,
         calibrated_dir=prepared["pair"].calibrated_dir,
         loader=overrides.pop("loader", prepared["loader"]),
+        versions=overrides.pop("versions", SYNTHETIC_VERSIONS),
         resamples=50,
         **tracking,
         **overrides,
@@ -146,6 +147,7 @@ def test_run_scores_both_scorers_and_writes_no_models(prepared, tracking):
         candidates_dir=prepared["pair"].candidates_dir,
         calibrated_dir=prepared["pair"].calibrated_dir,
         loader=prepared["loader"],
+        versions=SYNTHETIC_VERSIONS,
         resamples=50,
         **tracking,
     )
@@ -177,12 +179,15 @@ def test_run_scores_both_scorers_and_writes_no_models(prepared, tracking):
     assert all(inputs["truth"].values())
     assert len(inputs["runs"]) == 2 and all(inputs["runs"].values())
     assert set(inputs["model"]) == {
-        "classifier.txt",
-        "preprocessing.json",
-        "report.json",
-        "validation_predictions.jsonl",
-        "calibration.json",
+        "candidates/classifier.txt",
+        "candidates/preprocessing.json",
+        "candidates/report.json",
+        "candidates/validation_predictions.jsonl",
+        "calibration/calibration.json",
+        "calibration/report.json",
+        "calibration/predictions.jsonl",
     }
+    assert inputs["model"]["candidates/report.json"] != inputs["model"]["calibration/report.json"]
     assert all(inputs["model"].values())
     lines = [json.loads(x) for x in (directory / "predictions.jsonl").read_text().splitlines()]
     assert len(lines) == 6  # three steps, two scorers
@@ -214,6 +219,15 @@ def test_the_training_and_calibration_options_are_gone(prepared, tracking, optio
     assert not prepared["output"].exists()
 
 
+def rebind_m03_report(pair):
+    """Keep M04's calibration.json bound to M03's report after a test edits the report."""
+    report_sha = hashlib.sha256((pair.candidates_dir / "report.json").read_bytes()).hexdigest()
+    path = pair.calibrated_dir / "calibration.json"
+    calibration = json.loads(path.read_text())
+    calibration["candidates"]["report_sha256"] = report_sha
+    path.write_text(json.dumps(calibration))
+
+
 def rename_validation_run(pair, run_id):
     """Give validation row 0 another run_id, with M03's recorded predictions and report to match,
     so the reproduction check passes and only the overlap check can refuse."""
@@ -227,6 +241,7 @@ def rename_validation_run(pair, run_id):
     saved = json.loads(report_path.read_text())
     saved["validation_predictions"]["sha256"] = hashlib.sha256(predictions.read_bytes()).hexdigest()
     report_path.write_text(json.dumps(saved))
+    rebind_m03_report(pair)
     return rows
 
 
@@ -274,12 +289,20 @@ def test_scored_overlap_names_run_ids_and_plan_hashes_found_in_the_split():
     assert scored_overlap(scored, [{"run_id": "x", "plan_sha256": None}]) == []
 
 
-def test_a_mismatched_model_pair_exits_2_and_writes_no_attempt(prepared, tracking):
+def test_a_mismatched_model_pair_is_refused_before_any_attempt(prepared, tracking):
     calibration = prepared["pair"].calibrated_dir / "calibration.json"
     body = json.loads(calibration.read_text())
     body["model_files"]["classifier"]["sha256"] = "0" * 64
     calibration.write_text(json.dumps(body))
+    with pytest.raises(HeldOutModelError, match="model_files.classifier.sha256"):
+        run_synthetic(prepared, tracking)
+    assert not prepared["output"].exists() or not any(prepared["output"].iterdir())
+
+
+def test_the_cli_refuses_a_pair_other_than_the_pinned_one(prepared, tracking, capsys):
+    # The CLI has no versions option: a synthetic pair never matches the pinned M03/M04 pair.
     assert main(cli_arguments(prepared, tracking)) == 2
+    assert "calibration.json version" in capsys.readouterr().err
     assert not prepared["output"].exists() or not any(prepared["output"].iterdir())
 
 
@@ -303,6 +326,7 @@ def test_a_model_that_does_not_reproduce_validation_is_a_recorded_failure(prepar
     saved = json.loads(report_path.read_text())
     saved["validation_predictions"]["sha256"] = hashlib.sha256(predictions.read_bytes()).hexdigest()
     report_path.write_text(json.dumps(saved))
+    rebind_m03_report(prepared["pair"])
     outcome = run_synthetic(prepared, tracking)
     assert outcome.status == "failed" and outcome.run_id
     report = json.loads((outcome.directory / "report.json").read_text())

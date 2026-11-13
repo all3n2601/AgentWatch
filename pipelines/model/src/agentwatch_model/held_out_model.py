@@ -2,7 +2,10 @@
 
 Nothing here fits or refits: the booster is read from M03's saved file, and the temperature and
 abstention threshold from M04's calibration.json. Both are accepted only when the files agree
-with each other and with the frozen split and evaluation contract.
+with each other and with the frozen split and evaluation contract, and only for the pinned pair
+(`FROZEN_VERSIONS`): M03's `training-v1+a34ea0be` and M04's `calibration-v1+08119e78`. M04's
+report must carry the same calibration as calibration.json, name the same split, and hash its
+predictions.jsonl, and calibration.json must hash M03's report.
 
 Two checks then prove the loaded pair is the one that was evaluated, step by step, so neither
 can pass on an empty or partial record. `check_reproduces_validation` scores the validation
@@ -48,6 +51,21 @@ CALIBRATION_REPORT = "report.json"
 CALIBRATED_PREDICTIONS = "predictions.jsonl"
 REPRODUCTION_TOLERANCE = 1e-9
 ACCEPTED_CONTRACT = {"version": "eval-contract-v3", "hash": "1cab0cbe", "status": "accepted"}
+# The M03 classifier and M04 calibration evaluated on split-v3 and frozen for held-out scoring.
+FROZEN_TRAINING_VERSION = "training-v1+a34ea0be"
+FROZEN_CALIBRATION_VERSION = "calibration-v1+08119e78"
+CALIBRATION_FIELDS = ("version", "temperature", "abstention_threshold")
+
+
+@dataclass(frozen=True)
+class FrozenVersions:
+    """The M03 training version and M04 calibration version a loaded pair must record."""
+
+    training: str
+    calibration: str
+
+
+FROZEN_VERSIONS = FrozenVersions(FROZEN_TRAINING_VERSION, FROZEN_CALIBRATION_VERSION)
 
 
 class HeldOutModelError(ValueError):
@@ -142,10 +160,63 @@ def check_calibration(calibration: dict, preprocessing: dict, where: str) -> tup
     return temperature, threshold
 
 
+def check_versions(
+    versions: FrozenVersions,
+    report: dict,
+    preprocessing: dict,
+    calibration: dict,
+    candidates_dir: Path,
+    calibrated_dir: Path,
+) -> None:
+    """M03's report and preprocessing, and calibration.json, must name the pinned versions."""
+    report_path, preprocessing_path = candidates_dir / REPORT, candidates_dir / PREPROCESSING
+    calibration_path = calibrated_dir / CALIBRATION
+    named = (
+        (preprocessing, preprocessing_path, ("training_version",), versions.training),
+        (report, report_path, ("model", "version"), versions.training),
+        (calibration, calibration_path, ("training_version",), versions.training),
+        (calibration, calibration_path, ("version",), versions.calibration),
+    )
+    for document, path, keys, expected in named:
+        value = field(document, *keys, where=str(path))
+        require_equal(value, expected, f"{path} {'.'.join(keys)}")
+
+
+def check_calibration_report(
+    calibration_report: dict, calibration: dict, split: Path, calibrated_dir: Path
+) -> str:
+    """M04's report must describe calibration.json and the split, and hash its predictions;
+    returns that hash."""
+    where = str(calibrated_dir / CALIBRATION_REPORT)
+    for name in CALIBRATION_FIELDS:
+        require_equal(
+            field(calibration_report, "calibration", name, where=where),
+            calibration[name],
+            f"{where} calibration.{name} against {CALIBRATION} {name}",
+        )
+    require_equal(
+        field(calibration_report, "split", where=where), split_identity(split), f"{where} split"
+    )
+    predictions_path = calibrated_dir / CALIBRATED_PREDICTIONS
+    predictions_sha = digest(predictions_path)
+    require_equal(
+        predictions_sha,
+        field(calibration_report, "predictions", "sha256", where=where),
+        f"{predictions_path} sha256 against {where} predictions.sha256",
+    )
+    return predictions_sha
+
+
 def load_frozen_classifier(
-    candidates_dir: Path, calibrated_dir: Path, split: Path
+    candidates_dir: Path,
+    calibrated_dir: Path,
+    split: Path,
+    versions: FrozenVersions = FROZEN_VERSIONS,
 ) -> FrozenClassifier:
-    """The M03 classifier with its M04 temperature and threshold, after every identity check."""
+    """The M03 classifier with its M04 temperature and threshold, after every identity check.
+
+    `versions` defaults to the pinned frozen pair; only tests of synthetic pairs pass others.
+    """
     check_lightgbm()
     import lightgbm
 
@@ -160,6 +231,7 @@ def load_frozen_classifier(
     preprocessing = read_object(preprocessing_path, "M03 preprocessing")
     calibration = read_object(calibration_path, "M04 calibration")
     calibration_report = read_object(calibration_report_path, "M04 report")
+    check_versions(versions, report, preprocessing, calibration, candidates_dir, calibrated_dir)
     where = str(calibration_report_path)
     validation_steps = positive_count(
         field(calibration_report, "fit", "steps", where=where), f"{where} fit.steps"
@@ -204,18 +276,28 @@ def load_frozen_classifier(
         f"{where} probability_columns",
     )
     temperature, threshold = check_calibration(calibration, preprocessing, str(calibration_path))
+    calibration_predictions_sha = check_calibration_report(
+        calibration_report, calibration, split, calibrated_dir
+    )
+    require_equal(
+        digest(report_path),
+        field(calibration, "candidates", "report_sha256", where=str(calibration_path)),
+        f"{report_path} sha256 against {calibration_path} candidates.report_sha256",
+    )
     try:
         booster = lightgbm.Booster(model_file=str(classifier_path))
     except lightgbm.basic.LightGBMError as error:
         raise HeldOutModelError(f"Cannot load {classifier_path}: {error}") from error
     identity = {
         "training_version": preprocessing["training_version"],
-        "calibration_version": calibration.get("version"),
+        "calibration_version": calibration["version"],
         "contract": dict(ACCEPTED_CONTRACT),
         "split": split_identity(split),
         "classifier_sha256": classifier_sha,
         "preprocessing_sha256": preprocessing_sha,
         "calibration_sha256": digest(calibration_path),
+        "calibration_report_sha256": digest(calibration_report_path),
+        "calibration_predictions_sha256": calibration_predictions_sha,
         "temperature": temperature,
         "threshold": threshold,
         "validation_steps": validation_steps,

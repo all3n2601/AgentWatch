@@ -6,6 +6,7 @@ import pytest
 from frozen_model_fixtures import (
     CALIBRATED_PREDICTIONS,
     CALIBRATION,
+    SYNTHETIC_VERSIONS,
     TEMPERATURE,
     THRESHOLD,
     calibrated_records,
@@ -21,8 +22,12 @@ from agentwatch_model.candidates import predict
 from agentwatch_model.features import feature_matrix
 from agentwatch_model.held_out_model import (
     CLASSIFIER_SCORER,
+    FROZEN_CALIBRATION_VERSION,
+    FROZEN_TRAINING_VERSION,
+    FROZEN_VERSIONS,
     REPRODUCTION_TOLERANCE,
     FrozenClassifier,
+    FrozenVersions,
     HeldOutModelError,
     check_reproduces_calibration,
     check_reproduces_validation,
@@ -42,6 +47,11 @@ def split(tmp_path):
 @pytest.fixture
 def pair(tmp_path, split):
     return write_frozen_pair(tmp_path, split)
+
+
+def load(pair, split, versions=SYNTHETIC_VERSIONS):
+    """The synthetic pair, loaded against the versions it records unless a test says otherwise."""
+    return load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split, versions)
 
 
 def edit(path, change):
@@ -74,7 +84,7 @@ def rebind_preprocessing(pair):
 
 
 def test_a_matching_pair_loads_and_records_its_identity(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
 
     assert isinstance(model, FrozenClassifier)
     assert model.class_order == pair.candidate.class_order
@@ -92,11 +102,16 @@ def test_a_matching_pair_loads_and_records_its_identity(pair, split):
     assert identity["preprocessing_sha256"] == file_sha256(pair.candidates_dir / PREPROCESSING)
     assert identity["calibration_sha256"] == file_sha256(pair.calibrated_dir / CALIBRATION)
     assert identity["temperature"] == TEMPERATURE and identity["threshold"] == THRESHOLD
+    assert identity["validation_steps"] == len(pair.validation_rows)
+    assert identity["calibration_report_sha256"] == file_sha256(pair.calibrated_dir / REPORT)
+    assert identity["calibration_predictions_sha256"] == file_sha256(
+        pair.calibrated_dir / CALIBRATED_PREDICTIONS
+    )
     check_reproduces_validation(model, pair.validation_rows, pair.candidates_dir)
 
 
 def test_loaded_scores_equal_the_trained_candidate(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
     rows = dataset(6, "held")
 
     expected = predict(pair.candidate, rows)
@@ -113,7 +128,7 @@ def test_loaded_scores_equal_the_trained_candidate(pair, split):
 
 
 def test_missing_feature_values_score_as_nan_not_zero(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
     rows = dataset(2, "held")
     rows[0]["cpu_seconds"] = None
 
@@ -124,11 +139,10 @@ def test_missing_feature_values_score_as_nan_not_zero(pair, split):
 def test_abstains_below_the_calibrated_threshold(pair, split, threshold, abstains):
     # A high temperature flattens the calibrated confidences, so 0.99 is out of reach for every
     # step.
-    edit(
-        pair.calibrated_dir / CALIBRATION,
-        lambda c: c.update(abstention_threshold=threshold, temperature=50.0),
-    )
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    fitted = {"abstention_threshold": threshold, "temperature": 50.0}
+    edit(pair.calibrated_dir / CALIBRATION, lambda c: c.update(fitted))
+    edit(pair.calibrated_dir / REPORT, lambda r: r["calibration"].update(fitted))
+    model = load(pair, split)
 
     steps = frozen_scores(model, dataset(6, "held"))
 
@@ -211,6 +225,49 @@ def threshold_not_finite(pair, split):
     path.write_text(path.read_text().replace(f"{THRESHOLD}", "NaN"))
 
 
+def preprocessing_training_version_differs(pair, split):
+    edit(pair.candidates_dir / PREPROCESSING, lambda p: p.update(training_version="training-v1+x"))
+    rebind_preprocessing(pair)
+
+
+def m03_model_version_differs(pair, split):
+    edit(pair.candidates_dir / REPORT, lambda r: r["model"].update(version="training-v1+x"))
+
+
+def calibration_version_differs(pair, split):
+    edit(pair.calibrated_dir / CALIBRATION, lambda c: c.update(version="calibration-v1+x"))
+
+
+def m04_report_version_differs(pair, split):
+    edit(pair.calibrated_dir / REPORT, lambda r: r["calibration"].update(version="other"))
+
+
+def m04_report_temperature_differs(pair, split):
+    edit(pair.calibrated_dir / REPORT, lambda r: r["calibration"].update(temperature=1.5))
+
+
+def m04_report_threshold_differs(pair, split):
+    edit(pair.calibrated_dir / REPORT, lambda r: r["calibration"].update(abstention_threshold=0.1))
+
+
+def m04_report_split_differs(pair, split):
+    edit(pair.calibrated_dir / REPORT, lambda r: r["split"].update(sha256="0" * 64))
+
+
+def m04_predictions_edited_without_rebinding(pair, split):
+    path = pair.calibrated_dir / CALIBRATED_PREDICTIONS
+    path.write_text(path.read_text() + "\n")
+
+
+def m03_report_edited_after_calibration(pair, split):
+    edit(pair.candidates_dir / REPORT, lambda r: r.update(note="changed"))
+
+
+def m04_report_missing(pair, split):
+    (pair.calibrated_dir / REPORT).unlink()
+
+
+M04_REPORT = r"calibration[\\/]report\.json"
 REFUSALS = [
     (split_other, "split"),
     (contract_proposed, "contract"),
@@ -227,6 +284,16 @@ REFUSALS = [
     (calibration_not_evaluated, r"calibration\.json status"),
     (threshold_zero, "abstention_threshold"),
     (threshold_not_finite, "abstention_threshold"),
+    (preprocessing_training_version_differs, r"preprocessing\.json training_version"),
+    (m03_model_version_differs, r"report\.json model\.version"),
+    (calibration_version_differs, r"calibration\.json version"),
+    (m04_report_version_differs, f"{M04_REPORT} calibration\\.version"),
+    (m04_report_temperature_differs, f"{M04_REPORT} calibration\\.temperature"),
+    (m04_report_threshold_differs, f"{M04_REPORT} calibration\\.abstention_threshold"),
+    (m04_report_split_differs, f"{M04_REPORT} split"),
+    (m04_predictions_edited_without_rebinding, f"{M04_REPORT} predictions\\.sha256"),
+    (m03_report_edited_after_calibration, "candidates\\.report_sha256"),
+    (m04_report_missing, "M04 report"),
 ]
 
 
@@ -235,18 +302,18 @@ def test_a_pair_that_disagrees_is_refused_naming_the_field(pair, split, break_it
     chosen = break_it(pair, split) or split
 
     with pytest.raises(HeldOutModelError, match=field):
-        load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, chosen)
+        load(pair, chosen)
 
 
 def test_a_missing_calibration_is_refused(pair, split):
     (pair.calibrated_dir / CALIBRATION).unlink()
 
     with pytest.raises(HeldOutModelError, match="calibration"):
-        load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+        load(pair, split)
 
 
 def test_a_validation_prediction_that_differs_is_refused(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
     path = pair.candidates_dir / VALIDATION_PREDICTIONS
     lines = [json.loads(line) for line in path.read_text().splitlines()]
     name = model.class_order[0]
@@ -258,7 +325,7 @@ def test_a_validation_prediction_that_differs_is_refused(pair, split):
 
 
 def test_a_changed_validation_label_is_refused(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
     path = pair.candidates_dir / VALIDATION_PREDICTIONS
     lines = [json.loads(line) for line in path.read_text().splitlines()]
     lines[0]["prediction"] = "not-a-class"
@@ -269,7 +336,7 @@ def test_a_changed_validation_label_is_refused(pair, split):
 
 
 def test_validation_rows_missing_on_either_side_are_refused(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
 
     with pytest.raises(HeldOutModelError, match="step"):
         check_reproduces_validation(model, pair.validation_rows[1:], pair.candidates_dir)
@@ -280,7 +347,7 @@ def test_validation_rows_missing_on_either_side_are_refused(pair, split):
 
 
 def test_a_duplicate_validation_prediction_line_is_refused(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
     path = pair.candidates_dir / VALIDATION_PREDICTIONS
     lines = path.read_text().splitlines(keepends=True)
     path.write_text("".join([*lines, lines[0]]))
@@ -290,7 +357,7 @@ def test_a_duplicate_validation_prediction_line_is_refused(pair, split):
 
 
 def test_an_empty_validation_record_is_refused(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
     (pair.candidates_dir / VALIDATION_PREDICTIONS).write_text("")
 
     with pytest.raises(HeldOutModelError, match="no steps"):
@@ -298,7 +365,7 @@ def test_an_empty_validation_record_is_refused(pair, split):
 
 
 def test_a_validation_count_that_disagrees_with_m04_fit_steps_is_refused(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
     assert model.validation_steps == len(pair.validation_rows)
     # The file and the rows still agree with each other; only M04's fitted count disagrees.
     path = pair.candidates_dir / VALIDATION_PREDICTIONS
@@ -309,14 +376,14 @@ def test_a_validation_count_that_disagrees_with_m04_fit_steps_is_refused(pair, s
 
 
 def test_m04_test_predictions_are_reproduced(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
 
     check_reproduces_calibration(model, pair.test_rows, pair.calibrated_dir)
 
 
 def test_m04_predictions_of_a_subset_of_test_rows_are_reproduced(pair, split):
     write_calibrated(pair, calibrated_lines(pair)[1:])
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
 
     check_reproduces_calibration(model, pair.test_rows, pair.calibrated_dir)
 
@@ -328,7 +395,7 @@ def test_m04_joint_only_steps_count_towards_the_recorded_steps(pair, split):
         report["joint_only_steps_not_scored"] = 1
 
     edit(pair.calibrated_dir / REPORT, one_joint_only)
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
     assert model.calibrated_test_steps == len(pair.test_rows)
 
     check_reproduces_calibration(model, pair.test_rows, pair.calibrated_dir)
@@ -338,7 +405,7 @@ def test_m04_predictions_at_another_temperature_are_refused(pair, split):
     write_calibrated(
         pair, calibrated_records(pair.candidate, pair.test_rows, TEMPERATURE * 2, THRESHOLD)
     )
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
 
     with pytest.raises(HeldOutModelError, match="differs from the loaded model"):
         check_reproduces_calibration(model, pair.test_rows, pair.calibrated_dir)
@@ -386,14 +453,14 @@ def test_an_m04_test_prediction_that_differs_is_refused(pair, split, change, mes
     records = calibrated_lines(pair)
     change(records[-1])
     write_calibrated(pair, records)
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
 
     with pytest.raises(HeldOutModelError, match=message):
         check_reproduces_calibration(model, pair.test_rows, pair.calibrated_dir)
 
 
 def test_an_m04_step_missing_from_the_test_rows_is_refused(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
 
     with pytest.raises(HeldOutModelError, match="not test-split rows"):
         check_reproduces_calibration(model, pair.test_rows[1:], pair.calibrated_dir)
@@ -401,7 +468,7 @@ def test_an_m04_step_missing_from_the_test_rows_is_refused(pair, split):
 
 def test_an_m04_count_that_disagrees_with_scored_steps_is_refused(pair, split):
     edit(pair.calibrated_dir / REPORT, lambda r: r.update(scored_steps=r["scored_steps"] + 1))
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
 
     with pytest.raises(HeldOutModelError, match="scored_steps plus joint_only_steps_not_scored"):
         check_reproduces_calibration(model, pair.test_rows, pair.calibrated_dir)
@@ -410,7 +477,7 @@ def test_an_m04_count_that_disagrees_with_scored_steps_is_refused(pair, split):
 def test_empty_or_repeated_m04_predictions_are_refused(pair, split):
     records = calibrated_lines(pair)
     write_calibrated(pair, [*records, records[0]])
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
     with pytest.raises(HeldOutModelError, match="more than once"):
         check_reproduces_calibration(model, pair.test_rows, pair.calibrated_dir)
 
@@ -420,7 +487,7 @@ def test_empty_or_repeated_m04_predictions_are_refused(pair, split):
 
 
 def test_unreadable_m04_predictions_are_refused(pair, split):
-    model = load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+    model = load(pair, split)
     (pair.calibrated_dir / CALIBRATED_PREDICTIONS).write_text("{not json\n")
 
     with pytest.raises(HeldOutModelError, match="Cannot read"):
@@ -439,7 +506,7 @@ def test_m04_step_counts_must_be_positive_integers(pair, split, key, value):
     edit(pair.calibrated_dir / REPORT, change)
 
     with pytest.raises(HeldOutModelError, match=f"{key} must be a positive integer"):
-        load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+        load(pair, split)
 
 
 @pytest.mark.parametrize("value", [-1, 0.5, True, None])
@@ -447,4 +514,23 @@ def test_m04_joint_only_count_must_be_a_non_negative_integer(pair, split, value)
     edit(pair.calibrated_dir / REPORT, lambda r: r.update(joint_only_steps_not_scored=value))
 
     with pytest.raises(HeldOutModelError, match="joint_only_steps_not_scored must be a non-neg"):
+        load(pair, split)
+
+
+def test_the_frozen_versions_are_the_evaluated_m03_m04_pair():
+    assert FROZEN_TRAINING_VERSION == "training-v1+a34ea0be"
+    assert FROZEN_CALIBRATION_VERSION == "calibration-v1+08119e78"
+    assert FROZEN_VERSIONS == FrozenVersions(FROZEN_TRAINING_VERSION, FROZEN_CALIBRATION_VERSION)
+
+
+def test_a_synthetic_pair_is_refused_by_the_pinned_versions(pair, split):
+    # The synthetic training version is the packaged config's, so the calibration pin refuses.
+    with pytest.raises(HeldOutModelError, match=r"calibration\.json version .*08119e78"):
         load_frozen_classifier(pair.candidates_dir, pair.calibrated_dir, split)
+
+
+def test_a_pair_of_another_training_version_is_refused(pair, split):
+    versions = FrozenVersions("training-v1+other", SYNTHETIC_VERSIONS.calibration)
+
+    with pytest.raises(HeldOutModelError, match=r"training_version .*training-v1\+other"):
+        load(pair, split, versions)
