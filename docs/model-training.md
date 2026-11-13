@@ -238,7 +238,10 @@ or no present value has null fractions, never 0. It describes the inputs and cha
 Each attempt writes `.data/a06-scoring/scores/<attempt id>/` (`report.json`,
 `predictions.jsonl`, `tracking.json`) and is logged to the separate MLflow experiment
 `a06-held-out-scoring`, failed attempts included. The attempt id is the UTC start time plus the
-first digits of the hash of every input, the model files included. Exit codes: 0 completed, 1
+first digits of the hash of every input, the model files included. An attempt never reuses a
+folder: one started with the same id (identical inputs in the same second, or two runs at once)
+gets `<attempt id>-2`, then `-3`, each created with an exclusive `mkdir`, so no attempt
+overwrites another's files. Exit codes: 0 completed, 1
 failed (the reason is in the report), 3 not tracked, 2 for a malformed configuration, a model
 pair that does not match, an environment where LightGBM cannot load, or an output inside
 `data/held-out`. Scores stay local and belong in no release. Attempt
