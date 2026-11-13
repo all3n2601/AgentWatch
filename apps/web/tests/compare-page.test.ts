@@ -21,6 +21,8 @@ import {
   compareConfiguration,
   configurationOf,
   POLICY_NOT_RECORDED_WARNING,
+  policyUnknown,
+  verdictBadge,
 } from "../lib/run-compatibility";
 
 // Synthetic runs for tests only; they are not recorded-run evidence.
@@ -211,6 +213,45 @@ test("CPU runs have no agent by design, so their model is a recorded match", () 
   );
   assert.equal(model?.status, "same");
   assert.equal(model?.candidate, "Not applicable");
+});
+
+test("the policy check is found by its ID, whatever its label", () => {
+  const result = configurations(run("a"), run("b"));
+  assert.equal(policyUnknown(result), true);
+  const relabelled = {
+    ...result,
+    checks: result.checks.map((c) =>
+      c.id === "policy" ? { ...c, label: "Policy" } : c,
+    ),
+    unknown: result.unknown.map((label) =>
+      label === "Concurrency policy" ? "Policy" : label,
+    ),
+  };
+  assert.equal(policyUnknown(relabelled), true);
+  const known = {
+    ...result,
+    checks: result.checks.map((c) =>
+      c.id === "policy" ? { ...c, status: "same" as const } : c,
+    ),
+  };
+  assert.equal(policyUnknown(known), false);
+});
+
+test("verdictBadge is the one count label and tone for each verdict", () => {
+  assert.deepEqual(verdictBadge(configurations(run("a"), run("b"))), {
+    label: "2 unknown",
+    tone: "warning",
+  });
+  assert.deepEqual(
+    verdictBadge(
+      configurations(run("a"), withExperiment("b", { iterations: 1 })),
+    ),
+    { label: "1 differ", tone: "danger" },
+  );
+  assert.deepEqual(
+    verdictBadge({ checks: [], verdict: "match", differing: [], unknown: [] }),
+    { label: "Match", tone: "success" },
+  );
 });
 
 test("agent model is unknown when only one coding run has agent evidence", () => {

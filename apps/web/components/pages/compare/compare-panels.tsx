@@ -33,6 +33,7 @@ import {
   type CheckStatus,
   type Compatibility,
   type CompatibilityCheck,
+  verdictBadge,
 } from "@/lib/run-compatibility";
 import { relativeLengths } from "@/lib/segments";
 import { cn } from "@/lib/utils";
@@ -97,18 +98,7 @@ export function ConfigurationPanel({
     value: <CheckValue check={check} />,
     status: CHECK_STATUS[check.status],
   }));
-  const verdict =
-    compatibility.verdict === "differs"
-      ? {
-          label: `${compatibility.differing.length} differ`,
-          tone: "danger" as const,
-        }
-      : compatibility.verdict === "unverified"
-        ? {
-            label: `${compatibility.unknown.length} unknown`,
-            tone: "warning" as const,
-          }
-        : { label: "Configuration match", tone: "success" as const };
+  const verdict = verdictBadge(compatibility);
   return (
     <GlassPanel
       as="section"

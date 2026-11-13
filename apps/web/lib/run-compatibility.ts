@@ -1,5 +1,6 @@
 import type { Experiment } from "./experiment-schema";
 import { formatQuantity } from "./measurement-format";
+import type { Tone } from "./tone";
 
 /**
  * The one compatibility rule for saved runs, shared by the Runs selection and
@@ -72,7 +73,8 @@ export const NOT_RECORDED = "Not recorded";
 export const POLICY_NOT_RECORDED_WARNING =
   "Policy not recorded; full compatibility cannot be verified";
 
-const POLICY_LABEL = "Concurrency policy";
+/** The policy row's stable ID; rows are identified by ID, never by their label. */
+const POLICY_CHECK_ID = "policy";
 
 const CHECKSUM_EDGE_LENGTH = 6;
 
@@ -141,7 +143,7 @@ const SETTINGS: Setting[] = [
   { id: "rule", label: "Attribution rule", value: (c) => c.ruleVersion },
   // Saved runs do not record the concurrency policy they ran under, so it is never
   // known. Read it here once the saved-run API links runs to policy versions.
-  { id: "policy", label: POLICY_LABEL, value: () => null },
+  { id: POLICY_CHECK_ID, label: "Concurrency policy", value: () => null },
 ];
 
 function checkSetting(
@@ -196,4 +198,23 @@ export function compareConfiguration(
 
 /** Whether the policy is among the unknown settings (always, for saved runs today). */
 export const policyUnknown = (compatibility: Compatibility) =>
-  compatibility.unknown.includes(POLICY_LABEL);
+  compatibility.checks.some(
+    (check) => check.id === POLICY_CHECK_ID && check.status === "unknown",
+  );
+
+export const VERDICT_TONE = {
+  differs: "danger",
+  unverified: "warning",
+  match: "success",
+} as const satisfies Record<CompatibilityVerdict, Tone>;
+
+/** The verdict as a short count badge, shared by the Configuration tab and its panel. */
+export function verdictBadge({ verdict, differing, unknown }: Compatibility) {
+  const label =
+    verdict === "differs"
+      ? `${count(differing.length)} differ`
+      : verdict === "unverified"
+        ? `${count(unknown.length)} unknown`
+        : "Match";
+  return { label, tone: VERDICT_TONE[verdict] };
+}

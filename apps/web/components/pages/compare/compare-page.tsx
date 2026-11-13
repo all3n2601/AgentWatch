@@ -22,6 +22,8 @@ import { routes } from "@/lib/routes";
 import {
   policyUnknown,
   POLICY_NOT_RECORDED_WARNING,
+  VERDICT_TONE,
+  verdictBadge,
   type Compatibility,
 } from "@/lib/run-compatibility";
 import {
@@ -54,13 +56,17 @@ function pickerSlot(slot: RunSlot, options: readonly RunOption[]) {
 
 /** The configuration verdict; unknown settings are never labelled a match. */
 export function verdictStatus(compatibility: Compatibility) {
+  const tone = VERDICT_TONE[compatibility.verdict];
   if (compatibility.verdict === "differs")
-    return { label: "Settings differ", tone: "danger" as const };
+    return { label: "Settings differ", tone };
   if (compatibility.verdict === "unverified")
-    return policyUnknown(compatibility)
-      ? { label: "Policy not recorded", tone: "warning" as const }
-      : { label: "Settings not recorded", tone: "warning" as const };
-  return { label: "Configuration match", tone: "success" as const };
+    return {
+      label: policyUnknown(compatibility)
+        ? "Policy not recorded"
+        : "Settings not recorded",
+      tone,
+    };
+  return { label: "Configuration match", tone };
 }
 
 function ConfigurationStatus({
@@ -168,14 +174,6 @@ function ComparisonHeadline({ comparison }: { comparison: Comparison }) {
   );
 }
 
-function configurationBadge({ verdict, differing, unknown }: Compatibility) {
-  if (verdict === "differs")
-    return `${formatQuantity(differing.length, "count")} differ`;
-  if (verdict === "unverified")
-    return `${formatQuantity(unknown.length, "count")} unknown`;
-  return "Match";
-}
-
 function comparisonTabs(
   comparison: Comparison,
 ): (TabbedViewTab & { id: CompareTab })[] {
@@ -208,7 +206,7 @@ function comparisonTabs(
     {
       id: "configuration",
       label: "Configuration",
-      badge: configurationBadge(compatibility),
+      badge: verdictBadge(compatibility).label,
       content: (
         <ConfigurationPanel
           compatibility={compatibility}
