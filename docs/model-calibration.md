@@ -4,7 +4,8 @@ Status: `calibration-v1`, fitted and evaluated on dataset v1
 (`split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`, accepted); see
 [Results on dataset v1](#results-on-dataset-v1). Every gate it evaluates passes. Temperature
 scaling made the test-split ECE slightly worse, not better. On `split-v2` the validation split
-is empty, so no calibration is fitted there.
+is empty, so no calibration is fitted there. How a server applies the temperature and the
+abstention rule is in the [serving contract](model-serving-contract.md).
 
 Raw LightGBM class scores are not calibrated confidence. M04 calibrates the M03 classifier on the
 validation split only, chooses an abstention threshold there, and scores both once on the test
