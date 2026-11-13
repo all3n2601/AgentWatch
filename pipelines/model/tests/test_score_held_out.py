@@ -8,6 +8,8 @@ dataset v1 split is replaced by synthetic rows.
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 
 import pytest
 from agentwatch_data.splits import SplitError
@@ -17,6 +19,7 @@ require_lightgbm()
 
 import mlflow
 from agentwatch_data import evidence
+from agentwatch_model import score_held_out
 from agentwatch_model.candidates import TrainingError
 from agentwatch_model.features import FEATURES
 from agentwatch_model.held_out_model import CLASSIFIER_SCORER, HeldOutModelError
@@ -24,6 +27,7 @@ from agentwatch_model.held_out_rows import ACCEPTED_TRUTH_LABEL_VERSION
 from agentwatch_model.score_held_out import (
     EXPERIMENT,
     OutputError,
+    allocate_attempt_directory,
     input_hashes,
     main,
     run,
@@ -436,6 +440,59 @@ def test_truth_hashes_of_folders_with_one_name_do_not_collide(prepared, tmp_path
         hashes["truth"]["cfg-default-synthetic/truth.json"]
         != hashes["truth"]["cfg-default-elsewhere/truth.json"]
     )
+
+
+ARTIFACTS = ("report.json", "predictions.jsonl", "tracking.json")
+
+
+def test_two_attempts_at_one_frozen_instant_keep_independent_artifacts(prepared, tracking):
+    started = datetime(2026, 11, 13, 5, 0, 0, tzinfo=UTC)
+    first = run_synthetic(prepared, tracking, now=started)
+    kept = {name: (first.directory / name).read_bytes() for name in ARTIFACTS}
+    second = run_synthetic(prepared, tracking, now=started)
+
+    assert first.status == second.status == "completed"
+    assert second.directory != first.directory
+    assert second.directory.name == f"{first.directory.name}-2"
+    assert first.directory.name.startswith("20261113T050000Z-")
+    for name in ARTIFACTS:
+        assert (first.directory / name).read_bytes() == kept[name]
+        assert (second.directory / name).is_file()
+    assert first.run_id != second.run_id
+    tracked = [
+        json.loads((outcome.directory / "tracking.json").read_text())["run_id"]
+        for outcome in (first, second)
+    ]
+    assert tracked == [first.run_id, second.run_id]
+
+
+def test_an_attempt_never_writes_into_an_existing_folder(tmp_path):
+    taken = tmp_path / "20261113T050000Z-abcdef"
+    taken.mkdir(parents=True)
+    (taken / "report.json").write_text("earlier attempt")
+
+    directory = allocate_attempt_directory(tmp_path, taken.name)
+
+    assert directory == tmp_path / f"{taken.name}-2"
+    assert list(directory.iterdir()) == []
+    assert (taken / "report.json").read_text() == "earlier attempt"
+
+
+def test_concurrent_attempts_with_one_id_each_get_their_own_folder(tmp_path):
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        directories = list(
+            pool.map(lambda _: allocate_attempt_directory(tmp_path, "same-id"), range(16))
+        )
+    assert len(set(directories)) == 16
+    assert all(directory.is_dir() for directory in directories)
+
+
+def test_attempt_folders_for_one_id_are_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(score_held_out, "MAX_ATTEMPTS_PER_ID", 2)
+    allocate_attempt_directory(tmp_path, "same-id")
+    allocate_attempt_directory(tmp_path, "same-id")
+    with pytest.raises(OutputError, match="same-id"):
+        allocate_attempt_directory(tmp_path, "same-id")
 
 
 def test_truth_hashes_keep_a_folder_passed_twice(prepared):
