@@ -1045,6 +1045,17 @@ from M3 through M6 and do not renumber the implementation milestones above.
   (768 px at 200%) CSS px: no horizontal page overflow; no page scroll at 1280×800 and
   1440×900. Open: Allen's API gaps (applied admission limits, saved-run policy linkage, a `409`
   error code, a consistent active-plus-history read); owner browser check, PR review and CI.
+  Review follow-up 2026-11-12 (PR #73, reviews at `fb61185`; merged `origin/main` at `b3197f8`):
+  a mismatch draws no paired bars on Compare (`pairedBarLengths` in `lib/compare-page.ts`;
+  values listed as text); the Live status tab reads its policy again every 10 s while the run
+  is open (`nextRunPolicyReadMs`), dates the current policy, reads only the active version and
+  the newest history entry (`/api/policies/concurrency/current`) and shows an inconsistent read
+  as not confirmed (`currentPolicyText`, `controlsConsistent`); a coding run without agent
+  evidence has an unknown model, never a match; the policy row is found by ID and one
+  `verdictBadge` serves the Configuration tab and panel; `deltaTone` keeps a faster neutral
+  delta uncoloured; Controls notices are linked to their inputs, Retry states the change it
+  resends and Read again keeps focus. Verified locally: web lint, typecheck, 261 unit tests,
+  production build and 55 Playwright tests passed. Not yet pushed or re-reviewed.
 - [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
