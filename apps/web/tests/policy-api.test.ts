@@ -8,7 +8,12 @@ import {
 import {
   conflictCause,
   controlsConsistent,
+  currentPolicyText,
   EFFECTIVE_LIMITS_UNAVAILABLE,
+  INCONSISTENT_POLICY_RETRY_MS,
+  MAX_INCONSISTENT_POLICY_READS,
+  nextRunPolicyReadMs,
+  RUN_POLICY_REFRESH_MS,
   formFromLimits,
   limitChanges,
   limitsFromForm,
@@ -18,6 +23,7 @@ import {
   runPolicyText,
   versionLimitsText,
 } from "../lib/policy-view";
+import { policyControlsSchema } from "../lib/policy-api-schema";
 import { fakeFetch, RUN_ID } from "./live-fixtures";
 
 const API_ROOT = "http://worker.test";
@@ -296,6 +302,87 @@ test("a read whose history does not start at the active version is inconsistent"
   assert.equal(controlsConsistent(read(2, [3, 2, 1, 0])), false);
   assert.equal(controlsConsistent(read(3, [2, 1, 0])), false);
   assert.equal(controlsConsistent(read(0, [])), false);
+});
+
+test("the current policy is shown only from a consistent read", () => {
+  const read = (active: number, newest: number) => ({
+    ok: true as const,
+    data: policyControlsSchema.parse({
+      active: { ...version2, version: active },
+      history: {
+        versions: [{ ...version2, version: newest }],
+        next_before: null,
+      },
+    }),
+  });
+  assert.equal(
+    currentPolicyText(read(2, 2), { retrying: false }),
+    "Version 2: Inference: no limit · Tests: 2",
+  );
+  // A change landed between the two reads: neither version is labelled current.
+  for (const retrying of [true, false]) {
+    const text = currentPolicyText(read(2, 3), { retrying });
+    assert.doesNotMatch(text, /Version \d/);
+    assert.match(text, retrying ? /reading again/ : /not confirmed/);
+  }
+  assert.equal(currentPolicyText(null, { retrying: false }), "Loading policy…");
+  assert.equal(
+    currentPolicyText(
+      { ok: false, kind: "unavailable", message: "down" },
+      { retrying: false },
+    ),
+    "Policy service unavailable",
+  );
+});
+
+test("an open run's policy is read again; a closed run's stops once settled", () => {
+  assert.equal(
+    nextRunPolicyReadMs({ closed: false, inconsistentReads: 0 }),
+    RUN_POLICY_REFRESH_MS,
+  );
+  assert.equal(
+    nextRunPolicyReadMs({ closed: true, inconsistentReads: 0 }),
+    null,
+  );
+  for (const closed of [true, false])
+    assert.equal(
+      nextRunPolicyReadMs({ closed, inconsistentReads: 1 }),
+      INCONSISTENT_POLICY_RETRY_MS,
+    );
+  // Inconsistent retries are bounded; an open run falls back to its normal interval.
+  const exhausted = MAX_INCONSISTENT_POLICY_READS;
+  assert.equal(
+    nextRunPolicyReadMs({ closed: true, inconsistentReads: exhausted }),
+    null,
+  );
+  assert.equal(
+    nextRunPolicyReadMs({ closed: false, inconsistentReads: exhausted }),
+    RUN_POLICY_REFRESH_MS,
+  );
+});
+
+test("the browser reads the current policy without a full history page", async () => {
+  const { fetchImpl, requested } = fakeFetch(() =>
+    json({
+      active: version2,
+      history: { versions: [version2], next_before: null },
+    }),
+  );
+  const result = await createPolicyBrowserApi({
+    baseUrl: "http://web.test",
+    fetchImpl,
+  }).current();
+  assert.ok(result.ok);
+  assert.equal(requested.at(-1)!.pathname, "/api/policies/concurrency/current");
+});
+
+test("history pages can be limited to the newest entry", async () => {
+  const { fetchImpl, requested } = fakeFetch(() =>
+    json({ versions: [version2], next_before: 1 }),
+  );
+  await createPolicyApi(URLS, { fetchImpl }).history(undefined, undefined, 1);
+  assert.equal(requested.at(-1)!.searchParams.get("limit"), "1");
+  assert.equal(requested.at(-1)!.searchParams.has("before"), false);
 });
 
 test("run policy is read by UUID and summarised", async () => {

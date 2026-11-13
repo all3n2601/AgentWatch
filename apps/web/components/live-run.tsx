@@ -29,11 +29,15 @@ import {
   KeyValueList,
   type KeyValueItem,
 } from "@/components/widgets/evidence-lists";
+import { startPolling } from "@/components/use-live-feed";
 import { duration } from "@/lib/dashboard-data";
 import { createPolicyBrowserApi, type PolicyResult } from "@/lib/policy-api";
-import type { PolicyVersionView, RunPolicyView } from "@/lib/policy-api-schema";
+import type { PolicyControls, RunPolicyView } from "@/lib/policy-api-schema";
 import {
-  policyStatusText,
+  controlsConsistent,
+  currentPolicyText,
+  INCONSISTENT_POLICY_RETRY_MS,
+  nextRunPolicyReadMs,
   runAppliedLimitsText,
   runPolicyText,
 } from "@/lib/policy-view";
@@ -502,35 +506,54 @@ function useBrowserClock(ticking: boolean) {
   return now;
 }
 
+type RunPolicyRead = {
+  key: string;
+  run: PolicyResult<RunPolicyView>;
+  current: PolicyResult<PolicyControls>;
+  /** Browser wall time of the latest read whose current policy was consistent. */
+  currentReadAt: string | null;
+  retrying: boolean;
+};
+
 /**
  * The policy versions linked to the run, what its runner applied, and the current policy.
- * Read again when the run closes, since a policy change while it is open adds a version.
+ * Read again on the live view's poll loop while the run is open, since a policy change then
+ * links a new version and replaces the current one, and once more when it closes.
  */
 function RunPolicy({ runId, closed }: { runId: string; closed: boolean }) {
   const key = `${runId}:${closed}`;
-  const [policy, setPolicy] = useState<{
-    key: string;
-    run: PolicyResult<RunPolicyView>;
-    current: PolicyResult<PolicyVersionView>;
-  } | null>(null);
+  const [policy, setPolicy] = useState<RunPolicyRead | null>(null);
   useEffect(() => {
-    const controller = new AbortController();
-    void Promise.all([
-      policyApi.runPolicy(runId, controller.signal),
-      policyApi.controls(undefined, controller.signal),
-    ]).then(([run, controls]) => {
-      if (controller.signal.aborted) return;
-      const current = controls.ok
-        ? { ok: true as const, data: controls.data.active }
-        : controls;
-      setPolicy({ key, run, current });
+    let inconsistentReads = 0;
+    let currentReadAt: string | null = null;
+    const polling = startPolling(async (signal) => {
+      const [run, current] = await Promise.all([
+        policyApi.runPolicy(runId, signal),
+        policyApi.current(signal),
+      ]);
+      if (signal.aborted) return null;
+      const inconsistent = current.ok && !controlsConsistent(current.data);
+      inconsistentReads = inconsistent ? inconsistentReads + 1 : 0;
+      if (current.ok && !inconsistent) currentReadAt = new Date().toISOString();
+      const next = nextRunPolicyReadMs({ closed, inconsistentReads });
+      setPolicy({
+        key,
+        run,
+        current,
+        currentReadAt,
+        retrying: inconsistent && next === INCONSISTENT_POLICY_RETRY_MS,
+      });
+      return next;
     });
-    return () => controller.abort();
-  }, [key, runId]);
+    return () => polling.stop();
+  }, [key, runId, closed]);
   // Results for a previously selected run are never shown for this one.
   const shown = policy?.key === key ? policy : null;
   const run = shown?.run ?? null;
   const notApplicable = run?.ok === true && !run.data.applicable;
+  const current = shown?.current ?? null;
+  const currentConsistent =
+    current?.ok === true && controlsConsistent(current.data);
   const items: KeyValueItem[] = [
     {
       id: "linked",
@@ -548,7 +571,23 @@ function RunPolicy({ runId, closed }: { runId: string; closed: boolean }) {
     {
       id: "current",
       label: "Current policy",
-      value: policyStatusText(shown?.current ?? null),
+      value: currentPolicyText(current, { retrying: shown?.retrying ?? false }),
+      ...(current?.ok &&
+        !currentConsistent && {
+          status: { label: "Not confirmed", tone: "warning" as const },
+        }),
+    },
+    {
+      id: "current-read-at",
+      // A dated snapshot: the policy can change between reads.
+      label: currentConsistent
+        ? "Current policy read at"
+        : "Last confirmed read",
+      value: shown?.currentReadAt ? (
+        <Timestamp iso={shown.currentReadAt} />
+      ) : (
+        "Not read yet"
+      ),
     },
   ];
   return (

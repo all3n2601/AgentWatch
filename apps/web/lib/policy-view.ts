@@ -1,6 +1,7 @@
 import type { PolicyFailure, PolicyResult } from "./policy-api";
 import {
   MAX_POLICY_LIMIT,
+  type PolicyControls,
   type PolicyLimitsView,
   type RunPolicyView,
 } from "./policy-api-schema";
@@ -124,6 +125,49 @@ export function controlsConsistent(controls: {
   history: { versions: { version: number }[] };
 }) {
   return controls.history.versions[0]?.version === controls.active.version;
+}
+
+/**
+ * The current policy from one consistent read, as display text; `null` while loading. An
+ * inconsistent read is never shown as current: another change landed between its two reads.
+ */
+export function currentPolicyText(
+  result: PolicyResult<PolicyControls> | null,
+  { retrying }: { retrying: boolean },
+) {
+  if (result?.ok && !controlsConsistent(result.data))
+    return retrying
+      ? "Changed while it was being read; reading again…"
+      : "Changed while it was being read; not confirmed";
+  return policyStatusText(
+    result?.ok ? { ok: true, data: result.data.active } : result,
+  );
+}
+
+/** How often an open run's policy is read again, so "Current policy" follows changes. */
+export const RUN_POLICY_REFRESH_MS = 10_000;
+/** A read that changed underneath is retried quickly, a bounded number of times in a row. */
+export const INCONSISTENT_POLICY_RETRY_MS = 1_000;
+export const MAX_INCONSISTENT_POLICY_READS = 3;
+
+/**
+ * When to read a run's policy again: while the run is open, and soon after an inconsistent
+ * read. A closed run links no new versions, so it stops once a read is settled.
+ */
+export function nextRunPolicyReadMs({
+  closed,
+  inconsistentReads,
+}: {
+  closed: boolean;
+  /** Consecutive inconsistent reads, ending with the latest; 0 after any other result. */
+  inconsistentReads: number;
+}): number | null {
+  if (
+    inconsistentReads > 0 &&
+    inconsistentReads < MAX_INCONSISTENT_POLICY_READS
+  )
+    return INCONSISTENT_POLICY_RETRY_MS;
+  return closed ? null : RUN_POLICY_REFRESH_MS;
 }
 
 /** Shown wherever limits appear: no API reports which limits a runner actually applied. */
