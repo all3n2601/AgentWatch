@@ -8,12 +8,11 @@
 trained or fitted here. The pair is loaded and checked against the split first: a pair that
 does not match, or is not the pinned `training-v1+a34ea0be` / `calibration-v1+08119e78` pair
 (there is no option to accept another), is a setup error (exit 2) and no attempt is written.
-Then the split's rows are
-loaded with the leakage check on. The model must reproduce every M03 validation prediction, in
-a record of exactly the `fit.steps` M04 fitted on, and every M04 test prediction (label,
-abstention, calibrated confidence and class probabilities), in a record of exactly the
-test-split steps the M04 report counts; no scored run or plan may appear in the split. Each
-of those failures ends as a recorded failed attempt.
+Then the split's rows are loaded with the leakage check on. The model must reproduce every M03
+validation prediction, in a record of exactly the `fit.steps` M04 fitted on, and every M04 test
+prediction (label, abstention, calibrated confidence and class probabilities), in a record of
+exactly the test-split steps the M04 report counts; no scored run or plan may appear in the
+split. Each of those failures ends as a recorded failed attempt.
 
 Each attempt writes `<output>/<attempt id>/` with report.json and predictions.jsonl, and is
 logged to the MLflow experiment `a06-held-out-scoring`, failed attempts included. The attempt id
