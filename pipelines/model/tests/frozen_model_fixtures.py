@@ -9,7 +9,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from agentwatch_data.files import file_sha256, json_text
+from agentwatch_model.calibration import scale
 from agentwatch_model.candidates import (
     DEFAULT_TRAINING,
     Candidate,
@@ -30,6 +32,7 @@ from training_fixtures import dataset
 
 CONTRACT = {"version": "eval-contract-v3", "hash": "1cab0cbe", "status": "accepted"}
 CALIBRATION = "calibration.json"
+CALIBRATED_PREDICTIONS = "predictions.jsonl"
 TEMPERATURE = 0.9
 THRESHOLD = 0.6
 
@@ -40,21 +43,54 @@ class FrozenPair:
     calibrated_dir: Path
     candidate: Candidate
     validation_rows: list[dict]
+    test_rows: list[dict]
 
 
 def write_json(path: Path, value: dict) -> None:
     path.write_text(json_text(value))
 
 
+def jsonl_text(records: list[dict]) -> str:
+    return "".join(f"{json.dumps(record, sort_keys=True)}\n" for record in records)
+
+
+def calibrated_records(
+    candidate: Candidate, rows: list[dict], temperature: float, threshold: float
+) -> list[dict]:
+    """M04-style test prediction records: the trained candidate's scores, temperature-scaled."""
+    predictions = predict(candidate, rows)
+    columns = list(candidate.class_order)
+    raw = np.array([[p.probabilities[name] for name in columns] for p in predictions])
+    records = []
+    for row, prediction, raw_scores, scores in zip(
+        rows, predictions, raw, scale(raw, temperature), strict=True
+    ):
+        confidence = float(scores.max())
+        records.append(
+            {
+                "run_id": row["run_id"],
+                "step_id": row["step_id"],
+                "prediction": prediction.label,
+                "abstained": confidence < threshold,
+                "confidence": confidence,
+                "raw_confidence": float(raw_scores.max()),
+                "probabilities": dict(zip(columns, map(float, scores), strict=True)),
+            }
+        )
+    return records
+
+
 def write_frozen_pair(directory: Path, split: Path) -> FrozenPair:
     """Write a matching candidates folder and calibration folder under directory.
 
-    Returns the folders, the in-memory candidate and the validation rows it was scored on, so a
-    test can compare the loaded model with the trained one and call check_reproduces_validation.
+    Returns the folders, the in-memory candidate and the validation and test rows it was scored
+    on, so a test can compare the loaded model with the trained one and call
+    check_reproduces_validation and check_reproduces_calibration. Every call makes new step ids,
+    so a test's split must use these rows, not another call of dataset().
     """
     candidates_dir, calibrated_dir = directory / "candidates", directory / "calibration"
     calibrated_dir.mkdir(parents=True, exist_ok=True)
-    train, validation = dataset(30, "train"), dataset(8, "valid")
+    train, validation, test = dataset(30, "train"), dataset(8, "valid"), dataset(4, "test")
     candidate = fit_candidate(train, validation, load_training_config(DEFAULT_TRAINING))
     hashes = save_models(candidate, candidates_dir)
     columns = list(candidate.class_order)
@@ -115,4 +151,20 @@ def write_frozen_pair(directory: Path, split: Path) -> FrozenPair:
             },
         },
     )
-    return FrozenPair(candidates_dir, calibrated_dir, candidate, validation)
+    (calibrated_dir / CALIBRATED_PREDICTIONS).write_text(
+        jsonl_text(calibrated_records(candidate, test, TEMPERATURE, THRESHOLD))
+    )
+    write_json(
+        calibrated_dir / REPORT,
+        {
+            "split": split_identity(split),
+            "fit": {"steps": len(validation)},
+            "scored_steps": len(test),
+            "joint_only_steps_not_scored": 0,
+            "predictions": {
+                "file": CALIBRATED_PREDICTIONS,
+                "sha256": file_sha256(calibrated_dir / CALIBRATED_PREDICTIONS),
+            },
+        },
+    )
+    return FrozenPair(candidates_dir, calibrated_dir, candidate, validation, test)

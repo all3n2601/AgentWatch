@@ -39,12 +39,13 @@ from test_held_out_rows import (  # noqa: F401
 )
 
 
-def split_loader(validation, planted=None):
-    """A load_split stand-in: the synthetic split, plus rows a test plants, by split name."""
+def split_loader(pair, validation=None, planted=None):
+    """A load_split stand-in: the pair's synthetic split, plus rows a test plants, by split
+    name. `validation` replaces the pair's validation rows."""
     splits = {
         "train": dataset(30, "train"),
-        "validation": validation,
-        "test": dataset(4, "test"),
+        "validation": pair.validation_rows if validation is None else validation,
+        "test": pair.test_rows,
     }
     for name, rows in (planted or {}).items():
         splits[name] = splits[name] + list(rows)
@@ -93,7 +94,7 @@ def prepared(sweep, tmp_path):  # noqa: F811
         "split": split,
         "output": tmp_path / "scores",
         "pair": pair,
-        "loader": split_loader(pair.validation_rows),
+        "loader": split_loader(pair),
     }
 
 
@@ -237,7 +238,7 @@ def test_a_scored_run_in_any_split_fails_the_attempt(prepared, tracking, split_n
         validation = rename_validation_run(prepared["pair"], prepared["run_id"])
     else:
         planted[split_name] = [featured_row("none", 0, run_id=prepared["run_id"])]
-    loader = split_loader(validation, planted)
+    loader = split_loader(prepared["pair"], validation, planted)
     outcome = run_synthetic(prepared, tracking, loader=loader)
     assert outcome.status == "failed" and outcome.run_id
     report = json.loads((outcome.directory / "report.json").read_text())
@@ -250,7 +251,7 @@ def test_a_scored_plan_in_the_split_fails_the_attempt_without_a_shared_run_id(pr
     plan = "b" * 64
     write_truths(prepared["truth"], [r | {"plan_sha256": plan} for r in prepared["records"]])
     planted = featured_row("none", 0, run_id="another-run", plan_sha256=plan)
-    loader = split_loader(prepared["pair"].validation_rows, {"test": [planted]})
+    loader = split_loader(prepared["pair"], planted={"test": [planted]})
     outcome = run_synthetic(prepared, tracking, loader=loader)
     assert outcome.status == "failed" and outcome.run_id
     report = json.loads((outcome.directory / "report.json").read_text())
@@ -306,6 +307,23 @@ def test_a_model_that_does_not_reproduce_validation_is_a_recorded_failure(prepar
     assert outcome.status == "failed" and outcome.run_id
     report = json.loads((outcome.directory / "report.json").read_text())
     assert "HeldOutModelError" in report["reason"]
+    assert not (outcome.directory / "predictions.jsonl").exists()
+
+
+def test_a_model_that_does_not_reproduce_m04_is_a_recorded_failure(prepared, tracking):
+    calibrated = prepared["pair"].calibrated_dir
+    predictions = calibrated / "predictions.jsonl"
+    lines = [json.loads(line) for line in predictions.read_text().splitlines()]
+    lines[0]["confidence"] += 1e-3
+    predictions.write_text("".join(f"{json.dumps(line)}\n" for line in lines))
+    report_path = calibrated / "report.json"
+    saved = json.loads(report_path.read_text())
+    saved["predictions"]["sha256"] = hashlib.sha256(predictions.read_bytes()).hexdigest()
+    report_path.write_text(json.dumps(saved))
+    outcome = run_synthetic(prepared, tracking)
+    assert outcome.status == "failed" and outcome.run_id
+    report = json.loads((outcome.directory / "report.json").read_text())
+    assert "HeldOutModelError" in report["reason"] and "confidence" in report["reason"]
     assert not (outcome.directory / "predictions.jsonl").exists()
 
 

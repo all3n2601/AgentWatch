@@ -7,9 +7,11 @@
 `make train-candidates` folder and `--calibrated` the M04 `make calibrate` folder; nothing is
 trained or fitted here. The pair is loaded and checked against the split first: a pair that
 does not match is a setup error (exit 2) and no attempt is written. Then the split's rows are
-loaded with the leakage check on; the model must reproduce M03's validation predictions, and no
-scored run or plan may appear in the split. Each of those failures ends as a recorded failed
-attempt.
+loaded with the leakage check on. The model must reproduce every M03 validation prediction, in
+a record of exactly the `fit.steps` M04 fitted on, and every M04 test prediction (label,
+abstention, calibrated confidence and class probabilities), in a record of exactly the
+test-split steps the M04 report counts; no scored run or plan may appear in the split. Each
+of those failures ends as a recorded failed attempt.
 
 Each attempt writes `<output>/<attempt id>/` with report.json and predictions.jsonl, and is
 logged to the MLflow experiment `a06-held-out-scoring`, failed attempts included. The attempt id
@@ -39,6 +41,7 @@ from agentwatch_model.held_out_model import (
     CLASSIFIER_SCORER,
     FrozenClassifier,
     HeldOutModelError,
+    check_reproduces_calibration,
     check_reproduces_validation,
     frozen_scores,
     load_frozen_classifier,
@@ -231,6 +234,7 @@ def score_rows(
     sweep_root: Path,
     split: Path,
     candidates_dir: Path,
+    calibrated_dir: Path,
     model: FrozenClassifier,
     rules: Rules,
     contract: Contract,
@@ -242,12 +246,16 @@ def score_rows(
     seed: int,
 ) -> tuple[dict, str]:
     """Join rows, check the model and the split, score with both scorers; return the report
-    body and the predictions text. Nothing is written, so a failed check leaves no scores."""
+    body and the predictions text. Nothing is written, so a failed check leaves no scores.
+
+    The checks, in order: the model reproduces M03's validation predictions and M04's test
+    predictions, then no scored run or plan appears in any split row."""
     rows, refused, summaries, unjudged = held_out_rows(truth_dirs, sweep_root)
     if not rows:
         raise NoStepScored(refused, unjudged)
     split_rows = {name: loader(split, name, contract_path, frozen_schema) for name in SPLIT_NAMES}
     check_reproduces_validation(model, split_rows["validation"], candidates_dir)
+    check_reproduces_calibration(model, split_rows["test"], calibrated_dir)
     overlap = scored_overlap(rows, [row for part in split_rows.values() for row in part])
     if overlap:
         raise HeldOutError(f"scored steps appear in the split: {', '.join(overlap)}")
@@ -354,6 +362,7 @@ def run_attempt(
             sweep_root,
             split,
             candidates_dir,
+            calibrated_dir,
             model,
             rules,
             contract,
