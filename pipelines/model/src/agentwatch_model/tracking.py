@@ -92,20 +92,20 @@ def run_metrics(report: dict) -> dict[str, float]:
     return {name: float(value) for name, value in candidates.items() if value is not None}
 
 
-def experiment_id(artifact_root: Path) -> str:
+def experiment_id(artifact_root: Path, experiment: str = EXPERIMENT) -> str:
     import mlflow
     from mlflow.exceptions import MlflowException
 
-    existing = mlflow.get_experiment_by_name(EXPERIMENT)
+    existing = mlflow.get_experiment_by_name(experiment)
     if existing:
         return existing.experiment_id
     try:
         return mlflow.create_experiment(
-            EXPERIMENT, artifact_location=artifact_root.resolve().as_uri()
+            experiment, artifact_location=artifact_root.resolve().as_uri()
         )
     except MlflowException:
         # Another attempt created it first; use that one.
-        created = mlflow.get_experiment_by_name(EXPERIMENT)
+        created = mlflow.get_experiment_by_name(experiment)
         if created is None:
             raise
         return created.experiment_id
@@ -119,6 +119,7 @@ def log_run(
     tracking_uri: str,
     artifact_root: Path,
     task: str,
+    experiment: str = EXPERIMENT,
 ) -> str:
     """Log one attempt with its report and the named artifacts; return the MLflow run id."""
     import mlflow
@@ -126,7 +127,7 @@ def log_run(
     if tracking_uri.startswith(SQLITE_PREFIX):
         Path(tracking_uri.removeprefix(SQLITE_PREFIX)).parent.mkdir(parents=True, exist_ok=True)
     mlflow.set_tracking_uri(tracking_uri)
-    with mlflow.start_run(experiment_id=experiment_id(artifact_root)) as active:
+    with mlflow.start_run(experiment_id=experiment_id(artifact_root, experiment)) as active:
         mlflow.set_tags(
             {
                 "task": task,
