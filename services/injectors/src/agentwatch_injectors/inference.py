@@ -165,7 +165,13 @@ class RequestProfile(Protocol):
 
     def summarize(
         self, measurements: list[int], unmeasured: int, secondary: list[int | None]
-    ) -> dict: ...
+    ) -> dict:
+        """Activity fields for the completed replies.
+
+        `measurements` holds the replies that reported a measurement; `unmeasured` counts those
+        that did not. A statistic over no measurements is `None`, never zero.
+        """
+        ...
 
 
 @dataclass(frozen=True)
@@ -192,7 +198,12 @@ class CompetingChatProfile:
     def summarize(
         self, measurements: list[int], unmeasured: int, secondary: list[int | None]
     ) -> dict:
-        return {"generated_tokens": sum(measurements)}
+        # Missing, never zero, when no completed reply reported a count. With no completions
+        # at all, nothing was measured either, so the total is missing too.
+        return {
+            "generated_tokens": sum(measurements) if measurements else None,
+            "completions_without_generated_tokens": unmeasured,
+        }
 
 
 def request_flood(

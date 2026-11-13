@@ -17,8 +17,10 @@ split. Each of those failures ends as a recorded failed attempt.
 Each attempt writes `<output>/<attempt id>/` with report.json and predictions.jsonl, and is
 logged to the MLflow experiment `a06-held-out-scoring`, failed attempts included. The attempt id
 is the UTC start time plus the first digits of the hash of every input, so it names both when
-and on what the attempt ran. Outputs are scores, not run evidence: they never belong in
-`make add-evidence`, `make dataset` or `data/held-out/`.
+and on what the attempt ran. An attempt never reuses a folder: a second attempt with the same
+id gets `<attempt id>-2`, and so on, so earlier attempts' files are never touched. Outputs are
+scores, not run evidence: they never belong in `make add-evidence`, `make dataset` or
+`data/held-out/`.
 """
 
 import argparse
@@ -107,6 +109,8 @@ SPLIT_NAMES = ("train", "validation", "test")
 LOGGED_ARTIFACTS = (REPORT, PREDICTIONS)
 FORBIDDEN_OUTPUT = ("data", "held-out")
 ATTEMPT_ID_HASH_DIGITS = 6
+# Folders allowed for one attempt id (one input hash in one second) before refusing.
+MAX_ATTEMPTS_PER_ID = 1000
 EXIT_FAILED = 1
 EXIT_UNTRACKED = 3
 TRUTH_FILES = ("truth.json", "truth.jsonl")
@@ -213,6 +217,27 @@ def input_hashes(
 def attempt_id(hashes: dict, started: datetime) -> str:
     stamp = started.strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{canonical_sha256(hashes)[:ATTEMPT_ID_HASH_DIGITS]}"
+
+
+def allocate_attempt_directory(output: Path, attempt: str) -> Path:
+    """A new, empty folder for one attempt; never an earlier attempt's folder.
+
+    Each candidate is created with an exclusive mkdir, which is atomic: when `<attempt>` exists
+    (identical inputs started in the same second, or running at once), the next is
+    `<attempt>-2`, then `-3`. So every attempt keeps its own report, predictions and tracking.
+    """
+    output.mkdir(parents=True, exist_ok=True)
+    for sequence in range(1, MAX_ATTEMPTS_PER_ID + 1):
+        directory = output / (attempt if sequence == 1 else f"{attempt}-{sequence}")
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            continue
+        return directory
+    raise OutputError(
+        f"{output} already holds {MAX_ATTEMPTS_PER_ID} attempt folders for {attempt}; "
+        "wait a second or choose another --output"
+    )
 
 
 def prediction_lines(rows: list[dict], scores: dict[str, list[ScoredStep]]) -> str:
@@ -357,8 +382,12 @@ def run_attempt(
     artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
     resamples: int = BOOTSTRAP_RESAMPLES,
     seed: int = BOOTSTRAP_SEED,
+    now: datetime | None = None,
 ) -> Outcome:
     """One scoring attempt; data and model-check failures end as a recorded failed attempt.
+
+    Its folder is new (`allocate_attempt_directory`), so no attempt overwrites another's files.
+    `now` fixes the start time in the attempt id; it defaults to the current UTC time.
 
     A frozen pair that cannot be loaded, does not match the split, or is not the pinned pair
     (`versions`; the CLI always uses FROZEN_VERSIONS) is a setup error, raised before any
@@ -371,11 +400,8 @@ def run_attempt(
     model = load_frozen_classifier(candidates_dir, calibrated_dir, split, versions)
     recorded_failures = (*attempt_errors(), HeldOutError, HeldOutModelError, SplitError)
     hashes = input_hashes(truth_dirs, sweep_root, split, candidates_dir, calibrated_dir)
-    directory = output / attempt_id(hashes, datetime.now(UTC))
-    directory.mkdir(parents=True, exist_ok=True)
-    # A rerun with identical inputs in the same second reuses the folder; drop its old files.
-    for name in (REPORT, PREDICTIONS, TRACKING):
-        (directory / name).unlink(missing_ok=True)
+    started = now or datetime.now(UTC)
+    directory = allocate_attempt_directory(output, attempt_id(hashes, started))
     try:
         report, predictions = score_rows(
             truth_dirs,

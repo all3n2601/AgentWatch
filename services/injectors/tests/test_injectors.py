@@ -291,6 +291,7 @@ def test_competing_requests_use_the_runs_model_and_context(clock):
     assert activity["report"] == "received"
     assert activity["requests_completed"] > 0 and activity["requests_failed"] == 0
     assert activity["generated_tokens"] == 5 * activity["requests_completed"]
+    assert activity["completions_without_generated_tokens"] == 0
     payload = server.payloads[0]
     assert payload["model"] == "qwen3:1.7b"
     assert payload["options"] == {"temperature": 0, "num_predict": 128, "num_ctx": 4096}
@@ -376,6 +377,7 @@ def test_competing_vllm_requests_use_the_chat_api_and_count_tokens(clock):
     assert log["target"]["server"] == "vllm"
     assert activity["requests_completed"] > 0 and activity["requests_failed"] == 0
     assert activity["generated_tokens"] == 7 * activity["requests_completed"]
+    assert activity["completions_without_generated_tokens"] == 0
     assert set(server.paths) == {"/v1/chat/completions"}
     payload = server.payloads[0]
     assert payload["max_tokens"] == 128 and payload["stream"] is False
@@ -617,7 +619,8 @@ def test_competing_profile_payloads_do_not_vary_by_request():
     assert profile.payload(0, 0) == profile.payload(3, 41) == {"model": "m", "max_tokens": 128}
     assert profile.path == "/v1/chat/completions"
     assert profile.summarize([5, 7], unmeasured=1, secondary=[None, None]) == {
-        "generated_tokens": 12
+        "generated_tokens": 12,
+        "completions_without_generated_tokens": 1,
     }
 
 
@@ -860,7 +863,58 @@ def test_prefill_log_reports_measured_completion_tokens(clock):
 def test_competing_chat_report_keys_are_unchanged():
     profile = CompetingChatProfile(server="vllm", payload_template={})
     assert profile.measure_secondary({"usage": {"completion_tokens": 9}}) is None
-    assert profile.summarize([5, 7], 1, [None, None]) == {"generated_tokens": 12}
+    assert profile.summarize([5, 7], 1, [None, None]) == {
+        "generated_tokens": 12,
+        "completions_without_generated_tokens": 1,
+    }
+
+
+def test_competing_chat_tokens_are_missing_when_no_reply_reported_them():
+    profile = CompetingChatProfile(server="vllm", payload_template={})
+    assert profile.summarize([], 2, [None, None]) == {
+        "generated_tokens": None,
+        "completions_without_generated_tokens": 2,
+    }
+
+
+def test_competing_chat_tokens_sum_only_the_replies_that_reported_them():
+    profile = CompetingChatProfile(server="vllm", payload_template={})
+    summary = profile.summarize([5, 7], 1, [None, None, None])
+    assert summary["generated_tokens"] == 12
+    assert summary["completions_without_generated_tokens"] == 1
+
+
+def test_competing_chat_tokens_sum_every_reply_when_all_reported_them():
+    profile = CompetingChatProfile(server="ollama", payload_template={})
+    assert profile.summarize([5, 7, 3], 0, [None, None, None]) == {
+        "generated_tokens": 15,
+        "completions_without_generated_tokens": 0,
+    }
+
+
+def test_competing_chat_tokens_are_missing_when_nothing_completed():
+    profile = CompetingChatProfile(server="ollama", payload_template={})
+    summary = profile.summarize([], 0, [])
+    assert summary["generated_tokens"] is None
+    assert summary["completions_without_generated_tokens"] == 0
+
+
+def test_competing_replies_without_token_counts_are_recorded_as_missing(clock):
+    # A finished completion whose server omits `usage.completion_tokens`.
+    reply = {"choices": [{"message": {"content": "one"}, "finish_reason": "length"}]}
+    with FakeOllama(reply=reply) as server:
+        injector = CompetingInferenceInjector(
+            clock, 0.6, url=server.url, model="m", num_ctx=None, concurrency=2, server="vllm"
+        )
+        injector.start()
+        try:
+            assert wait_until(lambda: stopped(injector))
+        finally:
+            log = injector.stop()
+    activity = log["activity"]
+    assert activity["requests_completed"] > 0 and activity["requests_failed"] == 0
+    assert activity["generated_tokens"] is None
+    assert activity["completions_without_generated_tokens"] == activity["requests_completed"]
 
 
 def test_prefill_run_token_is_drawn_at_launch_not_construction(clock, monkeypatch):

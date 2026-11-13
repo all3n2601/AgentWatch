@@ -1047,6 +1047,7 @@ its coverage reports are byte-identical to `coverage-per-level.jsonl`. A new swe
 
 The attribution baseline's run used these targets' recipes as `make -n` prints them, because the
 WSL Ubuntu environment has no `make`. A rerun writes a new attempt folder; the attempt id
-includes the start time. The `split-v3` file is not yet versioned: the run of 2026-11-12
-regenerated it (SHA-256 `32488a942ad6…`, as the report records) and removed it afterwards, so the
-DVC-tracked split folder was left as it was.
+includes the start time, and a rerun that would get the same id gets its own `-2` folder
+instead. The `split-v3` file is not yet versioned: the runs of 2026-11-12 and 2026-11-13 each
+regenerated it (SHA-256 `32488a942ad6…`, as the reports record) and removed it afterwards, so
+the DVC-tracked split folder was left as it was.
