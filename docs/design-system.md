@@ -3,8 +3,8 @@
 Status: implemented 2026-11-11 in `apps/web`. On the glass shell: Overview (`/`,
 `components/model-overview.tsx`), Runs, Run detail, Experiments, Compare, Data quality and
 Settings (`components/pages/<page>/`, with tested logic in `lib/<page>-page*.ts`), and Live runs
-(`components/live-feed.tsx`, `live-run.tsx`). Controls has no approved design and keeps its earlier
-inner styling inside the glass shell.
+(`components/live-feed.tsx`, `live-run.tsx`). Controls has no separate mockup; it is composed
+from the existing primitives (`FieldRow`, `KeyValueList`, `AlertBanner`, `StatusBadge`).
 
 The approved direction is the "aggregate glass workspace" and its six supporting screens
 (Overview, Runs, Run diagnosis, Experiments, Compare, Data quality, Settings): frosted
@@ -61,6 +61,8 @@ reduced transparency, panels become opaque.
 - **Ratios are observations.** `RatioChip` and `DeltaChip` grade emphasis with
   `slowdownTone` (`lib/tone.ts`: above 1.1× warning, 1.5× caution, 8× danger). These are
   display thresholds, not attribution rules; pair them with "Observed, not causal" copy.
+  `DeltaChip neutral` drops that emphasis; Compare uses it, since a difference between two
+  uncontrolled runs is neither better nor worse.
 - **Invalid proportions are refused.** `layoutSegments` (`lib/segments.ts`) rejects negative,
   non-finite or duplicate segments and reports an all-zero total as empty instead of drawing it.
 - **Every page states its scope** through `PageHeader`'s `scope` line.

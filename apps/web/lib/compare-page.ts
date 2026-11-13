@@ -1,7 +1,6 @@
 import {
   duration,
   evidenceUrl,
-  matchingWorkload,
   runLabel,
   scopedRuns,
   stepsOf,
@@ -10,12 +9,21 @@ import type { DashboardData, Experiment, Step } from "./experiment-schema";
 import { formatQuantity } from "./measurement-format";
 import type { Route } from "next";
 import { routes } from "./routes";
+import { relativeLengths } from "./segments";
+import {
+  compareConfiguration,
+  configurationOf,
+  policyUnknown,
+  POLICY_NOT_RECORDED_WARNING,
+  type Compatibility,
+} from "./run-compatibility";
 
 /**
  * Pure model for the Compare page (`/compare?run=&baseline=`): which saved runs
- * were requested, whether their configurations agree, and the observed timing
- * differences between them. Every difference is candidate minus baseline and
- * every ratio is candidate / baseline; neither is a causal claim.
+ * were requested, whether their configurations agree (lib/run-compatibility.ts),
+ * and the observed timing differences between them. Every difference is
+ * candidate minus baseline and every ratio is candidate / baseline; neither is a
+ * causal claim. When a recorded setting differs, no difference is calculated.
  */
 
 export type CompareRole = "candidate" | "baseline";
@@ -75,26 +83,6 @@ export type RunSummary = {
   evidenceHref: string;
 };
 
-export type CompatibilityCheck = {
-  id: string;
-  label: string;
-  baseline: string;
-  candidate: string;
-  /** Full value for a shortened display, e.g. a checksum. */
-  baselineTitle?: string;
-  candidateTitle?: string;
-  matches: boolean;
-};
-
-export type Compatibility = {
-  checks: CompatibilityCheck[];
-  sameKind: boolean;
-  /** The existing workload rule: same kind, output checksum, iterations and worker capacity. */
-  matchingWorkload: boolean;
-  allMatch: boolean;
-  differing: string[];
-};
-
 /** One observed timing, candidate against baseline. */
 export type TimingDelta = {
   baselineSeconds: number | null;
@@ -128,21 +116,32 @@ export type AlignedStep = {
   duration: TimingDelta;
 };
 
+/** The observed total-time difference, stated without better or worse. */
 export type Headline = {
-  /** "slower", "faster" or "same" at the displayed ratio precision. */
-  direction: "slower" | "faster" | "same";
   title: string;
-  ratio: number;
+  deltaSeconds: number;
+  ratio: number | null;
+};
+
+/** A quality or coverage reading per run, shown side by side and never differenced. */
+export type QualityRow = {
+  id: string;
+  label: string;
+  baseline: string;
+  candidate: string;
 };
 
 export type Comparison = {
   candidate: RunSummary;
   baseline: RunSummary;
   compatibility: Compatibility;
+  /** False when a recorded setting differs: deltas and ratios are then null. */
+  differencesShown: boolean;
   metrics: MetricDelta[];
   steps: AlignedStep[];
   largestStepDifferences: AlignedStep[];
   headline: Headline | null;
+  quality: QualityRow[];
   interpretation: string;
   /** Recorded run limitations, deduplicated, in first-seen order. */
   limitations: string[];
@@ -162,11 +161,11 @@ export type ComparePageModel = {
 };
 
 const LARGEST_DIFFERENCES_SHOWN = 3;
-const CHECKSUM_EDGE_LENGTH = 6;
 const SHORT_ID_LENGTH = 8;
 
-const kindName = (kind: Experiment["kind"]) =>
-  kind === "coding" ? "Coding" : "CPU";
+/** Why throughput and tail latency are not shown for saved runs. */
+export const SINGLE_RUN_LIMITATION =
+  "Throughput and p95 task latency are not recorded: a saved run is one task, so it has no batch throughput or per-task tail latency.";
 
 /** "2026-11-11 00:20 UTC"; formatted in UTC so server and client agree. */
 export function formatStoredAt(iso: string | null | undefined): string | null {
@@ -209,6 +208,23 @@ export function stepLabel(stepId: string): string {
 const isFiniteNumber = (value: number | null): value is number =>
   value !== null && Number.isFinite(value);
 
+/**
+ * Both runs' bar lengths on one shared scale, or null when differences are not shown: a
+ * shared scale still encodes the candidate-to-baseline ratio (10 s against 100 s draws as
+ * 10×) that a configuration mismatch withholds.
+ */
+export function pairedBarLengths(
+  delta: TimingDelta,
+  differencesShown: boolean,
+): { baseline: number | null; candidate: number | null } | null {
+  if (!differencesShown) return null;
+  const [baseline, candidate] = relativeLengths([
+    delta.baselineSeconds ?? Number.NaN,
+    delta.candidateSeconds ?? Number.NaN,
+  ]);
+  return { baseline: baseline ?? null, candidate: candidate ?? null };
+}
+
 export function timingDelta(
   baselineSeconds: number | null,
   candidateSeconds: number | null,
@@ -227,76 +243,6 @@ export function timingDelta(
     candidateSeconds: candidate,
     deltaSeconds: candidate - baseline,
     ratio: baseline > 0 ? candidate / baseline : null,
-  };
-}
-
-const shortChecksum = (checksum: string) =>
-  checksum.length > CHECKSUM_EDGE_LENGTH * 2 + 1
-    ? `${checksum.slice(0, CHECKSUM_EDGE_LENGTH)}…${checksum.slice(-CHECKSUM_EDGE_LENGTH)}`
-    : checksum;
-
-const workers = (count: number) =>
-  `${formatQuantity(count, "count")} ${count === 1 ? "worker" : "workers"}`;
-
-/** Only settings recorded on every saved run (lib/experiment-schema.ts). */
-export function compareConfiguration(
-  baseline: Experiment,
-  candidate: Experiment,
-): Compatibility {
-  const check = (
-    id: string,
-    label: string,
-    pick: (run: Experiment) => string,
-    title?: (run: Experiment) => string,
-  ): CompatibilityCheck => {
-    const base = pick(baseline);
-    const cand = pick(candidate);
-    const baseTitle = title?.(baseline);
-    const candTitle = title?.(candidate);
-    return {
-      id,
-      label,
-      baseline: base,
-      candidate: cand,
-      ...(baseTitle !== undefined && { baselineTitle: baseTitle }),
-      ...(candTitle !== undefined && { candidateTitle: candTitle }),
-      matches: (baseTitle ?? base) === (candTitle ?? cand),
-    };
-  };
-  const checks = [
-    check("kind", "Workload kind", (run) => kindName(run.kind)),
-    check("workload", "Workload", (run) => run.experiment.workload),
-    check("model", "Agent model", (run) => run.agent?.model ?? "None recorded"),
-    check("capacity", "Worker capacity", (run) =>
-      workers(run.experiment.worker_capacity),
-    ),
-    check("iterations", "Iterations", (run) =>
-      formatQuantity(run.experiment.iterations, "count"),
-    ),
-    check("tests", "Tests per step", (run) =>
-      run.experiment.tests_per_step === null
-        ? "Not applicable"
-        : formatQuantity(run.experiment.tests_per_step, "count"),
-    ),
-    check("repeats", "Baseline repeats", (run) =>
-      formatQuantity(run.experiment.baseline_repeats, "count"),
-    ),
-    check(
-      "checksum",
-      "Clean output checksum",
-      (run) => shortChecksum(run.clean.checksum),
-      (run) => run.clean.checksum,
-    ),
-    check("rule", "Attribution rule", (run) => run.clean.rule_version),
-  ];
-  const sameKind = baseline.kind === candidate.kind;
-  const differing = checks.filter((c) => !c.matches).map((c) => c.label);
-  return {
-    checks,
-    sameKind,
-    matchingWorkload: sameKind && matchingWorkload(candidate, baseline),
-    allMatch: differing.length === 0,
-    differing,
   };
 }
 
@@ -445,32 +391,6 @@ export function largestDifferences(
     .slice(0, limit);
 }
 
-/** Headline from total step time; null without a usable ratio. */
-export function headline(total: MetricDelta): Headline | null {
-  const { ratio } = total;
-  if (ratio === null || !Number.isFinite(ratio) || ratio <= 0) return null;
-  // Compare at display precision so "1.0× slower" is never printed.
-  const shown = formatQuantity(ratio, "ratio");
-  const inverse = formatQuantity(1 / ratio, "ratio");
-  if (ratio > 1 && shown !== formatQuantity(1, "ratio"))
-    return {
-      direction: "slower",
-      title: `Candidate is ${shown} slower`,
-      ratio,
-    };
-  if (ratio < 1 && inverse !== formatQuantity(1, "ratio"))
-    return {
-      direction: "faster",
-      title: `Candidate is ${inverse} faster`,
-      ratio,
-    };
-  return {
-    direction: "same",
-    title: "Candidate took about the same time",
-    ratio,
-  };
-}
-
 /** "+24.85 s", "−840 μs", "±0 ms", with the dashboard's duration precision. */
 export const signedDuration = (seconds: number) =>
   `${seconds > 0 ? "+" : seconds < 0 ? "−" : "±"}${duration(Math.abs(seconds))}`;
@@ -480,40 +400,125 @@ const deltaPhrase = (metric: MetricDelta) =>
     ? "unavailable"
     : `${signedDuration(metric.deltaSeconds)}${metric.ratio === null ? "" : ` (${formatQuantity(metric.ratio, "ratio")})`}`;
 
-/** One sentence describing what was observed, never why. */
+/** The observed total difference; null without a total measured on both runs. */
+export function headline(total: MetricDelta): Headline | null {
+  if (total.deltaSeconds === null) return null;
+  const ratio = total.ratio !== null && total.ratio > 0 ? total.ratio : null;
+  return {
+    title: `Total step time ${signedDuration(total.deltaSeconds)}${ratio === null ? "" : ` (${formatQuantity(ratio, "ratio")} of baseline)`}`,
+    deltaSeconds: total.deltaSeconds,
+    ratio,
+  };
+}
+
+const telemetryText = (step: Step) =>
+  step.telemetry
+    ? `${formatQuantity(step.telemetry.sample_count, "count")} samples · ${formatQuantity(step.telemetry.valid_pressure_samples, "count")} valid pressure readings (${step.telemetry.status})`
+    : "No telemetry recorded";
+
+/**
+ * Quality and coverage of each run. Throughput and p95 task latency need a
+ * batch of tasks, which saved runs do not record, so they are not derived.
+ */
+export function qualityRows(
+  baseline: Experiment,
+  candidate: Experiment,
+): QualityRow[] {
+  const row = (
+    id: string,
+    label: string,
+    text: (run: Experiment) => string,
+  ): QualityRow => ({
+    id,
+    label,
+    baseline: text(baseline),
+    candidate: text(candidate),
+  });
+  return [
+    row("throughput", "Throughput", () => "Not recorded"),
+    row("p95", "p95 task latency", () => "Not recorded"),
+    row("checks", "Acceptance checks", (run) =>
+      run.checks.passed ? "Passed" : "Failed",
+    ),
+    row(
+      "agent",
+      "Agent outcome",
+      (run) => run.agent?.status ?? "No agent evidence",
+    ),
+    row("clean-telemetry", "Clean step telemetry", (run) =>
+      telemetryText(run.clean),
+    ),
+    row("contended-telemetry", "Contended step telemetry", (run) =>
+      telemetryText(run.contended),
+    ),
+  ];
+}
+
+/** What was observed, never why, and what the configuration check allows. */
 export function interpretation(
   compatibility: Compatibility,
   metrics: readonly MetricDelta[],
 ): string {
+  if (compatibility.verdict === "differs")
+    return `Recorded settings differ: ${compatibility.differing.join(", ")}. No difference or ratio is calculated; each run's own values are listed side by side.`;
   const total = metrics.find((m) => m.id === "total");
   const queue = metrics.find((m) => m.id === "queue");
   const observed = `Observed total step time ${total ? deltaPhrase(total) : "unavailable"} and worker queue delay ${queue ? deltaPhrase(queue) : "unavailable"}, candidate minus baseline.`;
-  if (!compatibility.sameKind)
-    return `${observed} The runs record different workload kinds, so these differences are not comparable and show no regression or improvement.`;
-  if (!compatibility.allMatch)
-    return `${observed} Settings differ (${compatibility.differing.join(", ").toLowerCase()}), so the difference is observed, not causal, and does not establish a regression or improvement.`;
-  return `${observed} The recorded settings match, but these are two uncontrolled runs: the difference is observed, not causal. Worker queue delay reflects worker-capacity contention, not host CPU saturation.`;
+  const caveat =
+    "These are two uncontrolled runs: the difference is observed, not causal. Worker queue delay reflects worker-capacity contention, not host CPU saturation.";
+  if (compatibility.verdict === "unverified") {
+    const unknown = policyUnknown(compatibility)
+      ? `${POLICY_NOT_RECORDED_WARNING}.`
+      : `Not recorded on both runs: ${compatibility.unknown.join(", ").toLowerCase()}; full compatibility cannot be verified.`;
+    return `${observed} Every recorded setting matches. ${unknown} ${caveat}`;
+  }
+  return `${observed} The recorded settings match. ${caveat}`;
 }
+
+const withoutDifference = <T extends TimingDelta>(delta: T): T => ({
+  ...delta,
+  deltaSeconds: null,
+  ratio: null,
+});
 
 export function buildComparison(
   baseline: Experiment,
   candidate: Experiment,
 ): Comparison {
-  const compatibility = compareConfiguration(baseline, candidate);
-  const metrics = metricDeltas(baseline, candidate);
-  const steps = alignSteps(baseline, candidate);
+  const compatibility = compareConfiguration(
+    configurationOf(baseline),
+    configurationOf(candidate),
+  );
+  // A recorded setting that differs makes any difference cross-configuration,
+  // so none is calculated; each run's values stay visible.
+  const differencesShown = compatibility.verdict !== "differs";
+  const measured = metricDeltas(baseline, candidate);
+  const metrics = differencesShown ? measured : measured.map(withoutDifference);
+  const aligned = alignSteps(baseline, candidate);
+  const steps = differencesShown
+    ? aligned
+    : aligned.map((step) => ({
+        ...step,
+        duration: withoutDifference(step.duration),
+      }));
   const total = metrics.find((m) => m.id === "total");
   return {
     candidate: summarizeRun(candidate),
     baseline: summarizeRun(baseline),
     compatibility,
+    differencesShown,
     metrics,
     steps,
-    largestStepDifferences: largestDifferences(steps),
-    headline: total ? headline(total) : null,
-    interpretation: interpretation(compatibility, metrics),
+    largestStepDifferences: differencesShown ? largestDifferences(steps) : [],
+    headline: differencesShown && total ? headline(total) : null,
+    quality: qualityRows(baseline, candidate),
+    interpretation: interpretation(compatibility, measured),
     limitations: [
-      ...new Set([...candidate.limitations, ...baseline.limitations]),
+      ...new Set([
+        ...candidate.limitations,
+        ...baseline.limitations,
+        SINGLE_RUN_LIMITATION,
+      ]),
     ],
   };
 }

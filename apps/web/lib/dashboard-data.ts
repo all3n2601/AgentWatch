@@ -73,12 +73,5 @@ export function aggregate(runs: Experiment[]) {
         : null,
   };
 }
-export function matchingWorkload(a: Experiment, b: Experiment) {
-  return (
-    a.clean.checksum === b.clean.checksum &&
-    a.experiment.iterations === b.experiment.iterations &&
-    a.experiment.worker_capacity === b.experiment.worker_capacity
-  );
-}
 export const evidenceUrl = (run: Experiment, file = "results.json") =>
   `/api/experiments/${run.kind}/artifact?file=${file}${run.persisted ? `&run_id=${run.run_id}` : ""}`;

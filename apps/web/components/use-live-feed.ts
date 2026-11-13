@@ -30,14 +30,14 @@ const liveApi = createLiveApi("/api/live/runs", {
   timeoutMs: BROWSER_TIMEOUT_MS,
 });
 
-type PollStep = (signal: AbortSignal) => Promise<number | null>;
+export type PollStep = (signal: AbortSignal) => Promise<number | null>;
 
 /**
  * Runs `step` now, then again after the delay it returns until it returns null. Pauses while
  * the tab is hidden and reads immediately when it is shown again. `stop` aborts the request
  * in flight, so a response for a previous selection is never applied.
  */
-function startPolling(step: PollStep) {
+export function startPolling(step: PollStep) {
   let stopped = false;
   let running = false;
   let paused = false;

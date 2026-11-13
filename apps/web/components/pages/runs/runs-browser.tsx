@@ -456,8 +456,8 @@ export function RunsBrowser({
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <CompareControls selected={compareRows} onClear={clearCompare} />
           <p className="min-w-[min(100%,14rem)] flex-1 text-xs text-ink-muted">
-            Newest first. Select a run to preview it; tick two saved runs of the
-            same kind to compare.
+            Newest first. Select a run to preview it; tick two saved runs to
+            compare.
           </p>
         </div>
         <CompareNote selected={compareRows} hideHint />

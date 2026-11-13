@@ -87,15 +87,35 @@ the runner applied it. Per-step application is O03's evidence.
 
 ## Dashboard
 
-The Controls page (`apps/web/components/concurrency-controls.tsx`) is a deliberately plain
-working screen: active limits, a form (two optional limits, operator, reason), disable,
-restore-per-row, history, and conflict/validation errors as text. It states that each agent
-runner process enforces the policy for its own work, not globally. Empty limits read "No
-limits"; only version 0 adds "(baseline)", so a `disable` version is not mislabelled.
+The Controls page (`apps/web/components/pages/controls/controls-page.tsx`, with the editor in
+`apps/web/components/concurrency-controls.tsx`) is built from the glass components
+(`FieldRow`, `KeyValueList`, `AlertBanner`, `StatusBadge`; see `docs/design-system.md`). It
+shows the active limits, a form (two optional limits, operator, reason), disable,
+restore-per-row and history, and states that each agent runner process enforces the policy for
+its own work, not globally. Empty limits read "No limits"; only version 0 adds "(baseline)", so
+a `disable` version is not mislabelled.
+
+- The limit inputs start from the active limits, so a `set` keeps a control the operator did
+  not change. The form previews the change per control and refuses a `set` equal to the
+  active limits. Disable and restore ask for confirmation.
+- A `409` is reported as a stale `expected_version` or a reused `request_id`. The service has
+  no error code, so the page matches its `detail` text; anything else is a generic conflict.
+  After a conflict or a stored change the page reads the policy again.
+- An unconfirmed change (timeout, `503`, invalid response) shows "Not confirmed" and offers
+  Retry with the same `request_id`; validation errors show "Not saved" without Retry.
+- The page shows when the policy was last read and a Read again button. A read whose active
+  version is not the newest history entry (a change stored between the route's two calls) is
+  shown as a stale read, and changes are paused until it is read again.
+- "Limits applied by runners" is shown as not recorded: admission records stay in each
+  runner's local evidence and no API serves them.
+
 Server-side proxy routes under `apps/web/app/api/policies/concurrency` and
-`apps/web/app/api/live/runs/[runId]/policy` validate with zod; the live run view shows the
-selected run's policy history for its UUID. The finished controls UI and comparisons are O05
-(Meghana).
+`apps/web/app/api/live/runs/[runId]/policy` validate with zod. A live run's Live status tab (on
+`/live` and `/runs/UUID?tab=status`) lists, for that run's UUID, the versions active while the
+run was open with their limits, the limits its runner applied (not recorded, or not applicable
+for a run without an agent runner), and the current policy. Saved runs record no policy, so
+Compare shows the policy as unknown, never as a match. Browser coverage is in
+`apps/web/e2e/concurrency-controls.spec.ts` and `apps/web/e2e/run-policy.spec.ts`.
 
 ## Migration, recovery and verification
 

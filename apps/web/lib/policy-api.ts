@@ -169,10 +169,9 @@ export function createPolicyApi(
     history(
       before?: number,
       signal?: AbortSignal,
+      limit = POLICY_HISTORY_PAGE_LIMIT,
     ): Promise<PolicyResult<PolicyPageView>> {
-      const query = new URLSearchParams({
-        limit: String(POLICY_HISTORY_PAGE_LIMIT),
-      });
+      const query = new URLSearchParams({ limit: String(limit) });
       if (before !== undefined) query.set("before", String(before));
       return request(`${urls.policy}/versions?${query}`, policyPageSchema, {
         signal,
@@ -214,6 +213,12 @@ export function createPolicyBrowserApi({
     ): Promise<PolicyResult<PolicyControls>> {
       const query = before === undefined ? "" : `?before=${before}`;
       return request(`${controlsUrl}${query}`, policyControlsSchema, {
+        signal,
+      });
+    },
+    /** The active version with only the newest history entry, for a consistency check. */
+    current(signal?: AbortSignal): Promise<PolicyResult<PolicyControls>> {
+      return request(`${controlsUrl}/current`, policyControlsSchema, {
         signal,
       });
     },

@@ -1089,6 +1089,52 @@ from M3 through M6 and do not renumber the implementation milestones above.
   `pipelines/data/tests/test_optimization_{manifest,batches,comparison}.py`. Open until O06
   records a real experiment in this format.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
+  Implemented 2026-11-11 on branch `feature/optimization-controls-compare`, rebuilt on the glass
+  workspace (not yet pushed or reviewed; supersedes the unmerged `feature/optimization-view`).
+  **Assumption, with Allen's decisions:** "selected saved UUIDs" means the saved `/v1/runs`
+  experiments, not live runs. Saved runs record no concurrency policy, so the policy is always
+  unknown: when every recorded setting matches, Compare shows neutral observed differences with
+  "Policy not recorded; full compatibility cannot be verified", never "Configuration match".
+  Controls (`components/concurrency-controls.tsx`, glass `FieldRow`, `KeyValueList`,
+  `AlertBanner`, `StatusBadge`): the form starts from the active limits, previews the change,
+  refuses no-op sets, confirms disable and restore, tells a stale `expected_version` from a
+  reused `request_id` (by the service's `detail` text; no error code exists), retries
+  unconfirmed changes with the same `request_id`, shows the last read time and pauses changes
+  after an inconsistent read. A live run's Live status tab (`/live`, `/runs/UUID?tab=status`)
+  lists the versions linked while open, the limits its runner applied (not recorded) and the
+  current policy. Compare and the Runs selection share one rule (`lib/run-compatibility.ts`):
+  every setting is match, mismatch or unknown, including competing iterations (contention) and
+  the policy; a mismatch suppresses every delta, ratio, ranking and headline and lists the
+  differing settings; no faster/slower claims or better/worse colouring (`DeltaChip neutral`).
+  Compare shows exactly the `?baseline=` and `?run=` UUIDs and never substitutes another run.
+  Not shown, because no API serves them: limits a runner actually applied (admission records
+  stay in local `agent-evidence.json`), O04 comparison records, batch completion time,
+  throughput and p95 task latency (shown as "Not recorded"). No automatic actuation. Verified
+  locally 2026-11-11 on `origin/main` at `50f393d`: `make check` passed (249 web unit tests
+  including `tests/compare-page.test.ts`, `runs-page.test.ts` and `policy-api.test.ts`; 2,521
+  Python passed, 177 skipped for no test database, Docker or OpenMP; Go tests passed), and 50
+  Playwright tests passed against the production build, including
+  `e2e/concurrency-controls.spec.ts` (11), `e2e/run-policy.spec.ts` (5) and
+  `e2e/compare-runs.spec.ts` (9: direct URLs, recorded mismatch, differing and missing
+  contention, unknown policy, missing and invalid UUIDs, keyboard selection, the Runs
+  selection link, unavailable history). Deliberately breaking delta suppression, the unknown
+  policy, the contention check or the neutral colouring each made a test fail. Viewports
+  (Playwright, production build): Controls, the live and run-page Live status tabs, and Compare
+  (unverified, blocked and empty) at 390, 768, 1280×800, 1440×900, 640 (1280 px at 200%) and 384
+  (768 px at 200%) CSS px: no horizontal page overflow; no page scroll at 1280×800 and
+  1440×900. Open: Allen's API gaps (applied admission limits, saved-run policy linkage, a `409`
+  error code, a consistent active-plus-history read); owner browser check, PR review and CI.
+  Review follow-up 2026-11-12 (PR #73, reviews at `fb61185`; merged `origin/main` at `b3197f8`):
+  a mismatch draws no paired bars on Compare (`pairedBarLengths` in `lib/compare-page.ts`;
+  values listed as text); the Live status tab reads its policy again every 10 s while the run
+  is open (`nextRunPolicyReadMs`), dates the current policy, reads only the active version and
+  the newest history entry (`/api/policies/concurrency/current`) and shows an inconsistent read
+  as not confirmed (`currentPolicyText`, `controlsConsistent`); a coding run without agent
+  evidence has an unknown model, never a match; the policy row is found by ID and one
+  `verdictBadge` serves the Configuration tab and panel; `deltaTone` keeps a faster neutral
+  delta uncoloured; Controls notices are linked to their inputs, Retry states the change it
+  resends and Read again keeps focus. Verified locally: web lint, typecheck, 261 unit tests,
+  production build and 55 Playwright tests passed. Not yet pushed or re-reviewed.
 - [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
@@ -1193,7 +1239,7 @@ a passing reduced suite must not be reported as a complete database verification
 
 Implementation and test evidence lives in [the worker service](../services/worker/src/agentwatch_worker/),
 [Python tests](../services/worker/tests/), [the test-tool runtime](../services/sandbox/),
-[the dashboard](../apps/web/components/dashboard.tsx), and [web contract tests](../apps/web/tests/).
+[the web app](../apps/web/), and [web contract tests](../apps/web/tests/).
 Setup details are in [the CPU demo guide](cpu-demo.md), [ingestion guide](ingestion-api.md),
 and [database guide](../db/README.md).
 
@@ -1339,7 +1385,11 @@ serving metadata retain the full label-version set beside the legacy singular fi
   overflow 0 on every new tab at 1280×800 and 1440×900, no horizontal overflow at 390 px, no
   console errors from the new views.
 - [ ] `components/dashboard.tsx` (the earlier layout) is no longer rendered by any route and can be
-  removed once nothing else needs its helpers.
+  removed once nothing else needs its helpers. Removed 2026-11-11 with its `matchingWorkload`
+  helper on branch `feature/optimization-controls-compare` (O05; not yet reviewed or merged).
+  `components/command-center.tsx`, `dataset-views.tsx`, `experiments-view.tsx` and
+  `run-page.tsx` were imported only by it and now have no importers; they are left for their
+  owner to remove.
 - [x] Display density, sidebar and refresh preferences apply to every workspace page
   (`components/shell/workspace-preferences.tsx`, `nav-rail.tsx`).
 
