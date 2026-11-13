@@ -13,6 +13,8 @@ type Options = {
   competingIterations?: number | null;
   cleanSeconds?: number;
   passed?: boolean;
+  /** Agent model; adds synthetic agent evidence. Omitted, the run records no model. */
+  model?: string;
 };
 
 function step(
@@ -50,6 +52,7 @@ export function savedRun(
     competingIterations = iterations * 8,
     cleanSeconds = 3,
     passed = true,
+    model,
   }: Options,
 ): SavedRun {
   const endMs = Date.parse("2026-11-01T12:00:00Z") + sequence * 3_600_000;
@@ -81,6 +84,15 @@ export function savedRun(
       contended: step("contended", endMs, 2, 3),
       checks: { passed, stable_baseline: passed },
       limitations: [`Synthetic browser-test run ${sequence}`],
+      ...(model !== undefined && {
+        agent: {
+          model,
+          status: "passed",
+          limitations: [],
+          messages: [],
+          inference: [{ request_index: 0, wall_seconds: 1, metrics: {} }],
+        },
+      }),
     },
   };
 }

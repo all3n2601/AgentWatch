@@ -104,7 +104,9 @@ const SETTINGS: Setting[] = [
   {
     id: "model",
     label: "Agent model",
-    value: (c) => c.model ?? "None recorded",
+    // The CPU workload has no agent by design. A coding run without agent evidence does
+    // not record its model, and two unrecorded models are not the same model.
+    value: (c) => c.model ?? (c.kind === "cpu" ? "Not applicable" : null),
   },
   {
     id: "capacity",

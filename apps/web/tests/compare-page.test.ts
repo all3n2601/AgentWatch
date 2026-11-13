@@ -110,7 +110,8 @@ test("identical recorded settings are unverified, never a match, while policy is
   const result = configurations(run("a"), run("b"));
   assert.equal(result.verdict, "unverified");
   assert.deepEqual(result.differing, []);
-  assert.deepEqual(result.unknown, ["Concurrency policy"]);
+  // These coding runs have no agent evidence, so their model is not recorded either.
+  assert.deepEqual(result.unknown, ["Agent model", "Concurrency policy"]);
   const policy = result.checks.find((c) => c.id === "policy");
   assert.equal(policy?.status, "unknown");
   assert.equal(policy?.baseline, "Not recorded");
@@ -167,6 +168,7 @@ test("contention missing on one run is unknown, never a match", () => {
   assert.equal(contention?.status, "unknown");
   assert.equal(contention?.candidate, "Not recorded");
   assert.deepEqual(result.unknown, [
+    "Agent model",
     "Competing iterations (contention)",
     "Concurrency policy",
   ]);
@@ -188,7 +190,30 @@ test("checksum compares full values though it displays shortened", () => {
   assert.equal(check?.baselineTitle, long("aa"));
 });
 
-test("agent model mismatch when only one run has agent evidence", () => {
+test("two coding runs without agent evidence leave the model unknown, not a match", () => {
+  const result = configurations(run("a"), run("b"));
+  const model = result.checks.find((c) => c.id === "model");
+  assert.equal(model?.status, "unknown");
+  assert.equal(model?.baseline, "Not recorded");
+  assert.equal(model?.candidate, "Not recorded");
+  assert.ok(result.unknown.includes("Agent model"));
+  assert.equal(result.verdict, "unverified");
+});
+
+test("CPU runs have no agent by design, so their model is a recorded match", () => {
+  const cpu = (id: string) =>
+    run(id, {
+      kind: "cpu",
+      experiment: { ...run(id).experiment, tests_per_step: null },
+    });
+  const model = configurations(cpu("a"), cpu("b")).checks.find(
+    (c) => c.id === "model",
+  );
+  assert.equal(model?.status, "same");
+  assert.equal(model?.candidate, "Not applicable");
+});
+
+test("agent model is unknown when only one coding run has agent evidence", () => {
   const agent = {
     model: "qwen3:1.7b",
     status: "passed" as const,
@@ -201,7 +226,12 @@ test("agent model mismatch when only one run has agent evidence", () => {
   };
   const withAgent = run("b", { agent });
   const result = configurations(run("a"), withAgent);
-  assert.deepEqual(result.differing, ["Agent model"]);
+  assert.deepEqual(result.differing, []);
+  assert.deepEqual(result.unknown, ["Agent model", "Concurrency policy"]);
+  assert.equal(
+    result.checks.find((c) => c.id === "model")?.baseline,
+    "Not recorded",
+  );
   const inference = metricDeltas(run("a"), withAgent).find(
     (m) => m.id === "inference",
   );

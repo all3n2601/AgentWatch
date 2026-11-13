@@ -13,25 +13,33 @@ test.beforeEach(async ({ request }) => resetFixtureApi(request));
 
 type Request = Parameters<typeof registerSavedRun>[0];
 
+type RunOptions = Partial<Parameters<typeof savedRun>[1]>;
+
+/** `shared` applies to every run, `candidateOptions` to the candidate only. */
 async function pair(
   request: Request,
-  candidateOptions: Partial<Parameters<typeof savedRun>[1]> = {},
+  candidateOptions: RunOptions = {},
+  shared: RunOptions = {},
 ) {
   const [baseline, candidate, newest] = [
     newSavedRunId(),
     newSavedRunId(),
     newSavedRunId(),
   ];
-  await registerSavedRun(request, savedRun(baseline, { sequence: 1 }));
+  await registerSavedRun(
+    request,
+    savedRun(baseline, { ...shared, sequence: 1 }),
+  );
   await registerSavedRun(
     request,
     savedRun(candidate, {
+      ...shared,
       sequence: 2,
       cleanSeconds: 4.5,
       ...candidateOptions,
     }),
   );
-  await registerSavedRun(request, savedRun(newest, { sequence: 3 }));
+  await registerSavedRun(request, savedRun(newest, { ...shared, sequence: 3 }));
   return { baseline, candidate, newest };
 }
 
@@ -93,7 +101,11 @@ test("unknown policy is listed as unknown, never as a match", async ({
   page,
   request,
 }) => {
-  const { baseline, candidate } = await pair(request);
+  const { baseline, candidate } = await pair(
+    request,
+    {},
+    { model: "qwen3:1.7b" },
+  );
   await page.goto(
     `/compare?run=${candidate}&baseline=${baseline}&view=configuration`,
   );
@@ -161,9 +173,11 @@ test("contention missing on one run is unknown, not a match", async ({
   page,
   request,
 }) => {
-  const { baseline, candidate } = await pair(request, {
-    competingIterations: null,
-  });
+  const { baseline, candidate } = await pair(
+    request,
+    { competingIterations: null },
+    { model: "qwen3:1.7b" },
+  );
   await page.goto(
     `/compare?run=${candidate}&baseline=${baseline}&view=configuration`,
   );
@@ -186,6 +200,21 @@ test("a faster candidate's delta stays neutral, without improvement colouring", 
   await expect(delta).toContainText("(0.3×)");
   await expect(delta).not.toHaveClass(TONE_CLASS);
   await expect(page.getByText(/faster|slower|improve/i)).toHaveCount(0);
+});
+
+test("coding runs without agent evidence leave the model unknown, not a match", async ({
+  page,
+  request,
+}) => {
+  const { baseline, candidate } = await pair(request);
+  await page.goto(
+    `/compare?run=${candidate}&baseline=${baseline}&view=configuration`,
+  );
+  await expect(verdict(page)).toContainText("2 unknown");
+  const model = configuration(page)
+    .getByRole("definition")
+    .filter({ hasText: "Baseline Not recorded" });
+  await expect(model).toHaveCount(2);
 });
 
 test("a missing or invalid UUID is reported and never replaced by another run", async ({
