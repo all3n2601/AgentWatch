@@ -18,6 +18,7 @@ require_lightgbm()
 import mlflow
 from agentwatch_data import evidence
 from agentwatch_model.candidates import TrainingError
+from agentwatch_model.features import FEATURES
 from agentwatch_model.held_out_model import CLASSIFIER_SCORER, HeldOutModelError
 from agentwatch_model.held_out_rows import ACCEPTED_TRUTH_LABEL_VERSION
 from agentwatch_model.score_held_out import (
@@ -160,6 +161,17 @@ def test_run_scores_both_scorers_and_writes_no_models(prepared, tracking):
     assert report["status"] == "completed" and report["held_out"] is True
     assert report["gate"] == "none (descriptive baseline)"
     assert report["scored_steps"] == 3
+    assert any(
+        line.startswith(f"`{report['rules']['version']}` covers only")
+        and "1.000 by construction" in line
+        for line in report["limitations"]
+    )
+    availability = report["feature_availability"]
+    assert availability["definition"]
+    assert set(availability["features"]) == set(FEATURES)
+    queue = availability["features"]["queue_seconds"]
+    assert queue["held_out"]["rows"] == 3 and queue["train"]["rows"] == 120
+    assert set(queue["held_out_by_configuration"]) == {"cfg-default"}
     frozen = report["model"]["frozen"]
     classifier_file = prepared["pair"].candidates_dir / "classifier.txt"
     assert frozen["classifier_sha256"] == hashlib.sha256(classifier_file.read_bytes()).hexdigest()

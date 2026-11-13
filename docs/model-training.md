@@ -224,7 +224,16 @@ rows are read only for those checks (all three splits for the leakage check, val
 test for the two reproduction checks) and to decide which task groups are seen (train). The
 regressor is not scored. The A06 evidence is never used for training, calibration or tuning,
 and there is no gate: the report is a descriptive baseline of miss, false-alarm and abstention
-rates, with 95% intervals that resample whole batches.
+rates, with 95% intervals that resample whole batches. Its limitations include one computed
+from the rules: `rules-v1` covers only `none` and `cpu_sandbox` and never predicts
+`inference`, so its `inference` miss rate is 1.000 by construction, not a measured weakness.
+
+The report's `feature_availability` shows, for every model feature in `FEATURES` order, how
+the scored held-out steps (overall and per configuration) compare with the train split: `rows`,
+`missing_fraction` (null or NaN, the values the classifier receives as NaN; a measured zero is
+present), `distinct_values` among present values, and `most_common_fraction`, the share of
+present values equal to the most common one (1.0 for a constant feature). A group with no rows
+or no present value has null fractions, never 0. It describes the inputs and changes no score.
 
 Each attempt writes `.data/a06-scoring/scores/<attempt id>/` (`report.json`,
 `predictions.jsonl`, `tracking.json`) and is logged to the separate MLflow experiment

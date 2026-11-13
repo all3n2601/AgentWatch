@@ -38,6 +38,10 @@ from agentwatch_data.splits import SplitError, load_split
 
 from agentwatch_model.candidates import TrainingError
 from agentwatch_model.contract import DEFAULT_CONTRACT, Contract, ContractError, load_contract
+from agentwatch_model.held_out_features import (
+    FEATURE_AVAILABILITY_DEFINITION,
+    feature_availability,
+)
 from agentwatch_model.held_out_model import (
     CALIBRATED_PREDICTIONS,
     CALIBRATION,
@@ -258,7 +262,8 @@ def score_rows(
     body and the predictions text. Nothing is written, so a failed check leaves no scores.
 
     The checks, in order: the model reproduces M03's validation predictions and M04's test
-    predictions, then no scored run or plan appears in any split row."""
+    predictions, then no scored run or plan appears in any split row. The report also carries
+    `feature_availability`, each feature's presence on the scored steps against train."""
     rows, refused, summaries, unjudged = held_out_rows(truth_dirs, sweep_root)
     if not rows:
         raise NoStepScored(refused, unjudged)
@@ -279,6 +284,7 @@ def score_rows(
             "summaries": summaries,
             "unjudged": unjudged,
             "model": {"frozen": model.identity, "label_version": label_version(train)},
+            "rules": {"version": rules.version, "covered_classes": list(rules.covered_classes)},
             "resamples": resamples,
             "seed": seed,
         },
@@ -293,6 +299,10 @@ def score_rows(
             "scored_split": "held-out",
             "split": split_identity(split),
             "scored_steps": len(rows),
+            "feature_availability": {
+                "definition": FEATURE_AVAILABILITY_DEFINITION,
+                "features": feature_availability(rows, train),
+            },
             "truths": {
                 summary["sweep_folder"]: {name: summary[name] for name in TRUTH_IDENTITY_FIELDS}
                 for summary in summaries
