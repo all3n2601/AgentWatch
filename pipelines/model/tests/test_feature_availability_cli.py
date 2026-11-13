@@ -184,3 +184,20 @@ def test_a_booster_that_does_not_reproduce_validation_is_refused(prepared, capsy
     assert main(cli_arguments(prepared)) == EXIT_ERROR
     assert "validation rows" in capsys.readouterr().err
     assert not prepared["output"].exists()
+
+
+def test_test_rows_that_do_not_reproduce_m04_are_refused(prepared, capsys, monkeypatch):  # noqa: F811
+    pin_synthetic_pair(monkeypatch)
+    splits = {
+        "train": dataset(30, "train"),
+        "validation": prepared["pair"].validation_rows,
+        "test": dataset(4, "other"),
+    }
+
+    def loader(path, name, contract_path, frozen_schema, allow_unchecked_leakage=False):
+        return splits[name]
+
+    monkeypatch.setattr("agentwatch_model.feature_availability.load_split", loader)
+    assert main(cli_arguments(prepared)) == EXIT_ERROR
+    assert "Feature availability error" in capsys.readouterr().err
+    assert not prepared["output"].exists()

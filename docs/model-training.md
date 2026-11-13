@@ -269,12 +269,13 @@ counting (`held_out_features.availability`), in four ways:
   and maximum, and the shares of held-out values below the train minimum and above the train
   maximum.
 
-It reads the model through the same checked loader as `score-held-out` and runs its
-validation-reproduction and split-overlap checks, scores, trains and fits nothing, and writes
-`feature-availability.json` and two Markdown tables to `.data/a06-scoring/feature-availability/`
-(exit 2, and nothing written, for a mismatched model pair, a booster that does not reproduce
-M03's validation predictions, a held-out run or plan found in the split, no judged step, a
-refused split or an output inside `data/held-out`). The same inputs give byte-identical output.
+It reads the model through the same checked loader as `score-held-out` and runs the same
+validation-reproduction, calibration-reproduction and split-overlap checks; it scores, trains and
+fits nothing, and writes `feature-availability.json` and two Markdown tables to
+`.data/a06-scoring/feature-availability/` (exit 2, and nothing written, for a mismatched model pair,
+a pair that does not reproduce M03's validation predictions or M04's test predictions, a held-out
+run or plan found in the split, no judged step, a refused split or an output inside
+`data/held-out`). The same inputs give byte-identical output.
 
 Run of 2026-11-12 on the 1,740 scored model calls (825 `cfg-default`, 915 `cfg-hardware`) against
 the 1,707 single-class train rows (48 mixed train steps not classified), with classifier

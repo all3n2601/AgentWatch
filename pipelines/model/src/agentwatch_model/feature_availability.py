@@ -35,6 +35,7 @@ from agentwatch_model.held_out_model import (
     FROZEN_VERSIONS,
     FrozenVersions,
     HeldOutModelError,
+    check_reproduces_calibration,
     check_reproduces_validation,
     load_frozen_classifier,
 )
@@ -333,6 +334,7 @@ def run(
     # it would score.
     splits = {name: loader(split, name, contract_path, frozen_schema) for name in SPLIT_NAMES}
     check_reproduces_validation(model, splits["validation"], candidates_dir)
+    check_reproduces_calibration(model, splits["test"], calibrated_dir)
     overlap = scored_overlap(rows, [row for part in splits.values() for row in part])
     if overlap:
         raise AvailabilityError(f"held-out steps appear in the split: {', '.join(overlap)}")
