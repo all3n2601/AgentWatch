@@ -822,7 +822,7 @@ frozen evaluation sets without tuning against them.
   2026-11-12 (branch `feature/held-out-feature-availability`, stacked on A06 PR 3, not yet
   merged): `make held-out-feature-availability` compares the frozen classifier's features on its
   1,707 single-class train rows and the same 1,740 held-out rows, descriptive only
-  ([model training](model-training.md#feature-availability-on-held-out-rows),
+  ([model training](model-training.md#feature-shift-on-held-out-rows),
   `pipelines/model/tests/test_feature_availability*.py`). The timing features holding 0.894 of
   the gain are present on every held-out row; the four missing on every held-out row hold 0.106
   and were mostly missing in train too. The held-out model calls are slower than the train steps
