@@ -4,7 +4,7 @@ import {
   formatSeconds,
   MISSING_VALUE,
 } from "@/lib/measurement-format";
-import { slowdownTone } from "@/lib/tone";
+import { deltaTone, slowdownTone } from "@/lib/tone";
 import { cn } from "@/lib/utils";
 
 export const CHIP =
@@ -64,7 +64,7 @@ export function DeltaChip({
   }
   const sign = deltaSeconds > 0 ? "+" : deltaSeconds < 0 ? "−" : "±";
   const hasRatio = ratio !== null && Number.isFinite(ratio);
-  const tone = hasRatio && !neutral ? slowdownTone(ratio) : null;
+  const tone = deltaTone(ratio, neutral);
   return (
     <span
       className={cn(

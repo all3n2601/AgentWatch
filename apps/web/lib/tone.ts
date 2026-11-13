@@ -59,6 +59,16 @@ export function slowdownTone(ratio: number): Tone | null {
 }
 
 /**
+ * Emphasis for a delta chip. Neutral deltas get none at any ratio: a faster
+ * candidate (ratio below 1) is as uncontrolled as a slower one, so it must not
+ * read as an improvement.
+ */
+export function deltaTone(ratio: number | null, neutral: boolean): Tone | null {
+  if (neutral || ratio === null || !Number.isFinite(ratio)) return null;
+  return slowdownTone(ratio);
+}
+
+/**
  * One colour per resource class, reused by every chart, chip and legend
  * (docs/ui-redesign-plan.md section 4). Values are CSS variables so both
  * themes stay in sync with app/globals.css.

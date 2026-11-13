@@ -38,6 +38,9 @@ async function pair(
 const runId = (page: Page, role: "Baseline" | "Candidate", id: string) =>
   page.getByRole("button", { name: `Copy ${role} run ID ${id}` });
 
+/** Any status tone's text or surface colour. */
+const TONE_CLASS = /(text|bg|border)-(success|warning|caution|danger|info)/;
+
 const verdict = (page: Page) =>
   page.getByRole("tab", { name: /Configuration/ });
 
@@ -71,7 +74,7 @@ test("a direct URL compares the selected UUIDs with neutral observed differences
     .filter({ hasText: "Clean execution" });
   const delta = clean.getByText("+1.50 s");
   await expect(delta).toBeVisible();
-  await expect(delta).not.toHaveClass(/text-(success|warning|caution|danger)/);
+  await expect(delta).not.toHaveClass(TONE_CLASS);
 
   const quality = page.getByRole("region", { name: "Quality and coverage" });
   await expect(quality).toContainText("ThroughputBaseline Not recorded");
@@ -166,6 +169,23 @@ test("contention missing on one run is unknown, not a match", async ({
   );
   await expect(verdict(page)).toContainText("2 unknown");
   await expect(configuration(page)).toContainText("Candidate Not recorded");
+});
+
+test("a faster candidate's delta stays neutral, without improvement colouring", async ({
+  page,
+  request,
+}) => {
+  // Clean step 3 s against 1.5 s: a ratio below 1 would otherwise be graded "success".
+  const { baseline, candidate } = await pair(request, { cleanSeconds: 1.5 });
+  await page.goto(`/compare?run=${candidate}&baseline=${baseline}`);
+  const clean = page
+    .getByRole("listitem")
+    .filter({ hasText: "Clean execution" });
+  const delta = clean.getByText(/^−1\.50 s/);
+  await expect(delta).toBeVisible();
+  await expect(delta).toContainText("(0.3×)");
+  await expect(delta).not.toHaveClass(TONE_CLASS);
+  await expect(page.getByText(/faster|slower|improve/i)).toHaveCount(0);
 });
 
 test("a missing or invalid UUID is reported and never replaced by another run", async ({

@@ -7,7 +7,7 @@ import {
 } from "../lib/measurement-format";
 import { overviewScene, sceneManifestSchema } from "../lib/overview-scene";
 import { donutArc, layoutSegments, relativeLengths } from "../lib/segments";
-import { slowdownTone, statusTone } from "../lib/tone";
+import { deltaTone, slowdownTone, statusTone } from "../lib/tone";
 
 test("formatMeasurement keeps a measured zero distinct from a missing reading", () => {
   assert.equal(formatMeasurement(0, "ms").text, "0 ms");
@@ -64,6 +64,15 @@ test("slowdownTone grades observed ratios at the declared boundaries", () => {
   assert.equal(slowdownTone(8), "danger");
   assert.equal(slowdownTone(Number.NaN), null);
   assert.equal(slowdownTone(-1), null);
+});
+
+test("neutral deltas take no tone, so a faster candidate never reads as better", () => {
+  // Without `neutral`, a ratio below 1 would be graded "success".
+  assert.equal(deltaTone(0.5, false), "success");
+  for (const ratio of [0.5, 1, 1.2, 12])
+    assert.equal(deltaTone(ratio, true), null);
+  assert.equal(deltaTone(null, false), null);
+  assert.equal(deltaTone(Number.NaN, false), null);
 });
 
 test("layoutSegments computes shares and offsets that sum to the whole", () => {
