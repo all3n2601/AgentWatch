@@ -441,6 +441,12 @@ API interruption, and cancellation preserve a coherent lifecycle and readable ev
   (PR #70, merged 2026-11-12 as `386d494`). In the 2026-11-11 A06 preflight dry
   sweep on real vLLM, each flood had a median of 2,080 prompt tokens, every reply was exactly
   1 completion token, and cleanup was confirmed (`data/held-out/a06-20261111/preflight-dry-run/`).
+  2026-11-12: the inference injector's `generated_tokens` is null, not 0, when no completed reply
+  reported a token count, and `completions_without_generated_tokens` counts the replies without
+  one (`test_competing_chat_tokens_*` and
+  `test_competing_replies_without_token_counts_are_recorded_as_missing` in
+  `services/injectors/tests/test_injectors.py`). None of the 108 recorded competing-chat logs in
+  `data/evidence/` and `data/held-out/a06-20261111/` had a 0 total.
 
 **Exit test:** Known isolated workloads exercise each resource and a clean control. Measurements
 and attribution identify the affected class. Real GPU validation uses real inference hardware;
