@@ -4,6 +4,10 @@ The measures were declared before any scoring (docs/superpowers/specs/
 2026-11-11-a06-held-out-scoring-design.md, "Report measures"). Nothing here is a gate: the
 report is a descriptive baseline. A rate whose denominator is zero is None, never zero, and a
 truth that could not be judged for a step leaves that step out of that truth's measures.
+
+Besides the fixed limitations, the report states one computed from the rules: rules that never
+predict `inference` miss every `inference` step, so their miss rate is 1.000 by construction,
+not a measured weakness.
 """
 
 from collections import Counter
@@ -200,12 +204,26 @@ def unscored_runs(summaries: list[dict]) -> dict[str, dict]:
     return runs
 
 
+def rules_limitations(rules: dict) -> list[str]:
+    """What the rules cannot do by construction, from their covered classes."""
+    covered = rules["covered_classes"]
+    if INFERENCE in covered:
+        return []
+    names = " and ".join(f"`{name}`" for name in covered)
+    limitation = (
+        f"`{rules['version']}` covers only {names}; it never predicts `{INFERENCE}`, so its "
+        f"`{INFERENCE}` miss rate is 1.000 by construction"
+    )
+    return [limitation]
+
+
 def build_report(rows: list[dict], scores: dict[str, list[ScoredStep]], context: dict) -> dict:
     """Cells per (scorer, truth, configuration, N, phase, step type, task seen in training), the
     four rollups, and the report's fixed statements.
 
     `context` carries `seen_task_groups`, `refused` (counts by code), `summaries`, `unjudged`
-    (truth records with no judged truth), `model`, `resamples` and `seed`.
+    (truth records with no judged truth), `model`, `rules` (`version` and `covered_classes`),
+    `resamples` and `seed`.
     """
     seen_groups = frozenset(context["seen_task_groups"])
     seen = [task_group(row["task_id"]) in seen_groups for row in rows]
@@ -268,7 +286,7 @@ def build_report(rows: list[dict], scores: dict[str, list[ScoredStep]], context:
             "steps": unscored_steps(rows, context["unjudged"]),
             "runs": unscored_runs(context["summaries"]),
         },
-        "limitations": list(LIMITATIONS),
+        "limitations": [*LIMITATIONS, *rules_limitations(context["rules"])],
         "protocol_sha256": {
             summary["configuration"]: summary["protocol_sha256"] for summary in context["summaries"]
         },

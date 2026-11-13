@@ -198,18 +198,42 @@ abstention threshold, on the `sweep-truth-v2` truths of the frozen A06 capacity 
 ([design](superpowers/specs/2026-11-11-a06-held-out-scoring-design.md), "Change after #70, #72
 and #74"). It trains and fits nothing. A model pair whose M03 report does not name the
 `--split` file and `eval-contract-v3`, or whose files do not hash to the values M03 and M04
-recorded, is a setup error (exit 2) and no attempt is written. A truth folder whose
+recorded, is a setup error (exit 2) and no attempt is written. So is any pair but the pinned
+one: M03's preprocessing and report (`model.version`) and M04's `calibration.json` must name
+`training-v1+a34ea0be`, and `calibration.json` must be `calibration-v1+08119e78`; there is no
+option to accept another. M04's `report.json` must also carry `calibration.json`'s version,
+temperature and abstention threshold, name the `--split` file, hash the `predictions.jsonl`
+beside it, and record positive `fit.steps` and `scored_steps`, and `calibration.json` must hash
+M03's `report.json`. Every M04 file enters the attempt's input hashes, keyed `candidates/<file>`
+and `calibration/<file>`. A truth folder whose
 `label_version` is not `sweep-truth-v2+c211f3e8`, whose `truth_sha256` is not the hash of the
-`truth.jsonl` beside it, or whose step and recorder hashes are not 64 lowercase hex digits, a
-booster that does not reproduce M03's validation predictions, and a scored run or plan found in
-any row of the split each end the attempt as a recorded `failed` one. It builds `steps-v1.3`
+`truth.jsonl` beside it, whose step and recorder hashes are not 64 lowercase hex digits, or with
+a record whose `plan_sha256` is absent or neither null nor 64 lowercase hex digits, a
+booster that does not reproduce M03's validation predictions, a pair that does not reproduce
+M04's test predictions, and a scored run or plan found in any row of the split each end the
+attempt as a recorded `failed` one. Neither reproduction check can pass on an empty or partial
+record: M03's `validation_predictions.jsonl` must hold exactly the `fit.steps` M04 fitted on,
+and every one must match (label, and each class probability within 1e-9); M04's
+`predictions.jsonl` must hold exactly the steps its report counts (`scored_steps` plus
+`joint_only_steps_not_scored`, as M04 records a prediction for every test step), each a
+test-split step, and every one must match after the same temperature step held-out scoring uses (label, abstention,
+calibrated confidence and each calibrated class probability within 1e-9). It builds `steps-v1.3`
 feature rows from each run's journal and scores model calls whose truth is a class; root, tool
 and retrieval steps, and model calls the rule leaves null, are counted by reason. The split's
-rows are read only for those checks (all three splits for the leakage check, validation for the
-reproduction check) and to decide which task groups are seen (train). The
+rows are read only for those checks (all three splits for the leakage check, validation and
+test for the two reproduction checks) and to decide which task groups are seen (train). The
 regressor is not scored. The A06 evidence is never used for training, calibration or tuning,
 and there is no gate: the report is a descriptive baseline of miss, false-alarm and abstention
-rates, with 95% intervals that resample whole batches.
+rates, with 95% intervals that resample whole batches. Its limitations include one computed
+from the rules: `rules-v1` covers only `none` and `cpu_sandbox` and never predicts
+`inference`, so its `inference` miss rate is 1.000 by construction, not a measured weakness.
+
+The report's `feature_availability` shows, for every model feature in `FEATURES` order, how
+the scored held-out steps (overall and per configuration) compare with the train split: `rows`,
+`missing_fraction` (null or NaN, the values the classifier receives as NaN; a measured zero is
+present), `distinct_values` among present values, and `most_common_fraction`, the share of
+present values equal to the most common one (1.0 for a constant feature). A group with no rows
+or no present value has null fractions, never 0. It describes the inputs and changes no score.
 
 Each attempt writes `.data/a06-scoring/scores/<attempt id>/` (`report.json`,
 `predictions.jsonl`, `tracking.json`) and is logged to the separate MLflow experiment
@@ -217,10 +241,11 @@ Each attempt writes `.data/a06-scoring/scores/<attempt id>/` (`report.json`,
 first digits of the hash of every input, the model files included. Exit codes: 0 completed, 1
 failed (the reason is in the report), 3 not tracked, 2 for a malformed configuration, a model
 pair that does not match, an environment where LightGBM cannot load, or an output inside
-`data/held-out`. Scores stay local and belong in
-no release. The run of 2026-11-12, attempt `20261112T222540Z-d3316f` with this classifier
-(`b35152b7…`) and `calibration-v1+08119e78`, is recorded in the
-[capacity record](capacity-record.md#attribution-baseline). The earlier attempt
+`data/held-out`. Scores stay local and belong in no release. Attempt
+`20261113T011157Z-f2e0c7` (2026-11-13), with this classifier (`b35152b7…`) and
+`calibration-v1+08119e78`, is recorded in the
+[capacity record](capacity-record.md#attribution-baseline). It has the same scores and
+predictions as the 2026-11-12 attempt `20261112T222540Z-d3316f`, which ran before these checks. The earlier attempt
 `20261112T025531Z-220363`, which retrained a classifier on `split-v2` and used the former
 `sweep-truth-v1` truths, is listed there as superseded.
 

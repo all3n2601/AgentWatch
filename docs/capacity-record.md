@@ -460,10 +460,10 @@ this evidence.
 
 | Item | Value |
 | --- | --- |
-| Attempt | `20261112T222540Z-d3316f`, status `completed`, in `.data/a06-scoring/scores/20261112T222540Z-d3316f/` |
-| When | 2026-11-12 22:25–22:32 UTC (17:25–17:32 local), on the laptop's CPU in WSL Ubuntu |
-| Code | Commit `8d414c2` on `feature/a06-held-out-scoring`. The recorder, rule, split and scoring commands each started with no modified, staged or untracked files outside the ignored `.data/` and `data/` stores; see the next rows for M03 and M04 |
-| MLflow | Experiment `a06-held-out-scoring`, run `67d710877ec24eb3babea1c8080745cd` |
+| Attempt | `20261113T011157Z-f2e0c7`, status `completed`, in `.data/a06-scoring/scores/20261113T011157Z-f2e0c7/`. Its scores equal those of the previous attempt, `20261112T222540Z-d3316f`, and its `predictions.jsonl` is byte-identical; it adds the checks and the feature availability from Rohit's review of #76 |
+| When | 2026-11-13 01:11–01:17 UTC (2026-11-12 20:11–20:17 local), on the laptop's CPU in WSL Ubuntu |
+| Code | Scoring at commit `52df567` on `feature/a06-held-out-scoring`; the recorder, rule and split outputs are those made at `8d414c2` for the previous attempt. Each command started with no modified, staged or untracked files outside the ignored `.data/` and `data/` stores; see the next rows for M03 and M04 |
+| MLflow | Experiment `a06-held-out-scoring`, run `eb3b42cfb9704135bf2526ed40765e36` |
 | Evidence | `data/held-out/a06-20261111/capacity-sweeps/`, both sweeps; protocol `natural-overload-sweep-v1`, `protocol_sha256` `22e26dc7536f…` (`cfg-default`) and `1608deee2a3b…` (`cfg-hardware`); `held_out: true` |
 | Truths | `capacity-sweep-steps`, then `sweep-truth` with label version `sweep-truth-v2+c211f3e8`, on each sweep, in `.data/a06-scoring/sweep-truth-v2/{steps,truth}/<sweep folder>/` |
 | Truth identity (`truths` in the report) | `cfg-default`: `steps_sha256` `7598a42e00fc…`, `steps_summary_sha256` `8f49eb141ff4…`, `truth_sha256` `92da54bca1be…`; `cfg-hardware`: `0ebe5446d0ef…`, `9c797b592097…`, `069a8303ac37…`. All six equal the hashes pinned by #74 ([data card](data-card.md#sweep-truth-rule-sweep-truth-v2-held-out-a06-sweeps-only)) |
@@ -471,7 +471,7 @@ this evidence.
 | Calibration (`model.frozen`) | `calibration-v1+08119e78`, `calibration.json` `459ff2a6f0db…`; temperature 0.897, abstention threshold 0.647 on calibrated top-label confidence, both applied unchanged |
 | M03 and M04 runs | Rebuilt for this attempt with `train-candidates` and `calibrate` on the same split: MLflow runs `34ef108ec273401b8cfc14105efc9334` (M03) and `5f5782166c4c4cf0b3c9cc4622bdbbab` (M04). Two documentation files (this record and `model-training.md`) were being edited in the tree while they ran; neither command reads them, and their outputs are byte-identical to #72's (next row) |
 | Comparison with #72 | M03's `classifier.txt`, `preprocessing.json`, `report.json` (`f98da5478d82…`), `validation_predictions.jsonl` (`c1bf9555c597…`), `predictions.jsonl` and `regressor.txt` equal #72's published hashes ([model training](model-training.md#results-on-dataset-v1)), as does M04's `predictions.jsonl` (`9f6b03fed9fe…`, [calibration](model-calibration.md#results-on-dataset-v1)). M04's `calibration.json` and `report.json` differ from those of #72's rebuild on 2026-11-12 (kept in `.data/review-72/calibration/`) only in `candidates.run_id`, M03's MLflow run id |
-| Input hashes (SHA-256) | split, both `truth.jsonl` and `truth.json`, the five M03 and M04 files above, and 696 run evidence and journal files, none missing (all listed in the report's `inputs`) |
+| Input hashes (SHA-256) | split, both `truth.jsonl` and `truth.json`, the seven M03 and M04 files the attempt reads (M03's `classifier.txt`, `preprocessing.json`, `report.json` and `validation_predictions.jsonl`; M04's `calibration.json`, `report.json` `ad9931f5bf39…` and `predictions.jsonl`), and 696 run evidence and journal files, none missing (all listed in the report's `inputs`) |
 | Scored steps | 1,740 model calls (825 `cfg-default`, 915 `cfg-hardware`); refused: none; no scored run or plan appears in the split |
 | Scorers | `rules-v1+1bf54c19` (covers `none` and `cpu_sandbox`; `inference` and `retrieval` uncovered) and `lightgbm-classifier-m03-m04` |
 | Intervals | 95% percentile bootstrap, 2,000 resamples, seed 0, resampling whole batches; a cell with fewer than 2 batches has none |
@@ -486,7 +486,8 @@ Every scoring attempt is kept:
 | 2026-11-12, before 02:27 | First launch | `4658849` | Called `make` inside WSL, which is not installed there; stopped before any command ran and wrote nothing |
 | 2026-11-12 02:28 | `20261112T022810Z-7eac8a` | `4658849` | Completed; superseded: its `slower` truth still judged the N = 1 baseline steps, contrary to the spec; fixed in 29df6fc before the next attempt. Its outputs stay in `.data/a06-scoring/scores/20261112T022810Z-7eac8a/`, and its truth files in `.data/a06-scoring/superseded/20261112T022810Z-7eac8a-truth/` |
 | 2026-11-12 02:55 | `20261112T025531Z-220363` | `29df6fc` | Completed; superseded: it used a different truth rule (`sweep-truth-v1`, from the agent's former per-step truth command), a different model (a classifier retrained on `split-v2`, uncalibrated and never abstaining) and a different set of scored steps (4,000 steps of every type). Its numbers are not compared with this attempt's. Its outputs stay in `.data/a06-scoring/scores/20261112T025531Z-220363/`. Its truth files are no longer on disk: they are identified by the hashes in that attempt's `report.json` `inputs.truth` (`truth.jsonl` `2c822ddaba90…` and `f113b63d2516…`), and can be regenerated with that attempt's code, the scoring branch's former `capacity-sweep-truth` at `29df6fc`. `.data/a06-scoring/truth/` and `steps/` now hold a later `sweep-truth-v1+3b75882f` labelling from the #74 work |
-| 2026-11-12 22:25 | `20261112T222540Z-d3316f` | `8d414c2` | Completed; the attempt this section reports |
+| 2026-11-12 22:25 | `20261112T222540Z-d3316f` | `8d414c2` | Completed; superseded by the next attempt, whose checks and report fields it lacks. Its scores and `predictions.jsonl` are identical to the next attempt's. MLflow run `67d710877ec24eb3babea1c8080745cd` |
+| 2026-11-13 01:11 | `20261113T011157Z-f2e0c7` | `52df567` | Completed; the attempt this section reports |
 
 ### How to read the tables
 
@@ -818,6 +819,38 @@ Steps with no judged truth, both sweeps together (`unscored.steps`):
 No model call had `not_completed`, `no_baseline` or `span_not_measured`, and no step was refused
 at the feature join (`refused` is empty).
 
+### Feature availability
+
+The report's `feature_availability` gives, for each of the classifier's 14 features, how often
+it is missing (null or NaN) and how many distinct values it takes, on the train split (1,755
+steps) and on the 1,740 scored model calls. Both configurations give the same picture.
+
+| Feature | Train: missing | Train: distinct values | Held out: missing | Held out: distinct values |
+| --- | --- | --- | --- | --- |
+| `cgroup_available` | 0.000 | 2 | 0.000 | 1 |
+| `cgroup_throttled_usec_delta` | 0.990 | 1 | 1.000 | 0 |
+| `cpu_pressure_available` | 0.000 | 2 | 0.000 | 1 |
+| `cpu_pressure_max_avg10` | 0.897 | 164 | 1.000 | 0 |
+| `cpu_seconds` | 0.844 | 272 | 1.000 | 0 |
+| `duration_seconds` | 0.000 | 1,755 | 0.000 | 1,740 |
+| `execution_seconds` | 0.000 | 1,755 | 0.000 | 1,740 |
+| `queue_fraction` | 0.000 | 1,755 | 0.000 | 1,740 |
+| `queue_seconds` | 0.000 | 1,755 | 0.000 | 1,740 |
+| `telemetry_coverage` | 0.979 | 2 | 1.000 | 0 |
+| `telemetry_sample_count` | 0.000 | 3 | 0.000 | 1 |
+| `tests_per_step` | 1.000 | 0 | 1.000 | 0 |
+| `worker_capacity` | 1.000 | 0 | 1.000 | 0 |
+| `workload_iterations` | 1.000 | 0 | 1.000 | 0 |
+
+On the held-out model calls only the four timing features vary: `duration_seconds`,
+`execution_seconds`, `queue_seconds` and `queue_fraction`. Every other feature is missing on
+every call, or takes one value: `cgroup_available`, `cpu_pressure_available` and
+`telemetry_sample_count`. In train, `cpu_pressure_max_avg10`, `cpu_seconds`,
+`cgroup_throttled_usec_delta` and `telemetry_coverage` are present on 10%, 16%, 1% and 2% of
+steps, and the three constant features take 2–3 values. So on A06 the classifier decides from
+timings alone. This report does not measure how much of its misses comes from that rather than
+from the model; that comparison belongs to "Compare models and rules" in the checklist.
+
 ### Observations
 
 These are observed values on one sweep per configuration, not causal attributions.
@@ -829,8 +862,9 @@ These are observed values on one sweep per configuration, not causal attribution
    rate is 0.292 (0.169–0.479), and 0.161 on answered calls. In the ramp it is 0.923 and 1.000
    at N = 3 (seen and unseen), and 0.079 and 0.035 at N = 12. Of the 686 queued model calls it
    predicted `inference` on 486 and abstained on 107; it predicted `none` on 61, `cpu_sandbox`
-   on 31 and `retrieval` on 1. No `steps-v1.3` feature describes GPU or vLLM state, and the
-   report does not show which features drive these predictions.
+   on 31 and `retrieval` on 1. No `steps-v1.3` feature describes GPU or vLLM state, only the
+   four timing features vary on these calls ([Feature availability](#feature-availability)),
+   and the report does not show which features drive these predictions.
 3. **On `cfg-hardware` the classifier misses the slowdown that does not queue.** vLLM queued
    only 8 model calls above the threshold, all in the prefill-flood batches, and the classifier
    predicted `inference` on all 8. Of the 663 model calls slower than their baseline it missed
@@ -869,7 +903,9 @@ From the report's own `limitations`:
 - dataset v1's replays were recorded mostly on Ollama, A06 on vLLM;
 - no `steps-v1.3` feature describes GPU or vLLM state;
 - one of the two A06 tasks (`fix-mean-empty`) was seen in training, so only `fix-median-even`
-  tests an unseen task.
+  tests an unseen task;
+- `rules-v1+1bf54c19` covers only `none` and `cpu_sandbox`; it never predicts `inference`, so its
+  `inference` miss rate is 1.000 by construction.
 
 And from the inputs:
 

@@ -125,6 +125,7 @@ def context(**overrides):
         ],
         "unjudged": [],
         "model": {"version": "training-v1"},
+        "rules": {"version": "rules-v1+synthetic", "covered_classes": ["none", "cpu_sandbox"]},
         "resamples": 50,
         "seed": 0,
     } | overrides
@@ -198,8 +199,22 @@ def test_report_states_its_fixed_claims():
     assert report["held_out"] is True
     assert report["gate"] == "none (descriptive baseline)"
     assert report["protocol_sha256"] == {"cfg-default": "a" * 64}
-    assert report["limitations"] == list(LIMITATIONS)
+    assert report["limitations"] == [
+        *LIMITATIONS,
+        (
+            "`rules-v1+synthetic` covers only `none` and `cpu_sandbox`; it never predicts "
+            "`inference`, so its `inference` miss rate is 1.000 by construction"
+        ),
+    ]
     assert report["model"] == {"version": "training-v1"}
+
+
+def test_rules_that_cover_inference_add_no_by_construction_limitation():
+    rules = {"version": "rules-v9+synthetic", "covered_classes": ["none", "inference"]}
+
+    report = build_report([step("inference")], rules_scores(1), context(rules=rules))
+
+    assert report["limitations"] == list(LIMITATIONS)
 
 
 def test_classifier_abstention_rates_are_measured_numbers():

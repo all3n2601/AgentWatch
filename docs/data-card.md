@@ -358,7 +358,8 @@ its tables. Rohit decided the `split-v3` assignment with Benoy on 2026-11-11
 M03 classifier with its M04 calibration (`training-v1+a34ea0be`, `calibration-v1+08119e78`, on
 `split-v3+932b2df410a7`) on the frozen sweeps' `sweep-truth-v2+c211f3e8` truths; the result is
 the capacity record's [attribution baseline](capacity-record.md#attribution-baseline) (attempt
-`20261112T222540Z-d3316f`, 1,740 model calls scored). It supersedes attempt
+`20261113T011157Z-f2e0c7`, 1,740 model calls scored, with the same scores and predictions as
+attempt `20261112T222540Z-d3316f`, which lacked the later checks). It supersedes attempt
 `20261112T025531Z-220363` (run 2026-11-12 02:55 UTC), which used the agent's former per-step
 truth command (`sweep-truth-v1`), a classifier retrained on `split-v2` and every step type. The truths and
 scores stay local in `.data/a06-scoring/`: `sweep-truth-v2/` for this attempt's steps and truths,

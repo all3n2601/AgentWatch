@@ -6,10 +6,13 @@
 `--truth` folders are `sweep-truth-v2` outputs, one per sweep. `--candidates` is the M03
 `make train-candidates` folder and `--calibrated` the M04 `make calibrate` folder; nothing is
 trained or fitted here. The pair is loaded and checked against the split first: a pair that
-does not match is a setup error (exit 2) and no attempt is written. Then the split's rows are
-loaded with the leakage check on; the model must reproduce M03's validation predictions, and no
-scored run or plan may appear in the split. Each of those failures ends as a recorded failed
-attempt.
+does not match, or is not the pinned `training-v1+a34ea0be` / `calibration-v1+08119e78` pair
+(there is no option to accept another), is a setup error (exit 2) and no attempt is written.
+Then the split's rows are loaded with the leakage check on. The model must reproduce every M03
+validation prediction, in a record of exactly the `fit.steps` M04 fitted on, and every M04 test
+prediction (label, abstention, calibrated confidence and class probabilities), in a record of
+exactly the test-split steps the M04 report counts; no scored run or plan may appear in the
+split. Each of those failures ends as a recorded failed attempt.
 
 Each attempt writes `<output>/<attempt id>/` with report.json and predictions.jsonl, and is
 logged to the MLflow experiment `a06-held-out-scoring`, failed attempts included. The attempt id
@@ -34,11 +37,20 @@ from agentwatch_data.splits import SplitError, load_split
 
 from agentwatch_model.candidates import TrainingError
 from agentwatch_model.contract import DEFAULT_CONTRACT, Contract, ContractError, load_contract
+from agentwatch_model.held_out_features import (
+    FEATURE_AVAILABILITY_DEFINITION,
+    feature_availability,
+)
 from agentwatch_model.held_out_model import (
+    CALIBRATED_PREDICTIONS,
     CALIBRATION,
+    CALIBRATION_REPORT,
     CLASSIFIER_SCORER,
+    FROZEN_VERSIONS,
     FrozenClassifier,
+    FrozenVersions,
     HeldOutModelError,
+    check_reproduces_calibration,
     check_reproduces_validation,
     frozen_scores,
     load_frozen_classifier,
@@ -135,15 +147,18 @@ def hash_of(path: Path) -> str | None:
 
 
 def model_hashes(candidates_dir: Path, calibrated_dir: Path) -> dict:
-    """SHA-256 of each frozen M03/M04 file the attempt depends on; a missing file is None."""
-    files = (
-        candidates_dir / MODEL_FILES["classifier"],
-        candidates_dir / PREPROCESSING,
-        candidates_dir / CANDIDATES_REPORT,
-        candidates_dir / VALIDATION_PREDICTIONS,
-        calibrated_dir / CALIBRATION,
+    """SHA-256 of each frozen M03/M04 file the attempt depends on, keyed `candidates/<name>`
+    or `calibration/<name>` (both folders hold a report.json); a missing file is None."""
+    candidates = (
+        MODEL_FILES["classifier"],
+        PREPROCESSING,
+        CANDIDATES_REPORT,
+        VALIDATION_PREDICTIONS,
     )
-    return {path.name: hash_of(path) for path in files}
+    calibration = (CALIBRATION, CALIBRATION_REPORT, CALIBRATED_PREDICTIONS)
+    return {f"candidates/{name}": hash_of(candidates_dir / name) for name in candidates} | {
+        f"calibration/{name}": hash_of(calibrated_dir / name) for name in calibration
+    }
 
 
 def input_hashes(
@@ -231,6 +246,7 @@ def score_rows(
     sweep_root: Path,
     split: Path,
     candidates_dir: Path,
+    calibrated_dir: Path,
     model: FrozenClassifier,
     rules: Rules,
     contract: Contract,
@@ -242,12 +258,17 @@ def score_rows(
     seed: int,
 ) -> tuple[dict, str]:
     """Join rows, check the model and the split, score with both scorers; return the report
-    body and the predictions text. Nothing is written, so a failed check leaves no scores."""
+    body and the predictions text. Nothing is written, so a failed check leaves no scores.
+
+    The checks, in order: the model reproduces M03's validation predictions and M04's test
+    predictions, then no scored run or plan appears in any split row. The report also carries
+    `feature_availability`, each feature's presence on the scored steps against train."""
     rows, refused, summaries, unjudged = held_out_rows(truth_dirs, sweep_root)
     if not rows:
         raise NoStepScored(refused, unjudged)
     split_rows = {name: loader(split, name, contract_path, frozen_schema) for name in SPLIT_NAMES}
     check_reproduces_validation(model, split_rows["validation"], candidates_dir)
+    check_reproduces_calibration(model, split_rows["test"], calibrated_dir)
     overlap = scored_overlap(rows, [row for part in split_rows.values() for row in part])
     if overlap:
         raise HeldOutError(f"scored steps appear in the split: {', '.join(overlap)}")
@@ -262,6 +283,7 @@ def score_rows(
             "summaries": summaries,
             "unjudged": unjudged,
             "model": {"frozen": model.identity, "label_version": label_version(train)},
+            "rules": {"version": rules.version, "covered_classes": list(rules.covered_classes)},
             "resamples": resamples,
             "seed": seed,
         },
@@ -276,6 +298,10 @@ def score_rows(
             "scored_split": "held-out",
             "split": split_identity(split),
             "scored_steps": len(rows),
+            "feature_availability": {
+                "definition": FEATURE_AVAILABILITY_DEFINITION,
+                "features": feature_availability(rows, train),
+            },
             "truths": {
                 summary["sweep_folder"]: {name: summary[name] for name in TRUTH_IDENTITY_FIELDS}
                 for summary in summaries
@@ -322,6 +348,7 @@ def run_attempt(
     *,
     candidates_dir: Path = DEFAULT_CANDIDATES,
     calibrated_dir: Path = DEFAULT_CALIBRATED,
+    versions: FrozenVersions = FROZEN_VERSIONS,
     contract_path: Path = DEFAULT_CONTRACT,
     frozen_schema: Path = DEFAULT_SCHEMA,
     rules_path: Path = DEFAULT_RULES,
@@ -333,14 +360,15 @@ def run_attempt(
 ) -> Outcome:
     """One scoring attempt; data and model-check failures end as a recorded failed attempt.
 
-    A frozen pair that cannot be loaded or does not match the split is a setup error, raised
-    before any attempt folder exists. A recorded failed report carries the rules identity and
+    A frozen pair that cannot be loaded, does not match the split, or is not the pinned pair
+    (`versions`; the CLI always uses FROZEN_VERSIONS) is a setup error, raised before any
+    attempt folder exists. A recorded failed report carries the rules identity and
     the frozen identity under `model.frozen`; nothing was trained, so there is no training
     config to name.
     """
     check_output(output)
     contract, rules = load_configuration(contract_path, rules_path)
-    model = load_frozen_classifier(candidates_dir, calibrated_dir, split)
+    model = load_frozen_classifier(candidates_dir, calibrated_dir, split, versions)
     recorded_failures = (*attempt_errors(), HeldOutError, HeldOutModelError, SplitError)
     hashes = input_hashes(truth_dirs, sweep_root, split, candidates_dir, calibrated_dir)
     directory = output / attempt_id(hashes, datetime.now(UTC))
@@ -354,6 +382,7 @@ def run_attempt(
             sweep_root,
             split,
             candidates_dir,
+            calibrated_dir,
             model,
             rules,
             contract,

@@ -239,6 +239,10 @@ def changed(record: dict, path: str, value: object) -> dict:
         ("execution_seconds", "0.5", "execution_seconds must be a finite number"),
         ("execution_seconds", True, "execution_seconds must be a finite number"),
         ("duration_seconds", MISSING, "duration_seconds must be a finite number"),
+        ("plan_sha256", MISSING, "plan_sha256 is missing"),
+        ("plan_sha256", "ab" * 31, "plan_sha256 must be null or 64 lowercase hex"),
+        ("plan_sha256", "AB" * 32, "plan_sha256 must be null or 64 lowercase hex"),
+        ("plan_sha256", 7, "plan_sha256 must be null or 64 lowercase hex"),
     ],
 )
 def test_a_malformed_truth_record_is_refused_naming_file_line_and_field(
@@ -252,6 +256,15 @@ def test_a_malformed_truth_record_is_refused_naming_file_line_and_field(
     assert "truth.jsonl" in str(refused.value) and "line 2" in str(refused.value)
     with pytest.raises(HeldOutError):
         held_out_rows([sweep["truth"]], sweep["root"])
+
+
+@pytest.mark.parametrize("plan", [None, "0f" * 32])
+def test_a_null_or_hex_plan_sha256_is_accepted(sweep, plan):
+    records = sweep["records"]
+    records[0] = records[0] | {"plan_sha256": plan}
+    write_truths(sweep["truth"], records)
+    _, loaded = load_truths(sweep["truth"])
+    assert loaded[0]["plan_sha256"] == plan
 
 
 def test_a_null_timing_is_accepted_as_unmeasured(sweep):
