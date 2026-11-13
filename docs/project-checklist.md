@@ -813,8 +813,8 @@ frozen evaluation sets without tuning against them.
   `score-held-out` scored `rules-v1` and the frozen M03 classifier with its M04 calibration
   (`training-v1+a34ea0be`, `calibration-v1+08119e78`, `split-v3+932b2df410a7`) on the same
   1,740 held-out A06 model calls, against the `sweep-truth-v2+c211f3e8` queue, slowdown and
-  clean-batch truths, attempt `20261112T222540Z-d3316f` at `8d414c2`
-  ([capacity record](capacity-record.md#attribution-baseline)). `rules-v1` missed every queued
+  clean-batch truths, attempt `20261112T222540Z-d3316f` at `8d414c2`, rerun with the same scores
+  as `20261113T011157Z-f2e0c7` at `52df567` ([capacity record](capacity-record.md#attribution-baseline)). `rules-v1` missed every queued
   call (1.000); the classifier missed 0.288 (0.161–0.482), abstained on 0.130, and on the
   unseen task `fix-median-even` missed 0.276 (0.150–0.480). It is a descriptive baseline
   with no gate, one sweep per configuration and one unseen task. Stays open for M2 PR 4's
@@ -917,6 +917,18 @@ frozen evaluation sets without tuning against them.
   configuration, dataset v1 recorded mostly on Ollama, no GPU or vLLM feature, one unseen task)
   are in the [capacity record](capacity-record.md#attribution-baseline). Natural overload is now
   evaluated beside injector-driven experiments, descriptively and without a gate.
+  2026-11-13 (Rohit's review of #76): `score-held-out` now also requires the pinned
+  `training-v1+a34ea0be` / `calibration-v1+08119e78` pair, M04's report to match its
+  calibration, split and predictions, and `calibration.json` to hash M03's report. It refuses
+  an empty or miscounted validation record, reproduces all 3,575 of M04's test predictions
+  (label, abstention, calibrated confidence and probabilities within 1e-9), and requires
+  `plan_sha256` on every truth record. The report adds `feature_availability`, plus the
+  limitation that `rules-v1`'s `inference` miss rate is 1.000 by construction
+  (`pipelines/model/tests`). Rerun as attempt `20261113T011157Z-f2e0c7` at `52df567` (MLflow run
+  `eb3b42cfb9704135bf2526ed40765e36`): every check passed, and its scores and `predictions.jsonl`
+  are identical to `20261112T222540Z-d3316f`'s. On the held-out calls only the four timing
+  features vary; every other feature is missing or takes one value
+  ([capacity record](capacity-record.md#feature-availability)).
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
   2026-11-10 (M04): `make calibrate` fits `calibration-v1` temperature scaling and the abstention
   threshold on the validation split only, then reports test-split ECE, abstention rates, clean

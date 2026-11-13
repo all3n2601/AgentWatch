@@ -241,10 +241,11 @@ Each attempt writes `.data/a06-scoring/scores/<attempt id>/` (`report.json`,
 first digits of the hash of every input, the model files included. Exit codes: 0 completed, 1
 failed (the reason is in the report), 3 not tracked, 2 for a malformed configuration, a model
 pair that does not match, an environment where LightGBM cannot load, or an output inside
-`data/held-out`. Scores stay local and belong in
-no release. The run of 2026-11-12, attempt `20261112T222540Z-d3316f` with this classifier
-(`b35152b7…`) and `calibration-v1+08119e78`, is recorded in the
-[capacity record](capacity-record.md#attribution-baseline). The earlier attempt
+`data/held-out`. Scores stay local and belong in no release. Attempt
+`20261113T011157Z-f2e0c7` (2026-11-13), with this classifier (`b35152b7…`) and
+`calibration-v1+08119e78`, is recorded in the
+[capacity record](capacity-record.md#attribution-baseline). It has the same scores and
+predictions as the 2026-11-12 attempt `20261112T222540Z-d3316f`, which ran before these checks. The earlier attempt
 `20261112T025531Z-220363`, which retrained a classifier on `split-v2` and used the former
 `sweep-truth-v1` truths, is listed there as superseded.
 
