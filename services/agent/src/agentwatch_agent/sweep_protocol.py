@@ -70,6 +70,7 @@ INJECTOR_RAMP_SECONDS = 2.0
 INJECTOR_BOUND_MARGIN_SECONDS = 32.0  # bound = run limit + this
 
 # Contended when (duration - baseline mean) > max(floor, multiplier * baseline stdev).
+# These two must equal `pipelines/data/src/agentwatch_data/sweep-truth-v2.toml` `[noise]`.
 LABEL_THRESHOLD_FLOOR_SECONDS = 0.01
 LABEL_THRESHOLD_STDEV_MULTIPLIER = 3.0
 VALIDATED_MIN_PRECISION = 0.90

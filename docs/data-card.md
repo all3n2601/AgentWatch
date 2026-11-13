@@ -2,7 +2,8 @@
 
 Status: dataset v1, schema `steps-v1.3` (release `steps-v1.3+aafae73eb211`, 2026-11-07, D03),
 with two label rule sets: `labels-v1.1` for CPU and coding run rows and `labels-v2` for agent
-replay rows. It is split with `split-v2` under the accepted `eval-contract-v2`. The earlier
+replay rows. It is split with `split-v3` under `eval-contract-v3` (accepted in #70, 2026-11-12); its `split-v2`
+split under `eval-contract-v2` is kept and still rebuilds. The earlier
 `steps-v1.2+5954f97ef8b2` release and its `split-v1` split are kept unchanged. Recorded runs and
 replay experiments are curated into a versioned evidence store (`make add-evidence`); releases
 are built from it (`make dataset`), gated (`make validate-dataset`), split
@@ -30,13 +31,14 @@ step, and experiment-derived labels naming the resource that caused excess waiti
 | Format | Parquet, with a `manifest.json` per release |
 | Targets | `label_resource` (classification), `label_excess_fraction` (regression) |
 | Classes | `none`, `cpu_sandbox`, `inference`, `retrieval`; `mixed` is a `labels-v2` label value outside the four prediction classes |
-| Split | `split-v2`: the frozen assignment file, grouped by `task_group` so replays of a task never cross splits (`steps-v1.2` keeps `split-v1`, 70/15/15 grouped by `task_id`) |
+| Split | `split-v3`: the frozen assignment file, grouped by `task_group` so test shares no task with training, with whole experiments of the training task in validation and only `step-features-v1` rows split (`split-v2` is kept; `steps-v1.2` keeps `split-v1`, 70/15/15 grouped by `task_id`) |
 | Current coverage | All four classes and `mixed` from agent replays of two tasks; `none` and `cpu_sandbox` from the CPU and coding experiments |
 
 ## Dataset v1 (`steps-v1.3+aafae73eb211`)
 
-Current format 3 release: `steps-v1.3+aafae73eb211`, split
-`split-v2+febe942a2b59`. Both are publicly downloadable and independently reproduced
+Current format 3 release: `steps-v1.3+aafae73eb211`, split `split-v3+932b2df410a7` (local until
+the DVC pointer is updated) and the earlier `split-v2+febe942a2b59`. The release and the
+`split-v2` split are publicly downloadable and independently reproduced
 byte for byte on 2026-11-07 (see Review fixes below).
 
 The immutable format 2 predecessor is `steps-v1.3+a1b96c4ff2c8`, with split
@@ -245,6 +247,30 @@ coding task groups go to test.
   Live telemetry legitimately sees injected load on steps that were not slowed, so this is not a
   gate.
 
+**`split-v3+932b2df410a7`** (2026-11-11), under `eval-contract-v3` (identifier `1cab0cbe`) and
+the `split-v3` assignment (identifier `dc2c4c92`; see
+[Frozen split assignment (`split-v3`)](#frozen-split-assignment-split-v3)). It splits only the
+5,603 `step-features-v1` rows; the 350 `steps-v1.2` CPU and coding rows (50 runs) are in no
+split. Three of `fix-mean-empty`'s 21 experiments go to validation.
+
+| Split | Rows | Runs | Task groups | `none` | `cpu_sandbox` | `inference` | `retrieval` | `mixed` |
+|---|---|---|---|---|---|---|---|---|
+| train | 1,755 | 234 | 1 | 1,447 | 70 | 86 | 104 | 48 |
+| validation | 273 | 39 | 1 | 234 | 8 | 14 | 12 | 5 |
+| test | 3,575 | 325 | 1 | 2,923 | 127 | 226 | 206 | 93 |
+
+- **Class balance (test): met.** `clean` steps 1,100; steps labeled `mixed` 93; rows under the
+  `mixed` condition 275.
+- **Leakage: passed** on the 1,755 training steps against the 0.98 bound.
+- **`split-v3` checks:** independence passed (train and validation share only the task
+  group, never a run or a plan), mixed in test met, held-out methods `not_met`: neither
+  `worker_queue_blocker` nor `prefill-flood-openai-chat-v1` has a `step-features-v1` row in
+  this release. Held-out evaluation set: 0 rows.
+- **Per-split `rows_sha256`:** train `ad849324…`, validation `d91703c1…`, test `5ba15081…`.
+- **Reproduce:** `uv run --package agentwatch-data python -m agentwatch_data.splits --release
+  data/datasets/steps-v1.3+aafae73eb211` (the live contract is the default). The split file is
+  local until the DVC pointer is updated.
+
 ### Reproduction
 
 Copying the evidence store and building, validating and splitting again into an empty store
@@ -257,16 +283,23 @@ still loads (train 175, validation 0, test 175) with the v1 contract file and `s
 
 ### What v1 cannot support
 
-- **No validation split and one training task.** The frozen assignment leaves `validation`
-  empty and puts one task group (`fix-mean-empty`, 2,028 rows) in train. Calibration,
-  abstention tuning, early stopping and every validation-dependent gate are `inconclusive`,
-  and train holds no CPU or coding rows.
-- **Mixed feature definitions stop evaluation.** `mixed` steps are scored by
+- **Under `split-v2`: no validation split and one training task.** The frozen assignment leaves
+  `validation` empty and puts one task group (`fix-mean-empty`, 2,028 rows) in train.
+  Calibration, abstention tuning, early stopping and every validation-dependent gate are
+  `inconclusive`, and train holds no CPU or coding rows. `split-v3` gives validation 273 steps
+  from three `fix-mean-empty` experiments; training still has one task.
+- **Under `split-v2`: mixed feature definitions stop evaluation.** `mixed` steps are scored by
   `mixed-scoring-v1` (Rohit's M02 rule for item 2 of the `eval-contract-v2` proposal; see
   [the rule baseline](rule-baseline.md)), but this split's test rows use two feature definitions
   (`steps-v1.2` for CPU and coding rows, `step-features-v1` for replay rows), and evaluation
   refuses a combined population. `make rule-baseline` exits 2 with no report, and
   `make train-candidates` records a `failed` attempt and exits 1, with no model.
+  `split-v3` splits only `step-features-v1` rows, so evaluation runs; the CPU and coding rows
+  are then not evaluated.
+- **Under `split-v3`: validation is small and clustered.** 273 steps from three experiments of
+  the training task, 234 of them `none`, all of one plan shape and recorded in the same session
+  as training experiments. Calibration fitted on it is weak evidence; see
+  [ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md).
 - **No GPU, inference-server or retrieval readings.** `step-features-v1` reads CPU PSI and
   cgroup metrics only; inference and retrieval contention is visible only through timings.
   Reading other metrics is a new feature version.
@@ -277,22 +310,24 @@ still loads (train 175, validation 0, test 175) with the v1 contract file and `s
 ## Held-out A06 evidence (in no release)
 
 The A06 natural-overload sweeps of 2026-11-11 ([capacity record](capacity-record.md)) are
-held-out test evidence. They are kept outside every dataset release until `split-v3` holds
-them out, and must never be used for training, calibration, threshold selection or tuning.
-This covers:
+held-out test evidence and must never be used for training, calibration, threshold selection
+or tuning. `split-v3` (`dc2c4c92`, 2026-11-11) holds all of it out, as listed below; it is still
+in no release, because no builder ingests sweep output yet. This covers:
 
 - **Natural-overload replays**, under sweep protocol `natural-overload-sweep-v1`. They carry no
-  injection method, so a hold-out must match them by sweep protocol, not by method. Akshay
-  plans to match them by `protocol.version` plus `protocol_sha256` from `sweep.json`. A06 PR 3
-  keeps both fields stable in its rows.
+  injection method, so `split-v3` matches them by sweep protocol: a row whose `protocol_sha256`
+  is one of the three listed (cfg-default `22e26dc7…`, cfg-hardware `1608deee…`, preflight dry
+  run `a16b2a14…`) is held out of train, validation and test as a separate evaluation set, and a
+  `natural-overload-sweep-v1` row with an unlisted hash is refused. The builder that ingests
+  them (A06 PR 3) must write `protocol_version` and `protocol_sha256` on every row. Scoring the
+  set needs a natural-overload label rule, since `labels-v2` would label every step `none`.
 - **Injected runs** using `prefill-flood-openai-chat-v1` ([ADR 0011](adr/0011-prefill-flood-held-out-injection-method.md)).
-  The hold-out must list this method in `held_out_injection_methods`.
+  `split-v3` lists this method in `held_out_injection_methods`.
 - **`fix-median-even` task runs, including ordinary non-sweep replays.** `fix-median-even` r1 is
   a new task and is to stay out of training (Benoy's decision, 2026-11-11). `split-v2` does not
   name it, so it would place the task by its `split-v1` hash position, 0.622, which falls in
-  **train**. `split-v3` is to put `fix-median-even` in `test_task_groups`. Until then, no
-  `fix-median-even` rows may enter a release. That is a rule for whoever builds a release: the
-  `split-v2` code does not enforce it.
+  **train**. `split-v3` puts `fix-median-even` in `test_task_groups`. A release split under
+  `split-v2` must still hold no `fix-median-even` rows; the `split-v2` code does not enforce it.
 
 Today's code keeps the sweep's own evidence out of every release: sweep output has no
 `experiment.json` or `results.json`, and the API source accepts only `coding` and `cpu` runs, so
@@ -305,9 +340,128 @@ threshold as a proxy for inference wait. It is not a validation of `labels-v2` u
 overload: `labels-v2` labels a resource only under an injected condition, so every
 natural-overload step would be `none`. A test pins the sweep's thresholds to `labels-v2.toml`.
 
-The evidence is in `.data/a06-20261111/` and the bundle
-`C:\Users\benoy\AgentWatch-evidence\a06-2026-11-11\`. Rohit and Akshay decide the `split-v3`
-assignment.
+**Where it is.** The evidence is versioned with DVC in `data/held-out/a06-20261111/` (pointer
+`data/held-out/a06-20261111.dvc`; 1,917 files, 950 MB, with a `README.txt` and `SHA256SUMS`).
+It is a separate store from `data/evidence/` and `data/datasets/`, so it stays out of releases:
+- **Not built.** `make dataset` reads `data/evidence/` by default, and this folder has no
+  directory the extractor treats as a run (`cpu`, `coding` or `llm` names).
+- **Not checked by the store gate.** `make version-dataset` snapshots only the two stores, and
+  its append-only check covers only them.
+- **Not pulled by default.** `make pull-dataset` downloads only the two stores. To download it:
+  `make pull-dataset TARGET=data/held-out/a06-20261111`.
+
+The [capacity record](capacity-record.md#reproduce) shows how to re-analyse it and regenerate
+its tables. Rohit decided the `split-v3` assignment with Benoy on 2026-11-11
+([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md)).
+
+## Sweep truth rule `sweep-truth-v2` (held-out A06 sweeps only)
+
+`sweep-truth-v2` labels the steps of the frozen A06 natural-overload sweeps so that held-out
+scoring has truths to compare against. It is a versioned rule in `pipelines/data`
+(`sweep-truth-v2.toml`, `sweep_truth.py`), run as `make sweep-truth STEPS=<dir>` on the output of
+`make agent-capacity-sweep-steps SWEEP=<folder>`. The agent service records the steps and decides
+nothing; this rule decides every truth and reason. Reviewer: Akshay.
+
+**History.** On #70 (2026-11-12) Rohit and Akshay agreed to take the scoring branch's rule on
+(named `sweep-truth-v1` there) and review it in its own pull request, with two exclusions: tool
+steps are unscored rather than `none`, and the root `agent-run` step is excluded. `sweep-truth-v2`
+is that rule after Akshay's review of #74, which added the changes under "What v2 changed".
+Acceptance is the approvals of #74 on its final version, as was done for `eval-contract-v3`.
+
+**Provenance.** The values and the model-call definitions come from the scoring branch's truths,
+which had already produced descriptive, no-gate results on these two sweeps (attempt
+`20261112T025531Z-220363`). Nothing was changed in response to those results. The only changes
+since are Akshay's two exclusions (#70) and, in v2, unfinished clean-batch calls being null. None
+of them depends on results. Editing a TOML comment does not change the fingerprint.
+
+**What v2 changed (Akshay's review of #74, 2026-11-12).**
+- A model call in a clean batch that did not finish gets `protocol_clean` null `not_completed`
+  instead of `none`: a call whose state is not `completed`, or that has no duration, was not
+  measured, so it cannot be called clean.
+- The recorder writes `recorder_sha256`, the fingerprint of its own code, into `steps.json`, and
+  `truth.json` carries it.
+- The three hashes below are pinned for both frozen sweeps.
+- The wording of provenance, acceptance and the queue threshold above and below.
+
+In both frozen sweeps every model call completed: 825 in cfg-default and 915 in cfg-hardware,
+including the 45 and 30 in clean batches. So no truth on these sweeps changes between v1 and v2.
+
+| Step | `queue` | `slower` | `protocol_clean` |
+|---|---|---|---|
+| model call | `inference` when vLLM's measured queue time exceeds the threshold, else `none` | `inference` when duration minus the N = 1 baseline mean exceeds the threshold, else `none`; null `not_applicable` on ramp N = 1 | `none` for a completed call with a duration in a ramp or control batch at N = 1; null `not_completed` for an unfinished call there; else null `not_applicable` |
+| root step (no parent) | null `root_step` | null `root_step` | null `root_step` |
+| any other step type | null `no_queue_reference` | null `no_queue_reference` | null `no_queue_reference` |
+
+The baseline of a step is the mean and sample standard deviation (`statistics.stdev`) of its
+runner-tick duration over the completed steps with the same (replay plan, step id) in the ramp
+N = 1 batches the analysis keeps, with at least 3 values; the recorder computes it. The threshold
+is max(0.01 s, 3 x baseline stdev), the `[noise]` values of `labels-v2`; the floor alone applies
+only to a null stdev, which a baseline of at least 3 runs never has and only hand-made input can
+carry. A model call that cannot be judged gets a null truth with a reason, in this order:
+`not_completed`, `malformed`, `no_baseline` (no baseline, or fewer than 3 baseline runs), then,
+for `queue` only, `span_not_measured`. `malformed` is a defensive branch: the input check refuses
+a negative or non-finite duration for the whole sweep, so it cannot reach the rule on validated
+input. The input check also refuses the sweep when a step's queue and execution seconds don't add
+up to its duration within 1e-6 s (the live contracts' timing-breakdown tolerance), and when
+`steps.json`'s `steps_sha256` isn't the hash of the `steps.jsonl` beside it.
+
+Precedence: on ramp N = 1, `slower` is `not_applicable` even when the step is `not_completed` or
+has `no_baseline`, while `queue` keeps the specific reason; and `protocol_clean` in a clean batch
+is `none` only when the call is `completed` with a duration, null `not_completed` otherwise.
+
+**Why `queue` uses this threshold.** `queue` compares vLLM's measured queue seconds with a
+threshold built from the step's own duration spread at N = 1. A wait inside the step's
+run-to-run jitter cannot be told apart from noise, so it is not counted as `inference`. The same
+values are what `label_validation` in the capacity record uses.
+
+**Exclusions and why.** Tool, retrieval and other steps have no vLLM queue reference, so their
+queue wait cannot be judged: they are null `no_queue_reference`, not `none`. The root `agent-run`
+step spans the whole run and is not a unit of work: null `root_step`. Neither gets
+`protocol_clean = none`. These two exclusions are the only difference from the scoring branch's
+earlier truths on the frozen sweeps, and every model-call truth is unchanged there (pinned by
+`tests/contract/test_sweep_truth_frozen.py`). In general the only other difference is that a
+malformed duration refuses the sweep instead of labelling one step `malformed`.
+
+**Label version:** `sweep-truth-v2+c211f3e8` (the fingerprint covers the rule values and the
+truth and input-validation code; comments and formatting in the TOML do not change it, but any
+edit to `sweep_truth.py` or `sweep_steps_input.py`, comments included, does). The baseline
+statistics are computed by the recorder, outside that fingerprint, so a truth set is identified by
+`label_version` together with `steps_sha256`, `steps_summary_sha256` and `truth_sha256`, all
+recorded in `truth.json`. The A06 scoring PR is to refuse any other label version and to check
+`steps_sha256`, `steps_summary_sha256` and `truth_sha256`; that is planned, not yet done.
+`steps.json` also carries `recorder_sha256`, the fingerprint of the recorder's own source and the
+code behind its baselines: `sweep_steps.py`, `sweep_labels.py`, `experiment.py`,
+`sweep_analysis.py` and `sweep_protocol.py`. Any edit to those five modules, comments included,
+moves it, and with it `steps_summary_sha256`. `truth.json` also records the validated rule
+values (`rule`), so a rule loaded with `--rules` can be reconstructed from its output, and
+`truth_sha256`, the hash of the `truth.jsonl` it was written with. Counts from the real run of
+2026-11-12, model calls by class, with the null reasons below. The three hashes, pinned in the
+contract test:
+
+| | cfg-default (`2d75ea`) | cfg-hardware (`b4ad4a`) |
+|---|---|---|
+| `steps_sha256` (`steps.jsonl`) | `7598a42e00fc0a3cf46dcc945646bf723339e280b0f008a0005c527796e81162` | `0ebe5446d0ef9a571d211dff32174ff8dece618dd1e302926bbf495c2d496bfe` |
+| `steps_summary_sha256` (`steps.json`) | `8f49eb141ff4867f974e6411cac3835072e414a05771a7f65b58811665384560` | `9c797b5920975716fccb2493dae36eeb32295c2b1e91fbfba25b04328c33349c` |
+| `truth_sha256` (`truth.jsonl`) | `92da54bca1be5b897e32ec72e6dc1f34dad1bb6695fd8a643b84bf3d19d0debe` | `069a8303ac376c58a821b453ade440347fee94d591ce92a5f22f06a838b71308` |
+
+Counts:
+
+| | cfg-default (`2d75ea`) | cfg-hardware (`b4ad4a`) |
+|---|---|---|
+| steps / model calls | 1,896 / 825 | 2,104 / 915 |
+| `queue` inference / none | 686 / 139 | 8 / 907 |
+| `slower` inference / none | 715 / 80 | 663 / 222 |
+| `slower` null `not_applicable` | 30 | 30 |
+| `protocol_clean` none / null `not_applicable` | 45 / 780 | 30 / 885 |
+| `root_step` (each truth) | 165 | 183 |
+| `no_queue_reference` (each truth) | 906 | 1,006 |
+
+The frozen-sweep contract test (`tests/contract/test_sweep_truth_frozen.py`) pins these counts
+and hashes and skips when the DVC data is not pulled. The preflight dry-run sweep
+(`data/held-out/a06-20261111/preflight-dry-run/`, the third held-out protocol hash) is held out
+but has no truths: the recorder accepts only the two protocol sweeps. This rule never feeds
+`make dataset` or a release: its output stays in `.data/a06-scoring/`, and the sweeps remain
+held-out evidence (see above). This document reports no model results.
 
 ## Sources
 
@@ -753,6 +907,29 @@ read, measured-only test sources, the training leakage check, and the contract's
 minimums (`class_balance`). With two agent tasks, validation is empty; `split-v2+febe942a2b59`
 records 0 validation rows.
 
+## Frozen split assignment (`split-v3`)
+
+`split-v3` is used when the evaluation contract selects it: `eval-contract-v3` does
+(2026-11-11). `make_split` and `load_split` call `split_assignment.partition_v3` for it. The
+assignment file is `split-assignment-v3.toml` (identifier `dc2c4c92`), and every rule in it
+was fixed before any label of the split was seen
+([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md)):
+
+- `feature_versions = ["step-features-v1"]`. Rows of other feature definitions are in no split;
+  the split file counts them under `split_v3_checks.excluded_feature_versions`.
+- `held_out_injection_methods = ["worker_queue_blocker", "prefill-flood-openai-chat-v1"]`, as in
+  `split-v2`.
+- `test_task_groups = ["fix-window-count", "fix-median-even"]`.
+- `[held_out_protocol]`: the natural-overload protocol and the three listed sweep hashes (see
+  [Held-out A06 evidence](#held-out-a06-evidence-in-no-release)). The set is recorded under
+  `split_v3_checks.held_out_evaluation` (rows, runs, task groups, hashes).
+- Validation: within a task group assigned to train, a whole experiment goes to validation when
+  its `split-v3:<experiment>` hash position is below validation / (train + validation), 0.15 /
+  0.85 under the contract. Train and validation may share a task group, never a run or a plan.
+
+The `split-v2` checks and gates apply unchanged. Changing the file requires `split-v4` and a new
+test split.
+
 ## Versioning
 
 The evidence store and the dataset store (releases, build reports, quality-gate attempts, and
@@ -768,6 +945,11 @@ make pull-dataset      # download what this commit versions (TARGET=data/dataset
 make dataset-status    # what is not yet versioned, and (with a remote) what is not yet uploaded
 make retire-release RELEASE=<release>  # remove a never-versioned release the pipeline can no longer build
 ```
+
+Held-out test evidence has its own pointer files under `data/held-out/` (today
+`data/held-out/a06-20261111.dvc`; see [Held-out A06 evidence](#held-out-a06-evidence-in-no-release)).
+It is added once with `dvc add` and never changed, `make push-dataset` uploads it with the
+stores, and `make pull-dataset` skips it unless `TARGET` names it.
 
 - **DVC runs in its own project**, `pipelines/versioning` (DVC 3.67.1 with GCS support, about
   120 packages, its own `uv.lock`, CPython 3.13 and 3.14), so the shared workspace and

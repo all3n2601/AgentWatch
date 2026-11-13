@@ -1,14 +1,23 @@
 # AgentWatch evaluation contract
 
-Status: `eval-contract-v2` (frozen identifier `9b55506c`), accepted. Rohit confirmed it in
-writing on 2026-11-10 by [approving PR #59](https://github.com/all3n2601/AgentWatch/pull/59#pullrequestreview-5846813656). It adopts items 1, 3 and 4 of
+Status: `eval-contract-v3` (frozen identifier `1cab0cbe`), accepted. Rohit proposed it with
+Benoy on 2026-11-11; `status = "accepted"` was set on 2026-11-12 in the pull request that adds
+it (#70), at Akshay's (splits) request, so the identifier that results record does not move at
+merge. That pull request's approvals, on this version, are the acceptance record. It changes only the split: `[splits]` selects `split-v3` and its assignment file
+`split-assignment-v3.toml` ([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md)).
+Every threshold and every other value is
+`eval-contract-v2`'s. Thresholds live in `pipelines/model/evaluation-contract.toml`.
+
+`eval-contract-v2` (identifier `9b55506c`) is kept unchanged as
+`pipelines/model/evaluation-contract-v2.toml`. Rohit confirmed it in writing on 2026-11-10 by
+[approving PR #59](https://github.com/all3n2601/AgentWatch/pull/59#pullrequestreview-5846813656). It adopts items 1, 3 and 4 of
 [the v2 proposal](evaluation-contract-v2-proposal.md). Item 2, the multi-resource metric and the
 rule for scoring a `mixed` step, is Rohit's M02 decision from the same approval, implemented in
 code as `mixed-scoring-v1` ([the rule baseline](rule-baseline.md)) rather than in the contract
-file, so the frozen identifier and the published split identities do not change. Thresholds live in `pipelines/model/evaluation-contract.toml`.
+file, so the frozen identifier and the published split identities do not change.
 `eval-contract-v1` (identifier `3022770b`) is kept unchanged as
-`pipelines/model/evaluation-contract-v1.toml`, so splits and results made under it still rebuild.
-No model or rule baseline has been evaluated yet.
+`pipelines/model/evaluation-contract-v1.toml`. Splits and results made under either earlier
+version still rebuild with its file.
 
 These targets are fixed before any evaluation so that no threshold is tuned to held-out results.
 Each value's basis is **Plan** (from the planning documents), **Plan, metric chosen here** (the
@@ -20,13 +29,19 @@ must be accepted or changed before first use).
 Uses `steps-v1.3` or a later compatible minor version (`steps-v1.x`, which only adds columns),
 the label rules `labels-v1.1` and `labels-v2` (a release is accepted when every label version it
 holds is listed), the classes `none`, `cpu_sandbox`, `inference`, and `retrieval`, and the
-`split-v2` split from [the data card](data-card.md): grouped by `task_group`, with the frozen
-assignment file `split-assignment.toml` declaring the test task group and the held-out injection
-method; other groups keep their `split-v1` hash position under the 70/15/15 fractions. `mixed`
+`split-v3` split from [the data card](data-card.md): grouped by `task_group`, with the frozen
+assignment file `split-assignment-v3.toml` declaring the test task groups, the held-out injection
+methods, the feature definition split (`step-features-v1`) and the natural-overload sweeps held
+out of every split; other groups keep their `split-v1` hash position under the 70/15/15
+fractions, and whole experiments of a training task go to validation by their `split-v3` hash
+position ([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md)). `mixed`
 is a `labels-v2` label value outside the four prediction classes. The test split contains
 `measured` runs only and is frozen, with its hash recorded, before any tuning. Label versions do
 not follow the schema's compatible-minor rule: any other label version needs a contract change.
 Tuning, calibration, and the abstention threshold use the validation split only.
+
+`eval-contract-v2` used `split-v2` (`split-assignment.toml`), which splits every row. To rebuild
+its splits, pass `pipelines/model/evaluation-contract-v2.toml`.
 
 `eval-contract-v1` evaluated `steps-v1.1` or later with exactly `labels-v1.1` and `split-v1`
 (70/15/15 grouped by `task_id`). To rebuild its splits and results, pass
@@ -43,7 +58,7 @@ Tuning, calibration, and the abstention threshold use the validation split only.
 The leakage check exists because on the CPU and coding data `label_resource` equals
 `rule_prediction` on every row and `queue_fraction` nearly separates the classes. On the first
 `split-v2` split (`split-v2+febe942a2b59`, dataset v1) the check passed, with an observed
-maximum of 0.974242 (`queue_seconds`, `retrieval`) against the 0.98 bound.
+maximum of 0.974242 (`queue_seconds`, `retrieval`) against the 0.98 bound. On the first `split-v3` split (`split-v3+932b2df410a7`, dataset v1) it also passed.
 
 ## Gates
 

@@ -364,18 +364,27 @@ def test_a_signal_cancels_a_running_batch_while_the_main_thread_waits(
     models = iter(blocking)
     monkeypatch.setattr(cli, "build_model", lambda _args: next(models))
 
-    def interrupt():
-        assert all(model.blocked.wait(10) for model in blocking)
-        os.kill(os.getpid(), signal.SIGINT)
-        # The abandoned requests end afterwards, so their permits come back before the drain.
-        threading.Timer(0.2, release.set).start()
+    observed = {}
 
-    threading.Thread(target=interrupt, daemon=True).start()
+    def interrupt():
+        observed["blocked"] = all(model.blocked.wait(10) for model in blocking)
+        os.kill(os.getpid(), signal.SIGINT)
+        # Cancellation abandons the blocked requests, so both runs close while their requests
+        # still hang. Only then are the requests released, so their permits come back before
+        # the drain. A fixed release timer raced the cancellation: a run whose request was
+        # released first could finish its script and complete.
+        observed["cancelled_promptly"] = server.wait_for_runs("cancelled", 2, timeout=5)
+        release.set()
+
+    interrupter = threading.Thread(target=interrupt, daemon=True)
+    interrupter.start()
     started = time.monotonic()
     code = cli.main(
         ["batch", "--task", "fix-mean-empty", "--repeat", "2", "--output-dir", str(tmp_path)]
     )
     assert time.monotonic() - started < 20
+    interrupter.join(10)
+    assert observed == {"blocked": True, "cancelled_promptly": True}
     assert code == cli.EXIT_FAILED
     (batch_file,) = tmp_path.glob("batch-*/batch.json")
     saved = json.loads(batch_file.read_text())
@@ -904,6 +913,24 @@ def test_sweep_analyse_refuses_a_folder_without_a_sweep_record(tmp_path, capsys)
     assert cli.main(["sweep-analyse", str(tmp_path)]) == cli.EXIT_USAGE
     assert "sweep.json" in capsys.readouterr().err
     assert not (tmp_path / "analysis.json").exists()
+
+
+def test_cli_capacity_sweep_steps_writes_default_folder_and_exits_2_on_refusal(
+    tmp_path, monkeypatch, capsys, capacity_sweep_dir
+):
+    sweep_dir = capacity_sweep_dir
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["capacity-sweep-steps", str(sweep_dir)]) == cli.EXIT_PASSED
+    written = tmp_path / ".data/a06-scoring/steps" / sweep_dir.name
+    assert (written / "steps.jsonl").is_file() and (written / "steps.json").is_file()
+    # The default output is relative to the working directory, so the printed path is too.
+    assert f"Steps: .data/a06-scoring/steps/{sweep_dir.name}/steps.jsonl" in capsys.readouterr().out
+
+    output = tmp_path / "refused"
+    argv = ["capacity-sweep-steps", str(tmp_path), "--output", str(output)]
+    assert cli.main(argv) == cli.EXIT_USAGE
+    assert "error:" in capsys.readouterr().err
+    assert not output.exists()
 
 
 def test_a_completed_sweep_whose_analysis_failed_does_not_exit_0(tmp_path, sweep_stubs, capsys):

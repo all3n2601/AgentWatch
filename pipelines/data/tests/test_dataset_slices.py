@@ -540,3 +540,38 @@ def test_main_reports_a_failure_without_writing(tmp_path, capsys):
     assert main(["--release", str(release), "--output", str(output)]) == 1
     assert "Slicing failed:" in capsys.readouterr().err
     assert not output.exists()
+
+
+def test_a_split_v3_split_places_validation_experiments_and_leaves_out_other_rows(tmp_path):
+    # Synthetic rows: one training task whose experiment "e-val" went to validation, a
+    # held-out natural-overload row and a row of another feature definition.
+    # Every row carries protocol_sha256: the release writer takes its columns from the first row.
+    replay = {
+        "task_group": "fix-mean-empty",
+        "feature_version": "step-features-v1",
+        "protocol_sha256": None,
+    }
+    rows = [replay_step(n, "none") | replay | {"experiment": "e-train"} for n in range(4)]
+    rows += [replay_step(10 + n, "none") | replay | {"experiment": "e-val"} for n in range(2)]
+    rows += [
+        replay_step(20, "none") | replay | {"experiment": "sweep", "protocol_sha256": "a" * 64}
+    ]
+    rows += [replay_step(30, "none") | replay | {"feature_version": "steps-v1.2"}]
+    release = write_release(tmp_path, rows)
+    document = {
+        "release": RELEASE,
+        "contract": {"group_key": "task_group"},
+        "split_method": "split-v3",
+        "groups": {"fix-mean-empty": "train"},
+        "excluded_runs": [],
+        "split_v3_checks": {
+            "validation_experiments": ["e-val"],
+            "excluded_feature_versions": {"steps-v1.2": {"rows": 1, "runs": 1}},
+            "held_out_evaluation": {"protocol_sha256": ["a" * 64]},
+        },
+    }
+    split = tmp_path / "split.json"
+    split.write_text(json.dumps(document))
+    report = slice_release(release, split, tmp_path / "out").report
+    # The held-out row and the other feature definition are in no split.
+    assert report["split_rows"] == {"excluded": 2, "train": 4, "validation": 2}

@@ -44,9 +44,11 @@ from dataset_fixtures import make_result, write_run
 from replay_fixtures import write_experiment
 
 REPOSITORY = Path(__file__).resolve().parents[3]
-# The committed contract is eval-contract-v2 (split-v2); split-v1 behavior is tested with the
-# kept eval-contract-v1 file and the steps.pbtxt frozen schema it was validated against.
-CONTRACT = REPOSITORY / "pipelines" / "model" / "evaluation-contract.toml"
+# The live contract is eval-contract-v3 (split-v3). split-v2 behavior is tested with the kept
+# eval-contract-v2 file, and split-v1 with eval-contract-v1 and the steps.pbtxt frozen schema
+# it was validated against.
+LIVE = REPOSITORY / "pipelines" / "model" / "evaluation-contract.toml"
+CONTRACT = REPOSITORY / "pipelines" / "model" / "evaluation-contract-v2.toml"
 V1 = REPOSITORY / "pipelines" / "model" / "evaluation-contract-v1.toml"
 FROZEN = REPOSITORY / "pipelines" / "validation" / "schema" / "steps.pbtxt"
 FROZEN_V1_3 = REPOSITORY / "pipelines" / "validation" / "schema" / "steps-v1.3.pbtxt"
@@ -743,7 +745,7 @@ def test_split_v1_contract_with_an_assignment_is_refused(tmp_path):
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ('method = "split-v2"', 'method = "split-v3"', "method 'split-v3' is not one of"),
+        ('method = "split-v2"', 'method = "split-v9"', "method 'split-v9' is not one of"),
         ('method = "split-v2"', "method = 2", "must be str"),
         ('assignment = "../data/src/agentwatch_data/split-assignment.toml"', "", "needs an"),
         (
@@ -1176,6 +1178,18 @@ def test_load_split_v2_rebuilds_and_refuses_an_edited_file(v1_3_release):
         load_split(result.path, "train", CONTRACT, FROZEN_V1_3, True)
 
 
+def test_a_split_v2_file_read_with_the_v3_contract_names_the_contract_to_pass(v1_3_release):
+    result = split_v2(v1_3_release)
+    with pytest.raises(SplitError, match="made with eval-contract-v2 .*pass the eval-contract-v2"):
+        load_split(result.path, "train", LIVE, FROZEN_V1_3, allow_unchecked_leakage=True)
+
+
+def test_a_split_v3_file_read_with_the_v2_contract_is_refused(v3_release):
+    result = make_split(v3_release, LIVE, FROZEN_V1_3)
+    with pytest.raises(SplitError, match="made with eval-contract-v3 .*pass the eval-contract-v3"):
+        load_split(result.path, "train", CONTRACT, FROZEN_V1_3, allow_unchecked_leakage=True)
+
+
 def copied_contract(tmp_path: Path) -> Path:
     """eval-contract-v2 and its assignment file, copied so the assignment can be edited."""
     directory = tmp_path / "contract"
@@ -1391,3 +1405,136 @@ def test_import_order_has_no_cycle():
         "agentwatch_data.splits, agentwatch_data.split_assignment",
     ):
         subprocess.run([sys.executable, "-I", "-c", f"import {modules}"], check=True, timeout=60)
+
+
+# split-v3 under eval-contract-v3, the live contract. The release adds a second synthetic
+# fix-mean-empty experiment with plan "6" * 64: the store names it
+# replay-fix-mean-empty-r1-20261105T000000Z-de5eba, whose split-v3 hash position (0.165) is
+# below the validation share (0.176); the first one's (0.329) is above it. Every replay value
+# is invented.
+
+VALIDATION_PLAN, TRAIN_PLAN = "6" * 64, "2" * 64
+
+
+def test_the_live_contract_is_v3_selecting_split_v3():
+    c = load_contract(LIVE)
+    assert (c.version, c.status, c.method, c.group_key) == (
+        "eval-contract-v3",
+        "accepted",
+        "split-v3",
+        "task_group",
+    )
+    assert (
+        c.assignment == REPOSITORY / "pipelines/data/src/agentwatch_data/split-assignment-v3.toml"
+    )
+
+
+def test_the_v2_contract_file_keeps_the_v2_identifier():
+    # 9b55506c identifies eval-contract-v2, which split-v2+febe942a2b59 and the #61-#63
+    # documentation record; the kept file must keep it.
+    assert load_contract(CONTRACT).sha256 == "9b55506c"
+
+
+def test_the_live_contract_keeps_the_v3_identifier():
+    # 1cab0cbe identifies eval-contract-v3, which split-v3+932b2df410a7 and the M02-M04 results
+    # record; any change to the parsed file needs a new version.
+    assert load_contract(LIVE).sha256 == "1cab0cbe"
+
+
+def test_v3_changes_only_the_split_selection():
+    v2, v3 = tomllib.loads(CONTRACT.read_text()), tomllib.loads(LIVE.read_text())
+    changed = {
+        ("version",): ("eval-contract-v2", "eval-contract-v3"),
+        ("splits", "method"): ("split-v2", "split-v3"),
+        ("splits", "assignment"): (
+            "../data/src/agentwatch_data/split-assignment.toml",
+            "../data/src/agentwatch_data/split-assignment-v3.toml",
+        ),
+    }
+    for (*tables, key), (old, new) in changed.items():
+        table_v2, table_v3 = v2, v3
+        for table in tables:
+            table_v2, table_v3 = table_v2[table], table_v3[table]
+        assert (table_v2.pop(key), table_v3.pop(key)) == (old, new)
+    assert v3 == v2
+
+
+def test_a_split_v3_contract_must_group_by_task(tmp_path):
+    contract = edited_contract(
+        tmp_path, ('group_key = "task_group"', 'group_key = "task_id"'), base=LIVE
+    )
+    with pytest.raises(SplitError, match="split-v3 requires group_key"):
+        load_contract(contract)
+
+
+def test_an_assignment_of_another_version_is_refused(v1_3_release, tmp_path):
+    contract = edited_contract(
+        tmp_path,
+        (
+            'assignment = "../data/src/agentwatch_data/split-assignment-v3.toml"',
+            f'assignment = "{load_contract(CONTRACT).assignment}"',
+        ),
+        base=LIVE,
+    )
+    with pytest.raises(SplitError, match="split-v2 assignment, not split-v3"):
+        make_split(v1_3_release, contract, FROZEN_V1_3)
+
+
+@pytest.fixture
+def v3_release(tmp_path):
+    """The v1.3 release plus a second fix-mean-empty experiment that hashes to validation."""
+    store = write_store(tmp_path)
+    experiment = write_experiment(
+        tmp_path / "in",
+        name="mean-exp-6",
+        task_id="fix-mean-empty-r1",
+        live=True,
+        run_namespace=3,
+        plan_sha256=VALIDATION_PLAN,
+        baseline=REPLAY_BASELINES,
+        contended=REPLAY_CONTENDED,
+    )
+    add(experiment, store)
+    return validated_release(store, tmp_path / "datasets")
+
+
+def test_split_v3_fills_validation_and_leaves_out_other_features(v3_release):
+    result = make_split(v3_release, LIVE, FROZEN_V1_3)
+    split = result.split
+    assert split["split_id"].startswith("split-v3+") and split["split_method"] == "split-v3"
+    # The golden coding run has steps-v1.2 features, so it is in no split.
+    assert split["groups"] == {"fix-mean-empty": "train", "fix-window-count": "test"}
+    checks = split["split_v3_checks"]
+    assert set(checks["excluded_feature_versions"]) == {"steps-v1.2"}
+    assert checks["excluded_feature_versions"]["steps-v1.2"]["rows"] > 0
+    assert checks["held_out_evaluation"]["rows"] == 0
+    assert checks["independence"]["status"] == "passed"
+    # Neither held-out method has a step-features-v1 row, which the split records honestly.
+    assert checks["held_out"]["status"] == "not_met"
+    assert split["assignment"]["version"] == "split-v3"
+    assert "split_v2_checks" not in split
+    rows = {
+        name: load_split(result.path, name, LIVE, FROZEN_V1_3, allow_unchecked_leakage=True)
+        for name in ("train", "validation", "test")
+    }
+    assert {row["plan_sha256"] for row in rows["validation"]} == {VALIDATION_PLAN}
+    assert {row["plan_sha256"] for row in rows["train"]} == {TRAIN_PLAN}
+    assert {row["task_group"] for row in rows["validation"]} == {"fix-mean-empty"}
+    assert {row["task_group"] for row in rows["test"]} == {"fix-window-count"}
+    assert {row["feature_version"] for name in rows for row in rows[name]} == {"step-features-v1"}
+
+
+def test_split_v3_is_reused_and_verified_by_load_split(v3_release):
+    first = make_split(v3_release, LIVE, FROZEN_V1_3)
+    again = make_split(v3_release, LIVE, FROZEN_V1_3)
+    assert again.reused and again.path == first.path
+    assert read_split_file(first.path)["split_id"] == first.split["split_id"]
+
+
+def test_the_cli_prints_the_split_v3_checks(v3_release, capsys):
+    arguments = ["--release", str(v3_release), "--contract", str(LIVE)]
+    assert main([*arguments, "--frozen-schema", str(FROZEN_V1_3)]) == 0
+    output = capsys.readouterr().out
+    assert "held-out methods (split-v3): not_met" in output
+    assert "left out (other feature definitions): steps-v1.2" in output
+    assert "held-out evaluation set: 0 rows" in output
