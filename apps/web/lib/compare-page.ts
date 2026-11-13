@@ -9,6 +9,7 @@ import type { DashboardData, Experiment, Step } from "./experiment-schema";
 import { formatQuantity } from "./measurement-format";
 import type { Route } from "next";
 import { routes } from "./routes";
+import { relativeLengths } from "./segments";
 import {
   compareConfiguration,
   configurationOf,
@@ -206,6 +207,23 @@ export function stepLabel(stepId: string): string {
 
 const isFiniteNumber = (value: number | null): value is number =>
   value !== null && Number.isFinite(value);
+
+/**
+ * Both runs' bar lengths on one shared scale, or null when differences are not shown: a
+ * shared scale still encodes the candidate-to-baseline ratio (10 s against 100 s draws as
+ * 10×) that a configuration mismatch withholds.
+ */
+export function pairedBarLengths(
+  delta: TimingDelta,
+  differencesShown: boolean,
+): { baseline: number | null; candidate: number | null } | null {
+  if (!differencesShown) return null;
+  const [baseline, candidate] = relativeLengths([
+    delta.baselineSeconds ?? Number.NaN,
+    delta.candidateSeconds ?? Number.NaN,
+  ]);
+  return { baseline: baseline ?? null, candidate: candidate ?? null };
+}
 
 export function timingDelta(
   baselineSeconds: number | null,

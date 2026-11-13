@@ -11,6 +11,7 @@ import {
   interpretation,
   largestDifferences,
   metricDeltas,
+  pairedBarLengths,
   qualityRows,
   SINGLE_RUN_LIMITATION,
   stepLabel,
@@ -252,6 +253,32 @@ test("verdictBadge is the one count label and tone for each verdict", () => {
     verdictBadge({ checks: [], verdict: "match", differing: [], unknown: [] }),
     { label: "Match", tone: "success" },
   );
+});
+
+test("paired bars share a scale only while differences are shown", () => {
+  const metric = timingDelta(10, 100);
+  assert.deepEqual(pairedBarLengths(metric, true), {
+    baseline: 0.1,
+    candidate: 1,
+  });
+  // A mismatch withholds the ratio, so no bar may encode 10 s against 100 s as 10×.
+  assert.equal(pairedBarLengths(metric, false), null);
+  assert.deepEqual(pairedBarLengths(timingDelta(null, 2), true), {
+    baseline: null,
+    candidate: 1,
+  });
+});
+
+test("a mismatched comparison keeps each run's values but no bar scale", () => {
+  const comparison = buildComparison(
+    run("a"),
+    withExperiment("b", { iterations: 1 }),
+  );
+  assert.equal(comparison.differencesShown, false);
+  const total = comparison.metrics.find((m) => m.id === "total");
+  assert.ok(total?.baselineSeconds && total.candidateSeconds);
+  assert.equal(total.ratio, null);
+  assert.equal(pairedBarLengths(total, comparison.differencesShown), null);
 });
 
 test("agent model is unknown when only one coding run has agent evidence", () => {

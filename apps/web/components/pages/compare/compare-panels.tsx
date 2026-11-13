@@ -18,13 +18,14 @@ import {
   type KeyValueItem,
 } from "@/components/widgets/evidence-lists";
 import { Measurement } from "@/components/widgets/measurement";
-import type {
-  AlignedStep,
-  Comparison,
-  MetricDelta,
-  QualityRow,
-  RunSummary,
-  StepTiming,
+import {
+  pairedBarLengths,
+  type AlignedStep,
+  type Comparison,
+  type MetricDelta,
+  type QualityRow,
+  type RunSummary,
+  type StepTiming,
 } from "@/lib/compare-page";
 import { routes } from "@/lib/routes";
 import {
@@ -35,7 +36,6 @@ import {
   type CompatibilityCheck,
   verdictBadge,
 } from "@/lib/run-compatibility";
-import { relativeLengths } from "@/lib/segments";
 import { cn } from "@/lib/utils";
 import { CompareDelta, TimingText } from "./compare-delta";
 
@@ -52,14 +52,21 @@ function PairValue({
   candidate,
   baselineTitle,
   candidateTitle,
+  className,
 }: {
-  baseline: string;
-  candidate: string;
+  baseline: React.ReactNode;
+  candidate: React.ReactNode;
   baselineTitle?: string;
   candidateTitle?: string;
+  className?: string;
 }) {
   return (
-    <span className="block space-y-0.5 text-right [overflow-wrap:anywhere]">
+    <span
+      className={cn(
+        "block space-y-0.5 text-right [overflow-wrap:anywhere]",
+        className,
+      )}
+    >
       <span className="block" title={baselineTitle}>
         <span className="text-ink-muted">Baseline </span>
         {baseline}
@@ -187,30 +194,36 @@ function MetricRow({
   metric: MetricDelta;
   differencesShown: boolean;
 }) {
-  const [baselineLength, candidateLength] = relativeLengths([
-    metric.baselineSeconds ?? Number.NaN,
-    metric.candidateSeconds ?? Number.NaN,
-  ]);
+  const lengths = pairedBarLengths(metric, differencesShown);
   return (
     <li className="grid gap-x-4 gap-y-1.5 py-2.5 fit:py-2 sm:grid-cols-[minmax(9rem,11rem)_minmax(0,1fr)_auto] sm:items-center">
       <div className="min-w-0">
         <p className="text-sm font-medium text-ink">{metric.label}</p>
         <p className="text-xs text-ink-muted">{metric.scope}</p>
       </div>
-      <div className="min-w-0 space-y-1">
-        <PairedBar
-          label="Baseline"
-          seconds={metric.baselineSeconds}
-          length={baselineLength ?? null}
-          tone="baseline"
+      {lengths ? (
+        <div className="min-w-0 space-y-1">
+          <PairedBar
+            label="Baseline"
+            seconds={metric.baselineSeconds}
+            length={lengths.baseline}
+            tone="baseline"
+          />
+          <PairedBar
+            label="Candidate"
+            seconds={metric.candidateSeconds}
+            length={lengths.candidate}
+            tone="candidate"
+          />
+        </div>
+      ) : (
+        // Values only: bars on any shared scale would still show the ratio withheld here.
+        <PairValue
+          baseline={<TimingText seconds={metric.baselineSeconds} />}
+          candidate={<TimingText seconds={metric.candidateSeconds} />}
+          className="text-left text-[13px] text-ink"
         />
-        <PairedBar
-          label="Candidate"
-          seconds={metric.candidateSeconds}
-          length={candidateLength ?? null}
-          tone="candidate"
-        />
-      </div>
+      )}
       {differencesShown ? (
         <CompareDelta delta={metric} className="sm:justify-self-end" />
       ) : (
@@ -256,9 +269,9 @@ export function TimeChangesPanel({
         description={
           differencesShown
             ? "Candidate minus baseline · bars scale within each row"
-            : "Each run's values · not compared because recorded settings differ"
+            : "Each run's values, without bars or differences, because recorded settings differ"
         }
-        actions={<PairLegend />}
+        actions={differencesShown ? <PairLegend /> : undefined}
         className="shrink-0"
       />
       <div

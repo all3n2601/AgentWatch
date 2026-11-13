@@ -49,6 +49,11 @@ const runId = (page: Page, role: "Baseline" | "Candidate", id: string) =>
 /** Any status tone's text or surface colour. */
 const TONE_CLASS = /(text|bg|border)-(success|warning|caution|danger|info)/;
 
+const timeChanges = (page: Page) =>
+  page
+    .getByRole("region", { name: /Where time changed|Recorded times/ })
+    .first();
+
 const verdict = (page: Page) =>
   page.getByRole("tab", { name: /Configuration/ });
 
@@ -83,6 +88,8 @@ test("a direct URL compares the selected UUIDs with neutral observed differences
   const delta = clean.getByText("+1.50 s");
   await expect(delta).toBeVisible();
   await expect(delta).not.toHaveClass(TONE_CLASS);
+  // Compatible runs share one bar scale per row.
+  await expect(timeChanges(page).locator(".bg-bar-track")).not.toHaveCount(0);
 
   const quality = page.getByRole("region", { name: "Quality and coverage" });
   await expect(quality).toContainText("ThroughputBaseline Not recorded");
@@ -150,6 +157,14 @@ for (const { name, options, setting, baselineValue, candidateValue } of [
     await expect(page.getByText(/[+−±]\d[\d.]* (s|ms|μs)/)).toHaveCount(0);
     await expect(page.getByText(/\d×/)).toHaveCount(0);
     await expect(page.getByText("Not compared").first()).toBeVisible();
+    // No bar may encode the withheld ratio; each run's value is shown as text instead.
+    const recorded = timeChanges(page);
+    await expect(recorded).toContainText("Recorded times");
+    await expect(recorded.locator(".bg-bar-track")).toHaveCount(0);
+    await expect(page.getByText("Baseline (upper bar)")).toHaveCount(0);
+    await expect(
+      recorded.getByRole("listitem").filter({ hasText: "Clean execution" }),
+    ).toContainText(/Baseline\s*2\.00 sCandidate\s*3\.50 s/);
     await expect(
       page.getByText("Not calculated: recorded settings differ."),
     ).toBeVisible();
