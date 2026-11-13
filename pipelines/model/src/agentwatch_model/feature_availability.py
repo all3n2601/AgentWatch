@@ -1,10 +1,14 @@
-"""Which of the frozen classifier's inputs are present on its training rows and on held-out rows.
+"""How the frozen classifier's inputs differ between its training rows and held-out rows.
 
 For every model feature this reports, on split-v3's train rows and on the held-out sweep rows
 that `score-held-out` scores (overall and per configuration), how many readings are missing, how
 many distinct values the rest take, their quantiles and range, and the share of held-out values
 outside the train range, beside the feature's share of the classifier's split gain. It reads
 the frozen M03/M04 pair through the same checked loader as `score-held-out`.
+
+The availability counts (rows, missing fraction, distinct values, most common share) come from
+`held_out_features.availability`, the same counting `score-held-out` reports; this module adds
+the classifier's own train rows, gain shares, two flags, quantiles and the train range.
 
 Descriptive only: nothing is scored, trained, fitted or tuned, and no threshold is applied.
 A feature that is missing or constant on held-out rows is a possible reason for held-out
@@ -26,7 +30,10 @@ from agentwatch_data.splits import SplitError, load_split
 from agentwatch_model.candidates import TrainingError
 from agentwatch_model.contract import DEFAULT_CONTRACT, ContractError
 from agentwatch_model.features import FEATURES, FeatureError, encode
+from agentwatch_model.held_out_features import availability
 from agentwatch_model.held_out_model import (
+    FROZEN_VERSIONS,
+    FrozenVersions,
     HeldOutModelError,
     check_reproduces_validation,
     load_frozen_classifier,
@@ -105,16 +112,14 @@ def describe_feature(rows: list[dict], name: str) -> dict:
     constant and all-missing flags of one feature over rows, using the classifier's own
     encoding."""
     present, missing = present_values(rows, name)
-    distinct = len(set(present))
+    counted = availability(rows, name)
+    distinct = counted["distinct_values"]
     quantiles = None
     if present:
         values = np.quantile(np.array(present), list(QUANTILES.values()))
         quantiles = {key: float(value) for key, value in zip(QUANTILES, values, strict=True)}
-    return {
-        "rows": len(rows),
+    return counted | {
         "missing": missing,
-        "missing_fraction": missing / len(rows),
-        "distinct_values": distinct,
         "constant": distinct == 1,
         "all_missing": not present,
         "quantiles": quantiles,
@@ -314,11 +319,13 @@ def run(
     contract_path: Path = DEFAULT_CONTRACT,
     frozen_schema: Path = DEFAULT_SCHEMA,
     loader=load_split,
+    versions: FrozenVersions = FROZEN_VERSIONS,
 ) -> Path:
     """Describe the frozen classifier's features on train and held-out rows; return the
-    report's path. Every check runs before anything is written."""
+    report's path. Every check runs before anything is written. `versions` defaults to the
+    pinned frozen pair, as in score-held-out; only tests of synthetic pairs pass others."""
     check_output(output)
-    model = load_frozen_classifier(candidates_dir, calibrated_dir, split)
+    model = load_frozen_classifier(candidates_dir, calibrated_dir, split, versions)
     rows, refused, summaries, unjudged = held_out_rows(truth_dirs, sweep_root)
     if not rows:
         raise AvailabilityError("no held-out step has a truth to describe")
@@ -390,6 +397,7 @@ def main(argv: list[str] | None = None) -> int:
             contract_path=args.contract,
             frozen_schema=args.frozen_schema,
             loader=load_split,
+            versions=FROZEN_VERSIONS,
         )
     except errors as error:
         print(f"Feature availability error: {error}", file=sys.stderr)

@@ -16,6 +16,7 @@ from agentwatch_model.feature_availability import (
 )
 from agentwatch_model.features import FEATURES
 from agentwatch_model.held_out_rows import held_out_rows
+from frozen_model_fixtures import SYNTHETIC_VERSIONS
 from test_held_out_rows import sweep, write_truths  # noqa: F401
 from test_score_held_out import prepared, split_loader  # noqa: F401
 from training_fixtures import dataset, featured_row
@@ -32,6 +33,7 @@ def run_prepared(prepared, **overrides):  # noqa: F811
         candidates_dir=prepared["pair"].candidates_dir,
         calibrated_dir=prepared["pair"].calibrated_dir,
         loader=overrides.pop("loader", prepared["loader"]),
+        versions=SYNTHETIC_VERSIONS,
         **overrides,
     )
 
@@ -84,7 +86,20 @@ def test_run_is_byte_for_byte_reproducible(prepared, tmp_path):  # noqa: F811
     assert first == second
 
 
+def pin_synthetic_pair(monkeypatch):
+    """The CLI always loads the pinned frozen pair; main() tests stand the synthetic pair in."""
+    monkeypatch.setattr("agentwatch_model.feature_availability.FROZEN_VERSIONS", SYNTHETIC_VERSIONS)
+
+
+def test_the_cli_refuses_any_pair_but_the_frozen_one(prepared, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setattr("agentwatch_model.feature_availability.load_split", prepared["loader"])
+    assert main(cli_arguments(prepared)) == EXIT_ERROR
+    assert "calibration-v1+08119e78" in capsys.readouterr().err
+    assert not prepared["output"].exists()
+
+
 def test_main_prints_the_table_and_returns_zero(prepared, capsys, monkeypatch):  # noqa: F811
+    pin_synthetic_pair(monkeypatch)
     monkeypatch.setattr("agentwatch_model.feature_availability.load_split", prepared["loader"])
     assert main(cli_arguments(prepared)) == 0
     printed = capsys.readouterr().out
@@ -92,14 +107,16 @@ def test_main_prints_the_table_and_returns_zero(prepared, capsys, monkeypatch): 
     assert str(prepared["output"] / REPORT_FILE) in printed
 
 
-def test_output_inside_held_out_evidence_is_refused(prepared, tmp_path, capsys):  # noqa: F811
+def test_output_inside_held_out_evidence_is_refused(prepared, tmp_path, capsys, monkeypatch):  # noqa: F811
+    pin_synthetic_pair(monkeypatch)
     forbidden = tmp_path / "data" / "held-out" / "availability"
     assert main(cli_arguments(prepared, output=forbidden)) == EXIT_ERROR
     assert "data/held-out" in capsys.readouterr().err
     assert not forbidden.exists()
 
 
-def test_a_mismatched_frozen_pair_is_refused_before_writing(prepared, capsys):  # noqa: F811
+def test_a_mismatched_frozen_pair_is_refused_before_writing(prepared, capsys, monkeypatch):  # noqa: F811
+    pin_synthetic_pair(monkeypatch)
     (prepared["pair"].calibrated_dir / "calibration.json").unlink()
     assert main(cli_arguments(prepared)) == EXIT_ERROR
     assert "Feature availability error" in capsys.readouterr().err
@@ -107,6 +124,7 @@ def test_a_mismatched_frozen_pair_is_refused_before_writing(prepared, capsys):  
 
 
 def test_no_judged_step_is_refused(prepared, capsys, monkeypatch):  # noqa: F811
+    pin_synthetic_pair(monkeypatch)
     lines = (prepared["truth"] / "truth.jsonl").read_text().splitlines()
     unjudged = [
         json.loads(line)
@@ -128,6 +146,7 @@ def test_no_judged_step_is_refused(prepared, capsys, monkeypatch):  # noqa: F811
 
 
 def test_a_refusing_split_is_an_error(prepared, capsys, monkeypatch):  # noqa: F811
+    pin_synthetic_pair(monkeypatch)
     from test_score_held_out import refusing
 
     monkeypatch.setattr("agentwatch_model.feature_availability.load_split", refusing)
@@ -137,17 +156,18 @@ def test_a_refusing_split_is_an_error(prepared, capsys, monkeypatch):  # noqa: F
 
 def test_train_rows_are_the_classifiers_single_class_rows(prepared):  # noqa: F811
     mixed = featured_row("none", 99, run_id="run-mixed") | {"label_resource": "mixed"}
-    loader = split_loader(prepared["pair"].validation_rows, {"train": [mixed]})
+    loader = split_loader(prepared["pair"], planted={"train": [mixed]})
     report = json.loads(run_prepared(prepared, loader=loader).read_text())
     assert report["row_sets"]["train"] == TRAIN_ROWS
     assert report["row_sets"]["train_not_classified"] == 1
 
 
 def test_a_held_out_run_found_in_the_split_is_refused(prepared, capsys, monkeypatch):  # noqa: F811
+    pin_synthetic_pair(monkeypatch)
     planted = {"test": [featured_row("none", 0, run_id=prepared["run_id"])]}
     monkeypatch.setattr(
         "agentwatch_model.feature_availability.load_split",
-        split_loader(prepared["pair"].validation_rows, planted),
+        split_loader(prepared["pair"], planted=planted),
     )
     assert main(cli_arguments(prepared)) == EXIT_ERROR
     err = capsys.readouterr().err
@@ -156,9 +176,10 @@ def test_a_held_out_run_found_in_the_split_is_refused(prepared, capsys, monkeypa
 
 
 def test_a_booster_that_does_not_reproduce_validation_is_refused(prepared, capsys, monkeypatch):  # noqa: F811
+    pin_synthetic_pair(monkeypatch)
     monkeypatch.setattr(
         "agentwatch_model.feature_availability.load_split",
-        split_loader(dataset(8, "other")),
+        split_loader(prepared["pair"], validation=dataset(8, "other")),
     )
     assert main(cli_arguments(prepared)) == EXIT_ERROR
     assert "validation rows" in capsys.readouterr().err

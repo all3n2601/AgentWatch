@@ -263,3 +263,14 @@ def test_range_table_lists_only_features_present_on_both_sides():
     assert "| 1.1 / 2 / 2.9 |" in queue and "| 9 / 9 / 9 |" in queue
     assert queue.endswith("| 0.0% | 100.0% |")
     assert not [line for line in lines if "`cpu_pressure_max_avg10`" in line]
+
+
+def test_counts_agree_with_the_held_out_scorers_availability():
+    from agentwatch_model.held_out_features import availability
+
+    rows = [{"queue_seconds": value} for value in (0.5, None, 0.5, 2.0, 0.0)]
+    described = describe_feature(rows, "queue_seconds")
+    assert {key: described[key] for key in availability(rows, "queue_seconds")} == availability(
+        rows, "queue_seconds"
+    )
+    assert described["most_common_fraction"] == 0.5
