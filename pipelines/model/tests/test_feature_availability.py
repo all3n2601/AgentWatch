@@ -9,6 +9,7 @@ from agentwatch_model.feature_availability import (
     describe_feature,
     gain_shares,
     markdown_table,
+    range_table,
 )
 from agentwatch_model.features import FEATURES, FeatureError
 from training_fixtures import featured_row
@@ -36,14 +37,14 @@ class FakeBooster:
 
 def test_describe_counts_missing_and_distinct_values():
     rows = [{"queue_seconds": value} for value in (0.5, None, 0.5, 2.0)]
-    assert describe_feature(rows, "queue_seconds") == {
+    described = describe_feature(rows, "queue_seconds")
+    assert {key: described[key] for key in ("rows", "missing", "missing_fraction")} == {
         "rows": 4,
         "missing": 1,
         "missing_fraction": 0.25,
-        "distinct_values": 2,
-        "constant": False,
-        "all_missing": False,
     }
+    assert described["distinct_values"] == 2
+    assert described["constant"] is False and described["all_missing"] is False
 
 
 def test_a_single_present_value_is_constant():
@@ -210,3 +211,55 @@ def test_markdown_table_shows_unknown_gain_as_not_available():
         )
     )
     assert "| n/a |" in table
+
+
+def test_describe_reports_quantiles_and_range_of_present_values():
+    rows = [{"queue_seconds": value} for value in (None, *range(1, 102))]
+    described = describe_feature(rows, "queue_seconds")
+    assert described["min"] == 1.0 and described["max"] == 101.0
+    assert described["quantiles"] == {"p05": 6.0, "p50": 51.0, "p95": 96.0}
+
+
+def test_all_missing_has_no_quantiles_or_range():
+    described = describe_feature([{"cpu_seconds": None}], "cpu_seconds")
+    assert described["quantiles"] is None
+    assert described["min"] is None and described["max"] is None
+
+
+def test_held_out_values_outside_the_train_range_are_counted_as_shares_of_present_values():
+    train = [
+        featured_row("none", index, queue_seconds=value) for index, value in enumerate((1, 2, 3))
+    ]
+    held_out = [
+        held_out_row(index, "cfg-default", queue_seconds=value)
+        for index, value in enumerate((0.5, 2.0, 4.0, 5.0, None))
+    ]
+    report = availability_report(train, held_out, even_gain())
+    (queue,) = [item for item in report["features"] if item["feature"] == "queue_seconds"]
+    assert queue["held_out"]["outside_train_range"] == {
+        "below_train_min": 0.25,
+        "above_train_max": 0.5,
+    }
+    by_configuration = queue["held_out_by_configuration"]["cfg-default"]
+    assert by_configuration["outside_train_range"] == queue["held_out"]["outside_train_range"]
+
+
+def test_outside_train_range_is_null_without_present_values_on_both_sides():
+    train = [featured_row("none", 0, cpu_seconds=None, queue_seconds=1.0)]
+    held_out = [held_out_row(0, "cfg-default", cpu_seconds=0.2, queue_seconds=None)]
+    report = availability_report(train, held_out, even_gain())
+    by_name = {item["feature"]: item for item in report["features"]}
+    assert by_name["cpu_seconds"]["held_out"]["outside_train_range"] is None
+    assert by_name["queue_seconds"]["held_out"]["outside_train_range"] is None
+
+
+def test_range_table_lists_only_features_present_on_both_sides():
+    train = [featured_row("none", index, queue_seconds=float(index + 1)) for index in range(3)]
+    held_out = [held_out_row(index, "cfg-default", queue_seconds=9.0) for index in range(2)]
+    table = range_table(availability_report(train, held_out, even_gain()))
+    lines = table.strip().splitlines()
+    assert lines[0].startswith("| Feature | Gain share | Train p5 / p50 / p95 |")
+    (queue,) = [line for line in lines if line.startswith("| `queue_seconds`")]
+    assert "| 1.1 / 2 / 2.9 |" in queue and "| 9 / 9 / 9 |" in queue
+    assert queue.endswith("| 0.0% | 100.0% |")
+    assert not [line for line in lines if "`cpu_pressure_max_avg10`" in line]

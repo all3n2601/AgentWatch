@@ -1,9 +1,10 @@
 """Which of the frozen classifier's inputs are present on its training rows and on held-out rows.
 
 For every model feature this reports, on split-v3's train rows and on the held-out sweep rows
-that `score-held-out` scores (overall and per configuration), how many readings are missing and
-how many distinct values the rest take, beside the feature's share of the classifier's split
-gain. It reads the frozen M03/M04 pair through the same checked loader as `score-held-out`.
+that `score-held-out` scores (overall and per configuration), how many readings are missing, how
+many distinct values the rest take, their quantiles and range, and the share of held-out values
+outside the train range, beside the feature's share of the classifier's split gain. It reads
+the frozen M03/M04 pair through the same checked loader as `score-held-out`.
 
 Descriptive only: nothing is scored, trained, fitted or tuned, and no threshold is applied.
 A feature that is missing or constant on held-out rows is a possible reason for held-out
@@ -18,6 +19,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import Path
 
+import numpy as np
 from agentwatch_data.files import json_text, write_atomic
 from agentwatch_data.splits import SplitError, load_split
 
@@ -48,6 +50,8 @@ TABLE_FILE = "feature-availability.md"
 GAIN_IMPORTANCE = "gain"
 MISSING_ON_HELD_OUT_ONLY = "missing_on_held_out_only"
 CONSTANT_ON_HELD_OUT_ONLY = "constant_on_held_out_only"
+# Quantiles of the present values, by name; numpy's default linear interpolation.
+QUANTILES = {"p05": 0.05, "p50": 0.5, "p95": 0.95}
 METHOD = {
     "train": "split-v3 train rows the classifier was fitted on: single-class steps of its class "
     "order; the others (mixed steps) are counted in train_not_classified",
@@ -56,6 +60,10 @@ METHOD = {
     "distinct_values": "distinct present values after the classifier's encoding",
     "constant": "exactly one distinct present value",
     "gain_share": "the feature's share of the frozen classifier's total split gain",
+    "quantiles": "p05, p50 and p95 of the present values (linear interpolation); null when "
+    "every value is missing",
+    "outside_train_range": "shares of the present held-out values below the train minimum and "
+    "above the train maximum; null unless both sides have a present value",
     MISSING_ON_HELD_OUT_ONLY: "some train value is present and every held-out value is missing",
     CONSTANT_ON_HELD_OUT_ONLY: "train values vary and held-out values are constant",
 }
@@ -77,28 +85,51 @@ class AvailabilityError(ValueError):
     """Rows or gain shares that cannot be described as recorded."""
 
 
-def describe_feature(rows: list[dict], name: str) -> dict:
-    """Missing count and fraction, distinct present values, and the constant and all-missing
-    flags of one feature over rows, using the classifier's own encoding."""
+def present_values(rows: list[dict], name: str) -> tuple[list[float], int]:
+    """The present values of one feature, encoded as the classifier receives them, and the
+    missing count."""
     if not rows:
         raise AvailabilityError(f"Cannot describe {name}: no rows")
-    present = set()
-    missing = 0
+    present = []
     for index, row in enumerate(rows):
         if name not in row:
             raise FeatureError(f"Row {index} is missing feature {name}")
         value = encode(row[name], name, index)
-        if math.isnan(value):
-            missing += 1
-        else:
-            present.add(value)
+        if not math.isnan(value):
+            present.append(value)
+    return present, len(rows) - len(present)
+
+
+def describe_feature(rows: list[dict], name: str) -> dict:
+    """Missing count and fraction, distinct present values, quantiles and range, and the
+    constant and all-missing flags of one feature over rows, using the classifier's own
+    encoding."""
+    present, missing = present_values(rows, name)
+    distinct = len(set(present))
+    quantiles = None
+    if present:
+        values = np.quantile(np.array(present), list(QUANTILES.values()))
+        quantiles = {key: float(value) for key, value in zip(QUANTILES, values, strict=True)}
     return {
         "rows": len(rows),
         "missing": missing,
         "missing_fraction": missing / len(rows),
-        "distinct_values": len(present),
-        "constant": len(present) == 1,
+        "distinct_values": distinct,
+        "constant": distinct == 1,
         "all_missing": not present,
+        "quantiles": quantiles,
+        "min": min(present) if present else None,
+        "max": max(present) if present else None,
+    }
+
+
+def outside_train_range(train: dict, present: list[float]) -> dict | None:
+    """Shares of the present held-out values below the train minimum and above its maximum."""
+    if train["min"] is None or not present:
+        return None
+    return {
+        "below_train_min": sum(value < train["min"] for value in present) / len(present),
+        "above_train_max": sum(value > train["max"] for value in present) / len(present),
     }
 
 
@@ -130,8 +161,10 @@ def held_out_flags(train: dict, held_out: dict) -> list[str]:
 
 def compared(train: dict, rows: list[dict], name: str) -> dict:
     described = describe_feature(rows, name)
+    present, _ = present_values(rows, name)
     return described | {
         "missing_fraction_gap": described["missing_fraction"] - train["missing_fraction"],
+        "outside_train_range": outside_train_range(train, present),
         "flags": held_out_flags(train, described),
     }
 
@@ -232,6 +265,44 @@ def markdown_table(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def number(value: float) -> str:
+    return f"{value:.4g}"
+
+
+def spread(described: dict) -> str:
+    quantiles = described["quantiles"]
+    return " / ".join(number(quantiles[key]) for key in QUANTILES)
+
+
+def range_table(report: dict) -> str:
+    """Quantiles of each feature present on both sides, and the held-out shares outside the
+    train range."""
+    header = [
+        "Feature",
+        "Gain share",
+        "Train p5 / p50 / p95",
+        "Held-out p5 / p50 / p95",
+        "Held-out below train min",
+        "Held-out above train max",
+    ]
+    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    for item in report["features"]:
+        outside = item["held_out"]["outside_train_range"]
+        if outside is None:
+            continue
+        share = item["gain_share"]
+        cells = [
+            f"`{item['feature']}`",
+            "n/a" if share is None else f"{share:.3f}",
+            spread(item["train"]),
+            spread(item["held_out"]),
+            percent(outside["below_train_min"]),
+            percent(outside["above_train_max"]),
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n"
+
+
 def run(
     truth_dirs: list[Path],
     sweep_root: Path,
@@ -271,7 +342,7 @@ def run(
         "refused": refused,
         "unjudged_steps": len(unjudged),
     }
-    table = markdown_table(report)
+    table = markdown_table(report) + "\n" + range_table(report)
     output.mkdir(parents=True, exist_ok=True)
     write_atomic(output / TABLE_FILE, table)
     write_atomic(output / REPORT_FILE, json_text(report))

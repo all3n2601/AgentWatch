@@ -75,6 +75,7 @@ def test_run_writes_the_report_and_table_for_the_scored_rows(prepared):  # noqa:
     assert report["evaluation"] is False and report["held_out"] is True
     table = (output / TABLE_FILE).read_text()
     assert table.startswith("| Feature |")
+    assert "| Feature | Gain share | Train p5 / p50 / p95 |" in table
 
 
 def test_run_is_byte_for_byte_reproducible(prepared, tmp_path):  # noqa: F811
