@@ -808,15 +808,24 @@ frozen evaluation sets without tuning against them.
   contract ([model training](model-training.md#results-on-dataset-v1)). One test task, so no
   interval and no causal claim. PR #72 merged 2026-11-12 as `d67303c`. Open: more than one
   task group in training and test.
-  2026-11-12 (branch `feature/sweep-truth-rule`, not yet merged): `sweep-truth-v2` is a versioned
+  2026-11-12 (PR #74, merged 2026-11-12 as `5c63c27`): `sweep-truth-v2` is a versioned
   label rule in `pipelines/data` for the frozen A06 sweeps (v1 was the rule as agreed on #70; v2
   is it after Akshay's review of #74), label version `sweep-truth-v2+c211f3e8`
   ([data card](data-card.md#sweep-truth-rule-sweep-truth-v2-held-out-a06-sweeps-only),
   [design](superpowers/specs/2026-11-12-sweep-truth-rule-design.md)). The contract test
   `tests/contract/test_sweep_truth_frozen.py` pins both sweeps' truth counts and their step,
-  step-summary and truth hashes (skipped when the DVC data is not pulled). It labels only; no
-  model has been scored with it, so the item stays open.
-- [ ] Evaluate natural overload in addition to injector-driven experiments.
+  step-summary and truth hashes (skipped when the DVC data is not pulled). It labels only.
+  2026-11-12 (A06 PR 3, `feature/a06-held-out-scoring`, not yet merged; #74 merged as `5c63c27`):
+  `score-held-out` scored `rules-v1` and the frozen M03 classifier with its M04 calibration
+  (`training-v1+a34ea0be`, `calibration-v1+08119e78`, `split-v3+932b2df410a7`) on the same
+  1,740 held-out A06 model calls, against the `sweep-truth-v2+c211f3e8` queue, slowdown and
+  clean-batch truths, attempt `20261112T222540Z-d3316f` at `8d414c2`, rerun with the same scores
+  as `20261113T011157Z-f2e0c7` at `52df567` ([capacity record](capacity-record.md#attribution-baseline)). `rules-v1` missed every queued
+  call (1.000); the classifier missed 0.288 (0.161–0.482), abstained on 0.130, and on the
+  unseen task `fix-median-even` missed 0.276 (0.150–0.480). It is a descriptive baseline
+  with no gate, one sweep per configuration and one unseen task. Stays open for M2 PR 4's
+  inference rule, which will be scored by the same command, and for an evaluable release.
+- [x] Evaluate natural overload in addition to injector-driven experiments.
   2026-11-11 (A06, PR #65, merged to `main` as `50f393d` on 2026-11-12 UTC):
   `capacity-sweep` grows concurrent vLLM replays from 1 to 16 under the declared protocol
   `natural-overload-sweep-v1`
@@ -869,8 +878,63 @@ frozen evaluation sets without tuning against them.
   `sweep-record` command regenerates the record's Results and Sampling coverage tables
   identically (`test_sweep_record.py`).
 
-  Open until model and rule scoring of this evidence (A06 PR 3) is done. The capacity
-  describes this laptop and these two configurations only, from one sweep each.
+  2026-11-11 (A06 PR 3, branch `feature/a06-held-out-scoring`, not yet merged; after #69):
+  `capacity-sweep-truth` and `score-held-out` scored `rules-v1` and the `training-v1` classifier
+  on both frozen sweeps, attempt `20261112T025531Z-220363` (run 2026-11-12 02:55 UTC) at commit
+  `29df6fc`, with no modified or staged tracked files (only the untracked frozen evidence in
+  `data/held-out/` was present). It supersedes attempt `20261112T022810Z-7eac8a`, whose `slower`
+  truth still judged the N = 1 baseline steps, contrary to the design. 4,000 steps scored, none
+  refused; the 9 and 24 live-confirmation
+  runs have no truth records (no plan, so no baseline). `rules-v1` missed every queued model call
+  (miss rate 1.000). The classifier missed 0.285 (95% interval 0.162–0.475) of them, and 0.910
+  (0.770–1.000) of the `cfg-hardware` calls slower than their baseline, where the ramp did not
+  queue. Dataset v1 gave it
+  no usable validation steps, so calibration and abstention are `unavailable`. Results, intervals
+  by batch and limitations are in the
+  [capacity record](capacity-record.md#attribution-baseline) (since replaced; see that attempt's
+  `report.json`); tests in `services/agent/tests/test_sweep_truth.py` (since deleted) and
+  `pipelines/model/tests/test_held_out_*.py`, `test_score_held_out.py`. This attempt was later superseded (see the 2026-11-12 entry below),
+  and the item stayed open until that rerun. The capacity and the baseline describe this laptop
+  and these two configurations only, from one sweep each.
+
+  2026-11-11 (final review of A06 PR 3): `score-held-out` now validates the truth files at its
+  boundary. A record without its identity, position, timing or truth fields, a truth outside
+  `inference`, `none` and null, a summary whose protocol hash, configuration, step count or
+  counters do not match, and a sweep or (run, step) passed twice fail the attempt with a
+  recorded, tracked report instead of crashing or being miscounted
+  (`pipelines/model/tests/test_held_out_rows.py`, `test_score_held_out.py`). Both real truth
+  folders (the former `sweep-truth-v1` folders, since superseded) pass unchanged: 4,000 rows,
+  none refused, the same files the reported attempt hashed.
+
+  2026-11-12 (A06 PR 3, `feature/a06-held-out-scoring`, not yet merged; #74 merged as `5c63c27`):
+  closed by attempt `20261112T222540Z-d3316f` (run 2026-11-12 22:25–22:32 UTC at commit
+  `8d414c2`, clean tree, CPU only in WSL; MLflow run `67d710877ec24eb3babea1c8080745cd` in the
+  `a06-held-out-scoring` experiment). It follows the design's "Change after #70, #72 and #74":
+  #74's recorder and `sweep-truth-v2+c211f3e8` rule on both frozen sweeps (step, step-summary and
+  truth hashes equal #74's pins), `split-v3+932b2df410a7`, and #72's M03 and M04 rebuilt on it
+  (classifier `b35152b7…`, M04 `predictions.jsonl` `9f6b03fe…`, both equal to #72's), then
+  `score-held-out`. 1,740 model calls scored, none refused; root, tool and retrieval steps are
+  counted as unscored by reason. `rules-v1` missed every queued call (1.000). The classifier
+  missed 0.288 (0.161–0.482) of them, raised an alarm on 0.125 (0.066–0.187) of the unqueued
+  calls, abstained on 0.130 of all scored calls, and missed 0.908 (0.770–0.998) of the
+  `cfg-hardware` calls slower than their baseline. It supersedes attempt
+  `20261112T025531Z-220363`, which used a different truth rule, model and set of scored steps;
+  the two are not compared. Results, batch intervals and limitations (one laptop, one sweep per
+  configuration, dataset v1 recorded mostly on Ollama, no GPU or vLLM feature, one unseen task)
+  are in the [capacity record](capacity-record.md#attribution-baseline). Natural overload is now
+  evaluated beside injector-driven experiments, descriptively and without a gate.
+  2026-11-13 (Rohit's review of #76): `score-held-out` now also requires the pinned
+  `training-v1+a34ea0be` / `calibration-v1+08119e78` pair, M04's report to match its
+  calibration, split and predictions, and `calibration.json` to hash M03's report. It refuses
+  an empty or miscounted validation record, reproduces all 3,575 of M04's test predictions
+  (label, abstention, calibrated confidence and probabilities within 1e-9), and requires
+  `plan_sha256` on every truth record. The report adds `feature_availability`, plus the
+  limitation that `rules-v1`'s `inference` miss rate is 1.000 by construction
+  (`pipelines/model/tests`). Rerun as attempt `20261113T011157Z-f2e0c7` at `52df567` (MLflow run
+  `eb3b42cfb9704135bf2526ed40765e36`): every check passed, and its scores and `predictions.jsonl`
+  are identical to `20261112T222540Z-d3316f`'s. On the held-out calls only the four timing
+  features vary; every other feature is missing or takes one value
+  ([capacity record](capacity-record.md#feature-availability)).
 - [ ] Calibrate confidence, select an abstention threshold, and show uncertain results explicitly.
   2026-11-10 (M04): `make calibrate` fits `calibration-v1` temperature scaling and the abstention
   threshold on the validation split only, then reports test-split ECE, abstention rates, clean

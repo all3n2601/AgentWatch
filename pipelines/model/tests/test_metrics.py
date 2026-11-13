@@ -1,6 +1,7 @@
 import pytest
 from agentwatch_model.metrics import (
     CLASSES,
+    bootstrap_interval,
     bootstrap_macro_f1,
     class_scores,
     condition_slices,
@@ -104,6 +105,53 @@ def test_bootstrap_interval_resamples_whole_tasks_and_is_reproducible():
     first = bootstrap_macro_f1(rows, noisy, resamples=200, seed=7)
     assert first == bootstrap_macro_f1(rows, noisy, resamples=200, seed=7)
     assert first["low"] <= first["high"]
+
+
+def test_bootstrap_macro_f1_is_unchanged_by_the_generalisation():
+    # Literal captured from the implementation before bootstrap_interval existed.
+    rows = [row(task_id=f"t{i}", label="cpu_sandbox") for i in range(6)]
+    rows += [row(task_id=f"t{i}") for i in range(6)]
+    predictions = [("cpu_sandbox" if i % 3 else "none") for i in range(len(rows))]
+    assert bootstrap_macro_f1(rows, predictions, resamples=200, seed=7) == {
+        "level": 0.95,
+        "low": 0.3333333333333333,
+        "high": 0.5,
+        "resamples": 200,
+        "valid_resamples": 200,
+        "seed": 7,
+        "groups": 6,
+        "min_groups": 2,
+    }
+
+
+def _accuracy(correct: list[bool]):
+    return lambda drawn: sum(correct[i] for i in drawn) / len(drawn)
+
+
+def test_bootstrap_interval_resamples_whole_groups():
+    rows = [{"batch_id": "good"}] * 3 + [{"batch_id": "bad"}] * 3
+    correct = [True] * 3 + [False] * 3
+    seen: list[float] = []
+
+    def statistic(drawn: list[int]) -> float:
+        value = _accuracy(correct)(drawn)
+        seen.append(value)
+        return value
+
+    interval = bootstrap_interval(
+        rows, statistic, group_key="batch_id", resamples=100, seed=3, min_groups=2
+    )
+    assert set(seen) <= {0.0, 0.5, 1.0} and len(seen) == 100
+    assert interval["groups"] == 2 and interval["valid_resamples"] == 100
+    assert interval["low"] == 0.0 and interval["high"] == 1.0
+
+
+def test_bootstrap_interval_needs_min_groups():
+    rows = [{"batch_id": "only"}] * 4
+    interval = bootstrap_interval(
+        rows, _accuracy([True] * 4), group_key="batch_id", resamples=20, seed=1
+    )
+    assert interval["low"] is None and interval["high"] is None and interval["groups"] == 1
 
 
 def test_bootstrap_needs_at_least_two_tasks():

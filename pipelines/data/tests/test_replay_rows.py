@@ -11,10 +11,12 @@ from agentwatch_data.replay_rows import (
     FEATURE_TIMING_TOLERANCE_SECONDS,
     REPLAY_STAGES,
     experiment_rows,
+    feature_values,
     main,
+    replay_features,
     replay_source_sha256,
 )
-from agentwatch_data.schema import SCHEMA_VERSION, validate_rows
+from agentwatch_data.schema import SCHEMA_VERSION, feature_columns, validate_rows
 from replay_fixtures import (
     DEFAULT_STEPS,
     configuration_digest,
@@ -507,3 +509,13 @@ def test_duplicate_replay_rejection_keeps_independent_experiments(tmp_path):
     assert len(rows) == 10
     assert {r["experiment"] for r in rows} == {"independent"}
     assert sum(len(items) for items in rejections.values()) == 2
+
+
+def test_feature_values_are_the_release_rows_feature_columns(tmp_path, config):
+    directory = experiment(tmp_path)
+    rows, _ = experiment_rows(directory, config)
+    features = replay_features(directory, "replays/01", rows[0]["run_id"])
+    values = feature_values(features.by_step[rows[0]["step_id"]])
+    assert set(values) == set(feature_columns())
+    assert {name: rows[0][name] for name in values} == values
+    assert values["worker_capacity"] is None

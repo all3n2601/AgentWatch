@@ -354,6 +354,26 @@ The [capacity record](capacity-record.md#reproduce) shows how to re-analyse it a
 its tables. Rohit decided the `split-v3` assignment with Benoy on 2026-11-11
 ([ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md)).
 
+**Held-out scores (2026-11-12, A06 PR 3).** `score-held-out` scored `rules-v1` and the frozen
+M03 classifier with its M04 calibration (`training-v1+a34ea0be`, `calibration-v1+08119e78`, on
+`split-v3+932b2df410a7`) on the frozen sweeps' `sweep-truth-v2+c211f3e8` truths; the result is
+the capacity record's [attribution baseline](capacity-record.md#attribution-baseline) (attempt
+`20261113T011157Z-f2e0c7`, 1,740 model calls scored, with the same scores and predictions as
+attempt `20261112T222540Z-d3316f`, which lacked the later checks). It supersedes attempt
+`20261112T025531Z-220363` (run 2026-11-12 02:55 UTC), which used the agent's former per-step
+truth command (`sweep-truth-v1`), a classifier retrained on `split-v2` and every step type. The truths and
+scores stay local in `.data/a06-scoring/`: `sweep-truth-v2/` for this attempt's steps and truths,
+`scores/` for every attempt, `superseded/` for the earliest attempt's truths, and `truth/` and
+`steps/` for a later `sweep-truth-v1+3b75882f` labelling from the #74 work. The superseded
+attempt's own truth files are no longer on disk; its `report.json` `inputs.truth` identifies them
+by hash, and that attempt's code (`29df6fc`) can regenerate them. All of it is in no dataset
+release and outside `data/held-out/`. The classifier was trained
+and calibrated on dataset v1's train and validation splits only; no A06 row was used for
+training, calibration, threshold selection or tuning. `make add-evidence` refuses the truth and
+score folders (`pipelines/model/tests/test_score_held_out.py`), and `make dataset` reads only its configured
+sources (the evidence store and the API), so neither can take them in. Versioning the scores is
+out of scope.
+
 ## Sweep truth rule `sweep-truth-v2` (held-out A06 sweeps only)
 
 `sweep-truth-v2` labels the steps of the frozen A06 natural-overload sweeps so that held-out
@@ -427,8 +447,10 @@ truth and input-validation code; comments and formatting in the TOML do not chan
 edit to `sweep_truth.py` or `sweep_steps_input.py`, comments included, does). The baseline
 statistics are computed by the recorder, outside that fingerprint, so a truth set is identified by
 `label_version` together with `steps_sha256`, `steps_summary_sha256` and `truth_sha256`, all
-recorded in `truth.json`. The A06 scoring PR is to refuse any other label version and to check
-`steps_sha256`, `steps_summary_sha256` and `truth_sha256`; that is planned, not yet done.
+recorded in `truth.json`. `score-held-out` (A06 PR 3) fails the attempt (recorded and tracked,
+with no predictions) on any other label version, on a `truth_sha256` that is not the hash of the
+`truth.jsonl` beside it, and on malformed `steps_sha256`, `steps_summary_sha256` or
+`recorder_sha256`, and records the first three of them, with the label version, for each sweep.
 `steps.json` also carries `recorder_sha256`, the fingerprint of the recorder's own source and the
 code behind its baselines: `sweep_steps.py`, `sweep_labels.py`, `experiment.py`,
 `sweep_analysis.py` and `sweep_protocol.py`. Any edit to those five modules, comments included,

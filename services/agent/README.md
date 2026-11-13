@@ -653,10 +653,14 @@ is a separate step in `pipelines/data` (`sweep-truth-v2`).
 
 **Evidence status.** Natural-overload and prefill-flood runs are held-out test evidence
 (`held_out: true`): never use them for training, calibration, threshold selection or
-tuning. `rules-v1` predicts only `cpu_sandbox` or `none`; it cannot predict inference, and
-this command does not score it. Scoring rules and models on this evidence follows in a later
-change. Concurrent replays share prompt prefixes, so they load vLLM less than free agents;
-the live confirmation shows the difference.
+tuning. `rules-v1` predicts only `cpu_sandbox` or `none`; it cannot predict inference.
+`capacity-sweep-steps` records measurements only. `make sweep-truth` in `pipelines/data`
+labels the steps with `sweep-truth-v2`, and `make score-held-out TRUTH="<truth dir> ..."` in
+`pipelines/model` scores `rules-v1` and the learned classifier against those truths
+([model training](../../docs/model-training.md#held-out-a06-scoring)); the result is the
+[capacity record](../../docs/capacity-record.md#attribution-baseline)'s attribution baseline.
+Concurrent replays share prompt prefixes, so they load vLLM less than free agents; the live
+confirmation shows the difference.
 
 ## Tests
 

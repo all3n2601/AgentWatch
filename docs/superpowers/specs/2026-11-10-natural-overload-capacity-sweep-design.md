@@ -59,6 +59,13 @@ Three PRs, merged in this order:
    - not read the sweep's label verdicts as validation of `labels-v2`, since they validate the
      noise threshold only.
 
+   **Changed 2026-11-11 (Benoy): PR 3 no longer waits for M2 PR 4.** M2 PR 4 follows M2 PRs 2
+   and 3, so waiting would keep A06 open for weeks. PR 3 scores `rules-v1` and the learned
+   candidates now, as a baseline of missed inference contention and clean-step false alarms;
+   M2 PR 4's rule is added to the same scoring later, under its own version. The three
+   obligations above are unchanged. Design:
+   [A06 held-out scoring](2026-11-11-a06-held-out-scoring-design.md).
+
 Out of scope: policy-limit evaluation (O06; the sweep runs `--no-policy`), changing
 `split-assignment.toml` or labels (Rohit and Akshay's decision), CPU/retrieval cases
 (Akshayaa), and any claim about cloud capacity.

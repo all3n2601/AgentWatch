@@ -7,6 +7,7 @@ measured failure or success.
 
 import math
 import random
+from collections.abc import Callable
 from typing import TypeGuard
 
 from agentwatch_data.schema import RESOURCE_CLASSES
@@ -128,18 +129,24 @@ def constant_reference_mae(train: list[dict], test: list[dict]) -> dict:
     }
 
 
-def bootstrap_macro_f1(
+def bootstrap_interval(
     rows: list[dict],
-    predictions: list[str],
+    statistic: Callable[[list[int]], float | None],
+    *,
+    group_key: str,
     resamples: int,
     seed: int,
     level: float = 0.95,
     min_groups: int = MIN_BOOTSTRAP_GROUPS,
 ) -> dict:
-    """Percentile interval for defined-class macro F1, resampling whole tasks together."""
+    """Percentile interval for any statistic, resampling whole groups of rows together.
+
+    The statistic receives the drawn row indices and returns None when undefined for that draw;
+    such draws are counted out of valid_resamples rather than treated as zero.
+    """
     groups: dict[str, list[int]] = {}
     for index, row in enumerate(rows):
-        groups.setdefault(row["task_id"], []).append(index)
+        groups.setdefault(row[group_key], []).append(index)
     interval = {
         "level": level,
         "low": None,
@@ -157,8 +164,7 @@ def bootstrap_macro_f1(
     values = []
     for _ in range(resamples):
         drawn = [i for key in generator.choices(keys, k=len(keys)) for i in groups[key]]
-        labels = [rows[i]["label_resource"] for i in drawn]
-        value = macro_f1(class_scores(confusion_matrix(labels, [predictions[i] for i in drawn])))
+        value = statistic(drawn)
         if value is not None:
             values.append(value)
     interval["valid_resamples"] = len(values)
@@ -169,3 +175,28 @@ def bootstrap_macro_f1(
     interval["low"] = values[math.floor(tail * len(values))]
     interval["high"] = values[math.ceil((1 - tail) * len(values)) - 1]
     return interval
+
+
+def bootstrap_macro_f1(
+    rows: list[dict],
+    predictions: list[str],
+    resamples: int,
+    seed: int,
+    level: float = 0.95,
+    min_groups: int = MIN_BOOTSTRAP_GROUPS,
+) -> dict:
+    """Percentile interval for defined-class macro F1, resampling whole tasks together."""
+
+    def statistic(drawn: list[int]) -> float | None:
+        labels = [rows[i]["label_resource"] for i in drawn]
+        return macro_f1(class_scores(confusion_matrix(labels, [predictions[i] for i in drawn])))
+
+    return bootstrap_interval(
+        rows,
+        statistic,
+        group_key="task_id",
+        resamples=resamples,
+        seed=seed,
+        level=level,
+        min_groups=min_groups,
+    )
