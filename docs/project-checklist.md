@@ -956,7 +956,16 @@ frozen evaluation sets without tuning against them.
   in the next release before calibration is read as evidence (Akshay, #70 review); and showing
   uncertain results, which belongs to serving and the dashboard.
 - [ ] Load a versioned registered model in the correlation service.
+  2026-11-12 (M03/M04 handoff, branch `docs/m03-m04-serving-contract`, not yet merged):
+  [serving contract](model-serving-contract.md) for B03 (Allen) and the dashboard (Meghana):
+  artifacts and their identity checks, the 14 inputs with units and NaN-for-missing encoding,
+  calibrated probabilities, the abstention rule and the clipped excess-latency estimate. The
+  current pair has `blocks_promotion: true` (four gates `not_evaluated`), so it is not to be
+  served as promoted. The artifacts are local, not registered; nothing is served yet.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
+  2026-11-12: what the dashboard must show (model identity and promotion state, abstention as
+  its own state, missing telemetry beside the prediction, the excess fraction as an estimate)
+  is in the [serving contract](model-serving-contract.md); no UI change yet.
 
 **Exit test:** Report accuracy/macro F1, regression MAE, clean-run false positives, and calibration.
 Validate missing features and model load failures. Measure time from step completion to visible

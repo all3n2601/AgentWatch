@@ -6,7 +6,8 @@ accepted); see [Results on dataset v1](#results-on-dataset-v1). It passes every 
 evaluates and blocks promotion only because six gates are `not_evaluated`. Earlier: the interim
 `steps-v1.2+5954f97ef8b2` split is blocked by the leakage check, and on `split-v2+febe942a2b59`
 a run is a `failed` attempt because that test split mixes two feature definitions. Steps
-labeled `mixed` are scored by `mixed-scoring-v1` (see Running it).
+labeled `mixed` are scored by `mixed-scoring-v1` (see Running it). What serving must reproduce,
+and what each prediction means, is in the [serving contract](model-serving-contract.md).
 
 M03 trains two LightGBM candidates on CPU: a resource classifier and an excess-latency
 regressor. It scores them and [the rule baseline](rule-baseline.md) on identical rows against
