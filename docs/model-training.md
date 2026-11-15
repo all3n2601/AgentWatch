@@ -234,7 +234,7 @@ read as more than descriptive.
 ## Result figures and SHAP
 
 ```sh
-make model-analysis SPLIT=$SPLIT ANALYSIS_CANDIDATES="v1=<training-v1 folder> v2=.data/candidates"
+make model-analysis SPLIT=$SPLIT   # default: selected=.data/candidates; add others as name=folder
 ```
 
 `model-analysis` reads evaluated `train-candidates` folders and, when present, the tuning report,

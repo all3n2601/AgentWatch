@@ -102,8 +102,8 @@ tune-candidates: ## Tune the LightGBM candidates on the validation split only (n
 	uv run --package agentwatch-model python -m agentwatch_model.tune_candidates --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(TUNING_OUTPUT)
 
 ANALYSIS_OUTPUT ?= .data/analysis
-ANALYSIS_CANDIDATES ?= v2=$(CANDIDATES_OUTPUT)
-ANALYSIS_EXPLAIN ?= v2
+ANALYSIS_CANDIDATES ?= selected=$(CANDIDATES_OUTPUT)
+ANALYSIS_EXPLAIN ?= selected
 
 model-analysis: ## Draw confusion matrices, a model comparison, SHAP importance and tuning sensitivity for evaluated candidates; reads results, trains nothing (SPLIT=split file)
 	@test -n "$(SPLIT)" || { echo "Set SPLIT to the split the candidates used: make model-analysis SPLIT=<split.json>" >&2; exit 2; }
