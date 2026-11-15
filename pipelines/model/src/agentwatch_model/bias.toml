@@ -1,0 +1,21 @@
+# bias-v1: the model-level slice check, declared before it is run on any model
+# (docs/model-bias.md). A slice is flagged when its correct-attribution rate is more than
+# max_disparity below the rate over all scored steps; slices with fewer than min_slice_steps are
+# reported as insufficient, never flagged or cleared.
+version = "bias-v1"
+
+[thresholds]
+max_disparity = 0.10
+# The data slices' minimum (pipelines/data slices.MIN_SLICE_ROWS): fewer steps cannot support a
+# per-slice rate.
+min_slice_steps = 30
+
+[mitigation]
+# Mitigation trains the same settings with condition-balancing weights (each condition carries
+# the same total weight). On validation it replaces the unweighted model only when it lowers the
+# worst flagged disparity by at least min_disparity_reduction and raises the classifier's
+# validation log loss by no more than max_log_loss_increase (relative). Test results of both are
+# reported; test never decides.
+weight_by = "condition"
+min_disparity_reduction = 0.02
+max_log_loss_increase = 0.05

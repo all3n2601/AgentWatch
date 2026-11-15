@@ -109,6 +109,12 @@ model-analysis: ## Draw confusion matrices, a model comparison, SHAP importance 
 	@test -n "$(SPLIT)" || { echo "Set SPLIT to the split the candidates used: make model-analysis SPLIT=<split.json>" >&2; exit 2; }
 	uv run --package agentwatch-model python -m agentwatch_model.model_analysis --split "$(SPLIT)" --candidates $(ANALYSIS_CANDIDATES) --explain $(ANALYSIS_EXPLAIN) $(if $(wildcard $(TUNING_OUTPUT)/report.json),--tuning-report $(TUNING_OUTPUT)/report.json) --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(ANALYSIS_OUTPUT)
 
+BIAS_OUTPUT ?= .data/bias
+
+bias-check: ## Check the packaged training settings for slice disparities on validation and test, with a condition-weighted mitigation decided on validation (SPLIT=split file)
+	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make bias-check SPLIT=<split.json>" >&2; exit 2; }
+	uv run --package agentwatch-model python -m agentwatch_model.bias_check --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(BIAS_OUTPUT)
+
 CALIBRATION_OUTPUT ?= .data/calibration
 
 calibrate: ## Calibrate the trained candidates on validation and score abstention on test (SPLIT=the split train-candidates used; blocked runs exit 1)
