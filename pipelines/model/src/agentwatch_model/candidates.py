@@ -1,10 +1,12 @@
 """LightGBM attribution candidates: a resource classifier and an excess-latency regressor.
 
 Both train on the training split only; the validation split is used only for early stopping.
-Settings come from training.toml (training-v1). LightGBM is imported where it is used, so the
-configuration and errors stay importable on hosts where its OpenMP runtime is missing.
+Settings come from training.toml; earlier versions are kept as training-v<N>.toml. LightGBM is
+imported where it is used, so the configuration and errors stay importable on hosts where its
+OpenMP runtime is missing.
 """
 
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +22,8 @@ if TYPE_CHECKING:
     import lightgbm
 
 DEFAULT_TRAINING = Path(__file__).with_name("training.toml")
-VERSION = "training-v1"
+# The settings' version, `training-v<N>`; tune-candidates proposes the next one.
+VERSION_PATTERN = re.compile(r"training-v[1-9][0-9]*")
 HASH_DIGITS = 8  # matches the rules and contract identifiers
 TUNABLE = ("learning_rate", "num_leaves", "min_data_in_leaf", "feature_fraction", "lambda_l2")
 # One thread, a fixed seed and LightGBM's deterministic mode make retraining reproducible.
@@ -104,15 +107,16 @@ def booster_settings(parsed: dict, table: str) -> dict:
 
 def load_training_config(path: Path = DEFAULT_TRAINING) -> TrainingConfig:
     parsed = tomllib.loads(path.read_text())
-    if parsed.get("version") != VERSION:
-        raise TrainingError(f"{path.name}: version must be {VERSION!r}")
+    name = parsed.get("version")
+    if not isinstance(name, str) or not VERSION_PATTERN.fullmatch(name):
+        raise TrainingError(f"{path.name}: version must be training-v<N>, got {name!r}")
     # Validate before hashing: canonical JSON refuses NaN, and the error should name the value.
     rounds = positive_int(parsed, "num_boost_round")
     patience = positive_int(parsed, "early_stopping_rounds")
     classifier = booster_settings(parsed, "classifier")
     regressor = booster_settings(parsed, "regressor")
     return TrainingConfig(
-        version=f"{VERSION}+{canonical_sha256(parsed)[:HASH_DIGITS]}",
+        version=f"{name}+{canonical_sha256(parsed)[:HASH_DIGITS]}",
         num_boost_round=rounds,
         early_stopping_rounds=patience,
         classifier=classifier,

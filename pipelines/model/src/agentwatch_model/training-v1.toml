@@ -1,0 +1,24 @@
+# training-v1: LightGBM settings for the attribution candidates, fixed before training.
+# They are never tuned on the test split. Any change changes the training version hash.
+# Determinism settings (one thread, fixed seed, deterministic mode) are fixed in code.
+version = "training-v1"
+
+# Rounds are an upper bound; training stops early when the validation loss stops improving.
+num_boost_round = 300
+early_stopping_rounds = 30
+
+# Resource classifier (multiclass log loss).
+[classifier]
+learning_rate = 0.05
+num_leaves = 15
+min_data_in_leaf = 5
+feature_fraction = 1.0
+lambda_l2 = 1.0
+
+# Excess-latency fraction regressor (L1 loss, matching the contract's MAE).
+[regressor]
+learning_rate = 0.05
+num_leaves = 15
+min_data_in_leaf = 5
+feature_fraction = 1.0
+lambda_l2 = 1.0

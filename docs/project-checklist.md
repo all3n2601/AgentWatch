@@ -789,6 +789,16 @@ frozen evaluation sets without tuning against them.
 
 - [ ] Train LightGBM resource classification and latency-fraction regression.
 - [ ] Track data versions, parameters, metrics, and artifacts in MLflow.
+  2026-11-15 (branch `feature/model-tuning-selection`, not yet merged): `make tune-candidates`
+  searches a 162-point grid declared in `tuning.toml` (`tuning-v1+f729092b`, committed first) on
+  the validation split only and logs every point as a nested MLflow run. Both models beat
+  `training-v1` by more than the declared 2% margin on validation (classifier log loss 0.1579 to
+  0.1462, regressor MAE 0.0524 to 0.0476), so `training-v2+fd027e8a` became `training.toml`
+  before test was scored. On test it is slightly worse than `training-v1` (macro F1 0.787
+  against 0.790, MAE 0.077 against 0.076), within what one test task cannot separate; reported,
+  not reversed ([model training](model-training.md#tuning-and-training-v2),
+  `pipelines/model/tests/test_tune_candidates.py`). Validation is 273 steps from one task. A re-run
+  with the shipped code (MLflow `b9e3cae3`) reproduced the search and the proposal byte for byte.
 - [ ] Compare models and rules on the same held-out tasks and contention cases.
   2026-10-26 (M03): `make train-candidates` trains the classifier and regressor on the training
   split (`training-v1`), compares them with `rules-v1` on identical rows against

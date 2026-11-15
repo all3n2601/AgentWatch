@@ -1,13 +1,17 @@
 # AgentWatch model training
 
-Status: `training-v1+a34ea0be`, trained and evaluated on dataset v1
-(`steps-v1.3+aafae73eb211`, split `split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`,
-accepted); see [Results on dataset v1](#results-on-dataset-v1). It passes every gate it
-evaluates and blocks promotion only because six gates are `not_evaluated`. Earlier: the interim
-`steps-v1.2+5954f97ef8b2` split is blocked by the leakage check, and on `split-v2+febe942a2b59`
-a run is a `failed` attempt because that test split mixes two feature definitions. Steps
-labeled `mixed` are scored by `mixed-scoring-v1` (see Running it). What serving must reproduce,
-and what each prediction means, is in the [serving contract](model-serving-contract.md).
+Status: the packaged default (`training.toml`, used by `make train-candidates` and `make calibrate`)
+is `training-v2+fd027e8a`. The frozen evaluated pair, which held-out scoring and the serving
+contract pin, is `training-v1+a34ea0be`, trained and evaluated on dataset v1
+(`steps-v1.3+aafae73eb211`, split `split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`, accepted);
+see [Results on dataset v1](#results-on-dataset-v1). It passes every gate it evaluates and blocks
+promotion only because six gates are `not_evaluated`. Earlier: the interim `steps-v1.2+5954f97ef8b2`
+split is blocked by the leakage check, and on `split-v2+febe942a2b59` a run is a `failed` attempt
+because that test split mixes two feature definitions. Steps labeled `mixed` are scored by
+`mixed-scoring-v1` (see Running it). `training-v2` was chosen on validation by the declared tuning
+run; on test it does not improve on `training-v1` (see [Tuning and
+training-v2](#tuning-and-training-v2)). What serving must reproduce, and what each prediction means,
+is in the [serving contract](model-serving-contract.md).
 
 M03 trains two LightGBM candidates on CPU: a resource classifier and an excess-latency
 regressor. It scores them and [the rule baseline](rule-baseline.md) on identical rows against
@@ -159,6 +163,77 @@ How far these results reach:
   the mixed macro F1 is low because `cpu_sandbox` is rarely named (4 of 82).
 - **Validation is shared.** The same 273 validation steps chose both early-stopping iterations
   and, in M04, the calibration; see [ADR 0012](adr/0012-split-v3-held-out-a06-evidence-and-validation.md).
+
+## Tuning and training-v2
+
+```sh
+make tune-candidates SPLIT=$SPLIT   # validation only; writes .data/tuning/{report.json,training-v2.toml}
+make train-candidates SPLIT=$SPLIT  # training.toml (training-v2), scored once on test
+make calibrate SPLIT=$SPLIT
+```
+
+**Declared before any run** (`tuning.toml`, `tuning-v1+f729092b`, committed in `aed9f8c`):
+
+- **Search space:** 162 grid points, `learning_rate` 0.03 / 0.05 / 0.1, `num_leaves` 7 / 15 / 31,
+  `min_data_in_leaf` 5 / 10 / 20, `lambda_l2` 0 / 1 / 5 and `feature_fraction` 0.8 / 1.0.
+  `training-v1`'s settings are a grid point.
+- **Selection, validation only:** lowest multiclass log loss on the 268 single-class validation
+  steps for the classifier, lowest excess-fraction MAE on all 273 validation steps for the
+  regressor. Log loss, not macro F1, because validation holds 8 `cpu_sandbox`, 12 `retrieval` and
+  14 `inference` steps, so macro F1 moves in large steps. The classifier and regressor train
+  independently, so each takes its own best point from the same grid.
+- **Noise margin:** the best point replaces `training-v1` only when it improves the
+  `training-v1` value by at least 2% (relative); ties go to the simpler setting.
+- **Test:** `tune-candidates` never reads it (a test asserts only train and validation are
+  loaded). The proposal became `training.toml` (`training-v2`, `a6fad7c`) before test was scored.
+
+Every grid point is a nested MLflow run under one parent in the `agentwatch-tuning` experiment
+(parent `ed393fcc226e4d3c8303f3628fcc1a0b`, local); failed points would be kept with their reason.
+None failed. That run predates `7a3a6f6`, which changed `select()` for an unmeasured base point and
+the limitations text; a re-run with the shipped code (parent `b9e3cae389ab43d0bfdd1be82520688f`)
+reproduced every point's validation values and the selection, and its proposal is byte-identical
+to the committed `training.toml`.
+
+**Validation results** (run of 2026-11-15, CPU in a Linux container):
+
+| Model | Measure | `training-v1` | Selected | Improvement | Settings |
+|---|---|---|---|---|---|
+| Classifier | log loss | 0.1579 | 0.1462 | 7.4% | 31 leaves, learning rate 0.1, L2 5, feature fraction 0.8, min data 5 |
+| Classifier | macro F1 (reported) | 0.796 | 0.816 | | |
+| Regressor | MAE | 0.0524 | 0.0476 | 9.3% | 15 leaves, learning rate 0.03, L2 0, feature fraction 1.0, min data 10 |
+
+Log loss over the 162 points ranges from 0.146 to 0.175. **Sensitivity** (median validation value
+over every point with each setting; the full min / median / max is in the report's
+`sensitivity`): for the classifier, `lambda_l2` (0.161 at 0, 0.153 at 5) and `num_leaves` (0.153
+at 7, 0.161 at 31) matter most, and `learning_rate`, `min_data_in_leaf` and `feature_fraction`
+move the median by under 0.003. The selected point has 31 leaves although 7 leaves has the best
+median: the minimum is one point on a small split. For the regressor no setting moves the median
+MAE by more than 0.0014.
+
+**Test results, scored once after `training-v2` was committed** (same 3,564 scored test steps,
+`eval-contract-v3`):
+
+| Measure | `training-v1+a34ea0be` | `training-v2+fd027e8a` |
+|---|---|---|
+| Macro F1 (rules-v1: 0.200) | 0.790 | 0.787 |
+| Clean steps predicted `none` | 0.991 | 0.989 |
+| Excess-latency MAE (limit 0.10) | 0.076 | 0.077 |
+| Gates | 5 pass, 6 `not_evaluated` | 5 pass, 6 `not_evaluated` |
+| Calibration (M04) | T 0.897, threshold 0.647, ECE 0.0178 (uncalibrated 0.0074), 2.4% abstain | T 0.807, threshold 0, ECE 0.0207 (uncalibrated 0.0053), none abstain |
+
+The validation gains did not carry over to test: `training-v2` is slightly worse on every
+measure, by amounts that one test task cannot separate from noise (no interval is defined with
+one task group). Selection stays the declared validation one; the test result is reported, not
+used to switch back, since choosing between configurations on test would be tuning on it. On
+`training-v2`, M04's validation search found no abstention threshold that improved its
+objective, so it abstains on nothing. The frozen held-out pair (`score-held-out`) stays
+`training-v1+a34ea0be`. MLflow runs (local): candidates `3b6b8b327de74cc8a2a35e048ba9986e`,
+calibration `3b4f8fdcc94e4dcc8860d21064dcf8d6`.
+
+Limitations: validation is 273 steps from 3 experiments of one task and also stops training
+early, so every point's validation value is optimistic; test is one unseen task; training has
+one task group. A second task group in the next release is needed before tuning results are
+read as more than descriptive.
 
 ## Gates
 

@@ -95,6 +95,12 @@ train-candidates: ## Train LightGBM candidates on a frozen split, compare with r
 	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make train-candidates SPLIT=<split.json>" >&2; exit 2; }
 	uv run --package agentwatch-model python -m agentwatch_model.train_candidates --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(CANDIDATES_OUTPUT)
 
+TUNING_OUTPUT ?= .data/tuning
+
+tune-candidates: ## Tune the LightGBM candidates on the validation split only (never test) and propose training-v2 (SPLIT=split file)
+	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make tune-candidates SPLIT=<split.json>" >&2; exit 2; }
+	uv run --package agentwatch-model python -m agentwatch_model.tune_candidates --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(TUNING_OUTPUT)
+
 CALIBRATION_OUTPUT ?= .data/calibration
 
 calibrate: ## Calibrate the trained candidates on validation and score abstention on test (SPLIT=the split train-candidates used; blocked runs exit 1)

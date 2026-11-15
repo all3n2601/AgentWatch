@@ -1,0 +1,20 @@
+# tuning-v1: the hyperparameter search for the attribution candidates, declared before any
+# tuning run (docs/model-training.md, "Tuning"). Settings are chosen on the validation split
+# only; tune-candidates never reads the test split. The base settings (training-v1.toml) must
+# be a point of the grid, so they are always compared on the same terms.
+version = "tuning-v1"
+
+[selection]
+# Classifier: lowest multiclass log loss on the single-class validation steps of trained
+# classes. Regressor: lowest excess-fraction MAE on every validation step. The best point
+# replaces the base settings only when it improves the base's validation value by at least
+# this relative margin: validation is 273 steps from 3 experiments of one task, so smaller
+# differences are not distinguishable from noise. Ties go to the simpler setting.
+min_relative_improvement = 0.02
+
+[search]
+learning_rate = [0.03, 0.05, 0.1]
+num_leaves = [7, 15, 31]
+min_data_in_leaf = [5, 10, 20]
+lambda_l2 = [0.0, 1.0, 5.0]
+feature_fraction = [0.8, 1.0]
