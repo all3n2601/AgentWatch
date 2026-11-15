@@ -1,10 +1,10 @@
-# registry-v1: when a pushed model may replace the registered champion. Declared before the
-# first push. Every evaluated model is registered as a new version under the `candidate` alias;
-# the `champion` alias moves to it only when it is eligible (no failed contract or calibration
-# gate, and no failed bias check on test when a bias report is given) and its test macro F1 is at
-# least the champion's minus max_macro_f1_drop. Otherwise the champion is kept: that is the
-# rollback. `champion` marks the best eligible evaluated model; it is not a promotion while the
-# version is tagged blocks_promotion = true (serving must refuse those; docs/model-serving-contract.md).
+# registry-v1: when a pushed model may replace the registered champion. Declared before the first
+# push. Every evaluated model is registered as a new version under the `candidate` alias; the
+# `champion` alias moves to it only when it is eligible (no failed contract or calibration gate,
+# and no failed bias check on test when a bias report is given) and its test macro F1 is at least
+# the champion's minus max_macro_f1_drop. Otherwise the champion is kept: that is the rollback.
+# `champion` marks the best eligible evaluated model; it is not a promotion while the version is
+# tagged blocks_promotion = true (serving must refuse those; docs/model-serving-contract.md).
 version = "registry-v1"
 model_name = "agentwatch-attribution"
 max_macro_f1_drop = 0.0
