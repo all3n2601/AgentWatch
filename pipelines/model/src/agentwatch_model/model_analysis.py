@@ -13,6 +13,7 @@ model's scores, not causes of contention.
 
 import argparse
 import json
+import os
 import statistics
 import sys
 from pathlib import Path
@@ -98,6 +99,9 @@ def model_rows(reports: dict[str, dict]) -> dict[str, dict]:
 
 
 def pyplot():
+    # A notebook kernel exports MPLBACKEND for its inline backend, which a subprocess such as
+    # `make model-analysis` run from a cell cannot load; these figures are files, so use Agg.
+    os.environ["MPLBACKEND"] = "Agg"
     import matplotlib
 
     matplotlib.use("Agg")

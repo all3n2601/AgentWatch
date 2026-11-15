@@ -15,6 +15,7 @@ from agentwatch_model.model_analysis import (
     main,
     numeric_order,
     parse_named,
+    pyplot,
     run,
     shap_importance,
 )
@@ -138,3 +139,10 @@ def test_main_exits_2_on_a_bad_candidates_argument(tmp_path, capsys):
 def test_sensitivity_values_are_plotted_in_numeric_order():
     assert numeric_order({"10": {}, "20": {}, "5": {}}) == ["5", "10", "20"]
     assert numeric_order({"0.1": {}, "0.03": {}, "0.05": {}}) == ["0.03", "0.05", "0.1"]
+
+
+def test_figures_draw_under_a_notebook_kernel_backend(monkeypatch):
+    # Jupyter exports this for its inline backend; a `make` subprocess inherits it.
+    monkeypatch.setenv("MPLBACKEND", "module://matplotlib_inline.backend_inline")
+    plt = pyplot()
+    assert plt.get_backend().lower() == "agg"
