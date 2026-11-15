@@ -13,12 +13,12 @@ import mlflow
 from agentwatch_model.candidates import load_training_config
 from agentwatch_model.tune_candidates import (
     EXIT_ERROR,
-    PROPOSAL,
     REPORT,
     TuningError,
     grid,
     load_tuning_config,
     main,
+    next_version,
     run,
     select,
     sensitivity,
@@ -212,12 +212,12 @@ def test_run_reads_only_train_and_validation_and_writes_a_training_v2_proposal(t
     assert first.startswith(
         f"Settings are chosen on the validation split: {len(SPLITS['validation'])} steps"
     )
-    proposal = tomllib.loads((tmp_path / "out" / PROPOSAL).read_text())
+    proposal = tomllib.loads((tmp_path / "out" / "training-v2.toml").read_text())
     assert proposal["version"] == "training-v2"
     assert proposal["classifier"] == report["selection"]["classifier"]["settings"]
     assert proposal["regressor"] == report["selection"]["regressor"]["settings"]
     proposed = tmp_path / "proposed.toml"
-    proposed.write_text((tmp_path / "out" / PROPOSAL).read_text())
+    proposed.write_text((tmp_path / "out" / "training-v2.toml").read_text())
     assert load_training_config(proposed).version.startswith("training-v2+")
 
 
@@ -245,7 +245,7 @@ def test_a_blocked_split_is_a_recorded_attempt_without_a_proposal(tmp_path):
     assert outcome.status == "blocked" and outcome.run_id
     report = read_report(tmp_path)
     assert report["status"] == "blocked" and "leakage" in report["reason"]
-    assert not (tmp_path / "out" / PROPOSAL).exists()
+    assert not (tmp_path / "out" / "training-v2.toml").exists()
 
 
 def test_main_exits_2_on_a_bad_tuning_file(tmp_path, capsys):
@@ -253,3 +253,40 @@ def test_main_exits_2_on_a_bad_tuning_file(tmp_path, capsys):
     bad.write_text('version = "tuning-v9"\n')
     assert main(["--split", str(tmp_path / "s.json"), "--tuning", str(bad)]) == EXIT_ERROR
     assert "Tuning error" in capsys.readouterr().err
+
+
+def test_the_next_version_follows_the_base():
+    assert next_version("training-v1+a34ea0be") == "training-v2"
+    assert next_version("training-v2+fd027e8a") == "training-v3"
+    with pytest.raises(TuningError):
+        next_version("tuning-v1+f729092b")
+
+
+def test_the_proposal_keeps_the_explanatory_comments(tmp_path):
+    tune(tmp_path)
+    text = (tmp_path / "out" / "training-v2.toml").read_text()
+    assert "stops early when the validation loss stops improving" in text
+    assert "multiclass log loss" in text and "matching the contract's MAE" in text
+
+
+def test_a_run_where_no_point_trains_fails_without_a_proposal(tmp_path, monkeypatch):
+    from agentwatch_model import tune_candidates
+    from agentwatch_model.candidates import CandidateError
+
+    def refuse(*args, **kwargs):
+        raise CandidateError("synthetic: cannot train")
+
+    monkeypatch.setattr(tune_candidates, "fit_candidate", refuse)
+    outcome = tune(tmp_path)
+    assert outcome.status == "failed" and outcome.run_id
+    report = read_report(tmp_path)
+    assert report["failed_points"] == report["points"] == 4
+    assert "could not be measured" in report["reason"]
+    assert "proposal" not in report
+    assert not list((tmp_path / "out").glob("training-v*.toml"))
+
+
+def test_main_exits_2_on_an_unreadable_tuning_file(tmp_path, capsys):
+    missing = tmp_path / "missing.toml"
+    assert main(["--split", str(tmp_path / "s.json"), "--tuning", str(missing)]) == EXIT_ERROR
+    assert "Cannot read" in capsys.readouterr().err
