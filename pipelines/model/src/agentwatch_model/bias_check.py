@@ -19,9 +19,10 @@ choose. The check runs on the packaged training settings and writes no model.
 """
 
 import argparse
+import re
 import sys
 import tomllib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from agentwatch_data.extract import canonical_sha256
@@ -66,6 +67,7 @@ DEFAULT_BIAS = PACKAGE / "bias.toml"
 DEFAULT_OUTPUT = Path(".data/bias")
 VERSION = "bias-v1"
 REPORT = "report.json"
+PROPOSAL = "training-weighted.toml"
 TRACKING = "tracking.json"
 EXPERIMENT = "agentwatch-bias"
 TASK = "M04-bias"
@@ -87,6 +89,28 @@ LIMITATIONS = (
         "labels, clean and baseline steps are almost all `none`."
     ),
 )
+
+
+def weighted_settings_text(base_text: str, base_version: str, weight_by: str) -> str:
+    """The base training file with the next training version and condition weighting."""
+    matched = re.fullmatch(r"training-v([0-9]+)\+[0-9a-f]+", base_version)
+    if matched is None:
+        raise BiasError(f"Cannot derive the next training version from {base_version!r}")
+    number = int(matched.group(1)) + 1
+    text = re.sub(
+        r'^version = "training-v[0-9]+"',
+        f'version = "training-v{number}"',
+        base_text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    header = (
+        f"# training-v{number}: {base_version}'s settings trained with {weight_by}-balancing\n"
+        "# weights, written by bias-check (bias-v1) as the mitigation candidate.\n"
+    )
+    return header + text.replace(
+        "\nnum_boost_round =", f'\nweight_by = "{weight_by}"\nnum_boost_round =', 1
+    )
 
 
 class BiasError(ValueError):
@@ -317,7 +341,14 @@ def run(
     for name, rows in splits.items():
         validate_rows(rows, name)
     validate_dataset_version(splits["train"] + splits["validation"] + splits["test"])
-    variants = {"unweighted": base, "weighted": replace(base, weight_by=config.weight_by)}
+    if base.weight_by is not None:
+        raise BiasError(f"{training_path.name} is already weighted; check unweighted settings")
+    output.mkdir(parents=True, exist_ok=True)
+    proposal = output / PROPOSAL
+    write_atomic(
+        proposal, weighted_settings_text(training_path.read_text(), base.version, config.weight_by)
+    )
+    variants = {"unweighted": base, "weighted": load_training_config(proposal)}
     models = {}
     for name, settings in variants.items():
         candidate = fit_candidate(splits["train"], splits["validation"], settings)
@@ -340,7 +371,6 @@ def run(
         weighted["validation_log_loss"],
         config,
     )
-    output.mkdir(parents=True, exist_ok=True)
     for name in ("validation", "test"):
         reports = {model: models[model][name] for model in MODELS}
         bias_figure(reports, name, config, output / f"bias-{name}.png")
@@ -357,7 +387,7 @@ def run(
         },
         "split": {"file": split.name, "sha256": file_sha256(split) if split.is_file() else None},
         "models": models,
-        "decision": decision,
+        "decision": decision | {"settings_file": PROPOSAL if decision["adopted"] else None},
         "figures": {
             name: file_sha256(output / name) for name in ("bias-validation.png", "bias-test.png")
         },

@@ -193,6 +193,12 @@ def test_run_reports_both_models_on_validation_and_test_with_figures(tmp_path):
         assert model["validation"]["overall"]["steps"] > 0
     assert report["decision"]["selected"] in {"unweighted", "weighted"}
     assert report["decision"]["decided_on"] == "validation"
+    versions = {name: model["training_version"] for name, model in report["models"].items()}
+    assert versions["unweighted"].startswith("training-v2+")
+    assert versions["weighted"].startswith("training-v3+")
+    proposed = load_training_config(output / "training-weighted.toml")
+    assert proposed.weight_by == "condition" and proposed.version == versions["weighted"]
+    assert proposed.classifier == load_training_config().classifier
     for name in ("bias-validation.png", "bias-test.png"):
         assert (output / name).read_bytes().startswith(b"\x89PNG")
     mlflow.set_tracking_uri(tracking["tracking_uri"])
