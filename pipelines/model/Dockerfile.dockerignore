@@ -1,0 +1,17 @@
+# Build context for pipelines/model/Dockerfile (BuildKit reads this file for that Dockerfile).
+# Local data, results, environments and caches stay out; the DVC pointers (data/*.dvc) stay in.
+.git
+**/.git
+.data
+data/evidence
+data/datasets
+data/held-out
+.venv
+**/.venv
+**/node_modules
+apps/web
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+.dvc/cache
+.dvc/tmp

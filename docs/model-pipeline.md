@@ -1,0 +1,70 @@
+# AgentWatch model pipeline image and registry
+
+One image runs the whole model pipeline with the repository's own make targets, and every run
+ends by pushing the evaluated model to a model registry. Until the team's GCP model registry
+and its credentials exist, MLflow's model registry on the local tracking database stands in for
+it.
+
+```sh
+make model-pipeline-image   # docker build -f pipelines/model/Dockerfile -t agentwatch-model-pipeline .
+make model-pipeline-run     # outputs, figures and the MLflow database in .data/model-pipeline/
+```
+
+## What the image runs
+
+[`pipelines/model/run_pipeline.sh`](../pipelines/model/run_pipeline.sh), stopping at the first
+failure:
+
+1. `make pull-dataset TARGET=data/datasets`: dataset v1 from the public DVC remote (no login).
+2. Rebuild `split-v3` from the release and check its SHA-256 against the evaluated split
+   (`32488a94…`); a different file stops the run.
+3. `make train-candidates`, `make calibrate`, `make bias-check`, `make model-analysis` on that
+   split, with the packaged settings (`training.toml`, `calibration.toml`, `bias.toml`).
+4. `make register-model`: push the model to the registry.
+
+The image is `ghcr.io/astral-sh/uv:python3.13-bookworm` pinned by digest, with `libgomp1` for
+LightGBM and `make`; the locked environments are installed at build time (`uv sync --frozen`),
+and it runs as a non-root user. Its build context leaves out local data, results, environments
+and the git directory (`pipelines/model/Dockerfile.dockerignore`), so DVC runs without git
+(`core.no_scm`). Mount a folder at `/agentwatch/.data` to keep the results; the run writes
+nothing outside it and the container.
+
+## Registry rule and rollback
+
+`make register-model` ([`register_model.py`](../pipelines/model/src/agentwatch_model/register_model.py))
+follows [`registry.toml`](../pipelines/model/src/agentwatch_model/registry.toml) (`registry-v1`),
+declared before the first push:
+
+- It refuses a candidates folder that is not an evaluated test report, an unfitted calibration,
+  or a calibration of another training version.
+- Every accepted push logs the model files, the serving contract, the calibration and the reports
+  as one run in the `agentwatch-registry` experiment and registers them as a new version of
+  `agentwatch-attribution`, tagged with its training and calibration versions, test macro F1,
+  `blocks_promotion`, eligibility and bias-check outcome. The `candidate` alias moves to it.
+- The `champion` alias moves to it only when it is **eligible** (no failed contract or calibration
+  gate, and no failed bias check on test when `make bias-check` has run) and its test macro F1 is
+  at least the champion's (`max_macro_f1_drop = 0`). Otherwise the champion stays: that is the
+  automatic rollback, and the reason is recorded in `.data/registry/registration.json`.
+- `make rollback-model` points `champion` back at the version it replaced.
+
+`champion` is the best eligible evaluated model. It is not a promotion while the version is
+tagged `blocks_promotion = true`, which serving must refuse
+([serving contract](model-serving-contract.md)); promotion gates are M05.
+
+## Run of 2026-11-15
+
+`make model-pipeline-image` then `make model-pipeline-run` on a laptop (Docker, arm64): the image
+built in about 40 s and the run took about 20 s. The rebuilt `split-v3` matched (`OK`), and the
+model it trained is byte-identical to the local `training-v3+71c4dd58` run (same `classifier.txt`
+and `predictions.jsonl`; test macro F1 0.790). It was registered as version 1 of
+`agentwatch-attribution` under `candidate`, tagged `blocks_promotion = true`; `champion` was not
+set, because the bias check fails on test ([model bias](model-bias.md)), so no model is
+champion yet.
+
+## Still needed (owner access)
+
+- A GCP model or artifact registry and permission to push to it, so `register-model` can push
+  there instead of the local stand-in.
+- CI secrets (registry credentials, the Slack webhook) for a CI job that runs this image on
+  model-code changes and alerts on training finished, failed runs, and failed validation or
+  bias checks.

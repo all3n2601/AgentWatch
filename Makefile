@@ -115,6 +115,22 @@ bias-check: ## Check the packaged training settings for slice disparities on val
 	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make bias-check SPLIT=<split.json>" >&2; exit 2; }
 	uv run --package agentwatch-model python -m agentwatch_model.bias_check --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(BIAS_OUTPUT)
 
+REGISTRY_OUTPUT ?= .data/registry
+MODEL_PIPELINE_IMAGE ?= agentwatch-model-pipeline
+
+register-model: ## Push the evaluated model to the registry (MLflow's local registry stands in for GCP); champion moves only under registry.toml's rule
+	uv run --package agentwatch-model python -m agentwatch_model.register_model --candidates $(CANDIDATES_OUTPUT) --calibrated $(CALIBRATION_OUTPUT) $(if $(wildcard $(BIAS_OUTPUT)/report.json),--bias-report $(BIAS_OUTPUT)/report.json) --output $(REGISTRY_OUTPUT)
+
+rollback-model: ## Point the registry's champion back at the version it replaced
+	uv run --package agentwatch-model python -m agentwatch_model.register_model --rollback
+
+model-pipeline-image: ## Build the model pipeline image (pull, split, train, calibrate, bias check, figures, registry push)
+	docker build -f pipelines/model/Dockerfile -t $(MODEL_PIPELINE_IMAGE) .
+
+model-pipeline-run: ## Run the model pipeline image; outputs and MLflow land in .data/model-pipeline/
+	mkdir -p "$(CURDIR)/.data/model-pipeline"
+	docker run --rm -v "$(CURDIR)/.data/model-pipeline:/agentwatch/.data" $(MODEL_PIPELINE_IMAGE)
+
 CALIBRATION_OUTPUT ?= .data/calibration
 
 calibrate: ## Calibrate the trained candidates on validation and score abstention on test (SPLIT=the split train-candidates used; blocked runs exit 1)
