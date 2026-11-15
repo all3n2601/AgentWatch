@@ -25,7 +25,7 @@ def candidate(config):
 
 def test_training_config_is_versioned_by_its_parsed_contents(config, tmp_path):
     assert (
-        config.version.startswith("training-v1+") and len(config.version) == len("training-v1+") + 8
+        config.version.startswith("training-v3+") and len(config.version) == len("training-v3+") + 8
     )
     edited = tmp_path / "training.toml"
     edited.write_text(
@@ -44,7 +44,8 @@ def test_training_config_is_versioned_by_its_parsed_contents(config, tmp_path):
 )
 def test_invalid_training_settings_are_rejected(tmp_path, old, new, message):
     bad = tmp_path / "training.toml"
-    bad.write_text(DEFAULT_TRAINING.read_text().replace(old, new, 1))
+    # The frozen training-v1 file has fixed, known values to edit.
+    bad.write_text(DEFAULT_TRAINING.with_name("training-v1.toml").read_text().replace(old, new, 1))
     with pytest.raises(TrainingError, match=message):
         load_training_config(bad)
 
@@ -107,3 +108,31 @@ def test_coverage_gaps_are_recorded_not_hidden(config):
     candidate = fit_candidate(train, validation, config)
     assert candidate.validation_rows_dropped == 4
     assert candidate.classes_absent_from_train == ("inference", "retrieval")
+
+
+def test_the_evaluated_training_v2_settings_are_kept_unchanged():
+    # The tuning run's evaluated settings, which training-v3 weights by condition.
+    frozen = DEFAULT_TRAINING.with_name("training-v2.toml")
+    assert load_training_config(frozen).version == "training-v2+fd027e8a"
+
+
+def test_the_packaged_settings_are_training_v2_weighted_by_condition():
+    packaged = load_training_config()
+    v2 = load_training_config(DEFAULT_TRAINING.with_name("training-v2.toml"))
+    assert packaged.version == "training-v3+71c4dd58" and packaged.weight_by == "condition"
+    assert (packaged.classifier, packaged.regressor) == (v2.classifier, v2.regressor)
+
+
+def test_the_evaluated_training_v1_settings_are_kept_unchanged():
+    # M03's first evaluation (#72) and the frozen held-out pair (#76) are training-v1+a34ea0be.
+    frozen = DEFAULT_TRAINING.with_name("training-v1.toml")
+    assert load_training_config(frozen).version == "training-v1+a34ea0be"
+
+
+@pytest.mark.parametrize("name", ["training", "training-v0", "training-v2a", "tuning-v1"])
+def test_a_version_that_is_not_training_vN_is_refused(tmp_path, name):
+    edited = tmp_path / "training.toml"
+    text = DEFAULT_TRAINING.read_text().replace('version = "training-v3"', f'version = "{name}"')
+    edited.write_text(text)
+    with pytest.raises(TrainingError, match="training-v<N>"):
+        load_training_config(edited)

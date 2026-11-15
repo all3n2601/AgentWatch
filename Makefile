@@ -95,6 +95,42 @@ train-candidates: ## Train LightGBM candidates on a frozen split, compare with r
 	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make train-candidates SPLIT=<split.json>" >&2; exit 2; }
 	uv run --package agentwatch-model python -m agentwatch_model.train_candidates --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(CANDIDATES_OUTPUT)
 
+TUNING_OUTPUT ?= .data/tuning
+
+tune-candidates: ## Tune the LightGBM candidates on the validation split only (never test) and propose training-v2 (SPLIT=split file)
+	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make tune-candidates SPLIT=<split.json>" >&2; exit 2; }
+	uv run --package agentwatch-model python -m agentwatch_model.tune_candidates --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(TUNING_OUTPUT)
+
+ANALYSIS_OUTPUT ?= .data/analysis
+ANALYSIS_CANDIDATES ?= selected=$(CANDIDATES_OUTPUT)
+ANALYSIS_EXPLAIN ?= selected
+
+model-analysis: ## Draw confusion matrices, a model comparison, SHAP importance and tuning sensitivity for evaluated candidates; reads results, trains nothing (SPLIT=split file)
+	@test -n "$(SPLIT)" || { echo "Set SPLIT to the split the candidates used: make model-analysis SPLIT=<split.json>" >&2; exit 2; }
+	uv run --package agentwatch-model python -m agentwatch_model.model_analysis --split "$(SPLIT)" --candidates $(ANALYSIS_CANDIDATES) --explain $(ANALYSIS_EXPLAIN) $(if $(wildcard $(TUNING_OUTPUT)/report.json),--tuning-report $(TUNING_OUTPUT)/report.json) --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(ANALYSIS_OUTPUT)
+
+BIAS_OUTPUT ?= .data/bias
+
+bias-check: ## Check the packaged training settings for slice disparities on validation and test, with a condition-weighted mitigation decided on validation (SPLIT=split file)
+	@test -n "$(SPLIT)" || { echo "Set SPLIT to a frozen split file: make bias-check SPLIT=<split.json>" >&2; exit 2; }
+	uv run --package agentwatch-model python -m agentwatch_model.bias_check --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --output $(BIAS_OUTPUT)
+
+REGISTRY_OUTPUT ?= .data/registry
+MODEL_PIPELINE_IMAGE ?= agentwatch-model-pipeline
+
+register-model: ## Push the evaluated model to the registry (MLflow's local registry stands in for GCP); champion moves only under registry.toml's rule
+	uv run --package agentwatch-model python -m agentwatch_model.register_model --candidates $(CANDIDATES_OUTPUT) --calibrated $(CALIBRATION_OUTPUT) $(if $(NO_BIAS_REPORT),--no-bias-report,--bias-report $(BIAS_OUTPUT)/report.json) --output $(REGISTRY_OUTPUT)
+
+rollback-model: ## Point the registry's champion back at the version it replaced
+	uv run --package agentwatch-model python -m agentwatch_model.register_model --rollback
+
+model-pipeline-image: ## Build the model pipeline image (pull, split, train, calibrate, bias check, figures, registry push)
+	docker build -f pipelines/model/Dockerfile -t $(MODEL_PIPELINE_IMAGE) .
+
+model-pipeline-run: ## Run the model pipeline image; outputs and MLflow land in .data/model-pipeline/
+	mkdir -p "$(CURDIR)/.data/model-pipeline"
+	docker run --rm -v "$(CURDIR)/.data/model-pipeline:/agentwatch/.data" $(MODEL_PIPELINE_IMAGE)
+
 CALIBRATION_OUTPUT ?= .data/calibration
 
 calibrate: ## Calibrate the trained candidates on validation and score abstention on test (SPLIT=the split train-candidates used; blocked runs exit 1)

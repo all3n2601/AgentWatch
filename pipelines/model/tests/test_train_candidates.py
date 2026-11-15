@@ -10,6 +10,7 @@ from training_fixtures import dataset, featured_row, require_lightgbm
 require_lightgbm()
 
 import mlflow
+from agentwatch_model.candidates import DEFAULT_TRAINING, load_training_config
 from agentwatch_model.train_candidates import main, run
 
 SPLITS = {
@@ -81,7 +82,8 @@ def test_run_trains_scores_test_and_saves_every_artifact(tmp_path):
     assert logged.info.run_id == outcome.run_id
     assert logged.data.tags["status"] == "evaluated" and logged.data.tags["task"] == "M03"
     assert logged.data.params["dataset_version"] == "steps-v1.2+synthetic"
-    assert logged.data.params["classifier.learning_rate"] == "0.05"
+    packaged = load_training_config(DEFAULT_TRAINING).classifier["learning_rate"]
+    assert logged.data.params["classifier.learning_rate"] == str(packaged)
     assert "model_macro_f1_defined_classes" in logged.data.metrics
 
 

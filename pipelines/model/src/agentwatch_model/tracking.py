@@ -57,7 +57,7 @@ def run_params(report: dict) -> dict[str, str]:
     for name, value in (model.get("best_iterations") or {}).items():
         params[f"best_iteration.{name}"] = text(value)
     settings = model.get("settings") or {}
-    for name in ("num_boost_round", "early_stopping_rounds"):
+    for name in ("num_boost_round", "early_stopping_rounds", "weight_by"):
         params[name] = text(settings.get(name))
     for booster in ("classifier", "regressor"):
         for name, value in (settings.get(booster) or {}).items():

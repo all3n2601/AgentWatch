@@ -37,11 +37,14 @@ CALIBRATED_PREDICTIONS = "predictions.jsonl"
 TEMPERATURE = 0.9
 THRESHOLD = 0.6
 SYNTHETIC_CALIBRATION_VERSION = "calibration-v1+synthetic"
-# The versions a synthetic pair records. Its training version is the packaged training
-# config's, as for a real M03 run; its calibration version is never a real one, so the pinned
+# The frozen pair was trained with training-v1, kept as training-v1.toml after training-v2
+# became the packaged config; a synthetic pair is trained with the same file.
+FROZEN_TRAINING = DEFAULT_TRAINING.with_name("training-v1.toml")
+# The versions a synthetic pair records. Its training version is training-v1's, as for the
+# real frozen M03 run; its calibration version is never a real one, so the pinned
 # FROZEN_VERSIONS refuse every synthetic pair.
 SYNTHETIC_VERSIONS = FrozenVersions(
-    training=load_training_config(DEFAULT_TRAINING).version,
+    training=load_training_config(FROZEN_TRAINING).version,
     calibration=SYNTHETIC_CALIBRATION_VERSION,
 )
 
@@ -100,7 +103,7 @@ def write_frozen_pair(directory: Path, split: Path) -> FrozenPair:
     candidates_dir, calibrated_dir = directory / "candidates", directory / "calibration"
     calibrated_dir.mkdir(parents=True, exist_ok=True)
     train, validation, test = dataset(30, "train"), dataset(8, "valid"), dataset(4, "test")
-    candidate = fit_candidate(train, validation, load_training_config(DEFAULT_TRAINING))
+    candidate = fit_candidate(train, validation, load_training_config(FROZEN_TRAINING))
     hashes = save_models(candidate, candidates_dir)
     columns = list(candidate.class_order)
     write_json(

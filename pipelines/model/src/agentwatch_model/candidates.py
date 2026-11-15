@@ -1,10 +1,12 @@
 """LightGBM attribution candidates: a resource classifier and an excess-latency regressor.
 
 Both train on the training split only; the validation split is used only for early stopping.
-Settings come from training.toml (training-v1). LightGBM is imported where it is used, so the
-configuration and errors stay importable on hosts where its OpenMP runtime is missing.
+Settings come from training.toml; earlier versions are kept as training-v<N>.toml. LightGBM is
+imported where it is used, so the configuration and errors stay importable on hosts where its
+OpenMP runtime is missing.
 """
 
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from agentwatch_data.extract import canonical_sha256
+from agentwatch_data.slices import balancing_weights
 
 from agentwatch_model.features import FEATURES, feature_matrix
 from agentwatch_model.metrics import CLASSES, is_number
@@ -20,9 +23,13 @@ if TYPE_CHECKING:
     import lightgbm
 
 DEFAULT_TRAINING = Path(__file__).with_name("training.toml")
-VERSION = "training-v1"
+# The settings' version, `training-v<N>`; tune-candidates proposes the next one.
+VERSION_PATTERN = re.compile(r"training-v[1-9][0-9]*")
 HASH_DIGITS = 8  # matches the rules and contract identifiers
 TUNABLE = ("learning_rate", "num_leaves", "min_data_in_leaf", "feature_fraction", "lambda_l2")
+# Training rows can be re-weighted so every value of one of these attributes carries the same total
+# weight (the data slices' balancing weights); unset, every row weighs 1.
+WEIGHT_ATTRIBUTES = ("condition",)
 # One thread, a fixed seed and LightGBM's deterministic mode make retraining reproducible.
 FIXED = {"deterministic": True, "num_threads": 1, "seed": 0, "verbose": -1, "force_col_wise": True}
 
@@ -44,6 +51,7 @@ class TrainingConfig:
     early_stopping_rounds: int
     classifier: dict
     regressor: dict
+    weight_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,20 +112,38 @@ def booster_settings(parsed: dict, table: str) -> dict:
 
 def load_training_config(path: Path = DEFAULT_TRAINING) -> TrainingConfig:
     parsed = tomllib.loads(path.read_text())
-    if parsed.get("version") != VERSION:
-        raise TrainingError(f"{path.name}: version must be {VERSION!r}")
+    name = parsed.get("version")
+    if not isinstance(name, str) or not VERSION_PATTERN.fullmatch(name):
+        raise TrainingError(f"{path.name}: version must be training-v<N>, got {name!r}")
     # Validate before hashing: canonical JSON refuses NaN, and the error should name the value.
     rounds = positive_int(parsed, "num_boost_round")
     patience = positive_int(parsed, "early_stopping_rounds")
     classifier = booster_settings(parsed, "classifier")
     regressor = booster_settings(parsed, "regressor")
+    weight_by = parsed.get("weight_by")
+    if weight_by is not None and weight_by not in WEIGHT_ATTRIBUTES:
+        raise TrainingError(
+            f"weight_by must be one of {list(WEIGHT_ATTRIBUTES)}, got {weight_by!r}"
+        )
     return TrainingConfig(
-        version=f"{VERSION}+{canonical_sha256(parsed)[:HASH_DIGITS]}",
+        version=f"{name}+{canonical_sha256(parsed)[:HASH_DIGITS]}",
         num_boost_round=rounds,
         early_stopping_rounds=patience,
         classifier=classifier,
         regressor=regressor,
+        weight_by=weight_by,
     )
+
+
+def row_weights(rows: list[dict], attribute: str | None) -> np.ndarray | None:
+    """Balancing weights by one attribute's value, or None for unweighted training."""
+    if attribute is None:
+        return None
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[str(row[attribute])] = counts.get(str(row[attribute]), 0) + 1
+    by_value = balancing_weights({value: {"rows": n} for value, n in counts.items()}, len(rows))
+    return np.array([by_value[str(row[attribute])] for row in rows], dtype=np.float64)
 
 
 def class_targets(rows: list[dict], index: dict[str, int]) -> np.ndarray:
@@ -134,10 +160,13 @@ def train_booster(
     target: np.ndarray,
     validation: Validation,
     config: TrainingConfig,
+    weight: np.ndarray | None = None,
 ) -> "lightgbm.Booster":
     import lightgbm
 
-    data = lightgbm.Dataset(features, target, feature_name=list(FEATURES), free_raw_data=False)
+    data = lightgbm.Dataset(
+        features, target, weight=weight, feature_name=list(FEATURES), free_raw_data=False
+    )
     if validation is None:
         return lightgbm.train(params, data, num_boost_round=config.num_boost_round)
     valid = lightgbm.Dataset(*validation, reference=data)
@@ -164,6 +193,9 @@ def fit_candidate(train: list[dict], validation: list[dict], config: TrainingCon
     # only; the regressor learns, and stops early on, every step's excess fraction. Validation
     # rows of a class unseen in training, and mixed ones, cannot be scored by this classifier.
     classified = [row for row in train if row["label_resource"] in index]
+    # Weights are computed over each model's own training rows.
+    classifier_weights = row_weights(classified, config.weight_by)
+    regressor_weights = row_weights(train, config.weight_by)
     usable = [row for row in validation if row["label_resource"] in index]
     held_out = feature_matrix(usable) if usable else None
     features = feature_matrix(train)
@@ -173,6 +205,7 @@ def fit_candidate(train: list[dict], validation: list[dict], config: TrainingCon
         class_targets(classified, index),
         None if held_out is None else (held_out, class_targets(usable, index)),
         config,
+        classifier_weights,
     )
     regressor = train_booster(
         FIXED | config.regressor | {"objective": "regression_l1"},
@@ -180,6 +213,7 @@ def fit_candidate(train: list[dict], validation: list[dict], config: TrainingCon
         fraction_targets(train),
         (feature_matrix(validation), fraction_targets(validation)) if validation else None,
         config,
+        regressor_weights,
     )
     return Candidate(
         class_order=class_order,
