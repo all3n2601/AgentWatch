@@ -804,6 +804,16 @@ frozen evaluation sets without tuning against them.
   ([model training](model-training.md#result-figures-and-shap),
   `pipelines/model/tests/test_model_analysis.py`). `pipelines/model/notebooks/model_pipeline_colab.ipynb`
   runs pull, split rebuild, tuning (optional), training, calibration and the figures in Colab.
+  2026-11-15 (branch `feature/model-bias-check`, stacked on the figures branch, not yet merged):
+  `make bias-check` compares each slice's correct-attribution rate (condition, telemetry
+  readings, contention) with the overall rate against thresholds declared in `bias.toml`
+  (`bias-v1`, committed first: flag above a 0.10 disparity, 30-step minimum) and decides a
+  condition-weighted mitigation on validation only ([model bias](model-bias.md),
+  `pipelines/model/tests/test_bias_check.py`). Weighting cut the worst validation disparity from
+  0.118 to 0.092 within the 5% log-loss trade-off, so `training-v3+71c4dd58` (training-v2 with
+  condition weights) became `training.toml`. On test both models still flag contended steps
+  (about 0.84 against 0.94 overall) and single-class contention (0.73 to 0.74); weighting does not
+  add the missing `cpu_sandbox` and `retrieval` evidence.
 - [ ] Compare models and rules on the same held-out tasks and contention cases.
   2026-10-26 (M03): `make train-candidates` trains the classifier and regressor on the training
   split (`training-v1`), compares them with `rules-v1` on identical rows against
