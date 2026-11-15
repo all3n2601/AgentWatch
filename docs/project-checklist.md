@@ -1090,7 +1090,7 @@ from M3 through M6 and do not renumber the implementation milestones above.
   to confirm a test fails. The CPU batch above predates these fixes and was not rerun. Open:
   PR review and CI, Benoy's GPU validation, and O02's formal acceptance.
 - [ ] O04 — Akshay: paired-run manifests and comparison validation after O01/D02.
-  Implemented 2026-11-05 on branch `feature/optimization-evidence`:
+  Implemented 2026-11-05 in PR #58, merged to `main` as `346525e` on 2026-11-10:
   [optimization experiment evidence](optimization-evidence.md), preregistration manifests checked
   against `opt-contract-v1` (contract hash, frozen tasks, model/hardware/power/state identity,
   arrivals, one-control candidates, queue bounds, repetitions), policy hashes, a seeded paired
