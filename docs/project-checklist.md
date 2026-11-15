@@ -789,7 +789,7 @@ frozen evaluation sets without tuning against them.
 
 - [ ] Train LightGBM resource classification and latency-fraction regression.
 - [ ] Track data versions, parameters, metrics, and artifacts in MLflow.
-  2026-11-15 (branch `feature/model-tuning-selection`, not yet merged): `make tune-candidates`
+  2026-11-15 (PR #81, merged as `a8518ee`): `make tune-candidates`
   searches a 162-point grid declared in `tuning.toml` (`tuning-v1+f729092b`, committed first) on
   the validation split only and logs every point as a nested MLflow run. Both models beat
   `training-v1` by more than the declared 2% margin on validation (classifier log loss 0.1579 to
@@ -799,7 +799,7 @@ frozen evaluation sets without tuning against them.
   not reversed ([model training](model-training.md#tuning-and-training-v2),
   `pipelines/model/tests/test_tune_candidates.py`). Validation is 273 steps from one task. A re-run
   with the shipped code (MLflow `b9e3cae3`) reproduced the search and the proposal byte for byte.
-  2026-11-15 (branch `feature/model-analysis-plots`, stacked on the tuning branch, not yet merged):
+  2026-11-15 (PR #82, merged as `2fb5561`):
   `make model-analysis` draws confusion matrices, a model comparison, TreeSHAP feature importance
   and tuning sensitivity from evaluated reports, training nothing ([model
   training](model-training.md#result-figures-and-shap),
@@ -807,6 +807,17 @@ frozen evaluation sets without tuning against them.
   `pipelines/model/notebooks/model_pipeline_colab.ipynb` runs pull, split rebuild, tuning
   (optional), training, calibration and the figures; it was executed end to end in a clean Linux
   container the way Colab runs it, not yet on Colab itself.
+  2026-11-15 (branch `feature/model-bias-check`, stacked on the figures branch, not yet merged):
+  `make bias-check` compares each slice's correct-attribution rate (condition, telemetry readings,
+  contention) with the overall rate against thresholds declared in `bias.toml` (`bias-v1`, committed
+  first: flag above a 0.10 disparity, 30-step minimum) and decides a condition-weighted mitigation
+  on validation only ([model bias](model-bias.md), `pipelines/model/tests/test_bias_check.py`).
+  Weighting cut the worst validation disparity from 0.118 to 0.092 within the 5% log-loss trade-off,
+  so the declared rule made `training-v3+71c4dd58` (training-v2 with condition weights)
+  `training.toml`; the margin is one step on a 34-step slice, so the mitigation's evidence is
+  inconclusive. On test both models still flag contended steps (about 0.84 against 0.94 overall) and
+  single-class contention (0.73 to 0.74); weighting does not add the missing `cpu_sandbox` and
+  `retrieval` evidence.
 - [ ] Compare models and rules on the same held-out tasks and contention cases.
   2026-10-26 (M03): `make train-candidates` trains the classifier and regressor on the training
   split (`training-v1`), compares them with `rules-v1` on identical rows against

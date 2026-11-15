@@ -191,6 +191,7 @@ def model_identity(config: TrainingConfig, candidate: Candidate, labels: str | N
             "early_stopping_rounds": config.early_stopping_rounds,
             "classifier": config.classifier,
             "regressor": config.regressor,
+            "weight_by": config.weight_by,
         },
         "lightgbm_version": version("lightgbm"),
         "numpy_version": version("numpy"),

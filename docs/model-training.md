@@ -1,17 +1,18 @@
 # AgentWatch model training
 
 Status: the packaged default (`training.toml`, used by `make train-candidates` and `make calibrate`)
-is `training-v2+fd027e8a`. The frozen evaluated pair, which held-out scoring and the serving
-contract pin, is `training-v1+a34ea0be`, trained and evaluated on dataset v1
+is `training-v3+71c4dd58`: `training-v2+fd027e8a`, chosen on validation by the declared tuning run
+(on test it does not improve on `training-v1`; see [Tuning and
+training-v2](#tuning-and-training-v2)), trained with condition-balancing weights that the [model
+bias check](model-bias.md) adopted on validation. The frozen evaluated pair, which held-out scoring
+and the serving contract pin, is `training-v1+a34ea0be`, trained and evaluated on dataset v1
 (`steps-v1.3+aafae73eb211`, split `split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`, accepted);
 see [Results on dataset v1](#results-on-dataset-v1). It passes every gate it evaluates and blocks
 promotion only because six gates are `not_evaluated`. Earlier: the interim `steps-v1.2+5954f97ef8b2`
 split is blocked by the leakage check, and on `split-v2+febe942a2b59` a run is a `failed` attempt
 because that test split mixes two feature definitions. Steps labeled `mixed` are scored by
-`mixed-scoring-v1` (see Running it). `training-v2` was chosen on validation by the declared tuning
-run; on test it does not improve on `training-v1` (see [Tuning and
-training-v2](#tuning-and-training-v2)). What serving must reproduce, and what each prediction means,
-is in the [serving contract](model-serving-contract.md).
+`mixed-scoring-v1` (see Running it). What serving must reproduce, and what each prediction means, is
+in the [serving contract](model-serving-contract.md).
 
 M03 trains two LightGBM candidates on CPU: a resource classifier and an excess-latency
 regressor. It scores them and [the rule baseline](rule-baseline.md) on identical rows against

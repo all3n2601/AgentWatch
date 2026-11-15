@@ -25,7 +25,7 @@ def candidate(config):
 
 def test_training_config_is_versioned_by_its_parsed_contents(config, tmp_path):
     assert (
-        config.version.startswith("training-v2+") and len(config.version) == len("training-v2+") + 8
+        config.version.startswith("training-v3+") and len(config.version) == len("training-v3+") + 8
     )
     edited = tmp_path / "training.toml"
     edited.write_text(
@@ -110,9 +110,17 @@ def test_coverage_gaps_are_recorded_not_hidden(config):
     assert candidate.classes_absent_from_train == ("inference", "retrieval")
 
 
-def test_the_packaged_training_v2_settings_are_pinned():
-    # Declared by the tuning run before test was scored; a silent edit must fail here.
-    assert load_training_config().version == "training-v2+fd027e8a"
+def test_the_evaluated_training_v2_settings_are_kept_unchanged():
+    # The tuning run's evaluated settings, which training-v3 weights by condition.
+    frozen = DEFAULT_TRAINING.with_name("training-v2.toml")
+    assert load_training_config(frozen).version == "training-v2+fd027e8a"
+
+
+def test_the_packaged_settings_are_training_v2_weighted_by_condition():
+    packaged = load_training_config()
+    v2 = load_training_config(DEFAULT_TRAINING.with_name("training-v2.toml"))
+    assert packaged.version == "training-v3+71c4dd58" and packaged.weight_by == "condition"
+    assert (packaged.classifier, packaged.regressor) == (v2.classifier, v2.regressor)
 
 
 def test_the_evaluated_training_v1_settings_are_kept_unchanged():
@@ -124,7 +132,7 @@ def test_the_evaluated_training_v1_settings_are_kept_unchanged():
 @pytest.mark.parametrize("name", ["training", "training-v0", "training-v2a", "tuning-v1"])
 def test_a_version_that_is_not_training_vN_is_refused(tmp_path, name):
     edited = tmp_path / "training.toml"
-    text = DEFAULT_TRAINING.read_text().replace('version = "training-v2"', f'version = "{name}"')
+    text = DEFAULT_TRAINING.read_text().replace('version = "training-v3"', f'version = "{name}"')
     edited.write_text(text)
     with pytest.raises(TrainingError, match="training-v<N>"):
         load_training_config(edited)
