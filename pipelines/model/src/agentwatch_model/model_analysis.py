@@ -198,12 +198,17 @@ def numeric_order(spread: dict) -> list[str]:
 
 def sensitivity_figure(tuning: dict, path: Path) -> None:
     plt = pyplot()
-    settings = sorted(tuning["sensitivity"]["classifier"])
+    settings = sorted(
+        {name for model, _ in SENSITIVITY_METRICS for name in tuning["sensitivity"][model]}
+    )
     figure, axes = plt.subplots(len(SENSITIVITY_METRICS), len(settings), figsize=(13, 5.2))
     for row, (model, label) in enumerate(SENSITIVITY_METRICS):
         for column, setting in enumerate(settings):
             axis = axes[row][column]
-            spread = tuning["sensitivity"][model][setting]
+            spread = tuning["sensitivity"][model].get(setting)
+            if not spread:
+                axis.set_axis_off()  # this model's grid has no such setting
+                continue
             # JSON keys come back sorted as text (10 before 5); plot them in numeric order.
             values = numeric_order(spread)
             medians = [spread[v]["median"] for v in values]
