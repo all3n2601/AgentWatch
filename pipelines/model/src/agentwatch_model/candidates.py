@@ -1,8 +1,9 @@
 """LightGBM attribution candidates: a resource classifier and an excess-latency regressor.
 
 Both train on the training split only; the validation split is used only for early stopping.
-Settings come from training.toml; earlier versions are kept as training-v<N>.toml. LightGBM is imported where it is used, so the
-configuration and errors stay importable on hosts where its OpenMP runtime is missing.
+Settings come from training.toml; earlier versions are kept as training-v<N>.toml. LightGBM is
+imported where it is used, so the configuration and errors stay importable on hosts where its
+OpenMP runtime is missing.
 """
 
 import re

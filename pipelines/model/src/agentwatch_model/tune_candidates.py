@@ -16,6 +16,7 @@ import itertools
 import statistics
 import sys
 import tomllib
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -80,13 +81,7 @@ SIMPLICITY = (
     ("feature_fraction", 1),
     ("learning_rate", 1),
 )
-LIMITATIONS = (
-    (
-        "Settings are chosen on the validation split: 273 steps from 3 experiments of one task "
-        "(fix-mean-empty), with 8 cpu_sandbox, 12 retrieval and 14 inference steps. Small "
-        "differences between points are within its noise; the declared margin guards against "
-        "adopting them."
-    ),
+FIXED_LIMITATIONS = (
     (
         "The validation split also stops training early, so every point's validation value is "
         "slightly optimistic, equally for all points."
@@ -96,6 +91,21 @@ LIMITATIONS = (
         "proposal is committed as training-v2."
     ),
 )
+
+
+def limitations(validation: list[dict]) -> list[str]:
+    """The fixed limitations, after one describing the validation split actually used."""
+    experiments = {row.get("experiment") for row in validation} - {None}
+    tasks = sorted({row["task_id"] for row in validation})
+    classes = Counter(row["label_resource"] for row in validation)
+    counts = ", ".join(f"{classes[name]} {name}" for name in sorted(classes))
+    first = (
+        f"Settings are chosen on the validation split: {len(validation)} steps from "
+        f"{len(experiments)} experiments of {len(tasks)} task(s), by class {counts}. Small "
+        "differences between points are within its noise; the declared margin guards against "
+        "adopting them."
+    )
+    return [first, *FIXED_LIMITATIONS]
 
 
 class TuningError(ValueError):
@@ -246,10 +256,12 @@ def select(results: list[dict], metric: tuple[str, str], base: dict, margin: flo
             "best_settings": None,
             "relative_improvement": None,
             "measured_points": 0,
+            "base_measured": False,
         }
     value, best = min(scored, key=lambda item: (item[0], simplicity(item[1]["settings"])))
+    # Without a measured base there is nothing to beat by the margin, so the base is kept.
     improvement = None if not base_value else (base_value - value) / base_value
-    adopted = base_value is None or (improvement is not None and improvement >= margin)
+    adopted = improvement is not None and improvement >= margin
     return {
         "settings": best["settings"] if adopted else base,
         "adopted": adopted,
@@ -259,6 +271,7 @@ def select(results: list[dict], metric: tuple[str, str], base: dict, margin: flo
         "best_value": value,
         "relative_improvement": improvement,
         "measured_points": len(scored),
+        "base_measured": base_value is not None,
     }
 
 
@@ -403,7 +416,7 @@ def run(
         },
         "contract": {"version": contract.version, "hash": contract.hash},
         "split": split_identity(split),
-        "limitations": list(LIMITATIONS),
+        "limitations": list(FIXED_LIMITATIONS),
     }
     load = loader or load_split
     try:
@@ -428,6 +441,7 @@ def run(
         evaluate_point(settings, base, splits["train"], splits["validation"], errors)
         for settings in grid(tuning.search)
     ]
+    report["limitations"] = limitations(splits["validation"])
     margin = tuning.min_relative_improvement
     selection = {
         "classifier": select(results, CLASSIFIER_METRIC, base.classifier, margin),

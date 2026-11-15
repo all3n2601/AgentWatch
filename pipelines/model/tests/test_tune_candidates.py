@@ -160,6 +160,17 @@ def test_select_breaks_ties_toward_the_simpler_setting():
     assert chosen["settings"] == {"num_leaves": 7, "min_data_in_leaf": 5}
 
 
+def test_an_unmeasured_base_is_kept_rather_than_bypassing_the_margin():
+    base = {"num_leaves": 15}
+    results = [
+        {"settings": base, "classifier": None, "status": "failed"},
+        point({"num_leaves": 7}, 0.1),
+    ]
+    chosen = select(results, ("classifier", "log_loss"), base, 0.02)
+    assert chosen["adopted"] is False and chosen["settings"] == base
+    assert chosen["base_measured"] is False and chosen["best_settings"] == {"num_leaves": 7}
+
+
 def test_select_ignores_points_that_could_not_be_measured():
     base = {"num_leaves": 15}
     results = [
@@ -197,7 +208,10 @@ def test_run_reads_only_train_and_validation_and_writes_a_training_v2_proposal(t
     for model in ("classifier", "regressor"):
         assert set(report["selection"][model]) >= {"settings", "adopted", "base_value"}
     assert set(report["sensitivity"]) == {"classifier", "regressor"}
-    assert any("validation" in line for line in report["limitations"])
+    first = report["limitations"][0]
+    assert first.startswith(
+        f"Settings are chosen on the validation split: {len(SPLITS['validation'])} steps"
+    )
     proposal = tomllib.loads((tmp_path / "out" / PROPOSAL).read_text())
     assert proposal["version"] == "training-v2"
     assert proposal["classifier"] == report["selection"]["classifier"]["settings"]
