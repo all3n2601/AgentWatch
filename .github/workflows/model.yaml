@@ -49,7 +49,7 @@ jobs:
       CI_OUTPUT: .data/model-ci
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           version: "0.13.1"
           python-version: "3.13"
@@ -86,13 +86,13 @@ jobs:
 
       - name: Authenticate to Google Cloud
         if: env.PUSH_TO_GCP == 'true'
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
       - name: Set up gcloud
         if: env.PUSH_TO_GCP == 'true'
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
 
       - name: Push to Artifact Registry
         id: push
@@ -136,7 +136,7 @@ jobs:
 
       - name: Alert Slack with the model verdict
         if: always() && env.SEND_SLACK == 'true' && steps.message.outcome == 'success'
-        uses: slackapi/slack-github-action@v2
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
         with:
           webhook: ${{ secrets.AGENTWATCH_ALERT_SLACK_WEBHOOK_URL }}
           webhook-type: incoming-webhook
@@ -145,7 +145,7 @@ jobs:
       # The pipeline stopped before a verdict existed: training, validation or a gate failed.
       - name: Alert Slack that the pipeline failed
         if: failure() && env.SEND_SLACK == 'true' && steps.message.outcome != 'success'
-        uses: slackapi/slack-github-action@v2
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
         with:
           webhook: ${{ secrets.AGENTWATCH_ALERT_SLACK_WEBHOOK_URL }}
           webhook-type: incoming-webhook
