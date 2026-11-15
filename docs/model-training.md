@@ -1,13 +1,15 @@
 # AgentWatch model training
 
-Status: `training-v1+a34ea0be`, trained and evaluated on dataset v1 (`steps-v1.3+aafae73eb211`,
-split `split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`, accepted); see [Results on dataset
-v1](#results-on-dataset-v1). It passes every gate it evaluates and blocks promotion only because six
-gates are `not_evaluated`. Earlier: the interim `steps-v1.2+5954f97ef8b2` split is blocked by the
-leakage check, and on `split-v2+febe942a2b59` a run is a `failed` attempt because that test split
-mixes two feature definitions. Steps labeled `mixed` are scored by `mixed-scoring-v1` (see Running
-it). The packaged settings are now `training-v2+fd027e8a`, chosen on validation by the declared
-tuning run; on test it does not improve on `training-v1` (see [Tuning and
+Status: the packaged default (`training.toml`, used by `make train-candidates` and `make calibrate`)
+is `training-v2+fd027e8a`. The frozen evaluated pair, which held-out scoring and the serving
+contract pin, is `training-v1+a34ea0be`, trained and evaluated on dataset v1
+(`steps-v1.3+aafae73eb211`, split `split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`, accepted);
+see [Results on dataset v1](#results-on-dataset-v1). It passes every gate it evaluates and blocks
+promotion only because six gates are `not_evaluated`. Earlier: the interim `steps-v1.2+5954f97ef8b2`
+split is blocked by the leakage check, and on `split-v2+febe942a2b59` a run is a `failed` attempt
+because that test split mixes two feature definitions. Steps labeled `mixed` are scored by
+`mixed-scoring-v1` (see Running it). `training-v2` was chosen on validation by the declared tuning
+run; on test it does not improve on `training-v1` (see [Tuning and
 training-v2](#tuning-and-training-v2)). What serving must reproduce, and what each prediction means,
 is in the [serving contract](model-serving-contract.md).
 
@@ -187,7 +189,10 @@ make calibrate SPLIT=$SPLIT
 
 Every grid point is a nested MLflow run under one parent in the `agentwatch-tuning` experiment
 (parent `ed393fcc226e4d3c8303f3628fcc1a0b`, local); failed points would be kept with their reason.
-None failed.
+None failed. That run predates `7a3a6f6`, which changed `select()` for an unmeasured base point and
+the limitations text; a re-run with the shipped code (parent `b9e3cae389ab43d0bfdd1be82520688f`)
+reproduced every point's validation values and the selection, and its proposal is byte-identical
+to the committed `training.toml`.
 
 **Validation results** (run of 2026-11-15, CPU in a Linux container):
 

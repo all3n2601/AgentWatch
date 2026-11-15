@@ -797,7 +797,8 @@ frozen evaluation sets without tuning against them.
   before test was scored. On test it is slightly worse than `training-v1` (macro F1 0.787
   against 0.790, MAE 0.077 against 0.076), within what one test task cannot separate; reported,
   not reversed ([model training](model-training.md#tuning-and-training-v2),
-  `pipelines/model/tests/test_tune_candidates.py`). Validation is 273 steps from one task.
+  `pipelines/model/tests/test_tune_candidates.py`). Validation is 273 steps from one task. A re-run
+  with the shipped code (MLflow `b9e3cae3`) reproduced the search and the proposal byte for byte.
 - [ ] Compare models and rules on the same held-out tasks and contention cases.
   2026-10-26 (M03): `make train-candidates` trains the classifier and regressor on the training
   split (`training-v1`), compares them with `rules-v1` on identical rows against

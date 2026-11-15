@@ -110,6 +110,11 @@ def test_coverage_gaps_are_recorded_not_hidden(config):
     assert candidate.classes_absent_from_train == ("inference", "retrieval")
 
 
+def test_the_packaged_training_v2_settings_are_pinned():
+    # Declared by the tuning run before test was scored; a silent edit must fail here.
+    assert load_training_config().version == "training-v2+fd027e8a"
+
+
 def test_the_evaluated_training_v1_settings_are_kept_unchanged():
     # M03's first evaluation (#72) and the frozen held-out pair (#76) are training-v1+a34ea0be.
     frozen = DEFAULT_TRAINING.with_name("training-v1.toml")
