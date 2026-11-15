@@ -76,6 +76,9 @@ EXIT_UNTRACKED = 3
 ATTRIBUTES = ("condition", "telemetry_readings", "contention")
 CONTENDED = "contended"
 MODELS = ("unweighted", "weighted")
+# Rounding policy: a value exactly on a declared boundary counts as on it ("at least", "no more
+# than", "more than"), so float noise such as 0.30 - 0.28 = 0.0199999... cannot flip it.
+TOLERANCE = 1e-9
 LIMITATIONS = (
     (
         "Validation, which decides the mitigation, has 273 steps from 3 experiments of one task; "
@@ -218,7 +221,7 @@ def slice_report(
                 verdict = "insufficient"
             else:
                 disparities.append(disparity)
-                verdict = "flagged" if disparity > config.max_disparity else "pass"
+                verdict = "flagged" if disparity > config.max_disparity + TOLERANCE else "pass"
             if verdict == "flagged":
                 flags.append(
                     {"attribute": attribute, "value": value, "disparity": round(disparity, 6)}
@@ -256,9 +259,9 @@ def choose(
     reduction = unweighted["worst_disparity"] - weighted["worst_disparity"]
     increase = (weighted_loss - unweighted_loss) / unweighted_loss
     decision |= {"disparity_reduction": reduction, "log_loss_increase": increase}
-    if reduction < config.min_disparity_reduction:
+    if reduction < config.min_disparity_reduction - TOLERANCE:
         return decision | {"reason": "weighting does not lower the worst disparity enough"}
-    if increase > config.max_log_loss_increase:
+    if increase > config.max_log_loss_increase + TOLERANCE:
         return decision | {"reason": "weighting raises validation log loss past the trade-off"}
     return decision | {
         "adopted": True,
@@ -361,6 +364,10 @@ def run(
         proposal, weighted_settings_text(training_path.read_text(), base.version, config.weight_by)
     )
     variants = {"unweighted": base, "weighted": load_training_config(proposal)}
+    # The weighting is inserted by text; a training file it could not be inserted into must not
+    # silently give an unweighted "weighted" model.
+    if variants["weighted"].weight_by != config.weight_by:
+        raise BiasError(f"Could not add weight_by to {training_path.name}; check its layout")
     models = {}
     for name, settings in variants.items():
         candidate = fit_candidate(splits["train"], splits["validation"], settings)

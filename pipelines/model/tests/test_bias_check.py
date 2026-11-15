@@ -224,3 +224,47 @@ def test_main_exits_2_on_a_bad_bias_file(tmp_path, capsys):
     bad.write_text('version = "bias-v9"\n')
     assert main(["--split", str(tmp_path / "s.json"), "--bias", str(bad)]) == 2
     assert "Bias check error" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("unweighted", "weighted", "base_loss", "weighted_loss", "adopted"),
+    [
+        (0.30, 0.28, 0.10, 0.10, True),  # reduction exactly the 0.02 margin
+        (0.30, 0.20, 0.10, 0.105, True),  # log loss up exactly 5%
+        (0.30, 0.2801, 0.10, 0.10, False),  # just short of the margin
+        (0.30, 0.20, 0.10, 0.1051, False),  # just past the trade-off
+    ],
+)
+def test_choose_counts_values_on_a_declared_boundary_as_on_it(
+    tmp_path, unweighted, weighted, base_loss, weighted_loss, adopted
+):
+    settings = load_bias_config(config(tmp_path))
+    decision = choose(outcome(unweighted), outcome(weighted), base_loss, weighted_loss, settings)
+    assert decision["adopted"] is adopted
+
+
+def test_a_disparity_exactly_at_the_threshold_is_not_flagged(tmp_path):
+    settings = load_bias_config(config(tmp_path, max_disparity=0.25))
+    rows = [featured_row("none", i) for i in range(4)] + [
+        featured_row("cpu_sandbox", i) for i in range(4)
+    ]
+    predictions = ["none"] * 4 + ["cpu_sandbox", "cpu_sandbox", "none", "none"]
+    report = slice_report(rows, predictions, CLASSES, settings)
+    contended = report["attributes"]["condition"]["contended"]
+    assert contended["disparity"] == pytest.approx(0.25) and contended["outcome"] == "pass"
+
+
+def test_a_training_file_the_weighting_cannot_be_added_to_is_refused(tmp_path):
+    odd = tmp_path / "training.toml"
+    text = DEFAULT_TRAINING.with_name("training-v2.toml").read_text()
+    odd.write_text(text.replace("num_boost_round = 300", "num_boost_round=300"))
+    with pytest.raises(BiasError, match="weight_by"):
+        run(
+            tmp_path / "split.json",
+            tmp_path / "out",
+            bias_path=config(tmp_path),
+            training_path=odd,
+            loader=loader,
+            tracking_uri=f"sqlite:///{tmp_path / 'm.db'}",
+            artifact_root=tmp_path / "a",
+        )
