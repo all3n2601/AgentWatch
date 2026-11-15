@@ -1,0 +1,29 @@
+name = "fix-fahrenheit-offset"
+revision = 1
+title = "Make to_fahrenheit() use the documented conversion"
+instructions = """
+The test suite of this small sensor project fails. Find out how Celsius converts to Fahrenheit,
+fix it by applying exactly one of the listed patches, and confirm that the tests pass.
+"""
+
+[[patches]]
+id = "scale-then-add-offset"
+description = "Multiply by 9/5, then add 32"
+file = "temperature.py"
+find = """
+    return celsius * 9 / 5
+"""
+replace = """
+    return celsius * 9 / 5 + 32
+"""
+
+[[patches]]
+id = "add-offset-then-scale"
+description = "Add 32, then multiply by 9/5"
+file = "temperature.py"
+find = """
+    return celsius * 9 / 5
+"""
+replace = """
+    return (celsius + 32) * 9 / 5
+"""
