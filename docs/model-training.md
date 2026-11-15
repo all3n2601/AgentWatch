@@ -230,6 +230,49 @@ early, so every point's validation value is optimistic; test is one unseen task;
 one task group. A second task group in the next release is needed before tuning results are
 read as more than descriptive.
 
+## Result figures and SHAP
+
+```sh
+make model-analysis SPLIT=$SPLIT ANALYSIS_CANDIDATES="v1=<training-v1 folder> v2=.data/candidates"
+```
+
+`model-analysis` reads evaluated `train-candidates` folders and, when present, the tuning report,
+and writes to `.data/analysis/`: a confusion matrix per model and for `rules-v1`
+(`confusion-*.png`), a bar chart of macro F1 and the clean-step `none` rate on the same test rows
+(`comparison.png`), the explained model's SHAP importance (`shap-<name>.png`), each setting's
+validation sensitivity (`sensitivity.png`, median with min to max over the grid), and
+`analysis.json` with every number and each figure's SHA-256. It trains, fits and selects nothing.
+SHAP values are LightGBM's exact TreeSHAP contributions (`predict(pred_contrib=True)`), which add
+up to each class's raw score (a test checks this); importance is the mean absolute value per
+feature over the test rows, averaged over classes. Equal inputs give byte-identical figures.
+
+The same steps run in Colab from a fresh clone with
+[`pipelines/model/notebooks/model_pipeline_colab.ipynb`](../pipelines/model/notebooks/model_pipeline_colab.ipynb):
+it pulls dataset v1 from the public DVC remote, rebuilds `split-v3` and checks its SHA-256, then
+runs (optionally) tuning, training, calibration and the figures with the repository's commands.
+
+Run of 2026-11-15 on the 3,564 scored test steps:
+
+| | `rules-v1` | `training-v1` | `training-v2` |
+|---|---|---|---|
+| Macro F1 | 0.200 | 0.790 | 0.787 |
+| Clean steps predicted `none` | 0.731 | 0.991 | 0.989 |
+
+SHAP importance of `training-v2`'s classifier (mean |SHAP|, raw score): `duration_seconds` 0.233,
+`execution_seconds` 0.219, `queue_seconds` 0.209, `queue_fraction` 0.123, then
+`cpu_pressure_max_avg10` 0.033 and `cpu_seconds` 0.032; `telemetry_coverage` and
+`cpu_pressure_available` are below 0.01, and the always-missing workload features contribute 0.
+Its confusion matrix shows where it fails: 60% of `cpu_sandbox` and 29% of `retrieval` test steps
+are predicted `none`, while 97% of `inference` steps are found.
+
+**Why `training-v2` is the selected model.** It is the declared validation choice: both its
+boosters beat `training-v1` on validation by more than the 2% margin set before the search. On
+test it is level with `training-v1` within noise (macro F1 0.787 against 0.790), and both clear
+every evaluated gate by the same margins. Switching back to `training-v1` because of the test
+result would be selecting on test. For held-out scoring the frozen pair remains `training-v1`,
+since that is the pair the A06 sweeps were scored with (#76). Neither is promotable: four gates
+are `not_evaluated`.
+
 ## Gates
 
 - Clean-step `none` rates, as for the rules.

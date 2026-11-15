@@ -798,6 +798,12 @@ frozen evaluation sets without tuning against them.
   against 0.790, MAE 0.077 against 0.076), within what one test task cannot separate; reported,
   not reversed ([model training](model-training.md#tuning-and-training-v2),
   `pipelines/model/tests/test_tune_candidates.py`). Validation is 273 steps from one task.
+  2026-11-15 (branch `feature/model-analysis-plots`, stacked on the tuning branch, not yet
+  merged): `make model-analysis` draws confusion matrices, a model comparison, TreeSHAP feature
+  importance and tuning sensitivity from evaluated reports, training nothing
+  ([model training](model-training.md#result-figures-and-shap),
+  `pipelines/model/tests/test_model_analysis.py`). `pipelines/model/notebooks/model_pipeline_colab.ipynb`
+  runs pull, split rebuild, tuning (optional), training, calibration and the figures in Colab.
 - [ ] Compare models and rules on the same held-out tasks and contention cases.
   2026-10-26 (M03): `make train-candidates` trains the classifier and regressor on the training
   split (`training-v1`), compares them with `rules-v1` on identical rows against

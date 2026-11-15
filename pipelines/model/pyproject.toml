@@ -13,6 +13,9 @@ dependencies = [
     "mlflow-skinny>=3.17,<4",
     "sqlalchemy>=2,<3",
     "alembic>=1.13,<2",
+    # Static result figures (confusion matrices, comparisons, SHAP and sensitivity), Agg backend
+    # only. Matplotlib license (PSF-based, BSD-compatible).
+    "matplotlib>=3.9,<4",
 ]
 
 [tool.uv.sources]
