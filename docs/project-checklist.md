@@ -994,6 +994,13 @@ frozen evaluation sets without tuning against them.
   in the next release before calibration is read as evidence (Akshay, #70 review); and showing
   uncertain results, which belongs to serving and the dashboard.
 - [ ] Load a versioned registered model in the correlation service.
+  2026-11-15 (branch `feature/model-pipeline-image`, stacked on the bias branch, not yet merged):
+  `make register-model` registers each evaluated model as a version of `agentwatch-attribution`
+  in MLflow's local registry (stand-in for GCP), moving `champion` only under `registry.toml`'s
+  rule and keeping the old one otherwise; `make rollback-model` restores the previous champion.
+  `pipelines/model/Dockerfile` runs pull, split check, training, calibration, the bias check,
+  figures and the push; its run reproduced `training-v3` byte for byte and registered it as
+  `candidate` only, since the bias check fails on test ([model pipeline](model-pipeline.md)).
   2026-11-12 (M03/M04 handoff, branch `docs/m03-m04-serving-contract`, not yet merged):
   [serving contract](model-serving-contract.md) for B03 (Allen) and the dashboard (Meghana):
   artifacts and their identity checks, the 14 inputs with units and NaN-for-missing encoding,

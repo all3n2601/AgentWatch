@@ -19,8 +19,11 @@ Promotion checks and rollback are M05.
 
 `make train-candidates` writes the M03 folder and `make calibrate` the M04 folder (defaults
 `.data/candidates/` and `.data/calibration/`). They are local outputs, not versioned in DVC or
-registered in MLflow's model registry; the same split and code rebuild them byte for byte (see
-the reproduction notes in both documents).
+registered in MLflow's model registry by default; the same split and code rebuild them byte for
+byte (see the reproduction notes in both documents). `make register-model` pushes an evaluated
+pair to the registry (MLflow's local registry stands in for the team's GCP one; model
+`agentwatch-attribution`, aliases `candidate` and `champion`), and `make model-pipeline-run`
+runs the whole pipeline in one image ([model pipeline](model-pipeline.md)).
 
 | File | Folder | What serving uses it for |
 |---|---|---|
