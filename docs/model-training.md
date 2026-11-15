@@ -242,14 +242,14 @@ make model-analysis SPLIT=$SPLIT   # default: selected=.data/candidates; add oth
 ```
 
 `model-analysis` reads evaluated `train-candidates` folders and, when present, the tuning report,
-and writes to `.data/analysis/`: a confusion matrix per model and for `rules-v1`
+checks that every report was scored on the `--split` file's rows with the files it recorded (classifier and predictions hashes, step count), and writes to `.data/analysis/`: a confusion matrix per model and for `rules-v1`
 (`confusion-*.png`), a bar chart of macro F1 and the clean-step `none` rate on the same test rows
 (`comparison.png`), the explained model's SHAP importance (`shap-<name>.png`), each setting's
 validation sensitivity (`sensitivity.png`, median with min to max over the grid), and
 `analysis.json` with every number and each figure's SHA-256. It trains, fits and selects nothing.
 SHAP values are LightGBM's exact TreeSHAP contributions (`predict(pred_contrib=True)`), which add
 up to each class's raw score (a test checks this); importance is the mean absolute value per
-feature over the test rows, averaged over classes. Equal inputs give byte-identical figures.
+feature over the test rows, averaged over classes. Equal inputs give byte-identical figures on the same platform and Matplotlib version (checked within one run, not across platforms).
 
 The same steps run in Colab from a fresh clone with
 [`pipelines/model/notebooks/model_pipeline_colab.ipynb`](../pipelines/model/notebooks/model_pipeline_colab.ipynb):

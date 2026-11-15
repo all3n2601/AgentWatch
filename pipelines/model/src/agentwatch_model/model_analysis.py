@@ -26,12 +26,13 @@ from agentwatch_model.candidates import TrainingError, check_lightgbm
 from agentwatch_model.contract import DEFAULT_CONTRACT
 from agentwatch_model.features import FEATURES, FeatureError, feature_matrix
 from agentwatch_model.metrics import CLASSES, NONE
-from agentwatch_model.rule_baseline import DEFAULT_SCHEMA, EXIT_ERROR
+from agentwatch_model.rule_baseline import DEFAULT_SCHEMA, EXIT_ERROR, split_identity
 
 DEFAULT_OUTPUT = Path(".data/analysis")
 ANALYSIS = "analysis.json"
 REPORT = "report.json"
 CLASSIFIER = "classifier.txt"
+PREDICTIONS = "predictions.jsonl"
 RULES = "rules-v1"
 DPI = 120
 # PNG metadata without the Matplotlib version or a timestamp, so equal inputs give equal files.
@@ -64,6 +65,29 @@ def load_report(folder: Path) -> dict:
     if report.get("status") != "evaluated" or report.get("scored_split") != "test":
         raise AnalysisError(f"{path} is not an evaluated test report")
     return report
+
+
+def check_inputs(
+    candidates: dict[str, Path], reports: dict[str, dict], split: Path, rows: list[dict]
+) -> None:
+    """Every folder must be scored on --split's rows, with the files its report recorded."""
+    expected = split_identity(split)
+    for name, folder in candidates.items():
+        report = reports[name]
+        if report.get("split") != expected:
+            raise AnalysisError(f"{name}: scored on {report.get('split')}, not {expected}")
+        recorded = {
+            CLASSIFIER: report["model_files"]["classifier"],
+            PREDICTIONS: report["predictions"]["sha256"],
+        }
+        for file, sha in recorded.items():
+            path = folder / file
+            if not path.is_file() or file_sha256(path) != sha:
+                raise AnalysisError(f"{name}: {path} does not match the hash its report recorded")
+        if report.get("scored_steps") != len(rows):
+            raise AnalysisError(
+                f"{name}: scored {report.get('scored_steps')} test steps, the split has {len(rows)}"
+            )
 
 
 def ordered_classes(matrix: dict) -> list[str]:
@@ -201,7 +225,9 @@ def sensitivity_figure(tuning: dict, path: Path) -> None:
     settings = sorted(
         {name for model, _ in SENSITIVITY_METRICS for name in tuning["sensitivity"][model]}
     )
-    figure, axes = plt.subplots(len(SENSITIVITY_METRICS), len(settings), figsize=(13, 5.2))
+    figure, axes = plt.subplots(
+        len(SENSITIVITY_METRICS), len(settings), figsize=(13, 5.2), squeeze=False
+    )
     for row, (model, label) in enumerate(SENSITIVITY_METRICS):
         for column, setting in enumerate(settings):
             axis = axes[row][column]
@@ -260,6 +286,7 @@ def run(
     import lightgbm
 
     rows = (loader or load_split)(split, "test", contract_path, frozen_schema)
+    check_inputs(candidates, reports, split, rows)
     booster = lightgbm.Booster(model_file=str(candidates[explain] / CLASSIFIER))
     class_order = tuple(reports[explain]["model"]["class_order"])
     importance = shap_importance(booster, rows, class_order)
