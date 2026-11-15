@@ -148,6 +148,18 @@ def test_choose_adopts_mitigation_only_within_the_declared_trade_off(tmp_path):
     assert unneeded["selected"] == "unweighted" and "no slice" in unneeded["reason"]
 
 
+def test_choose_keeps_the_unweighted_model_without_mitigation_evidence(tmp_path):
+    settings = load_bias_config(config(tmp_path))
+    no_slices = choose(
+        outcome(0.30), {"worst_disparity": None, "outcome": "pass"}, 0.1, 0.1, settings
+    )
+    assert no_slices["selected"] == "unweighted" and "insufficient" in no_slices["reason"]
+    no_loss = choose(outcome(0.30), outcome(0.10), None, 0.1, settings)
+    assert no_loss["selected"] == "unweighted" and "log loss" in no_loss["reason"]
+    zero_loss = choose(outcome(0.30), outcome(0.10), 0.0, 0.1, settings)
+    assert zero_loss["selected"] == "unweighted"
+
+
 def test_row_weights_give_each_condition_the_same_total_weight():
     rows = [featured_row("none", i) for i in range(6)] + [featured_row("inference", 0)] * 2
     weights = row_weights(rows, "condition")

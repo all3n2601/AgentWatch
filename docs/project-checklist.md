@@ -810,8 +810,9 @@ frozen evaluation sets without tuning against them.
   (`bias-v1`, committed first: flag above a 0.10 disparity, 30-step minimum) and decides a
   condition-weighted mitigation on validation only ([model bias](model-bias.md),
   `pipelines/model/tests/test_bias_check.py`). Weighting cut the worst validation disparity from
-  0.118 to 0.092 within the 5% log-loss trade-off, so `training-v3+71c4dd58` (training-v2 with
-  condition weights) became `training.toml`. On test both models still flag contended steps
+  0.118 to 0.092 within the 5% log-loss trade-off, so the declared rule made
+  `training-v3+71c4dd58` (training-v2 with condition weights) `training.toml`; the margin is one
+  step on a 34-step slice, so the mitigation's evidence is inconclusive. On test both models still flag contended steps
   (about 0.84 against 0.94 overall) and single-class contention (0.73 to 0.74); weighting does not
   add the missing `cpu_sandbox` and `retrieval` evidence.
 - [ ] Compare models and rules on the same held-out tasks and contention cases.

@@ -35,9 +35,13 @@ below 30 steps, the data slices' minimum.
 
 The mitigation trains the same settings with condition-balancing weights (the data slices'
 `balancing_weights`: each condition carries the same total weight). It replaces the unweighted
-model only when, **on validation**, it lowers the worst flagged disparity by at least 0.02 and
-raises the classifier's validation log loss by at most 5% (relative). Both models are then
-reported on test; test decides nothing. The trade-off is explicit: up-weighting the smaller
+model only when, **on validation**, it lowers the worst disparity among slices with enough steps
+by at least 0.02 and raises the classifier's validation log loss by at most 5% (relative), and
+only when the unweighted model has a flagged slice. The same run reports both models on test;
+the decision rule reads only validation. Both models stop early on the unweighted validation
+split, and each disparity is relative to that model's own overall rate (here the weighted
+model's overall rate is not lower, 0.945 against 0.941, so its smaller disparity is not an
+artefact of a lower overall rate). The trade-off is explicit: up-weighting the smaller
 conditions shifts errors toward the dominant clean and baseline steps.
 
 ## Results (2026-11-15, `split-v3+932b2df410a7`, `bias-v1+…`)
@@ -57,9 +61,12 @@ steps):
 | `telemetry_readings` missing_any | 0.941 (272) | 0.945 | 0.943 (3,543) | 0.944 |
 
 **Decision (validation):** weighting lowered the worst disparity from 0.118 to 0.092 (by 0.026,
-past the 0.02 margin) and raised validation log loss by 1.9% (within 5%), so the weighted
-settings were adopted as `training-v3` and became the packaged `training.toml`, committed before
-`training-v3` was trained and scored on test. MLflow: `agentwatch-bias` run
+past the 0.02 margin) and raised validation log loss by 1.9% (within 5%), so the declared rule
+adopted the weighted settings as `training-v3`, the packaged `training.toml`. The rule read only
+validation; the same run had already reported both models on test (below), so those test numbers
+existed when `training-v3` was committed, though they did not enter the decision. **The evidence
+is inconclusive:** the flagged slice is 34 validation steps, where one step moves its rate by
+0.029, more than the 0.026 reduction, and on test the weighting changes little. MLflow: `agentwatch-bias` run
 `be80cffe7a784ba383cf4e927c49874b` (local).
 
 **Test:** both models fail the check on the same slices. Contended steps are attributed correctly

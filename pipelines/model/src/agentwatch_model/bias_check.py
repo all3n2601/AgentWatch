@@ -249,6 +249,10 @@ def choose(
     decision = {"decided_on": "validation", "adopted": False, "selected": "unweighted"}
     if unweighted["outcome"] == "pass":
         return decision | {"reason": "no slice is flagged on validation; no mitigation needed"}
+    if weighted["worst_disparity"] is None:
+        return decision | {"reason": "every weighted slice is insufficient; no mitigation evidence"}
+    if not unweighted_loss or weighted_loss is None:
+        return decision | {"reason": "validation log loss could not be measured for both models"}
     reduction = unweighted["worst_disparity"] - weighted["worst_disparity"]
     increase = (weighted_loss - unweighted_loss) / unweighted_loss
     decision |= {"disparity_reduction": reduction, "log_loss_increase": increase}
@@ -271,9 +275,16 @@ def bias_figure(reports: dict[str, dict], split: str, config: BiasConfig, path: 
         values = sorted({v for r in reports.values() for v in r["attributes"][attribute]})
         for offset, (name, report) in enumerate(reports.items()):
             slices = report["attributes"][attribute]
-            heights = [slices[v]["correct_rate"] if v in slices else 0 for v in values]
-            positions = [i + (offset - 0.5) * width for i in range(len(values))]
-            axis.bar(positions, heights, width, label=name)
+            # A value the model's split lacks gets no bar (never a zero bar); an insufficient
+            # slice is hatched and lighter, since it is neither flagged nor cleared.
+            shown = [(i, v) for i, v in enumerate(values) if v in slices]
+            positions = [i + (offset - 0.5) * width for i, _ in shown]
+            heights = [slices[v]["correct_rate"] for _, v in shown]
+            bars = axis.bar(positions, heights, width, label=name, color=f"C{offset}")
+            for bar, (_, value) in zip(bars, shown, strict=True):
+                if slices[value]["outcome"] == "insufficient":
+                    bar.set_hatch("//")
+                    bar.set_alpha(0.45)
             line = report["overall"]["correct_rate"] - config.max_disparity
             axis.axhline(line, linestyle="--", linewidth=0.8, color=f"C{offset}")
         axis.set_xticks(range(len(values)), values, rotation=20)
