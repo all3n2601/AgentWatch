@@ -119,7 +119,7 @@ REGISTRY_OUTPUT ?= .data/registry
 MODEL_PIPELINE_IMAGE ?= agentwatch-model-pipeline
 
 register-model: ## Push the evaluated model to the registry (MLflow's local registry stands in for GCP); champion moves only under registry.toml's rule
-	uv run --package agentwatch-model python -m agentwatch_model.register_model --candidates $(CANDIDATES_OUTPUT) --calibrated $(CALIBRATION_OUTPUT) $(if $(wildcard $(BIAS_OUTPUT)/report.json),--bias-report $(BIAS_OUTPUT)/report.json) --output $(REGISTRY_OUTPUT)
+	uv run --package agentwatch-model python -m agentwatch_model.register_model --candidates $(CANDIDATES_OUTPUT) --calibrated $(CALIBRATION_OUTPUT) $(if $(NO_BIAS_REPORT),--no-bias-report,--bias-report $(BIAS_OUTPUT)/report.json) --output $(REGISTRY_OUTPUT)
 
 rollback-model: ## Point the registry's champion back at the version it replaced
 	uv run --package agentwatch-model python -m agentwatch_model.register_model --rollback

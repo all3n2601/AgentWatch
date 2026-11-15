@@ -32,24 +32,34 @@ nothing outside it and the container.
 ## Registry rule and rollback
 
 `make register-model` ([`register_model.py`](../pipelines/model/src/agentwatch_model/register_model.py))
-follows [`registry.toml`](../pipelines/model/src/agentwatch_model/registry.toml) (`registry-v1`),
-declared before the first push:
+follows [`registry.toml`](../pipelines/model/src/agentwatch_model/registry.toml) (`registry-v2`):
 
-- It refuses a candidates folder that is not an evaluated test report, an unfitted calibration,
-  or a calibration of another training version.
-- Every accepted push logs the model files, the serving contract, the calibration and the reports
-  as one run in the `agentwatch-registry` experiment and registers them as a new version of
-  `agentwatch-attribution`, tagged with its training and calibration versions, test macro F1,
-  `blocks_promotion`, eligibility and bias-check outcome. The `candidate` alias moves to it.
-- The `champion` alias moves to it only when it is **eligible** (no failed contract or calibration
-  gate, and no failed bias check on test when `make bias-check` has run) and its test macro F1 is
-  at least the champion's (`max_macro_f1_drop = 0`). Otherwise the champion stays: that is the
-  automatic rollback, and the reason is recorded in `.data/registry/registration.json`.
-- `make rollback-model` points `champion` back at the version it replaced.
+- It refuses a candidates folder that is not an evaluated test report, a classifier that does
+  not match its report's hash, an unfitted calibration, or a calibration of another training
+  version. It needs the bias report (`make bias-check`); `NO_BIAS_REPORT=1` (`--no-bias-report`)
+  pushes without one, tagged `bias_test_outcome = unavailable`.
+- A model is registered once per **identity**: training and calibration versions, split
+  SHA-256, dataset version and classifier SHA-256. A rerun of the same model returns the
+  existing version and changes no alias, so reruns cannot erase the rollback target.
+- Each new version is one run in the `agentwatch-registry` experiment (model files, serving
+  contract, calibration, reports), tagged with its identity, test macro F1, `blocks_promotion`,
+  eligibility and bias outcome; `candidate` moves to it.
+- `champion` moves to it only when it is **eligible** (no failed contract or calibration gate,
+  no failed bias check on test, and not blocking promotion), was scored on the **same split and
+  dataset** as the current champion, and its test macro F1 is at least the champion's
+  (`max_macro_f1_drop = 0`). Otherwise the champion stays (the automatic rollback), with the
+  reason in `.data/registry/registration.json`. `make rollback-model` points `champion` back at
+  the version it replaced.
 
-`champion` is the best eligible evaluated model. It is not a promotion while the version is
-tagged `blocks_promotion = true`, which serving must refuse
-([serving contract](model-serving-contract.md)); promotion gates are M05.
+While every model blocks promotion (four contract gates are `not_evaluated`), no version is
+`champion`; `candidate` is the newest evaluated model. Serving must refuse versions tagged
+`blocks_promotion = true` ([serving contract](model-serving-contract.md)).
+
+A registered version's `source` is where its artifacts were logged: inside the image that is
+`/agentwatch/.data/mlflow/artifacts/...`, which `make model-pipeline-run` mounts from
+`.data/model-pipeline/` on the host, so open that tracking database from the same layout. On a
+Linux host the bind mount is written by the image's user (uid 10001); give that uid write access
+to `.data/model-pipeline/` first (Docker Desktop on macOS needs nothing).
 
 ## Run of 2026-11-15
 
@@ -58,8 +68,7 @@ built in about 40 s and the run took about 20 s. The rebuilt `split-v3` matched 
 model it trained is byte-identical to the local `training-v3+71c4dd58` run (same `classifier.txt`
 and `predictions.jsonl`; test macro F1 0.790). It was registered as version 1 of
 `agentwatch-attribution` under `candidate`, tagged `blocks_promotion = true`; `champion` was not
-set, because the bias check fails on test ([model bias](model-bias.md)), so no model is
-champion yet.
+set, because it blocks promotion and the bias check fails on test ([model bias](model-bias.md)).
 
 ## Still needed (owner access)
 
@@ -68,3 +77,7 @@ champion yet.
 - CI secrets (registry credentials, the Slack webhook) for a CI job that runs this image on
   model-code changes and alerts on training finished, failed runs, and failed validation or
   bias checks.
+
+Follow-ups that change shared CI or are optimisations: building the image and running hadolint
+in CI, pinning the apt packages, and copying the lockfiles before the source so a code change
+does not reinstall every dependency layer.

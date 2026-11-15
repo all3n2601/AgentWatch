@@ -47,7 +47,8 @@ def calibrated(directory, training_version, **changes):
         "version": "calibration-v1+synthetic",
         "training_version": training_version,
         "fitted": True,
-        "blocks_promotion": True,
+        # Promotable here so the champion rule can be exercised; real pairs still block.
+        "blocks_promotion": False,
         "gates": {"calibration": "pass", "abstention": "pass"},
     } | changes
     (directory / "calibration.json").write_text(json.dumps(calibration))
@@ -73,7 +74,8 @@ def registry(tmp_path):
 
 def push(trained, tmp_path, registry, name, **changes):
     bias = changes.pop("bias", None)
-    calibration_changes = changes.pop("calibration", {})
+    # A distinct calibration version per push gives each pushed model its own identity.
+    calibration_changes = {"version": f"calibration-v1+{name}"} | changes.pop("calibration", {})
     folder, version = candidates_copy(trained, tmp_path / name, **changes)
     calibration = calibrated(tmp_path / f"{name}-cal", version, **calibration_changes)
     return register(folder, calibration, bias, output=tmp_path / f"{name}-out", **registry)
@@ -90,7 +92,9 @@ def test_the_first_eligible_version_becomes_candidate_and_champion(trained, tmp_
     assert outcome["version"] == 1 and outcome["champion"] == 1 and outcome["eligible"] is True
     assert aliases(registry) == {CANDIDATE: 1, CHAMPION: 1}
     record = json.loads((tmp_path / "a-out" / "registration.json").read_text())
-    assert record["tags"]["blocks_promotion"] == "true"
+    assert record["tags"]["blocks_promotion"] == "false"
+    assert record["tags"]["bias_test_outcome"] == "unavailable"
+    assert record["tags"]["split_sha256"] and record["tags"]["identity_sha256"]
     assert record["tags"]["training_version"].startswith("training-")
 
 
@@ -166,3 +170,66 @@ def test_main_exits_2_on_a_refused_registration(tmp_path, capsys):
     argv = ["--candidates", str(tmp_path / "none"), "--calibrated", str(tmp_path / "none")]
     assert main(argv) == 2
     assert "Registry error" in capsys.readouterr().err
+
+
+def test_a_model_that_blocks_promotion_never_becomes_champion(trained, tmp_path, registry):
+    outcome = push(trained, tmp_path, registry, "a", calibration={"blocks_promotion": True})
+    assert outcome["eligible"] is False and "blocks promotion" in outcome["reason"]
+    assert aliases(registry) == {CANDIDATE: 1}
+
+
+def test_a_rerun_of_the_same_model_changes_nothing(trained, tmp_path, registry):
+    push(trained, tmp_path, registry, "a", macro_f1=0.80)
+    again = register(
+        tmp_path / "a", tmp_path / "a-cal", None, output=tmp_path / "again", **registry
+    )
+    assert again["version"] == 1 and "already registered" in again["reason"]
+    assert aliases(registry) == {CANDIDATE: 1, CHAMPION: 1}
+    with pytest.raises(RegistryError, match="previous champion"):
+        rollback(**registry)
+
+
+def test_a_model_scored_on_another_split_does_not_displace_the_champion(
+    trained, tmp_path, registry
+):
+    push(trained, tmp_path, registry, "a", macro_f1=0.80)
+    folder, version = candidates_copy(trained, tmp_path / "b", macro_f1=0.95)
+    report = json.loads((folder / "report.json").read_text())
+    report["split"]["sha256"] = "f" * 64
+    (folder / "report.json").write_text(json.dumps(report))
+    calibration = calibrated(tmp_path / "b-cal", version, version="calibration-v1+b")
+    outcome = register(folder, calibration, None, output=tmp_path / "b-out", **registry)
+    assert outcome["champion"] == 1 and "different split" in outcome["reason"]
+
+
+def test_main_requires_a_bias_report_or_an_explicit_opt_out(trained, tmp_path, registry, capsys):
+    folder, version = candidates_copy(trained, tmp_path / "a")
+    calibration = calibrated(tmp_path / "a-cal", version)
+    common = [
+        "--candidates",
+        str(folder),
+        "--calibrated",
+        str(calibration),
+        "--output",
+        str(tmp_path / "out"),
+        "--tracking-uri",
+        registry["tracking_uri"],
+        "--artifact-root",
+        str(registry["artifact_root"]),
+    ]
+    assert main(common) == 2 and "--no-bias-report" in capsys.readouterr().err
+    assert main([*common, "--no-bias-report"]) == 0
+
+
+def test_rollback_through_main(trained, tmp_path, registry):
+    push(trained, tmp_path, registry, "a", macro_f1=0.80)
+    push(trained, tmp_path, registry, "b", macro_f1=0.85)
+    argv = [
+        "--rollback",
+        "--tracking-uri",
+        registry["tracking_uri"],
+        "--artifact-root",
+        str(registry["artifact_root"]),
+    ]
+    assert main(argv) == 0
+    assert aliases(registry)[CHAMPION] == 1
