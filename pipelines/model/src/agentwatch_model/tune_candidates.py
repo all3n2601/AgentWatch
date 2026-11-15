@@ -13,6 +13,7 @@ Every point is a nested MLflow run under one parent run, failed points included.
 
 import argparse
 import itertools
+import re
 import statistics
 import sys
 import tomllib
@@ -62,11 +63,9 @@ DEFAULT_TUNING = PACKAGE / "tuning.toml"
 DEFAULT_BASE = PACKAGE / "training-v1.toml"
 DEFAULT_OUTPUT = Path(".data/tuning")
 VERSION = "tuning-v1"
-NEXT_VERSION = "training-v2"
 EXPERIMENT = "agentwatch-tuning"
 TASK = "M03-tuning"
 REPORT = "report.json"
-PROPOSAL = "training-v2.toml"
 TRACKING = "tracking.json"
 EXIT_UNTRACKED = 3
 SPLITS = ("train", "validation")
@@ -139,7 +138,10 @@ def search_values(name: str, values: object) -> tuple[float, ...]:
 
 
 def load_tuning_config(path: Path = DEFAULT_TUNING, base_path: Path = DEFAULT_BASE) -> TuningConfig:
-    parsed = tomllib.loads(path.read_text())
+    try:
+        parsed = tomllib.loads(path.read_text())
+    except OSError as error:
+        raise TuningError(f"Cannot read {path}: {error}") from error
     if parsed.get("version") != VERSION:
         raise TuningError(f"{path.name}: version must be {VERSION!r}")
     margin = (parsed.get("selection") or {}).get("min_relative_improvement")
@@ -151,7 +153,7 @@ def load_tuning_config(path: Path = DEFAULT_TUNING, base_path: Path = DEFAULT_BA
     search = {name: search_values(name, values) for name, values in sorted(search_table.items())}
     try:
         base = load_training_config(base_path)
-    except TrainingError as error:
+    except (TrainingError, OSError) as error:
         raise TuningError(f"Base settings {base_path.name}: {error}") from error
     points = grid(search)
     for model, settings in (("classifier", base.classifier), ("regressor", base.regressor)):
@@ -298,25 +300,41 @@ def sensitivity(results: list[dict], metric: tuple[str, str]) -> dict:
     }
 
 
+def next_version(base_version: str) -> str:
+    """The training version after the base's: training-v1+... proposes training-v2."""
+    matched = re.fullmatch(r"training-v([0-9]+)\+[0-9a-f]+", base_version)
+    if matched is None:
+        raise TuningError(f"Cannot derive the next training version from {base_version!r}")
+    return f"training-v{int(matched.group(1)) + 1}"
+
+
 def toml_value(value: float) -> str:
     return repr(float(value)) if isinstance(value, float) else str(value)
 
 
+MODEL_COMMENTS = {
+    "classifier": "Resource classifier (multiclass log loss).",
+    "regressor": "Excess-latency fraction regressor (L1 loss, matching the contract's MAE).",
+}
+
+
 def proposal_text(tuning: TuningConfig, base: TrainingConfig, selection: dict) -> str:
+    version = next_version(base.version)
     lines = [
-        f"# {NEXT_VERSION}: LightGBM settings for the attribution candidates, chosen by",
+        f"# {version}: LightGBM settings for the attribution candidates, chosen by",
         f"# tune-candidates ({tuning.version}) on the validation split only, against the base",
         f"# {base.version}. The test split was not read. Any change changes the version hash.",
         "# Determinism settings (one thread, fixed seed, deterministic mode) are fixed in code.",
-        f'version = "{NEXT_VERSION}"',
+        f'version = "{version}"',
         "",
+        "# Rounds are an upper bound; training stops early when the validation loss stops improving.",
         f"num_boost_round = {base.num_boost_round}",
         f"early_stopping_rounds = {base.early_stopping_rounds}",
     ]
     for model in ("classifier", "regressor"):
         chosen = selection[model]
         how = "best grid point" if chosen["adopted"] else f"kept from {base.version}"
-        lines += ["", f"# {how}", f"[{model}]"]
+        lines += ["", f"# {MODEL_COMMENTS[model]}", f"# Settings: {how}.", f"[{model}]"]
         lines += [f"{name} = {toml_value(v)}" for name, v in sorted(chosen["settings"].items())]
     return "\n".join(lines) + "\n"
 
@@ -358,8 +376,8 @@ def log_tuning(report: dict, directory: Path, tracking_uri: str, artifact_root: 
                 metrics = child_metrics(result)
                 if metrics:
                     mlflow.log_metrics(metrics)
-        for name in (REPORT, PROPOSAL):
-            if (directory / name).is_file():
+        for name in (REPORT, (report.get("proposal") or {}).get("file")):
+            if name and (directory / name).is_file():
                 mlflow.log_artifact(str(directory / name))
         return parent.info.run_id
 
@@ -391,14 +409,19 @@ def run(
     """Search the declared grid on train and validation; write the report and the proposal."""
     tuning = load_tuning_config(tuning_path, base_path)
     base = load_training_config(base_path)
-    contract = load_contract(contract_path)
+    try:
+        contract = load_contract(contract_path)
+    except OSError as error:
+        raise TuningError(f"Cannot read {contract_path}: {error}") from error
+    proposal = f"{next_version(base.version)}.toml"
     check_lightgbm()
     from lightgbm.basic import LightGBMError
 
     errors = (CandidateError, FeatureError, LightGBMError)
     output.mkdir(parents=True, exist_ok=True)
-    for name in (REPORT, PROPOSAL, TRACKING):
-        (output / name).unlink(missing_ok=True)
+    # An earlier attempt's files must not be mistaken for this attempt's.
+    for stale in (output / REPORT, output / TRACKING, *output.glob("training-v*.toml")):
+        stale.unlink(missing_ok=True)
     report = {
         "status": "tuned",
         "evaluation": False,
@@ -458,9 +481,23 @@ def run(
             "classifier": sensitivity(results, CLASSIFIER_METRIC),
             "regressor": sensitivity(results, REGRESSOR_METRIC),
         },
-        "proposal": {"version": NEXT_VERSION, "file": PROPOSAL},
     }
-    write_atomic(output / PROPOSAL, proposal_text(tuning, base, selection))
+    # Without a measured base, or with no measured point at all, nothing was tuned: no proposal.
+    unmeasured = [
+        model
+        for model, chosen in selection.items()
+        if not chosen["base_measured"] or chosen["measured_points"] == 0
+    ]
+    if unmeasured:
+        reason = (
+            f"the base point or every point could not be measured for {', '.join(unmeasured)}; "
+            "no settings are proposed"
+        )
+        return finish(
+            report | {"status": "failed", "reason": reason}, output, tracking_uri, artifact_root
+        )
+    report["proposal"] = {"version": next_version(base.version), "file": proposal}
+    write_atomic(output / proposal, proposal_text(tuning, base, selection))
     return finish(report, output, tracking_uri, artifact_root)
 
 
@@ -481,7 +518,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    config_errors = (TuningError, TrainingError, ContractError, tomllib.TOMLDecodeError, OSError)
+    # Only configuration problems exit 2; an I/O failure while writing results crashes loudly,
+    # as in train_candidates. Unreadable configuration files are TuningErrors.
+    config_errors = (TuningError, TrainingError, ContractError, tomllib.TOMLDecodeError)
     try:
         outcome = run(
             args.split,
@@ -499,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Tuning {outcome.status}; MLflow run {outcome.run_id or 'not logged'}")
     if outcome.run_id is None:
         return EXIT_UNTRACKED
-    return EXIT_BLOCKED if outcome.status != "tuned" else 0
+    return 0 if outcome.status == "tuned" else EXIT_BLOCKED
 
 
 if __name__ == "__main__":
