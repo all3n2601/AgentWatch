@@ -799,6 +799,14 @@ frozen evaluation sets without tuning against them.
   not reversed ([model training](model-training.md#tuning-and-training-v2),
   `pipelines/model/tests/test_tune_candidates.py`). Validation is 273 steps from one task. A re-run
   with the shipped code (MLflow `b9e3cae3`) reproduced the search and the proposal byte for byte.
+  2026-11-15 (branch `feature/model-analysis-plots`, stacked on the tuning branch, not yet merged):
+  `make model-analysis` draws confusion matrices, a model comparison, TreeSHAP feature importance
+  and tuning sensitivity from evaluated reports, training nothing ([model
+  training](model-training.md#result-figures-and-shap),
+  `pipelines/model/tests/test_model_analysis.py`).
+  `pipelines/model/notebooks/model_pipeline_colab.ipynb` runs pull, split rebuild, tuning
+  (optional), training, calibration and the figures; it was executed end to end in a clean Linux
+  container the way Colab runs it, not yet on Colab itself.
 - [ ] Compare models and rules on the same held-out tasks and contention cases.
   2026-10-26 (M03): `make train-candidates` trains the classifier and regressor on the training
   split (`training-v1`), compares them with `rules-v1` on identical rows against
