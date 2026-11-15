@@ -1,0 +1,153 @@
+name: Model pipeline
+
+# Trains, validates and bias-checks the attribution model whenever code that affects it changes,
+# keeps the figures and reports, pushes an eligible model to GCP Artifact Registry from main, and
+# alerts Slack. docs/model-ci.md describes the one-time GCP and Slack setup; without it this
+# workflow still runs everything but the push and the alert, and says so in the job summary.
+on:
+  pull_request:
+    paths:
+      - "pipelines/model/**"
+      - "pipelines/data/**"
+      - "pipelines/versioning/**"
+      - "data/*.dvc"
+      - "Makefile"
+      - "uv.lock"
+      - ".github/workflows/model.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "pipelines/model/**"
+      - "pipelines/data/**"
+      - "pipelines/versioning/**"
+      - "data/*.dvc"
+      - "Makefile"
+      - "uv.lock"
+      - ".github/workflows/model.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-pipeline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  model-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # lets this job exchange its GitHub OIDC token for GCP access (no key file)
+    env:
+      # Pushing needs the repository variables from docs/model-ci.md and a run on main.
+      PUSH_TO_GCP: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+      SEND_SLACK: ${{ secrets.AGENTWATCH_ALERT_SLACK_WEBHOOK_URL != '' && github.event_name != 'pull_request' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      OUTPUTS: .data/model-pipeline
+      CI_OUTPUT: .data/model-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.1"
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --frozen --package agentwatch-model
+
+      - run: make model-pipeline-image
+      # The image's user (uid 10001) writes the results; the mounted folder must let it.
+      - name: Run the model pipeline
+        run: |
+          mkdir -p "$OUTPUTS"
+          chmod a+rwx "$OUTPUTS"
+          make model-pipeline-run
+
+      - name: Keep figures, reports and the registry record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-pipeline-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            .data/model-pipeline/analysis
+            .data/model-pipeline/bias
+            .data/model-pipeline/registry
+            .data/model-pipeline/calibration/report.json
+            .data/model-pipeline/candidates/report.json
+
+      - name: Decide what is eligible to push
+        id: verdict
+        run: |
+          uv run --frozen --package agentwatch-model python -m agentwatch_model.ci_report stage \
+            --root "$OUTPUTS" --output "$CI_OUTPUT" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        if: env.PUSH_TO_GCP == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        if: env.PUSH_TO_GCP == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Push to Artifact Registry
+        id: push
+        if: env.PUSH_TO_GCP == 'true'
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_LOCATION: ${{ vars.GCP_LOCATION }}
+          GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
+          PACKAGES: ${{ steps.verdict.outputs.packages }}
+          VERSION: ${{ steps.verdict.outputs.package_version }}
+        run: |
+          for package in $PACKAGES; do
+            if gcloud artifacts versions describe "$VERSION" --package="$package" \
+                --repository="$GCP_ARTIFACT_REPOSITORY" --location="$GCP_LOCATION" \
+                --project="$GCP_PROJECT_ID" > /dev/null 2>&1; then
+              echo "$package $VERSION already exists; it is immutable, so nothing is uploaded"
+              continue
+            fi
+            gcloud artifacts generic upload \
+              --repository="$GCP_ARTIFACT_REPOSITORY" --location="$GCP_LOCATION" \
+              --project="$GCP_PROJECT_ID" --package="$package" --version="$VERSION" \
+              --source-directory="$CI_OUTPUT/upload"
+          done
+
+      - name: Write the Slack message and job summary
+        id: message
+        if: always() && steps.verdict.outcome == 'success'
+        env:
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+        run: |
+          if [ "$PUSH_OUTCOME" = "success" ]; then status=pushed
+          elif [ "$PUSH_OUTCOME" = "failure" ]; then status=failed
+          else status=skipped; fi
+          uv run --frozen --package agentwatch-model python -m agentwatch_model.ci_report message \
+            --output "$CI_OUTPUT" --push-status "$status" --run-url "$RUN_URL"
+          jq -r .text "$CI_OUTPUT/slack.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$SEND_SLACK" != "true" ]; then
+            echo "Slack was not notified: no webhook secret, or this is a pull request." \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Alert Slack with the model verdict
+        if: always() && env.SEND_SLACK == 'true' && steps.message.outcome == 'success'
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ secrets.AGENTWATCH_ALERT_SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload-file-path: .data/model-ci/slack.json
+
+      # The pipeline stopped before a verdict existed: training, validation or a gate failed.
+      - name: Alert Slack that the pipeline failed
+        if: failure() && env.SEND_SLACK == 'true' && steps.message.outcome != 'success'
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ secrets.AGENTWATCH_ALERT_SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: ":x: AgentWatch model pipeline failed before a verdict (training, validation or a gate). Run: ${{ env.RUN_URL }}"
