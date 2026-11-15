@@ -1,9 +1,11 @@
-# training-v2: LightGBM settings for the attribution candidates, chosen by
-# tune-candidates (tuning-v1+f729092b) on the validation split only, against the base
-# training-v1+a34ea0be. The test split was not read. Any change changes the version hash.
+# training-v3: training-v2's LightGBM settings (chosen by tune-candidates on validation), trained
+# with condition-balancing weights. bias-check (bias-v1) adopted the weighting on the validation
+# split: it lowered the worst slice disparity past the declared margin within the declared
+# log-loss trade-off. The test split decided nothing. Any change changes the version hash.
 # Determinism settings (one thread, fixed seed, deterministic mode) are fixed in code.
-version = "training-v2"
+version = "training-v3"
 
+weight_by = "condition"
 num_boost_round = 300
 early_stopping_rounds = 30
 

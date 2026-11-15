@@ -158,10 +158,11 @@ def test_row_weights_give_each_condition_the_same_total_weight():
 
 
 def test_weighting_changes_the_model_and_unweighted_training_is_unchanged(tmp_path):
-    base = load_training_config()
+    unweighted = DEFAULT_TRAINING.with_name("training-v2.toml")
+    base = load_training_config(unweighted)
     weighted_path = tmp_path / "training.toml"
     weighted_path.write_text(
-        DEFAULT_TRAINING.read_text().replace(
+        unweighted.read_text().replace(
             "num_boost_round =", 'weight_by = "condition"\nnum_boost_round =', 1
         )
     )
@@ -198,7 +199,7 @@ def test_run_reports_both_models_on_validation_and_test_with_figures(tmp_path):
     assert versions["weighted"].startswith("training-v3+")
     proposed = load_training_config(output / "training-weighted.toml")
     assert proposed.weight_by == "condition" and proposed.version == versions["weighted"]
-    assert proposed.classifier == load_training_config().classifier
+    assert proposed.version == load_training_config().version  # the packaged training-v3
     for name in ("bias-validation.png", "bias-test.png"):
         assert (output / name).read_bytes().startswith(b"\x89PNG")
     mlflow.set_tracking_uri(tracking["tracking_uri"])

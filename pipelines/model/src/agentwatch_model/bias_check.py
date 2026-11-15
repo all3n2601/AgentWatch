@@ -31,7 +31,6 @@ from agentwatch_data.slices import READINGS
 from agentwatch_data.splits import SplitError, load_split
 
 from agentwatch_model.candidates import (
-    DEFAULT_TRAINING,
     HASH_DIGITS,
     WEIGHT_ATTRIBUTES,
     CandidateError,
@@ -64,6 +63,8 @@ from agentwatch_model.tune_candidates import validation_metrics
 
 PACKAGE = Path(__file__).parent
 DEFAULT_BIAS = PACKAGE / "bias.toml"
+# The unweighted settings the mitigation is decided on: training-v2, which training-v3 weights.
+DEFAULT_TRAINING = PACKAGE / "training-v2.toml"
 DEFAULT_OUTPUT = Path(".data/bias")
 VERSION = "bias-v1"
 REPORT = "report.json"
