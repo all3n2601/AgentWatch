@@ -86,7 +86,8 @@ def read_report(tmp_path):
 
 def test_the_packaged_search_space_contains_training_v1_and_is_declared():
     config = load_tuning_config()
-    assert config.version.startswith("tuning-v1+")
+    # The declared search; a silent edit to the grid or the rule must fail here.
+    assert config.version == "tuning-v1+f729092b"
     assert config.min_relative_improvement == 0.02
     base = load_training_config(config.base_path)
     assert base.version.startswith("training-v1+")

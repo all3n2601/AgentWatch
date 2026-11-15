@@ -17,6 +17,7 @@ from agentwatch_model.model_analysis import (
     parse_named,
     pyplot,
     run,
+    sensitivity_figure,
     shap_importance,
 )
 from agentwatch_model.train_candidates import run as train
@@ -46,9 +47,22 @@ def trained(tmp_path_factory):
         "learning_rate = [0.05, 0.1]\nnum_leaves = [7, 15]\nmin_data_in_leaf = [5]\n"
         "lambda_l2 = [1.0]\nfeature_fraction = [1.0]\n"
     )
+    # A second, different model: the frozen training-v1 settings instead of the packaged ones.
+    from agentwatch_model.candidates import DEFAULT_TRAINING
+
+    other = root / "candidates-v1"
+    v1 = DEFAULT_TRAINING.with_name("training-v1.toml")
+    assert train(root / "split.json", other, loader=load, training_path=v1, **tracking).status == (
+        "evaluated"
+    )
     tuned = root / "tuned"
     assert tune(root / "split.json", tuned, tuning_path=tuning, loader=load, **tracking).run_id
-    return {"root": root, "candidates": candidates, "tuning": tuned / "report.json"}
+    return {
+        "root": root,
+        "candidates": candidates,
+        "other": other,
+        "tuning": tuned / "report.json",
+    }
 
 
 def analyse(trained, output, **overrides):
@@ -146,3 +160,46 @@ def test_figures_draw_under_a_notebook_kernel_backend(monkeypatch):
     monkeypatch.setenv("MPLBACKEND", "module://matplotlib_inline.backend_inline")
     plt = pyplot()
     assert plt.get_backend().lower() == "agg"
+
+
+def test_two_different_models_are_compared_on_the_same_rows(trained, tmp_path):
+    folders = {"v1": trained["other"], "v2": trained["candidates"]}
+    analysis = json.loads(analyse(trained, tmp_path / "out", candidates=folders).read_text())
+    versions = {name: analysis["models"][name]["training_version"] for name in folders}
+    assert versions["v1"].startswith("training-v1+")
+    assert versions["v2"] != versions["v1"]
+
+
+def test_a_report_scored_on_another_split_is_refused(trained, tmp_path):
+    with pytest.raises(AnalysisError, match="scored on"):
+        run(
+            {"v2": trained["candidates"]},
+            tmp_path / "other-split.json",
+            tmp_path / "out",
+            explain="v2",
+            loader=load,
+        )
+
+
+def test_a_classifier_that_does_not_match_its_report_is_refused(trained, tmp_path):
+    import shutil
+
+    tampered = tmp_path / "tampered"
+    shutil.copytree(trained["candidates"], tampered)
+    with (tampered / "classifier.txt").open("a") as handle:
+        handle.write("\n")
+    with pytest.raises(AnalysisError, match="does not match"):
+        analyse(trained, tmp_path / "out", candidates={"v2": tampered})
+
+
+def test_a_one_setting_grid_still_draws(tmp_path):
+    spread = {"0.1": {"points": 1, "min": 0.2, "median": 0.2, "max": 0.2}}
+    tuning = {
+        "tuning": {"version": "tuning-v1+synthetic"},
+        "sensitivity": {
+            "classifier": {"learning_rate": spread},
+            "regressor": {"learning_rate": spread},
+        },
+    }
+    sensitivity_figure(tuning, tmp_path / "s.png")
+    assert (tmp_path / "s.png").read_bytes().startswith(PNG)

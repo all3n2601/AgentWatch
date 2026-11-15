@@ -1,16 +1,18 @@
 # AgentWatch model training
 
-Status: `training-v1+a34ea0be`, trained and evaluated on dataset v1 (`steps-v1.3+aafae73eb211`,
-split `split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`, accepted); see [Results on dataset
-v1](#results-on-dataset-v1). It passes every gate it evaluates and blocks promotion only because six
-gates are `not_evaluated`. Earlier: the interim `steps-v1.2+5954f97ef8b2` split is blocked by the
-leakage check, and on `split-v2+febe942a2b59` a run is a `failed` attempt because that test split
-mixes two feature definitions. Steps labeled `mixed` are scored by `mixed-scoring-v1` (see Running
-it). The packaged settings are now `training-v3+71c4dd58`: `training-v2+fd027e8a`, chosen on
-validation by the declared tuning run (on test it does not improve on `training-v1`; see [Tuning and
+Status: the packaged default (`training.toml`, used by `make train-candidates` and `make calibrate`)
+is `training-v3+71c4dd58`: `training-v2+fd027e8a`, chosen on validation by the declared tuning run
+(on test it does not improve on `training-v1`; see [Tuning and
 training-v2](#tuning-and-training-v2)), trained with condition-balancing weights that the [model
-bias check](model-bias.md) adopted on validation. What serving must reproduce, and what each
-prediction means, is in the [serving contract](model-serving-contract.md).
+bias check](model-bias.md) adopted on validation. The frozen evaluated pair, which held-out scoring
+and the serving contract pin, is `training-v1+a34ea0be`, trained and evaluated on dataset v1
+(`steps-v1.3+aafae73eb211`, split `split-v3+932b2df410a7`, `eval-contract-v3` `1cab0cbe`, accepted);
+see [Results on dataset v1](#results-on-dataset-v1). It passes every gate it evaluates and blocks
+promotion only because six gates are `not_evaluated`. Earlier: the interim `steps-v1.2+5954f97ef8b2`
+split is blocked by the leakage check, and on `split-v2+febe942a2b59` a run is a `failed` attempt
+because that test split mixes two feature definitions. Steps labeled `mixed` are scored by
+`mixed-scoring-v1` (see Running it). What serving must reproduce, and what each prediction means, is
+in the [serving contract](model-serving-contract.md).
 
 M03 trains two LightGBM candidates on CPU: a resource classifier and an excess-latency
 regressor. It scores them and [the rule baseline](rule-baseline.md) on identical rows against
@@ -188,7 +190,10 @@ make calibrate SPLIT=$SPLIT
 
 Every grid point is a nested MLflow run under one parent in the `agentwatch-tuning` experiment
 (parent `ed393fcc226e4d3c8303f3628fcc1a0b`, local); failed points would be kept with their reason.
-None failed.
+None failed. That run predates `7a3a6f6`, which changed `select()` for an unmeasured base point and
+the limitations text; a re-run with the shipped code (parent `b9e3cae389ab43d0bfdd1be82520688f`)
+reproduced every point's validation values and the selection, and its proposal is byte-identical
+to the committed `training.toml`.
 
 **Validation results** (run of 2026-11-15, CPU in a Linux container):
 
@@ -238,14 +243,14 @@ make model-analysis SPLIT=$SPLIT   # default: selected=.data/candidates; add oth
 ```
 
 `model-analysis` reads evaluated `train-candidates` folders and, when present, the tuning report,
-and writes to `.data/analysis/`: a confusion matrix per model and for `rules-v1`
+checks that every report was scored on the `--split` file's rows with the files it recorded (classifier and predictions hashes, step count), and writes to `.data/analysis/`: a confusion matrix per model and for `rules-v1`
 (`confusion-*.png`), a bar chart of macro F1 and the clean-step `none` rate on the same test rows
 (`comparison.png`), the explained model's SHAP importance (`shap-<name>.png`), each setting's
 validation sensitivity (`sensitivity.png`, median with min to max over the grid), and
 `analysis.json` with every number and each figure's SHA-256. It trains, fits and selects nothing.
 SHAP values are LightGBM's exact TreeSHAP contributions (`predict(pred_contrib=True)`), which add
 up to each class's raw score (a test checks this); importance is the mean absolute value per
-feature over the test rows, averaged over classes. Equal inputs give byte-identical figures.
+feature over the test rows, averaged over classes. Equal inputs give byte-identical figures on the same platform and Matplotlib version (checked within one run, not across platforms).
 
 The same steps run in Colab from a fresh clone with
 [`pipelines/model/notebooks/model_pipeline_colab.ipynb`](../pipelines/model/notebooks/model_pipeline_colab.ipynb):
