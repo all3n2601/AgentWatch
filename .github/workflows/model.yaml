@@ -37,6 +37,10 @@ jobs:
   model-pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    defaults:
+      run:
+        # bash with pipefail, so a failing command in `cmd | tee` fails its step
+        shell: bash
     permissions:
       contents: read
       id-token: write # lets this job exchange its GitHub OIDC token for GCP access (no key file)
@@ -63,6 +67,12 @@ jobs:
           mkdir -p "$OUTPUTS"
           chmod a+rwx "$OUTPUTS"
           make model-pipeline-run
+
+      # The container wrote the results as uid 10001 with its own file modes; the steps below run
+      # as the runner user and must be able to read them, even when the pipeline failed.
+      - name: Take ownership of the results
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$OUTPUTS"
 
       - name: Keep figures, reports and the registry record
         if: always()
