@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from agent_test_doubles import SOLVE_MEAN, ScriptedModel, chat_response
 from agentwatch_agent.delivery import RetryPolicy
+from agentwatch_agent.redacted_copy import MANIFEST_FILE, write_redacted_copy
 from agentwatch_agent.replay import (
     ReplayPlanError,
     ReplayRunner,
@@ -257,3 +258,23 @@ def test_signatures_ignore_test_timings_but_not_outcomes():
     reply = {"role": "assistant", "content": "x", "tool_calls": [{"function": {"name": "a"}}]}
     assert reply_signature(reply) == reply_signature(json.loads(json.dumps(reply)))
     assert reply_signature(reply) != reply_signature(reply | {"content": "y"})
+
+
+def test_a_redacted_copy_that_changed_the_conversation_is_refused(mean_task, server, tmp_path):
+    source, _ = record_source(mean_task, server, tmp_path)
+    evidence = json.loads((source / EVIDENCE_FILE).read_text(encoding="utf-8"))
+    evidence["messages"][1]["content"] += " Questions to maintainer@example.test."
+    (source / EVIDENCE_FILE).write_text(json.dumps(evidence), encoding="utf-8")
+    shared = tmp_path / "shared"
+    write_redacted_copy(source, shared)
+    with pytest.raises(ReplayPlanError, match="redacted copy"):
+        load_replay_plan(shared, mean_task)
+
+
+def test_a_redacted_copy_that_left_the_evidence_unchanged_can_be_replayed(
+    mean_task, server, tmp_path
+):
+    source, _ = record_source(mean_task, server, tmp_path)
+    manifest = {"files": [{"path": EVIDENCE_FILE, "replacements": {}}]}
+    (source / MANIFEST_FILE).write_text(json.dumps(manifest), encoding="utf-8")
+    assert load_replay_plan(source, mean_task).tool_call_count == 4

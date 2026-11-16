@@ -21,6 +21,7 @@ from pathlib import Path
 from agentwatch_agent.config import MODEL_BACKENDS, RunConfiguration
 from agentwatch_agent.errors import RunFailure
 from agentwatch_agent.model import ModelResponseError, RequestedCall, parse_reply
+from agentwatch_agent.redacted_copy import MANIFEST_FILE as REDACTION_MANIFEST_FILE
 from agentwatch_agent.runner import EVIDENCE_FILE, AgentRunner, _RunContext
 from agentwatch_agent.tasks import Task
 
@@ -167,6 +168,23 @@ def _turns(messages: list, model_calls: list) -> tuple[ReplayTurn, ...]:
     return tuple(turns)
 
 
+def _redaction_changed_evidence(run_dir: Path) -> bool:
+    """Whether run_dir is a redacted copy (`redact`) that replaced text in its evidence.
+
+    Redaction changes what the model would be sent, so such a copy cannot reproduce the
+    source run's requests. An unreadable manifest is treated as changed.
+    """
+    path = run_dir / REDACTION_MANIFEST_FILE
+    if not path.exists():
+        return False
+    try:
+        files = json.loads(path.read_text(encoding="utf-8"))["files"]
+        entry = next(f for f in files if f["path"] == EVIDENCE_FILE)
+        return bool(entry["replacements"])
+    except (OSError, ValueError, KeyError, TypeError, StopIteration):
+        return True
+
+
 def load_replay_plan(run_dir: Path, task: Task) -> ReplayPlan:
     """Build a plan from a completed, verified source run of `task`; refuse anything less."""
     path = run_dir / EVIDENCE_FILE
@@ -176,6 +194,10 @@ def load_replay_plan(run_dir: Path, task: Task) -> ReplayPlan:
     except (OSError, json.JSONDecodeError) as error:
         raise ReplayPlanError(f"Cannot read source evidence {path}: {error}") from None
     _require(isinstance(evidence, dict), "Source evidence is not a JSON object")
+    _require(
+        not _redaction_changed_evidence(run_dir),
+        "Source is a redacted copy whose evidence was changed; replay the original run",
+    )
     _require(
         evidence.get("status") == "completed" and evidence.get("task_passed") is True,
         "Only a completed run whose verification passed can be replayed",
