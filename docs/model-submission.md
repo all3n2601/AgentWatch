@@ -104,6 +104,21 @@ moves only for an eligible model that is not worse than the current champion; `m
 previous one. A run on 2026-11-15 reproduced the local model byte for byte. MLflow's registry is local; the GCP push is in
 section 10. See [model pipeline](model-pipeline.md).
 
+### Rollback and deployment scope
+
+- **Rollback rule.** `champion` moves to a new version only when the model is eligible, was scored on the same split
+  and dataset as the current champion, and its test macro F1 is not lower (`max_macro_f1_drop = 0` in
+  `registry.toml`). Otherwise the champion is kept, which is the automatic rollback. `make rollback-model` points
+  `champion` back at the version it replaced. The tests in `test_register_model.py` cover a worse model being kept
+  out, a promotion-blocked model never becoming champion, and `test_rollback_through_main`.
+- **Not exercised on a real model.** No model has been eligible, so `champion` has never been set; the recorded
+  evidence is the rejected path. Across CI runs the comparison is not applied, because MLflow's database does not
+  outlive a job (see section 10).
+- **Deployment is out of scope.** The guidelines ask the pipeline to deploy only "if your project includes a
+  deployment". This project has no serving code: Milestone 7 (deployment) is open in `docs/project-checklist.md`.
+  The [serving contract](model-serving-contract.md) says what a server must reproduce and that a model with
+  `blocks_promotion: true` must not be served as promoted.
+
 ## 10. CI/CD, notifications and GCP registry (**Merged**, PR #86)
 
 `.github/workflows/model.yaml` runs the model image on every pull request and push to `main` that touches model,
