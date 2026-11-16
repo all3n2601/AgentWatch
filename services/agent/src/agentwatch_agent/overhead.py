@@ -234,6 +234,8 @@ def measure_overhead(
         emit=delivery.emit,
     )
     walls: dict[str, list[float]] = {condition: [] for condition in CONDITIONS}
+    # Each measured repetition in run order, so analyses can pair adjacent repetitions.
+    measurements: list[dict] = []
     runner_cpu: dict[str, float] = dict.fromkeys(CONDITIONS, 0.0)
     sampling: list[dict] = []
     workspace: Workspace | None = None
@@ -286,6 +288,7 @@ def measure_overhead(
             wall = instrumented(index) if condition == "instrumented" else workload()
             runner_cpu[condition] += _process_cpu_seconds() - cpu_before
             walls[condition].append(wall)
+            measurements.append({"index": index, "condition": condition, "wall_seconds": wall})
         final_state = _close_completed(delivery, session)
     except BaseException as error:
         # Close the live run so it is not left running, then report how it was left.
@@ -338,6 +341,7 @@ def measure_overhead(
             "availability_counts": merged_availability(sampling),
         },
         "workload_wall_seconds": {"uninstrumented": baseline, "instrumented": measured},
+        "measurements": measurements,
         "median_difference_seconds": measured["median"] - baseline["median"],
         "median_difference_fraction": (measured["median"] - baseline["median"])
         / baseline["median"],

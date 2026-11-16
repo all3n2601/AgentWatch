@@ -39,6 +39,22 @@ def test_overhead_alternates_conditions_and_delivers_instrumented_steps(
     json.dumps(report)
 
 
+def test_every_repetition_is_recorded_in_alternating_order(mean_task, server, tmp_path):
+    """Paired analysis needs each repetition's wall time, not only the summaries."""
+    report = measure(mean_task, server, tmp_path)
+    measurements = report["measurements"]
+    assert [m["index"] for m in measurements] == [0, 1, 2, 3]
+    assert [m["condition"] for m in measurements] == [
+        "uninstrumented",
+        "instrumented",
+        "uninstrumented",
+        "instrumented",
+    ]
+    for condition in ("uninstrumented", "instrumented"):
+        walls = [m["wall_seconds"] for m in measurements if m["condition"] == condition]
+        assert summarize(walls) == report["workload_wall_seconds"][condition]
+
+
 def test_unknown_patch_is_rejected_before_any_run(mean_task, server, tmp_path):
     with pytest.raises(ValueError, match="no patch"):
         measure_overhead(mean_task, "nope", server, tmp_path)
