@@ -369,6 +369,17 @@ resource uses `service_id` `agentwatch-agent-overhead`, there is no `agent-run` 
 their steps are named `overhead-<n>`. Their configuration digest also covers the
 `agent-overhead-v1` protocol.
 
+Both `overhead.json` and `sampling-overhead.json` list every measured repetition in run order
+under `measurements` (`index`, `condition`, `wall_seconds`; `overhead.json` files saved before
+2026-11-16 have only the summaries). `make overhead-verdict ATTEMPTS="<attempt>.json ..."`
+judges saved attempts against the instrumentation overhead budget in
+`pipelines/model/optimization-contract.toml`: it pairs each uninstrumented repetition with the
+instrumented one after it, bootstraps the relative median increase with a recorded seed, and
+combines attempts with identical settings (protocol `instrumentation-overhead-acceptance-v1`,
+`agentwatch_data.overhead_verdict`). It writes `.data/reports/overhead/overhead-verdict.json`;
+failed attempts and attempts without per-repetition walls are kept as `not_evaluated`, and a
+malformed attempt exits 1.
+
 ## Replay experiments
 
 `make agent-experiment AGENT_TASK=fix-mean-empty` (or `... python -m agentwatch_agent
