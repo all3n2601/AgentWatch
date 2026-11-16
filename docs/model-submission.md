@@ -1,8 +1,9 @@
 # AgentWatch model development submission
 
-Status as of 2026-11-15 (evening), `main` at `39b98ad`. This report maps the course's *Model Development Guidelines* to this
-repository's evidence. It adds no new results: every number comes from the linked document, except the two items marked as observed
-for this submission (the macOS reproduction in section 12 and the local MLflow screenshots in the figures section). Work
+Status as of 2026-11-15 (evening), `main` at `f643e51`. This report maps the course's *Model Development Guidelines* to this
+repository's evidence. It adds no new results: every number comes from the linked document, except the items marked as observed
+for this submission (the macOS reproduction in section 12, and the local MLflow screenshots and the hyperparameter-sensitivity
+figure in the figures section). Work
 that is merged on `main` is separated from work still in review and from work not done.
 
 **Verdict.** The model is a research candidate, not a production model. It beats the rule baseline
@@ -148,8 +149,8 @@ workflow artifact for 30 days, pushes to GCP Artifact Registry from `main`, and 
   pipeline, authenticated to Google Cloud, uploaded 7 files (classifier, regressor, preprocessing, calibration,
   reports and `registration.json`) as version `m-197ffd968d86` of `attribution-candidate` in project
   `agentwatch-512815` (`us-central1`, repository `agentwatch-models`), and sent the Slack alert. The registered
-  model was not eligible (`eligible: false`), so nothing went to `attribution-champion`. Add the Slack message and
-  the Artifact Registry console as screenshots; they are not in the repository.
+  model was not eligible (`eligible: false`), so nothing went to `attribution-champion`. The Slack message and the
+  Artifact Registry console are shown in the figures section below.
 - Earlier pull-request runs of the workflow include one failure and one cancellation on 2026-11-15 before the
   passing run. Pull requests skip the push and the alert by design.
 - **Rollback caveat:** MLflow's database does not outlive a CI run, so the "keep the champion unless the new model is at
@@ -196,6 +197,17 @@ carry about zero.
 
 ![SHAP importance of the selected classifier on the test rows](images/model-submission/shap-selected.png)
 
+### Hyperparameter sensitivity
+
+**Observed for this submission**: drawn by `make model-analysis` from a local rerun of `tune-candidates`
+(`tuning-v1+f729092b`, WSL Ubuntu, 2026-11-15), because CI does not rerun tuning. Each point is the median validation
+score over the grid points sharing that value, with the min-to-max range. The rerun reproduces section 7: best
+classifier log loss 0.1462 and regressor MAE 0.0476; across values, the classifier's median moves 0.0078 for
+`lambda_l2` and 0.0075 for `num_leaves`, under 0.003 for the other three settings, and the regressor's at most 0.0014.
+The confusion, comparison and SHAP figures from the same rerun are byte-identical to the CI ones above.
+
+![Validation log loss and MAE over the tuning grid for each hyperparameter](images/model-submission/sensitivity.png)
+
 ### Bias slices
 
 The `contended` and `single_class` slices fall below the overall rate minus 0.1 on test (section 8).
@@ -224,9 +236,8 @@ experiments `agentwatch-attribution`, `-bias` and `-registry`; and the training 
 
 ![MLflow training run with its metrics](images/model-submission/mlflow-run.png)
 
-The hyperparameter-sensitivity figure (`sensitivity.png`) is not in the CI artifact because CI does not rerun
-tuning. The tuning sensitivity numbers in section 7 come from the merged tuning report. The JSON records behind the
-figures (`registration.json`, `bias/report.json`, `analysis.json`) are in the same workflow artifact.
+The JSON records behind the CI figures (`registration.json`, `bias/report.json`, `analysis.json`) are in the same
+workflow artifact.
 
 ## 11. Limitations
 
@@ -259,7 +270,7 @@ recorded Linux hashes; the cause was not investigated. Training took about 13 se
 | Load versioned data | [data card](data-card.md), `make pull-dataset` | Merged |
 | Train, select best model | [model training](model-training.md) | Merged |
 | Validation metrics | `report.json`, gates | Merged |
-| Tuning, sensitivity | Section 4 and 7 | Merged |
+| Tuning, sensitivity | Section 4 and 7, sensitivity figure | Merged |
 | Experiment tracking | MLflow, section 5 | Merged |
 | Bias slices and mitigation | [model bias](model-bias.md), section 8 | Merged |
 | Figures, SHAP | `make model-analysis`, section 7 | Merged |
