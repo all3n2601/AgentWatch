@@ -36,8 +36,11 @@ def test_tasks_command_lists_pinned_identities(capsys):
     assert cli.main(["tasks"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert [line.split("\t")[1] for line in lines] == [
+        "fix-config-precedence-r1",
+        "fix-fahrenheit-offset-r1",
         "fix-mean-empty-r1",
         "fix-median-even-r1",
+        "fix-slug-case-r1",
         "fix-window-count-r1",
     ]
 

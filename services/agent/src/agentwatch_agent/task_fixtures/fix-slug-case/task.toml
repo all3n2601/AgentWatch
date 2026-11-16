@@ -1,0 +1,40 @@
+name = "fix-slug-case"
+revision = 1
+title = "Make slugify() produce the documented slug"
+instructions = """
+The test suite of this small publishing project fails. Find out what a URL slug must look like,
+fix it by applying exactly one of the listed patches, and confirm that the tests pass.
+"""
+
+[[patches]]
+id = "lowercase-words"
+description = "Lowercase the title, then join its words with hyphens"
+file = "slugs.py"
+find = """
+    return "-".join(title.split())
+"""
+replace = """
+    return "-".join(title.lower().split())
+"""
+
+[[patches]]
+id = "underscore-words"
+description = "Lowercase the title, then join its words with underscores"
+file = "slugs.py"
+find = """
+    return "-".join(title.split())
+"""
+replace = """
+    return "_".join(title.lower().split())
+"""
+
+[[patches]]
+id = "strip-title"
+description = "Strip surrounding spaces from the title, then join its words with hyphens"
+file = "slugs.py"
+find = """
+    return "-".join(title.split())
+"""
+replace = """
+    return "-".join(title.strip().split())
+"""

@@ -100,6 +100,34 @@ Tasks live in `src/agentwatch_agent/task_fixtures/`: a small project whose tests
 reference documents, and two or more reviewed candidate patches that all apply cleanly. Only
 the documented behaviour (found through retrieval) makes the tests pass.
 
+`make agent-tasks` lists them:
+
+| Task | Project files | Documents | Patches |
+|---|---|---|---|
+| `fix-mean-empty` | 2 | 2 | 2 |
+| `fix-window-count` | 2 | 2 | 2 |
+| `fix-median-even` | 2 | 2 | 2 |
+| `fix-config-precedence` | 3 | 1 | 3 |
+| `fix-fahrenheit-offset` | 2 | 1 | 2 |
+| `fix-slug-case` | 2 | 2 | 3 |
+
+The prompt and tools are the same for every task, so a task can vary the agent's plan only
+through its own files, and the agent still chooses its own calls. On Ollama `qwen3:1.7b` (GPU,
+2026-11-15, 5 runs per task, declared before running: usable when at least 4 of 5 pass) the
+three newest tasks each passed 5 of 5, with one plan per task in every run:
+
+| Task | Steps | Tool calls the model made |
+|---|---|---|
+| `fix-config-precedence` | 8 (3 model calls) | `search_docs`, `read_file`, `apply_patch` |
+| `fix-fahrenheit-offset` | 11 (5 model calls) | `search_docs`, `read_file`, `apply_patch`, `run_tests` |
+| `fix-slug-case` | 11 (5 model calls) | `search_docs`, `read_file`, `apply_patch`, `run_tests` |
+
+Step counts include the run's root step and the runner's own `verify-tests` step. Reading three
+project files or offering three patches did not change the plan: the model read one file every
+time. A retrieval-heavy task whose fix needed facts from two documents (`fix-retry-delay`) failed
+0 of 5 in both of its revisions (the model chose a patch matching only one document) and was
+dropped before merge.
+
 `task_id` is `<name>-r<revision>`. `task_fixtures/index.toml` pins each task's content
 SHA-256; loading refuses a task whose files changed without a revision bump, so a task ID
 always covers the same inputs. Worker settings, model, limits and contention belong to the run

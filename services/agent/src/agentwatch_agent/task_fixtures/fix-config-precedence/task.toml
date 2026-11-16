@@ -1,0 +1,62 @@
+name = "fix-config-precedence"
+revision = 1
+title = "Make load_settings() apply the documented precedence"
+instructions = """
+The test suite of this small job-configuration project fails. Find out which settings source
+must win when several sources set the same key, fix it by applying exactly one of the listed
+patches, and confirm that the tests pass.
+"""
+
+[[patches]]
+id = "environment-over-file"
+description = "Start from the defaults, then apply the settings file, then the environment"
+file = "config.py"
+find = """
+    merged = dict(env_settings)
+    merged.update(file_settings)
+    for key, value in DEFAULTS.items():
+        merged.setdefault(key, value)
+    return merged
+"""
+replace = """
+    merged = dict(DEFAULTS)
+    merged.update(file_settings)
+    merged.update(env_settings)
+    return merged
+"""
+
+[[patches]]
+id = "file-over-environment"
+description = "Start from the defaults, then apply the environment, then the settings file"
+file = "config.py"
+find = """
+    merged = dict(env_settings)
+    merged.update(file_settings)
+    for key, value in DEFAULTS.items():
+        merged.setdefault(key, value)
+    return merged
+"""
+replace = """
+    merged = dict(DEFAULTS)
+    merged.update(env_settings)
+    merged.update(file_settings)
+    return merged
+"""
+
+[[patches]]
+id = "defaults-over-everything"
+description = "Start from the settings file, then apply the environment, then the defaults"
+file = "config.py"
+find = """
+    merged = dict(env_settings)
+    merged.update(file_settings)
+    for key, value in DEFAULTS.items():
+        merged.setdefault(key, value)
+    return merged
+"""
+replace = """
+    merged = dict(file_settings)
+    merged.update(env_settings)
+    merged.update(DEFAULTS)
+    return merged
+"""

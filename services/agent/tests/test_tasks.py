@@ -7,8 +7,11 @@ from agentwatch_agent.workspace import Workspace
 from agentwatch_sandbox.project_tests import run_project_tests
 
 CORRECT_PATCH = {
+    "fix-config-precedence": "environment-over-file",
+    "fix-fahrenheit-offset": "scale-then-add-offset",
     "fix-mean-empty": "return-none-for-empty",
     "fix-median-even": "average-middle-pair",
+    "fix-slug-case": "lowercase-words",
     "fix-window-count": "include-final-window",
 }
 

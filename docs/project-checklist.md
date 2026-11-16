@@ -755,6 +755,18 @@ Data pipeline progress (2026-10-06), in `pipelines/data` and [the data card](dat
   review), so an untagged sweep row cannot reach train; the PR that ingests sweep replays must
   still write `protocol_version` and `protocol_sha256` on every row and test that they are held
   out.
+  2026-11-15 (not merged, `feature/replay-task-suite`): three new tasks for the replay data
+  request, `fix-config-precedence`, `fix-fahrenheit-offset` and `fix-slug-case`. Fixture tests
+  fail unpatched and pass only with the documented patch (`services/agent/tests/test_tasks.py`).
+  Live check on Ollama `qwen3:1.7b` (GPU, 5 sequential runs per task, declared before running:
+  usable when at least 4 of 5 pass): each passed 5 of 5. Plan shapes did not vary with task
+  structure: `fix-config-precedence` ran 8 steps (no `run_tests` call by the model), the other
+  two 11 steps, and the model read one file in every run. `fix-retry-delay`, whose fix needed two
+  documents, failed 0 of 5 in revision 1 (its `retry_policy` query matched nothing) and 0 of 5 in
+  revision 2 (both sections retrieved, wrong patch chosen); it was dropped before merge. Run
+  evidence is local (`.data/task-reliability-20261115*`) and is not dataset evidence. Open: no
+  replay batch is recorded on the new tasks, and their train or test assignment needs
+  `split-v4`, approved by Rohit and the owner, before any batch is recorded.
 - [x] Exclude injection configuration and label-generation metadata from model features
   (`LEAKY_COLUMNS` in `schema.py`; enforced by `test_leaky_columns_are_never_features`).
 - [ ] Evaluate the expanded rule baseline before training the learned model.
