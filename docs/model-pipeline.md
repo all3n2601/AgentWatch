@@ -70,13 +70,17 @@ and `predictions.jsonl`; test macro F1 0.790). It was registered as version 1 of
 `agentwatch-attribution` under `candidate`, tagged `blocks_promotion = true`; `champion` was not
 set, because it blocks promotion and the bias check fails on test ([model bias](model-bias.md)).
 
-## Still needed (owner access)
+## CI, alerts and the GCP registry
 
-- A GCP model or artifact registry and permission to push to it, so `register-model` can push
-  there instead of the local stand-in.
-- CI secrets (registry credentials, the Slack webhook) for a CI job that runs this image on
-  model-code changes and alerts on training finished, failed runs, and failed validation or
-  bias checks.
+[Model CI/CD](model-ci.md) runs this image on GitHub Actions, alerts Slack and pushes eligible
+models to GCP Artifact Registry. It needs the one-time setup in that document.
+
+## Still needed
+
+- Run the workflow once on GitHub with the GCP variables and the Slack secret set, and record
+  the result (the workflow and message are verified locally only).
+- A persisted registry or champion pointer, so the champion comparison and rollback work across
+  CI runs (the MLflow database is rebuilt in each run).
 
 Follow-ups that change shared CI or are optimisations: building the image and running hadolint
 in CI, pinning the apt packages, and copying the lockfiles before the source so a code change

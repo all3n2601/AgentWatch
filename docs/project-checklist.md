@@ -1035,6 +1035,15 @@ attribution. If ML does not outperform rules, report that result rather than wea
 - [ ] Monitor feature drift and known-label quality without presenting drift alone as accuracy loss.
 - [ ] Build Airflow retraining with versioned inputs and tracked output models.
 - [ ] Add CI promotion gates and rollback to a previous model.
+  2026-11-15 (branch `feature/model-ci-cd`, not merged): `.github/workflows/model.yaml` runs the
+  model pipeline image on model-code changes, keeps figures and reports, pushes every evaluated
+  model to a GCP Artifact Registry `attribution-candidate` package and only an eligible one
+  (`registry-v2` rule) to `attribution-champion`, and alerts Slack with the verdict
+  ([model CI](model-ci.md), [ADR 0013](adr/0013-model-ci-and-gcp-artifact-registry.md),
+  `pipelines/model/tests/test_ci_report.py`). Verified locally only: 22 unit tests, `actionlint`,
+  and the verdict/message commands on real `make model-pipeline-run` output. Not run on GitHub;
+  the GCP push and Slack delivery have not been exercised, and the champion comparison does not
+  persist across CI runs, so this stays open.
 - [ ] Integrate Grafana/Alertmanager if they add operational value alongside the product dashboard.
 
 **Exit test:** A degraded candidate is rejected. Drift/canary failure triggers the intended workflow.
