@@ -405,3 +405,12 @@ def test_training_refuses_incompatible_feature_definitions(tmp_path):
     assert outcome.status == "failed"
     assert "Incompatible feature definitions" in read(output / "report.json")["reason"]
     assert not (output / "classifier.txt").exists()
+
+
+def test_saved_model_files_are_readable_by_other_users(tmp_path):
+    # The pipeline image writes as uid 10001; CI on the host reads the files as another user.
+    output = tmp_path / "out"
+    run(tmp_path / "split.json", output, loader=loader_for([], SPLITS), **tracking(tmp_path))
+    for name in ("classifier.txt", "regressor.txt"):
+        mode = (output / name).stat().st_mode & 0o777
+        assert mode & 0o044 == 0o044, f"{name} is {oct(mode)}"

@@ -166,6 +166,9 @@ def save_models(candidate: Candidate, directory: Path) -> dict[str, str]:
         os.close(descriptor)
         try:
             booster.save_model(staging, num_iteration=candidate.best_iterations[key])
+            # mkstemp creates 0600 files; like write_atomic's outputs, the models must be readable
+            # by other users (the pipeline image runs as its own uid, CI copies them as another).
+            Path(staging).chmod(0o644)
             os.replace(staging, target)
         except BaseException:
             # A half-written staging file must not outlive the attempt or reach MLflow.
