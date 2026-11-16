@@ -1,6 +1,6 @@
 # AgentWatch model development submission
 
-Status as of 2026-11-15 (evening), `main` at `8b12650`. This report maps the course's *Model Development Guidelines* to this
+Status as of 2026-11-15 (evening), `main` at `39b98ad`. This report maps the course's *Model Development Guidelines* to this
 repository's evidence. It adds no new results: every number comes from the linked document, except the two items marked as observed
 for this submission (the macOS reproduction in section 12 and the local MLflow screenshots in the figures table). Work
 that is merged on `main` is separated from work still in review and from work not done.
