@@ -42,6 +42,7 @@ from agentwatch_agent.delivery import (
 )
 from agentwatch_agent.errors import RunNotStarted
 from agentwatch_agent.resources import CpuProbe, ResourceSampler
+from agentwatch_agent.sampling_limits import sampling_record
 from agentwatch_agent.session import TERMINAL_RUN_STATES, CancellationState, RunSession
 from agentwatch_agent.stats import summarize
 from agentwatch_agent.steps import Step, StepRecorder, new_trace_id
@@ -345,6 +346,7 @@ def measure_overhead(
             condition: total / repetitions for condition, total in runner_cpu.items()
         },
         "workspace_removed": workspace_removed,
+        "sampling_coverage": sampling_record(sampling, sampling_interval_seconds),
         "limitations": [
             "One host and one short subprocess workload; this is not an overhead budget",
             (

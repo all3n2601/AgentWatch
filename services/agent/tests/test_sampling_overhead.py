@@ -4,6 +4,7 @@ import json
 
 import pytest
 from agent_test_doubles import FakeGpu
+from agentwatch_agent.sampling_limits import INTERVAL_FIELDS, LIMITS, judge_sampling
 from agentwatch_agent.sampling_overhead import (
     PROTOCOL,
     first_request,
@@ -144,3 +145,24 @@ def test_without_service_probes_the_v1_protocol_is_unchanged(mean_task, tmp_path
     report = measure(mean_task, tmp_path, lambda _payload: RESPONSE)
     assert report["protocol"] == PROTOCOL
     assert not any("combine the host and service" in text for text in report["limitations"])
+
+
+def test_each_samplers_intervals_and_the_coverage_verdict_are_saved(mean_task, tmp_path):
+    report = measure(mean_task, tmp_path, lambda _payload: RESPONSE)
+    sampling = report["sampling_coverage"]
+    # One sampler per sampled request, saved so the verdict can be recomputed.
+    assert len(sampling["samplers"]) == 3
+    assert set(sampling["samplers"][0]) == set(INTERVAL_FIELDS)
+    assert sampling["limits"] == judge_sampling(sampling["samplers"], 0.01)
+    assert sampling["limits"]["limits_version"] == LIMITS["version"]
+
+
+def test_service_samplers_are_saved_alongside_host_samplers(mean_task, tmp_path):
+    report = measure(
+        mean_task,
+        tmp_path,
+        lambda _payload: RESPONSE,
+        service_probes=lambda server: [vllm_probe(server, "http://127.0.0.1:1", "m@1")],
+    )
+    assert len(report["sampling_coverage"]["samplers"]) == 2 * 3
+    assert report["sampling_coverage"]["limits"]["samplers"] == 6

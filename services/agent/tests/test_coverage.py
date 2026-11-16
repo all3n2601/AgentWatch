@@ -520,8 +520,13 @@ def test_report_covers_a_test_double_runner_run(mean_task, server, tmp_path):
         open_gpu=FakeGpu,
     ).run()
     report = coverage_report(outcome.evidence_path.parent)
-    assert report["method"] == "coverage-v4"
+    assert report["method"] == "coverage-v5"
     assert report["run_id"] == str(outcome.run_id)
+    # Thread timing is not deterministic, so only the verdict's presence is checked here.
+    assert report["sampling_limits"]["verdict"] in ("met", "not_met")
+    assert report["short_steps"]["executed"] == len(
+        [entry for entry in report["steps"] if entry["window"] is not None]
+    )
     registered = server.only_run().registration.resources
     sampled_services = {"agentwatch-agent-runner", "nvidia-nvml"}
     assert {(e["resource_id"], e["service_id"]) for e in report["sampling"]} == {
@@ -569,3 +574,34 @@ def test_vllm_counters_report_increases_and_its_span_supplies_the_queue(tmp_path
     assert entry["timing"]["service_queue_seconds"] == 0.02
     assert entry["timing"]["service_queue_availability"] == "measured"
     assert entry["timing"]["outside_service_seconds"] == pytest.approx(0.05)
+
+
+def test_sampling_is_judged_against_the_declared_coverage_limits(tmp_path):
+    on_cadence = [sample(tick * 100 * MS, GPU_UTIL, 1) for tick in range(11)]
+    records = [
+        *executed("long", 0, 0, 1000 * MS, resource_id="gpu-1", step_type="model_call"),
+        *executed("short", 0, 0, 50 * MS, resource_id="gpu-1", step_type="tool"),
+        step("never-ran", 0, "queued", 0),
+        *on_cadence,
+    ]
+    report = coverage_report(write_run(tmp_path, records, interval=0.1))
+    assert report["method"] == "coverage-v5"
+    limits = report["sampling_limits"]
+    assert limits["verdict"] == "met"
+    assert limits["samplers"] == len(report["sampling"]) == 1
+    assert limits["checks"]["interval_median"]["value"] == pytest.approx(0.1)
+    assert report["short_steps"] == {"executed": 2, "shorter_than_interval": 1, "share": 0.5}
+
+
+def test_a_gap_in_sampling_is_reported_as_not_met(tmp_path):
+    gapped = [sample(tick * 100 * MS, GPU_UTIL, 1) for tick in (0, 1, 2, 3, 8, 9, 10)]
+    report = coverage_report(write_run(tmp_path, gapped, interval=0.1))
+    limits = report["sampling_limits"]
+    assert limits["verdict"] == "not_met"
+    assert set(limits["failed_checks"]) == {"interval_max", "missed_fraction"}
+
+
+def test_a_run_without_samples_has_no_coverage_verdict(tmp_path):
+    records = executed("long", 0, 0, 1000 * MS, resource_id="gpu-1")
+    report = coverage_report(write_run(tmp_path, records))
+    assert report["sampling_limits"]["verdict"] == "not_evaluated"

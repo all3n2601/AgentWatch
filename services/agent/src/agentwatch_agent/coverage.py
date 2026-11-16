@@ -1,6 +1,6 @@
 """Report how one run's resource samples cover its steps, from what the runner journaled.
 
-This is producer-side evidence for checking sampling (method `coverage-v4`), not the
+This is producer-side evidence for checking sampling (method `coverage-v5`), not the
 service's window join (B02). It reads `live-journal.jsonl` and `agent-evidence.json` and
 applies the live contracts' rules:
 
@@ -45,12 +45,14 @@ from pydantic import ValidationError
 
 from agentwatch_agent.admission import ADMITTED_TOOLS
 from agentwatch_agent.resources import COUNTER_METRICS, interval_summary
+from agentwatch_agent.sampling_limits import judge_sampling, short_steps
 from agentwatch_agent.service_probes import SERVICE_COUNTER_METRICS
 
+# v5 judges the run's sampling against the declared coverage limits (A07) and counts short steps;
 # v4 splits each step's queue into admission wait and dispatch (O03); v3 lists `sampling` and
 # `context` as entries carrying their full identity, and v2 keyed them by resource ID alone.
 # The method names the output shape, so recorded documents stay readable.
-COVERAGE_METHOD = "coverage-v4"
+COVERAGE_METHOD = "coverage-v5"
 RECORD_MODELS = {"resource_sample": ResourceSample, "step_event": StepEvent}
 # The live contracts' timing-breakdown tolerance.
 TIMING_TOLERANCE_SECONDS = 1e-6
@@ -440,5 +442,7 @@ def coverage_report(run_dir: Path) -> dict:
             if isinstance(r, dict)
         ],
         "sampling": sampling,
+        "sampling_limits": judge_sampling(sampling, declared),
+        "short_steps": short_steps(steps),
         "steps": steps,
     }

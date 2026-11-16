@@ -142,7 +142,7 @@ def test_every_model_request_and_test_job_is_admitted_under_the_policy(mean_task
     assert configuration["admission"]["enforcement_scope"] == "runner_process"
 
     report = coverage_report(outcome.evidence_path.parent)
-    assert report["method"] == "coverage-v4"
+    assert report["method"] == "coverage-v5"
     steps = {entry["step_id"]: entry for entry in report["steps"]}
     timing = steps["verify-tests"]["timing"]
     assert timing["admission"] == "admitted"
