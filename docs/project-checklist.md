@@ -244,6 +244,8 @@ These can be completed before adding an agent.
   never reports a counter increase from one reading. 24 runs: median 0.250 s, max 0.299 s, no
   missed rounds; every retrieval and most tool steps were shorter than one interval, and
   about half of the model-call windows held fewer than two CPU readings.
+  2026-11-16 (A07): coverage limits declared before measurement in
+  [the instrumentation overhead protocol](instrumentation-overhead-protocol.md); not yet evaluated.
 - [ ] Compare a genuinely CPU-starved task with a busy worker queue and a naturally long clean task.
 - [ ] Verify boundaries under clock changes and specify monotonic timing for duration calculations.
 - [ ] Measure profiler and sampler overhead against uninstrumented execution.
@@ -254,6 +256,8 @@ These can be completed before adding an agent.
   2026-10-24 (A04 CPU/retrieval): agent-overhead-v1 with five CPU metrics, two attempts each in
   WSL2 and a 1-CPU container: median wall −0.4% to +4.9% (sign varies, not resolved);
   runner CPU +4.2 to +5.3 ms per repetition; sampler thread 1.0–2.4% of a core in runs.
+  2026-11-16 (A07): decision rule (5% budget, paired bootstrap, two attempts per host) declared
+  in [the instrumentation overhead protocol](instrumentation-overhead-protocol.md); not yet evaluated.
 - [ ] Repeat experiments across more workload sizes and host loads; establish false-positive rates.
 - [ ] Verify task timeout/cancellation cleans up worker and child processes under failure.
 
