@@ -320,6 +320,22 @@ isolation sandbox**. The isolated container runner (`agentwatch_sandbox.containe
 [sandbox README](../sandbox/README.md)) is ready for the agent to adopt; until it does, and
 until model-written code gets its own review, do not add free-form edits or commands.
 
+## Sharing evidence
+
+Local evidence keeps the full conversation, tool results and test output, because replays
+resend the recorded conversation exactly. Share a redacted copy instead:
+`uv run --package agentwatch-agent python -m agentwatch_agent redact <folder> --output <new
+folder>`. It copies every `.json` and `.jsonl` file with each string value passed through
+`trace-redaction-v1` (`redaction.py`): private keys, credentials in URLs, bearer tokens, known
+token formats (GitHub, Anthropic/OpenAI-style `sk-`, AWS, Slack, Hugging Face, Google),
+`name=value` where the name ends in password, secret, token or key, email addresses, and
+absolute host paths. Keys, numbers and identifiers are kept. Other files are not copied and are
+listed, hidden files are skipped, symbolic links and an existing output are refused (exit 2,
+no partial output), and `redaction.json` records each file's source SHA-256 and replacements by
+kind. Live reasons use the same rules. Redaction is pattern-based, so review the copy before
+sharing. `experiment --source` refuses a redacted copy whose evidence was changed, because it
+could no longer resend the original requests.
+
 ## Sampling evidence
 
 `uv run --package agentwatch-agent python -m agentwatch_agent coverage <run dir>` prints a
