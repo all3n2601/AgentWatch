@@ -1,7 +1,8 @@
 # AgentWatch model development submission
 
 Status as of 2026-11-15 (evening), `main` at `8b12650`. This report maps the course's *Model Development Guidelines* to this
-repository's evidence. It adds no new results: every number comes from the linked document. Work
+repository's evidence. It adds no new results: every number comes from the linked document, except the two items marked as observed
+for this submission (the macOS reproduction in section 12 and the local MLflow screenshots in the figures table). Work
 that is merged on `main` is separated from work still in review and from work not done.
 
 **Verdict.** The model is a research candidate, not a production model. It beats the rule baseline
@@ -36,13 +37,18 @@ AgentWatch attributes excess waiting in an agent step to a resource. One row is 
 LightGBM classifier and regressor, trained on the frozen split, compared with the transparent
 `rules-v1` baseline on identical test rows. Details: [model training](model-training.md).
 
-| Measure (3,564 scored test steps) | Rules | `training-v1` | `training-v2` (tuned) |
-|---|---|---|---|
-| Macro F1 | 0.200 | 0.790 | 0.787 |
-| Clean steps predicted `none` (gate 0.95) | 0.731 | 0.991 | 0.989 |
-| Excess-latency MAE (limit 0.10) | | 0.076 | 0.077 |
+| Measure (3,564 scored test steps) | Rules | `training-v1` | `training-v2` (tuned) | `training-v3` (selected) |
+|---|---|---|---|---|
+| Macro F1 | 0.200 | 0.790 | 0.787 | 0.790 |
+| Clean steps predicted `none` (gate 0.95) | 0.731 | 0.991 | 0.989 | 0.988 |
+| Excess-latency MAE (limit 0.10) | | 0.076 | 0.077 | 0.076 |
 
-- Gates: 5 pass, 6 `not_evaluated` (unseen tasks, held-out method, abstention, calibration, live latency, overhead).
+- **Selected model:** `training-v3`, which is `training-v2`'s settings with condition-balancing weights. It was
+  adopted on validation by the declared bias-mitigation rule (section 8), not on test. The three settings are level on
+  test within what one test task can separate ([model bias](model-bias.md)).
+- Gates: after M03 (training), 5 pass and 6 are `not_evaluated`. M04 (calibration) then evaluates calibration and
+  abstention, and both pass (section 6), which leaves 4 `not_evaluated`: unseen tasks, held-out injection method,
+  live attribution latency and instrumentation overhead. Those four are why the model blocks promotion.
 - The model is far above the rule baseline, which cannot predict `inference` or `retrieval` by construction.
 - Mixed contention: macro F1 0.534 against 0.047 for the rules on 82 steps (gate gain 0.10: pass).
 
@@ -53,20 +59,25 @@ Declared before any run (`tuning-v1+f729092b`): a 162-point grid over `learning_
 classifier, MAE for the regressor). Every grid point is a nested MLflow run. None failed.
 
 - Validation: classifier log loss 0.1579 to 0.1462 (7.4%), regressor MAE 0.0524 to 0.0476 (9.3%).
-- **The gain did not carry over to test**: `training-v2` is slightly worse on every test measure. The result is
-  reported, not used to switch back, because choosing on test would be tuning on it.
+- **The gain did not carry over to test**: `training-v2` is slightly worse than `training-v1` on every test measure.
+  The result is reported, not used to switch back, because choosing on test would be tuning on it. The selected
+  model is `training-v3`, which builds on `training-v2` (section 3).
 
 ## 5. Experiment tracking (**Merged**)
 
-MLflow (local SQLite) logs settings, metrics, model versions and artifacts for training, tuning and
-calibration runs (bias and registry runs are added by the pull requests in sections 8 and 9). The stores are local to the machine that ran them and are not
-committed. Re-running reproduces the model files byte for byte on Linux.
+MLflow (local SQLite) logs settings, metrics, model versions and artifacts for training, tuning, calibration, bias
+and registry runs. The stores are local to the machine that ran them and are not committed. Re-running reproduces the model files byte for byte on Linux.
 
 ## 6. Validation, calibration and abstention (**Merged**)
 
-Temperature scaling and an abstention threshold are fitted on validation only. Calibration made test ECE
-slightly worse, not better (0.0178 against 0.0074 uncalibrated for `training-v1`). Raw scores are not
+Temperature scaling and an abstention threshold are fitted on validation only. M04 evaluates the calibration and
+abstention gates, and both pass. Calibration made test ECE slightly worse, not better, so raw scores are not
 confidence. Details: [model calibration](model-calibration.md).
+
+| Model | Temperature | Test ECE, calibrated (uncalibrated) | Abstention |
+|---|---|---|---|
+| `training-v1` | 0.897 | 0.0178 (0.0074) | 2.4% of steps |
+| `training-v3` (selected) | 0.797 | 0.020 (0.009) | none |
 
 ## 7. Result figures and sensitivity analysis (**Merged**, PR #82)
 
@@ -198,7 +209,7 @@ make train-candidates SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v
 make calibrate SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+932b2df410a7.json
 ```
 
-On 2026-11-15 a clean clone of `386d494` reproduced `classifier.txt`, `regressor.txt` and `preprocessing.json`
+**Observed for this submission, not recorded in any linked document.** On 2026-11-15 a clean clone of `386d494` reproduced `classifier.txt`, `regressor.txt` and `preprocessing.json`
 byte for byte on macOS. `report.json`, `predictions.jsonl` and `validation_predictions.jsonl` differed from the
 recorded Linux hashes; the cause was not investigated. Training took about 13 seconds.
 
