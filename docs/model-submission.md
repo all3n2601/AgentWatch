@@ -1,7 +1,8 @@
 # AgentWatch model development submission
 
-Status as of 2026-11-15 (evening), `main` at `8b12650`. This report maps the course's *Model Development Guidelines* to this
-repository's evidence. It adds no new results: every number comes from the linked document. Work
+Status as of 2026-11-15 (evening), `main` at `39b98ad`. This report maps the course's *Model Development Guidelines* to this
+repository's evidence. It adds no new results: every number comes from the linked document, except the two items marked as observed
+for this submission (the macOS reproduction in section 12 and the local MLflow screenshots in the figures section). Work
 that is merged on `main` is separated from work still in review and from work not done.
 
 **Verdict.** The model is a research candidate, not a production model. It beats the rule baseline
@@ -36,13 +37,18 @@ AgentWatch attributes excess waiting in an agent step to a resource. One row is 
 LightGBM classifier and regressor, trained on the frozen split, compared with the transparent
 `rules-v1` baseline on identical test rows. Details: [model training](model-training.md).
 
-| Measure (3,564 scored test steps) | Rules | `training-v1` | `training-v2` (tuned) |
-|---|---|---|---|
-| Macro F1 | 0.200 | 0.790 | 0.787 |
-| Clean steps predicted `none` (gate 0.95) | 0.731 | 0.991 | 0.989 |
-| Excess-latency MAE (limit 0.10) | | 0.076 | 0.077 |
+| Measure (3,564 scored test steps) | Rules | `training-v1` | `training-v2` (tuned) | `training-v3` (selected) |
+|---|---|---|---|---|
+| Macro F1 | 0.200 | 0.790 | 0.787 | 0.790 |
+| Clean steps predicted `none` (gate 0.95) | 0.731 | 0.991 | 0.989 | 0.988 |
+| Excess-latency MAE (limit 0.10) | | 0.076 | 0.077 | 0.076 |
 
-- Gates: 5 pass, 6 `not_evaluated` (unseen tasks, held-out method, abstention, calibration, live latency, overhead).
+- **Selected model:** `training-v3`, which is `training-v2`'s settings with condition-balancing weights. It was
+  adopted on validation by the declared bias-mitigation rule (section 8), not on test. The three settings are level on
+  test within what one test task can separate ([model bias](model-bias.md)).
+- Gates: after M03 (training), 5 pass and 6 are `not_evaluated`. M04 (calibration) then evaluates calibration and
+  abstention, and both pass (section 6), which leaves 4 `not_evaluated`: unseen tasks, held-out injection method,
+  live attribution latency and instrumentation overhead. Those four are why the model blocks promotion.
 - The model is far above the rule baseline, which cannot predict `inference` or `retrieval` by construction.
 - Mixed contention: macro F1 0.534 against 0.047 for the rules on 82 steps (gate gain 0.10: pass).
 
@@ -53,20 +59,25 @@ Declared before any run (`tuning-v1+f729092b`): a 162-point grid over `learning_
 classifier, MAE for the regressor). Every grid point is a nested MLflow run. None failed.
 
 - Validation: classifier log loss 0.1579 to 0.1462 (7.4%), regressor MAE 0.0524 to 0.0476 (9.3%).
-- **The gain did not carry over to test**: `training-v2` is slightly worse on every test measure. The result is
-  reported, not used to switch back, because choosing on test would be tuning on it.
+- **The gain did not carry over to test**: `training-v2` is slightly worse than `training-v1` on every test measure.
+  The result is reported, not used to switch back, because choosing on test would be tuning on it. The selected
+  model is `training-v3`, which builds on `training-v2` (section 3).
 
 ## 5. Experiment tracking (**Merged**)
 
-MLflow (local SQLite) logs settings, metrics, model versions and artifacts for training, tuning and
-calibration runs (bias and registry runs are added by the pull requests in sections 8 and 9). The stores are local to the machine that ran them and are not
-committed. Re-running reproduces the model files byte for byte on Linux.
+MLflow (local SQLite) logs settings, metrics, model versions and artifacts for training, tuning, calibration, bias
+and registry runs. The stores are local to the machine that ran them and are not committed. Re-running reproduces the model files byte for byte on Linux.
 
 ## 6. Validation, calibration and abstention (**Merged**)
 
-Temperature scaling and an abstention threshold are fitted on validation only. Calibration made test ECE
-slightly worse, not better (0.0178 against 0.0074 uncalibrated for `training-v1`). Raw scores are not
+Temperature scaling and an abstention threshold are fitted on validation only. M04 evaluates the calibration and
+abstention gates, and both pass. Calibration made test ECE slightly worse, not better, so raw scores are not
 confidence. Details: [model calibration](model-calibration.md).
+
+| Model | Temperature | Test ECE, calibrated (uncalibrated) | Abstention |
+|---|---|---|---|
+| `training-v1` | 0.897 | 0.0178 (0.0074) | 2.4% of steps |
+| `training-v3` (selected) | 0.797 | 0.020 (0.009) | none |
 
 ## 7. Result figures and sensitivity analysis (**Merged**, PR #82)
 
@@ -157,26 +168,65 @@ recorded evidence for the rejected path.
 
 ## Figures and screenshots
 
-The images and records below are delivered with the submission in the folders `figures/`, `screenshots/` and
-`records/`; they are not committed to the repository. They were taken from the `model-pipeline-43787735612` workflow artifact (kept 30 days, to about 2026-12-15, so download it
-before then) and the live consoles on 2026-11-15. The MLflow screenshots come from a local run of the same image
-(`make model-pipeline-run`, 2026-11-15, 20:57), not from the CI run, because CI's MLflow database does not outlive the job.
+The figures come from the `model-pipeline-43787735612` workflow artifact (kept 30 days, to about 2026-12-15) and the
+registry and Slack screenshots from the live consoles on 2026-11-15. The MLflow screenshots are **observed for this
+submission**: they come from a local run of the same image (`make model-pipeline-run`, 2026-11-15, 20:57), not from
+the CI run, because CI's MLflow database does not outlive the job. The images are in
+[`images/model-submission/`](images/model-submission/).
 
-| Item | File | What it shows |
-|---|---|---|
-| Confusion matrix, model | `figures/confusion-selected.png` | `cpu_sandbox` recall 35% (76 of 127 predicted `none`); `inference` 97%; `retrieval` 72% |
-| Confusion matrix, rules | `figures/confusion-rules.png` | Rules never predict `inference` or `retrieval` |
-| Model comparison | `figures/comparison.png` | Macro F1 0.790 against 0.200; clean steps predicted `none` 0.988 against 0.731 |
-| SHAP importance | `figures/shap-selected.png` | `duration_seconds`, `execution_seconds`, `queue_seconds` and `queue_fraction` dominate; workload size features carry about zero |
-| Bias slices | `figures/bias-test.png`, `figures/bias-validation.png` | `contended` and `single_class` slices fall below the overall rate minus 0.1 |
-| Registry | `screenshots/gcp-registry.png` | Version `m-197ffd968d86` in `attribution-candidate` |
-| Slack alert | `screenshots/slack-alert-crop.png` | "model is not eligible": bias check fails on test; pushed as candidate |
-| MLflow registry | `screenshots/mlflow-model.png` | `agentwatch-attribution` version 1, alias `candidate`, tags for training, calibration, split and dataset versions, macro F1, `eligible: false` |
-| MLflow experiments, run | `screenshots/mlflow-experiments.png`, `screenshots/mlflow-run.png` | Experiments `agentwatch-attribution`, `-bias`, `-registry`; the training run's metrics (macro F1 0.790) |
-| Records | `records/registration.json`, `bias-report.json`, `analysis.json` | Identity, gates, bias outcome, figure hashes |
+### Confusion matrices
+
+`cpu_sandbox` recall is 35% (76 of 127 predicted `none`); `inference` is 97% and `retrieval` 72%. The rule baseline
+never predicts `inference` or `retrieval`.
+
+![Confusion matrix of the selected model on the test split](images/model-submission/confusion-selected.png)
+
+![Confusion matrix of the rule baseline on the test split](images/model-submission/confusion-rules.png)
+
+### Model comparison
+
+Macro F1 0.790 against 0.200 for `rules-v1`; clean steps predicted `none` 0.988 against 0.731.
+
+![Macro F1 and clean-step none rate, selected model against rules-v1](images/model-submission/comparison.png)
+
+### SHAP feature importance
+
+`duration_seconds`, `execution_seconds`, `queue_seconds` and `queue_fraction` dominate; the workload size features
+carry about zero.
+
+![SHAP importance of the selected classifier on the test rows](images/model-submission/shap-selected.png)
+
+### Bias slices
+
+The `contended` and `single_class` slices fall below the overall rate minus 0.1 on test (section 8).
+
+![Slice rates on the test split, unweighted against condition-weighted](images/model-submission/bias-test.png)
+
+![Slice rates on the validation split, unweighted against condition-weighted](images/model-submission/bias-validation.png)
+
+### Registry and alert
+
+Version `m-197ffd968d86` in `attribution-candidate`, and the Slack alert for the same run: "model is not eligible"
+because the bias check fails on test and the model blocks promotion.
+
+![Google Artifact Registry showing version m-197ffd968d86 of attribution-candidate](images/model-submission/gcp-registry.png)
+
+![Slack alert: the model is not eligible and was pushed as a candidate](images/model-submission/slack-alert.png)
+
+### MLflow (local run of the pipeline image)
+
+Registered model `agentwatch-attribution` version 1 with alias `candidate`, its tags and `eligible: false`; the
+experiments `agentwatch-attribution`, `-bias` and `-registry`; and the training run's metrics (macro F1 0.790).
+
+![MLflow registered model agentwatch-attribution, version 1, alias candidate](images/model-submission/mlflow-model.png)
+
+![MLflow experiments list](images/model-submission/mlflow-experiments.png)
+
+![MLflow training run with its metrics](images/model-submission/mlflow-run.png)
 
 The hyperparameter-sensitivity figure (`sensitivity.png`) is not in the CI artifact because CI does not rerun
-tuning. The tuning sensitivity numbers in section 7 come from the merged tuning report.
+tuning. The tuning sensitivity numbers in section 7 come from the merged tuning report. The JSON records behind the
+figures (`registration.json`, `bias/report.json`, `analysis.json`) are in the same workflow artifact.
 
 ## 11. Limitations
 
@@ -198,7 +248,7 @@ make train-candidates SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v
 make calibrate SPLIT=data/datasets/splits/steps-v1.3+aafae73eb211/split-v3+932b2df410a7.json
 ```
 
-On 2026-11-15 a clean clone of `386d494` reproduced `classifier.txt`, `regressor.txt` and `preprocessing.json`
+**Observed for this submission, not recorded in any linked document.** On 2026-11-15 a clean clone of `386d494` reproduced `classifier.txt`, `regressor.txt` and `preprocessing.json`
 byte for byte on macOS. `report.json`, `predictions.jsonl` and `validation_predictions.jsonl` differed from the
 recorded Linux hashes; the cause was not investigated. Training took about 13 seconds.
 
