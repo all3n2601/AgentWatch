@@ -87,6 +87,17 @@ def test_successful_task_produces_one_correlated_run(mean_task, server, tmp_path
     assert saved["resource_sampling"]["sample_rounds"] * 5 == len(samples)
 
 
+def test_runner_registers_its_sampling_interval(mean_task, server, tmp_path):
+    outcome = make_runner(
+        mean_task, server, ScriptedModel(SOLVE_MEAN), tmp_path, sampling_interval_seconds=0.07
+    ).run()
+    # Telemetry coverage is judged against this declaration, never against a guessed constant.
+    assert server.only_run().registration.sampling_interval_seconds == 0.07
+    # A resend replays the journaled registration, so it must carry the same declaration.
+    (journaled,) = [e for e in journal_entries(outcome) if e["kind"] == "registration"]
+    assert journaled["payload"]["sampling_interval_seconds"] == 0.07
+
+
 def test_model_receives_tool_results_and_allowlisted_definitions(mean_task, server, tmp_path):
     model = ScriptedModel(SOLVE_MEAN)
     make_runner(mean_task, server, model, tmp_path).run()

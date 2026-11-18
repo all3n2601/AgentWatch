@@ -386,6 +386,7 @@ class AgentRunner:
                     configuration_digest=configuration.digest(),
                     clock_ids=[self.clock.clock_id],
                     resources=list(resources.values()),
+                    sampling_interval_seconds=self.sampling_interval_seconds,
                 )
                 if self.admission is not None:
                     # After local setup, so a local failure is never reported as the policy's;

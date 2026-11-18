@@ -1453,6 +1453,18 @@
             "type": "array",
             "maxItems": 64,
             "title": "Resources"
+          },
+          "sampling_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sampling Interval Seconds"
           }
         },
         "additionalProperties": false,
@@ -1572,6 +1584,18 @@
             "type": "array",
             "maxItems": 64,
             "title": "Resources"
+          },
+          "sampling_interval_seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sampling Interval Seconds"
           }
         },
         "type": "object",

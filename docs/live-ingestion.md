@@ -15,6 +15,15 @@ models/client live in `agentwatch_sdk`; generated TypeScript types are exported 
    immutable IDs for actual measurement/process lifetimes. Retain the server-created UUID
    for subsequent requests. Exact creation retries return that UUID (`200`, `created: false`);
    new creations return `201`.
+
+   Optional `sampling_interval_seconds` declares the producer's configured resource-sampling
+   interval in seconds (a finite number greater than zero); the agent runner sends its
+   configured value. Live step features (`agentwatch_features.live`) judge
+   `telemetry_coverage` against this declaration; when it is absent or null, coverage stays
+   null (a missing model input) rather than being computed from an assumed default. An
+   undeclared interval is omitted from the stored registration, so retrying a registration
+   created before the field existed stays an exact retry; reusing a `request_id` with a
+   different (or newly declared) interval returns `409`.
 2. `POST /v1/live/runs/{UUID}/state` with a retained `change_id`, `expected_revision`, `state`
    and explicit nullable `reason`. Revision zero starts queued. Allowed transitions are
    queued → running → completed/failed/cancelled, or queued → failed/cancelled. Failure and
@@ -184,6 +193,7 @@ registration = RunCreate(
     configuration_digest=configuration_sha256,
     clock_ids=[producer_clock_id],
     resources=[],  # Register actual targets before emitting resource records.
+    sampling_interval_seconds=producer_sampling_interval_seconds,  # Omit if not sampling.
 )
 run_id = client.create_run(registration).run_id
 client.change_state(run_id, RunChange(

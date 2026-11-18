@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from agentwatch_sdk.client import LiveClient
-from agentwatch_sdk.live import LiveBatch, ResourceSample, StepEvent
+from agentwatch_sdk.live import LiveBatch, ResourceSample, RunCreate, StepEvent
 from agentwatch_worker.export_live_contracts import openapi_document, typescript_document
 from pydantic import ValidationError
 from test_live_api import event, sample
@@ -28,6 +28,23 @@ def test_nonfinite_and_strict_producer_records():
         StepEvent.model_validate(record)
     with pytest.raises(ValidationError):
         LiveBatch.model_validate({"records": [record]})
+
+
+@pytest.mark.parametrize("interval", [0, -0.25, float("nan"), float("inf"), True, "0.25"])
+def test_sampling_interval_rejects_zero_negative_nan_and_inf(registration, interval):
+    with pytest.raises(ValidationError):
+        RunCreate.model_validate(registration | {"sampling_interval_seconds": interval})
+    with pytest.raises(ValidationError):
+        RunCreate.model_validate_json(
+            json.dumps(registration | {"sampling_interval_seconds": interval})
+        )
+    accepted = RunCreate.model_validate(registration | {"sampling_interval_seconds": 0.25})
+    assert accepted.sampling_interval_seconds == 0.25
+    undeclared = RunCreate.model_validate(registration | {"sampling_interval_seconds": None})
+    assert undeclared.sampling_interval_seconds is None
+    # Undeclared registrations keep the pre-field wire and storage form.
+    assert json.loads(undeclared.model_dump_json()) == undeclared.model_dump(mode="json")
+    assert "sampling_interval_seconds" not in undeclared.model_dump(mode="json")
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True, False])

@@ -63,6 +63,8 @@ class LiveStore:
         )
 
     def create(self, registration: RunCreate) -> dict:
+        # RunCreate omits an undeclared sampling_interval_seconds, so the stored and compared
+        # payload of such a registration matches rows stored before that field existed.
         payload = registration.model_dump(mode="json")
         with self.connect() as conn:
             # Serialize creation retries before assigning the server-owned run UUID.

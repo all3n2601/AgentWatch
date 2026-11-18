@@ -29,6 +29,7 @@ MAX_CURSOR = 2**63 - 1
 Tick = Annotated[int, Field(strict=True, ge=0, le=9007199254740991)]
 Number = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 Seconds = Annotated[Number, Field(ge=0)]
+PositiveSeconds = Annotated[Number, Field(gt=0)]
 State = Literal["queued", "running", "completed", "failed", "cancelled"]
 ResourceClass = Literal["cpu_sandbox", "inference", "retrieval"]
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
@@ -73,6 +74,13 @@ class RunCreate(LiveModel):
     configuration_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     clock_ids: list[Identifier] = Field(min_length=1, max_length=64)
     resources: list[ResourceRegistration] = Field(max_length=64)
+    # The producer's configured resource-sampling interval; telemetry coverage is judged
+    # against it and stays null when undeclared. Omitted from dumps when None, so an
+    # undeclared registration serializes exactly as one stored before the field existed
+    # (idempotent retries) and stays accepted by services that predate it.
+    sampling_interval_seconds: PositiveSeconds | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def registrations(self) -> Self:

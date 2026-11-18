@@ -206,6 +206,8 @@ def measure_overhead(
     retry = RetryPolicy()
     cancel = cancel or CancellationState()
     try:
+        # No sampling_interval_seconds: only the instrumented repetitions sample, so the run is
+        # not sampled throughout and coverage judged against the interval would be meaningless.
         session = RunSession.open(
             transport,
             RunCreate(
