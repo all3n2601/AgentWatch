@@ -22,11 +22,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from agentwatch_attribution.classes import RESOURCE_CLASSES
 from agentwatch_features import FEATURE_VERSION, LEGACY_FEATURE_VERSION
 
 SCHEMA_VERSION = "steps-v1.3"
 
-RESOURCE_CLASSES = ("none", "cpu_sandbox", "inference", "retrieval")
 SOURCES = ("measured", "simulated", "rcaeval")
 KINDS = ("cpu", "coding", "agent_replay")
 CONDITIONS = ("baseline", "clean", "contended")

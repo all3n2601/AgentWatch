@@ -11,6 +11,7 @@ members = [
   "services/injectors",
   "packages/sdk-python",
   "packages/features",
+  "packages/attribution",
   "pipelines/data",
   "pipelines/model",
 ]
@@ -27,5 +28,5 @@ target-version = "py313"
 line-length = 100
 
 [tool.pytest.ini_options]
-testpaths = ["packages/features/tests", "services/worker/tests", "services/sandbox/tests", "services/agent/tests", "services/injectors/tests", "pipelines/data/tests", "pipelines/model/tests", "deploy/diagnostics/tests", "tests/contract"]
+testpaths = ["packages/features/tests", "packages/attribution/tests", "services/worker/tests", "services/sandbox/tests", "services/agent/tests", "services/injectors/tests", "pipelines/data/tests", "pipelines/model/tests", "deploy/diagnostics/tests", "tests/contract"]
 

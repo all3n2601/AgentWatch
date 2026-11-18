@@ -8,18 +8,11 @@ measured failure or success.
 import math
 import random
 from collections.abc import Callable
-from typing import TypeGuard
 
-from agentwatch_data.schema import RESOURCE_CLASSES
+from agentwatch_attribution.classes import NONE, RESOURCE_CLASSES, is_number
 
 CLASSES = RESOURCE_CLASSES
-NONE = "none"
 MIN_BOOTSTRAP_GROUPS = 2  # fewer groups cannot show how results vary across tasks
-
-
-def is_number(value: object) -> TypeGuard[int | float]:
-    """A finite int or float; booleans are not numbers here."""
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def confusion_matrix(labels: list[str], predictions: list[str]) -> dict[str, dict[str, int]]:

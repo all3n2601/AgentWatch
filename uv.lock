@@ -9,6 +9,7 @@ resolution-markers = [
 [manifest]
 members = [
     "agentwatch-agent",
+    "agentwatch-attribution",
     "agentwatch-data",
     "agentwatch-features",
     "agentwatch-injectors",
@@ -39,10 +40,26 @@ requires-dist = [
 ]
 
 [[package]]
+name = "agentwatch-attribution"
+version = "0.1.0"
+source = { editable = "packages/attribution" }
+dependencies = [
+    { name = "lightgbm" },
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lightgbm", specifier = ">=4.6,<5" },
+    { name = "numpy", specifier = ">=2,<3" },
+]
+
+[[package]]
 name = "agentwatch-data"
 version = "0.1.0"
 source = { editable = "pipelines/data" }
 dependencies = [
+    { name = "agentwatch-attribution" },
     { name = "agentwatch-features" },
     { name = "agentwatch-worker" },
     { name = "pyarrow" },
@@ -50,6 +67,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agentwatch-attribution", editable = "packages/attribution" },
     { name = "agentwatch-features", editable = "packages/features" },
     { name = "agentwatch-worker", editable = "services/worker" },
     { name = "pyarrow", specifier = ">=21,<23" },
@@ -80,6 +98,7 @@ name = "agentwatch-model"
 version = "0.1.0"
 source = { editable = "pipelines/model" }
 dependencies = [
+    { name = "agentwatch-attribution" },
     { name = "agentwatch-data" },
     { name = "alembic" },
     { name = "lightgbm" },
@@ -91,6 +110,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agentwatch-attribution", editable = "packages/attribution" },
     { name = "agentwatch-data", editable = "pipelines/data" },
     { name = "alembic", specifier = ">=1.13,<2" },
     { name = "lightgbm", specifier = ">=4.6,<5" },

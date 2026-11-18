@@ -5,11 +5,14 @@ is staged under a hidden name, fsynced, renamed into place, and the directory is
 the rename survives. Staged names stay hidden so DVC excludes them (see .dvcignore).
 """
 
-import hashlib
 import json
 import os
 import tempfile
 from pathlib import Path, PurePath
+
+# The one implementation lives in agentwatch_attribution so serving can verify artifacts without
+# depending on this package; it stays importable from here for the pipeline stages that use it.
+from agentwatch_attribution.hashing import file_sha256  # noqa: F401
 
 # Readers of untrusted evidence directories. replay_evidence.py keeps its own copies on purpose:
 # its source is fingerprinted into the labels-v2 label version, so moving them there would
@@ -57,14 +60,6 @@ def decode_utf8(raw: bytes, name: str, error: type[Exception]) -> str:
 def read_bounded_text(path: Path, max_bytes: int, error: type[Exception]) -> str:
     """UTF-8 text of an untrusted regular file of at most max_bytes; symlinks are refused."""
     return decode_utf8(read_bounded_bytes(path, max_bytes, error), path.name, error)
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def json_text(value) -> str:
