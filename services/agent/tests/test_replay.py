@@ -278,3 +278,21 @@ def test_a_redacted_copy_that_left_the_evidence_unchanged_can_be_replayed(
     manifest = {"files": [{"path": EVIDENCE_FILE, "replacements": {}}]}
     (source / MANIFEST_FILE).write_text(json.dumps(manifest), encoding="utf-8")
     assert load_replay_plan(source, mean_task).tool_call_count == 4
+
+
+def test_a_real_redacted_copy_with_no_replacements_replays_like_the_source(
+    mean_task, server, tmp_path
+):
+    # The plan checks content (task, model, conversation), never the file's bytes.
+    source, _ = record_source(mean_task, server, tmp_path)
+    shared = tmp_path / "shared"
+    manifest = write_redacted_copy(source, shared)
+    entry = next(f for f in manifest["files"] if f["path"] == EVIDENCE_FILE)
+    assert entry["replacements"] == {} and entry["keys_redacted"] == 0
+    original, copy = load_replay_plan(source, mean_task), load_replay_plan(shared, mean_task)
+    assert copy.turns == original.turns
+    assert copy.source_run_id == original.source_run_id
+    # The runner and the copy serialize JSON the same way, so an unchanged file is byte-identical
+    # and the replay's source identity is preserved.
+    assert copy.source_evidence_sha256 == original.source_evidence_sha256
+    assert (shared / EVIDENCE_FILE).read_bytes() == (source / EVIDENCE_FILE).read_bytes()

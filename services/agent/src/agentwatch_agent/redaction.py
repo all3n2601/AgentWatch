@@ -18,11 +18,14 @@ MAX_REASON_CHARS = 512
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _WHITESPACE = re.compile(r"\s+")
 _SECRET_NAME = r"[\w-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)"
-# Top-level folders of macOS, Linux and container filesystems that hold host-specific paths.
+# Top-level folders of macOS, Linux and container filesystems that hold host-specific paths,
+# plus the MSYS/Git Bash drive form (`/c/Users/...`).
 _HOST_ROOTS = (
     "Users|home|root|private|var|tmp|opt|mnt|media|Volumes|srv|etc|usr|run|proc|sys|data|app"
-    "|workspaces?|Library|Applications|System|nix|snap"
+    "|workspaces?|Library|Applications|System|nix|snap|[A-Za-z]/Users|[A-Za-z]/home"
 )
+# Characters that end an unquoted value: whitespace, quotes, separators and call/index syntax.
+_VALUE_END = r"\s\"',;()\[\]{}"
 # Applied in order; earlier rules replace text that later, broader rules would split.
 _RULES: tuple[tuple[str, re.Pattern, str], ...] = (
     (
@@ -38,7 +41,19 @@ _RULES: tuple[tuple[str, re.Pattern, str], ...] = (
         re.compile(r"(\b[a-zA-Z][\w+.-]*://)[^/\s:@]+:[^/\s@]+@"),
         r"\1<credentials>@",
     ),
-    ("bearer", re.compile(r"(?i)\b(bearer|basic)\s+[\w.~+/=-]{8,}"), r"\1 <credential>"),
+    # In an Authorization header any scheme value is a credential.
+    (
+        "bearer",
+        re.compile(r"(?i)\b(authorization\s*[:=]\s*[\"']?)(bearer|basic)\s+[\w.~+/=-]{8,}"),
+        r"\1\2 <credential>",
+    ),
+    # Elsewhere only a token-shaped value (16+ characters with a digit) counts, so prose such as
+    # "basic configuration mismatch" or "Basic authentication failed" is kept.
+    (
+        "bearer",
+        re.compile(r"(?i)\b(bearer|basic)\s+(?=[\w.~+/=-]*\d)[\w.~+/=-]{16,}"),
+        r"\1 <credential>",
+    ),
     (
         "token",
         re.compile(
@@ -47,25 +62,47 @@ _RULES: tuple[tuple[str, re.Pattern, str], ...] = (
         ),
         "<credential>",
     ),
-    # The name must end in the secret word, so `max_tokens: 512` is not a credential.
+    # `name = value` where the name ends in a secret word (so `max_tokens: 512` is not one),
+    # including a quoted JSON name (`"password": "..."`). A quoted value is always redacted.
     (
         "secret_assignment",
-        re.compile(rf"(?i)\b({_SECRET_NAME})(\s*[=:]\s*)([\"']?)[^\s\"',;]{{4,}}"),
+        re.compile(rf"(?i)\b({_SECRET_NAME})([\"']?)(\s*[=:]\s*)([\"'])[^\"'\n]{{4,}}\4"),
+        r"\1\2\3\4<credential>\4",
+    ),
+    # An unquoted value must look like a token: 8+ characters with a letter and a digit, not
+    # followed by call or index syntax. Prose and code (`token: expired`, `next_token =
+    # self.advance()`, `secret=None`) are kept.
+    (
+        "secret_assignment",
+        re.compile(
+            rf"(?i)\b({_SECRET_NAME})([\"']?)(\s*[=:]\s*)"
+            rf"(?=[^{_VALUE_END}]*\d)(?=[^{_VALUE_END}]*[A-Za-z])[^{_VALUE_END}]{{8,}}(?![(\[])"
+        ),
         r"\1\2\3<credential>",
     ),
     ("email", re.compile(r"\b[\w.%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "<email>"),
-    # Absolute paths under filesystem roots, and Windows drive paths, reveal host layout and
-    # user names. Only known roots count, so API routes such as `/api/ps` are kept. A slash
-    # after `:` or `/` belongs to a URL, and a path after a placeholder (`<project>/tests/x.py`)
-    # is already relative; both are kept.
+    # A file URL names a host path, unlike other URLs.
+    ("path", re.compile(r"(?i)\bfile://[^\s'\"]*"), "<path>"),
+    # UNC paths: \\server\share\...
+    ("path", re.compile(r"(?<![\w\\])\\\\[^\s\\'\"]+\\[^\s'\"]*"), "<path>"),
+    # Absolute paths under filesystem roots, and Windows drive paths with either separator,
+    # reveal host layout and user names. Only known roots count, so API routes such as
+    # `/api/ps` are kept. A slash after `:` or `/` belongs to a URL, and a path after a
+    # placeholder (`<project>/tests/x.py`) is already relative; both are kept. A path containing
+    # spaces is replaced only up to the first space (see the limitations).
     (
         "path",
         re.compile(
             rf"(?:(?<![\w.>:/])/(?:{_HOST_ROOTS})(?:/[^\s'\"]*)?(?![\w-])"
-            r"|[A-Za-z]:\\[^\s'\"]+)"
+            r"|(?<![\w])[A-Za-z]:[\\/](?![\\/])[^\s'\"]+)"
         ),
         "<path>",
     ),
+)
+LIMITATIONS = (
+    "Pattern-based: an unlabeled random secret is indistinguishable from data",
+    "A path containing spaces is replaced only up to the first space; later folder names stay",
+    "Host names inside URLs are kept",
 )
 
 

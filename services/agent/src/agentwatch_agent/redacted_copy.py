@@ -2,8 +2,10 @@
 
 Local evidence stays complete: replays resend the recorded conversation exactly, so it is
 never redacted in place. Sharing uses a copy instead. Every string value in each `.json` and
-`.jsonl` file is passed through `redact_text`; keys, numbers, booleans and nulls are kept, so
-the copy keeps its structure. Files that cannot be scanned are not copied and are listed, and
+`.jsonl` file is passed through `redact_text`, and so is every object key (a map keyed by a
+path or email would otherwise pass unchanged); numbers, booleans and nulls are kept, so the
+copy keeps its structure. Two keys of one object that redact to the same text are refused
+rather than merged. Files that cannot be scanned are not copied and are listed, and
 hidden files (tool state such as `.DS_Store`) are skipped. `redaction.json` in the copy records
 the method, each file's source SHA-256 and replacements by kind, without host paths.
 
@@ -18,7 +20,7 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-from agentwatch_agent.redaction import REDACTION_METHOD, redact_text
+from agentwatch_agent.redaction import LIMITATIONS, REDACTION_METHOD, redact_text
 
 MANIFEST_FILE = "redaction.json"
 SCANNED_SUFFIXES = (".json", ".jsonl")
@@ -28,19 +30,41 @@ class RedactionError(ValueError):
     """The folder cannot be copied safely."""
 
 
-def _redact_value(value, counts: Counter[str]):
+def _redact_string(text: str, counts: Counter[str]) -> str:
+    redacted, replaced = redact_text(text)
+    counts.update(replaced)
+    return redacted
+
+
+def _redact_value(value, counts: Counter[str], keys: Counter[str]):
+    """Redact strings and object keys; `keys` counts the keys that changed."""
     if isinstance(value, str):
-        text, replaced = redact_text(value)
-        counts.update(replaced)
-        return text
+        return _redact_string(value, counts)
     if isinstance(value, list):
-        return [_redact_value(item, counts) for item in value]
+        return [_redact_value(item, counts, keys) for item in value]
     if isinstance(value, dict):
-        return {key: _redact_value(item, counts) for key, item in value.items()}
+        result = {}
+        for key, item in value.items():
+            redacted_key = _redact_string(key, counts)
+            if redacted_key != key:
+                keys["redacted"] += 1
+            if redacted_key in result:
+                raise RedactionError(f"two keys redact to the same text {redacted_key!r}")
+            result[redacted_key] = _redact_value(item, counts, keys)
+        return result
     return value
 
 
-def _redact_file(data: bytes, relative: str, counts: Counter[str]) -> str:
+def _redact_file(data: bytes, relative: str, counts: Counter[str], keys: Counter[str]) -> str:
+    try:
+        return _redact_document(data, relative, counts, keys)
+    except RedactionError as error:
+        if str(error).startswith(relative):
+            raise
+        raise RedactionError(f"{relative}: {error}") from error
+
+
+def _redact_document(data: bytes, relative: str, counts: Counter[str], keys: Counter[str]) -> str:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -50,7 +74,7 @@ def _redact_file(data: bytes, relative: str, counts: Counter[str]) -> str:
             value = json.loads(text)
         except json.JSONDecodeError as error:
             raise RedactionError(f"{relative} is not valid JSON: {error.msg}") from error
-        return json.dumps(_redact_value(value, counts), indent=2, ensure_ascii=False) + "\n"
+        return json.dumps(_redact_value(value, counts, keys), indent=2, ensure_ascii=False) + "\n"
     lines = []
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
@@ -59,7 +83,7 @@ def _redact_file(data: bytes, relative: str, counts: Counter[str]) -> str:
             value = json.loads(line)
         except json.JSONDecodeError as error:
             raise RedactionError(f"{relative} line {number} is not valid JSON") from error
-        lines.append(json.dumps(_redact_value(value, counts), ensure_ascii=False) + "\n")
+        lines.append(json.dumps(_redact_value(value, counts, keys), ensure_ascii=False) + "\n")
     return "".join(lines)
 
 
@@ -103,7 +127,8 @@ def write_redacted_copy(source: Path, output: Path) -> dict:
                 continue
             data = path.read_bytes()
             counts: Counter[str] = Counter()
-            redacted = _redact_file(data, relative, counts)
+            keys: Counter[str] = Counter()
+            redacted = _redact_file(data, relative, counts, keys)
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(redacted, encoding="utf-8")
@@ -113,6 +138,7 @@ def write_redacted_copy(source: Path, output: Path) -> dict:
                     "path": relative,
                     "source_sha256": hashlib.sha256(data).hexdigest(),
                     "replacements": dict(sorted(counts.items())),
+                    "keys_redacted": keys["redacted"],
                 }
             )
         manifest = {
@@ -122,11 +148,9 @@ def write_redacted_copy(source: Path, output: Path) -> dict:
             "not_copied": not_copied,
             "totals": dict(sorted(totals.items())),
             "limitations": [
-                (
-                    "Pattern-based: an unlabeled random secret is indistinguishable from data, "
-                    "so review the copy before sharing"
-                ),
+                *LIMITATIONS,
                 "Files other than .json and .jsonl are not copied",
+                "Review the copy before sharing",
             ],
         }
         (staging / MANIFEST_FILE).write_text(

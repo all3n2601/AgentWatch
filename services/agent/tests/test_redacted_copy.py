@@ -153,3 +153,31 @@ def test_redact_command_exits_2_when_the_copy_is_refused(tmp_path, capsys):
     source = evidence_folder(tmp_path)
     assert main(["redact", str(source), "--output", str(source / "inner")]) == 2
     assert "inside" in capsys.readouterr().err
+
+
+def test_object_keys_are_redacted_and_counted(tmp_path):
+    source = tmp_path / "run"
+    source.mkdir()
+    keyed = {"by_path": {HOME_PATH: 1, "relative/x.py": 2}, f"owner {EMAIL}": True}
+    (source / "index.json").write_text(json.dumps(keyed), encoding="utf-8")
+    manifest = write_redacted_copy(source, tmp_path / "shared")
+    copy = read(tmp_path / "shared/index.json")
+    assert copy == {"by_path": {"<path>": 1, "relative/x.py": 2}, "owner <email>": True}
+    (entry,) = manifest["files"]
+    assert entry["keys_redacted"] == 2
+    assert entry["replacements"] == {"email": 1, "path": 1}
+
+
+def test_keys_that_redact_to_the_same_text_are_refused(tmp_path):
+    source = tmp_path / "run"
+    source.mkdir()
+    colliding = {"/Users/alice/a.py": 1, "/Users/bob/b.py": 2}
+    (source / "index.json").write_text(json.dumps(colliding), encoding="utf-8")
+    with pytest.raises(RedactionError, match=r"index.json: two keys redact to the same text"):
+        write_redacted_copy(source, tmp_path / "shared")
+    assert not (tmp_path / "shared").exists()
+
+
+def test_the_manifest_states_the_redaction_limitations(tmp_path):
+    manifest = write_redacted_copy(evidence_folder(tmp_path), tmp_path / "shared")
+    assert any("spaces" in limitation for limitation in manifest["limitations"])

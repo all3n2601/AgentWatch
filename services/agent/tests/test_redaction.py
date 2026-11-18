@@ -1,7 +1,7 @@
 """Trace redaction over synthetic strings. Every credential below is a made-up fixture."""
 
 import pytest
-from agentwatch_agent.redaction import redact_reason, redact_text
+from agentwatch_agent.redaction import LIMITATIONS, redact_reason, redact_text
 
 # Built from parts so no complete credential-shaped literal sits in the source.
 GITHUB_TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
@@ -12,8 +12,9 @@ SLACK_TOKEN = "xoxb-" + "1234567890-abcdefghij"
 # secret scanners from reading the fixtures as real credentials.
 DUMMY_LONG = "example" + "value123"
 DUMMY_QUOTED = "example" + "value"
-DUMMY_SHORT = "dummy" + "42"
+DUMMY_SHORT = "dummy" + "4242"
 DUMMY_KEYLIKE = "abc123" + "xyz"
+DUMMY_TOKEN_SHAPED = "examplevalue" + "123456789"
 KEY_LABEL = "RSA PRIVATE" + " KEY"
 PRIVATE_KEY = f"-----BEGIN {KEY_LABEL}-----\nnot-a-real-key\n-----END {KEY_LABEL}-----"
 
@@ -92,3 +93,61 @@ def test_urls_in_reasons_are_kept_rather_than_treated_as_paths():
     # Regression: the path rule used to turn `http://host/x` into `http:/<path>`.
     reason = "connection to http://127.0.0.1:8090/v1/runs refused"
     assert redact_reason(reason) == reason
+
+
+# --- Review regressions (#95) ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("open C:/Users/alice/AgentWatch/x.py", "open <path>"),
+        ("open /c/Users/alice/AgentWatch/x.py", "open <path>"),
+        ("see file:///Users/alice/run/agent-evidence.json", "see <path>"),
+        ("share \\\\fileserver\\share\\alice", "share <path>"),
+    ],
+)
+def test_windows_msys_file_url_and_unc_paths_are_redacted(raw, expected):
+    assert redact_text(raw) == (expected, {"path": 1})
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (f'{{"password": "{DUMMY_LONG}"}}', '{"password": "<credential>"}'),
+        (f"{{'api_key': '{DUMMY_KEYLIKE}'}}", "{'api_key': '<credential>'}"),
+    ],
+)
+def test_quoted_names_in_json_text_are_redacted(raw, expected):
+    assert redact_text(raw) == (expected, {"secret_assignment": 1})
+
+
+def test_a_bearer_token_without_a_header_is_redacted_when_token_shaped():
+    assert redact_text(f"retry with bearer {DUMMY_TOKEN_SHAPED}") == (
+        "retry with bearer <credential>",
+        {"bearer": 1},
+    )
+
+
+@pytest.mark.parametrize(
+    "prose_or_code",
+    [
+        "a basic configuration mismatch",
+        "Basic authentication failed",
+        "Bearer token expired",
+        "Auth token: expired",
+        "next_token = self.advance()",
+        "access_token: Optional[str] = None",
+        "password: missing from request",
+        "secret=None",
+        "secret_key = os.environ[KEY_NAME]",
+    ],
+)
+def test_prose_and_code_near_secret_words_are_kept(prose_or_code):
+    assert redact_text(prose_or_code) == (prose_or_code, {})
+
+
+def test_a_path_with_spaces_is_replaced_up_to_the_first_space_as_documented():
+    # The user name is removed; later folder names stay. Stated in LIMITATIONS.
+    assert redact_text("/Users/alice/My Project/x.py") == ("<path> Project/x.py", {"path": 1})
+    assert any("spaces" in limitation for limitation in LIMITATIONS)

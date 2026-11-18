@@ -1057,8 +1057,12 @@ Retraining reproduces evaluation, promotion updates the served version, and roll
 - [ ] Add secrets management, trace redaction, retention rules, and access control for shared use.
   2026-11-16 (A07, branch `feature/trace-redaction`, not merged): live reasons and the new
   `redact` command's shared copies remove credentials, emails and host paths
-  (`trace-redaction-v1`); local evidence stays complete for replay. Secrets management,
-  retention and access control remain open.
+  (`trace-redaction-v1`); local evidence stays complete for replay. Tests:
+  `services/agent/tests/test_redaction.py` (rules, false positives, reviewer-reported Windows,
+  MSYS, `file://`, UNC and quoted-name cases), `test_redacted_copy.py` (copy, keys, refusals)
+  and `test_replay.py` (altered copies refused, unchanged copies replay). Run on the 6 local
+  recorded runs: 0 replacements (2026-11-16). Not run on GPU-host evidence yet. Secrets
+  management, retention and access control remain open.
 - [ ] Document threat boundaries, backups, restoration, deployment, and incident procedures.
 - [ ] Set cloud budgets and measure workload, instrumentation, and serving costs.
 - [ ] Reconcile the unused Go control plane/CLI and placeholder SDK/Protobuf contracts with the

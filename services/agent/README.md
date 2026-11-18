@@ -326,14 +326,21 @@ Local evidence keeps the full conversation, tool results and test output, becaus
 resend the recorded conversation exactly. Share a redacted copy instead:
 `uv run --package agentwatch-agent python -m agentwatch_agent redact <folder> --output <new
 folder>`. It copies every `.json` and `.jsonl` file with each string value passed through
-`trace-redaction-v1` (`redaction.py`): private keys, credentials in URLs, bearer tokens, known
-token formats (GitHub, Anthropic/OpenAI-style `sk-`, AWS, Slack, Hugging Face, Google),
-`name=value` where the name ends in password, secret, token or key, email addresses, and
-absolute host paths. Keys, numbers and identifiers are kept. Other files are not copied and are
-listed, hidden files are skipped, symbolic links and an existing output are refused (exit 2,
-no partial output), and `redaction.json` records each file's source SHA-256 and replacements by
-kind. Live reasons use the same rules. Redaction is pattern-based, so review the copy before
-sharing. `experiment --source` refuses a redacted copy whose evidence was changed, because it
+`trace-redaction-v1` (`redaction.py`): private keys, credentials in URLs, `Authorization`
+header values and token-shaped bearer values, known token formats (GitHub,
+Anthropic/OpenAI-style `sk-`, AWS, Slack, Hugging Face, Google), values assigned to a name
+ending in password, secret, token or key (quoted values, including JSON such as
+`"password": "..."`, and unquoted token-shaped values; prose and code such as
+`token: expired` or `secret=None` are kept), email addresses, and host paths (POSIX paths
+under filesystem roots, `C:\` and `C:/` drive paths, `/c/Users`, `file://` URLs and UNC
+paths). Object keys are redacted too, and two keys that would collide are refused. Numbers and
+identifiers are kept. Other files are not copied and are listed, hidden files are skipped,
+symbolic links and an existing output are refused (exit 2, no partial output), and
+`redaction.json` records each file's source SHA-256, replacements by kind, redacted keys and
+the limitations. Live reasons use the same rules. Redaction is pattern-based: an unlabeled
+secret is not found, a path containing spaces is replaced only up to the first space, and
+hostnames in URLs are kept, so review the copy before sharing. An unchanged file is copied
+byte for byte. `experiment --source` refuses a redacted copy whose evidence was changed, because it
 could no longer resend the original requests.
 
 ## Sampling evidence
