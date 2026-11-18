@@ -350,8 +350,8 @@ evidence, not the service's window join (B02).
 server, without the live API: after 3 discarded warm-ups, the runner's first model request
 for a task alternates 30 times without and 30 times with CPU and GPU sampling (records are
 journaled as in a run). It reports wall-time and Ollama-duration medians and p90s, generated
-token counts, and the sampler's per-round cost, with no threshold, in
-`.data/sampling-overhead/`. A failed or interrupted measurement keeps what it measured, with
+token counts, and the sampler's per-round cost, in `.data/sampling-overhead/`. The command
+applies no threshold; `make overhead-verdict` judges its saved output (below). A failed or interrupted measurement keeps what it measured, with
 its status and error, and exits 1.
 
 ## Overhead
@@ -360,14 +360,30 @@ its status and error, and exits 1.
 `agent-overhead-v1` (declared in `overhead.py`): after 3 discarded warm-ups, 30 repetitions
 per condition of a task's patched test suite, alternating uninstrumented and instrumented
 (60 measured), with the live API running. It reports
-wall-time medians and p90s and runner CPU per repetition, with no pass/fail threshold, in
-`.data/agent-overhead/`. The fixture suite takes about 55 ms, shorter than one sampling
+wall-time medians and p90s and runner CPU per repetition in `.data/agent-overhead/`. The
+command applies no threshold; `make overhead-verdict` judges its saved output (below). The fixture suite takes about 55 ms, shorter than one sampling
 interval, so the result covers per-step instrumentation, not sustained sampling. Overhead
 runs keep the task's own `task_id` (dataset splits group by it) and must be excluded from
 training datasets. They are recognizable without runner internals: their single registered
 resource uses `service_id` `agentwatch-agent-overhead`, there is no `agent-run` root step, and
 their steps are named `overhead-<n>`. Their configuration digest also covers the
 `agent-overhead-v1` protocol.
+
+Both `overhead.json` and `sampling-overhead.json` list every measured repetition in run order
+under `measurements` (`index`, `condition`, `wall_seconds`; `overhead.json` files saved before
+2026-11-16 have only the summaries and are judged `not_evaluated`).
+`make overhead-verdict ATTEMPTS="<attempt>.json ..." HOST_LABEL=<host>` judges saved attempts
+from one host against the instrumentation overhead budget in
+`pipelines/model/optimization-contract.toml` (protocol `instrumentation-overhead-acceptance-v1`,
+`agentwatch_data.overhead_verdict`). It pairs each uninstrumented repetition with the
+instrumented one after it and bootstraps the relative median increase with a recorded seed. An
+attempt needs 30 pairs; attempts are combined only when their recorded settings, probe metrics
+and the host label match; the same file given twice is refused. Failed attempts and attempts
+without per-repetition walls are kept as `not_evaluated`. It writes
+`.data/reports/overhead/overhead-verdict.json` and exits 0 whatever the verdict, or 1 without
+writing when an attempt, the host label or the contract is invalid. `ATTEMPTS` is split on
+spaces, like `RUN` for `add-evidence`; for paths containing spaces, run
+`uv run --package agentwatch-data python -m agentwatch_data.overhead_verdict` with quoted paths.
 
 ## Replay experiments
 
