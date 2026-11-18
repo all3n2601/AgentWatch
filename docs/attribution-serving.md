@@ -135,3 +135,63 @@ Declared on 2026-11-18 (UTC), committed before any measurement run.
   recorded as failed with its error, not replaced. No run is repeated to improve a number.
 - **Scope.** This is one input to the attribution-latency gate on a synthetic workload; it is
   not promotion evidence and changes no gate or promotion state.
+
+### Results
+
+Measured on 2026-11-18 (UTC) on the declared machine (Apple M4 Pro, 14 CPUs, macOS 27.0.1,
+Python 3.14.7, PostgreSQL 17.11 on the same machine) at code revision `796c38e` (the
+declaration commit; no tracked files modified). Model status on every page of every run:
+`ready_not_promoted`, `not_promoted: true`, the synthetic pair `training-v1+synthetic` /
+`calibration-v1+synthetic` (serving key `856f5f32…`, unchanged during the runs). The real
+M03/M04 pair was not measured; it is not available locally. Each run was done once, in the
+declared order; none failed or was repeated.
+
+| Run | Poll interval | Client p50 / p95 / max (s) | Server-side p50 / p95 / max (s) | Never visible | Within 15.0 s |
+| --- | --- | --- | --- | --- | --- |
+| [A](attribution-latency/2026-11-18-run-A.json) | 2.0 s | 2.019 / 2.026 / 2.027 | 0.025 / 0.031 / 0.061 | 0 of 50 | `true` |
+| [B](attribution-latency/2026-11-18-run-B.json) | 2.0 s | 2.024 / 2.029 / 2.032 | 0.026 / 0.031 / 0.033 | 0 of 50 | `true` |
+| [C](attribution-latency/2026-11-18-run-C.json) | 0.25 s | 0.270 / 0.278 / 0.281 | 0.025 / 0.031 / 0.032 | 0 of 50 | `true` (descriptive) |
+
+Under the declared acceptance rule, runs A and B are both within the limit, so the
+synthetic-workload result is within the 15.0 s p95 limit. Every step's attribution was visible on
+the first poll, and all 150 rows carry model outcome `predicted`. The actual first poll was sent
+2.005 s (A and B, median) and 0.255 s (C) after the terminal request started, so the client
+figure is the poll schedule plus one poll's response time (roughly 5 to 30 ms); it cannot show
+where inside the interval the row was written. The server-side figure does: the row was
+committed about 25 ms (median) after the terminal event was received. It rose from about 22 ms
+over the first ten steps to about 28 to 31 ms over the last ten in every run, consistent with each
+pass recomputing the feature rows of the whole run. Run A's 0.061 s maximum is one step
+(`latency-step-0046`).
+
+The reports are synthetic-workload evidence (`synthetic_workload: true`) and say nothing about
+prediction quality.
+
+### Limitations
+
+- The steps and resource readings are synthetic: a client-side sleep with made-up CPU readings,
+  no agent, model call or real contention, run one step at a time. The model pair is the
+  tiny synthetic test pair (15 boosting rounds on 240 made-up rows), so its prediction time may
+  differ from the real pair's.
+- One machine, client, worker and database on loopback; no network between them, one worker
+  process, no concurrent runs. Each pass recomputes the whole run's feature rows; runs longer
+  than 50 steps (the bound is 1,000) were not measured.
+- The client figure includes a whole poll interval by construction (first poll one interval
+  after the terminal request), so it is a worst-phase figure for one poller, not the latency of
+  a randomly timed dashboard poll.
+- Three model inputs are always missing live (`workload_iterations`, `tests_per_step`,
+  `worker_capacity`) and are passed to the model as missing.
+- The current M03/M04 pair is not promoted, and four contract gates remain `not_evaluated`
+  (held-out injection method, unseen tasks, instrumentation overhead and attribution latency).
+  This synthetic result is one input to the attribution-latency gate, not promotion evidence;
+  no gate or promotion state changes. A latency measurement with the real pair is still open.
+  Promotion is M05.
+- No deployment passes the `AGENTWATCH_MODEL_*` variables yet: Compose has no worker service
+  (the worker runs on the host with `make dev-worker`), so containerized serving with a model is
+  B04 work.
+- A non-terminal batch that fills a gap and so applies an earlier-sent terminal event starts no
+  background pass; that step's row is written by the next read, so its server-side latency can
+  be up to one poll interval longer.
+- A sample that arrives inside a step's window after the last pass is flagged
+  (`evidence_changed`) only at the next pass; see [live ingestion](live-ingestion.md#attribution).
+
+The packaging decision behind serving is [ADR 0014](adr/0014-attribution-serving-package.md).

@@ -185,7 +185,8 @@ produced here; [Attribution](#attribution) serves step verdicts and model predic
 B03 serves one attribution per terminal step of a live run
 ([attribution OpenAPI](../api/openapi/attribution.json); `AttributionPage`, `AttributionItem`
 and `ModelStatusView` in `agentwatch_sdk.attribution` and `@agentwatch/sdk`). The prediction
-semantics follow the [model serving contract](model-serving-contract.md).
+semantics follow the [model serving contract](model-serving-contract.md); configuration, model
+states and the latency measurement are in [attribution serving](attribution-serving.md).
 
 - `GET /v1/live/runs/{UUID}/attributions?after=0&limit=50` returns `run_id`, the serving
   `model` status, `attributions` oldest first and `next_cursor`. `after` is the largest
@@ -214,10 +215,12 @@ a page can therefore hold rows of more than one key, and the current one is
 `model.serving_key`. `committed_at` (row written) and `step_terminal_received_at` (terminal
 event received) are both database-clock times. A step's feature row is computed once; when a
 later pass would compute a different one (a sample inside the step's window arriving late),
-the stored row keeps its record and `evidence_changed` becomes `true`. Passes run only after
-terminal batches, on run close and on reads, so a sample that arrives after the last pass is
-flagged only at the next one. Only rows of the current serving key are audited; rows of a
-superseded key keep the flag they had.
+the stored row keeps its record and `evidence_changed` becomes `true`. Background passes run
+after a batch holding a terminal step event and after a run closes. A read runs a pass only when
+a terminal step lacks a row for the current serving key, so reading alone does not re-audit
+stored rows: a sample that arrives after the last pass is flagged only at the next pass (the
+next terminal batch, the run's close, or a read that finds a step without a row). Only rows of
+the current serving key are audited; rows of a superseded key keep the flag they had.
 
 | `model.state` | Meaning |
 | --- | --- |

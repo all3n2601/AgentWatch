@@ -300,6 +300,12 @@ These can be completed before adding an agent.
   2026-10-24: the producer-side `coverage-v3` report applies the contract's join rules to a
   run's journal (own resource and service, registered clocks, `[started, finished)`), aligned
   with `step-features-v1`'s statuses and join key; it does not import the service join.
+  2026-11-18 (B03, branch `feature/serve-attribution-predictions`, PR pending): attribution
+  passes now call the join for every terminal live step, and registration declares
+  `sampling_interval_seconds` (`51e71be`, `3fc0ca6`; the agent runner sends its configured
+  value), so coverage is computed when declared. Still open: only synthetic fixtures and the
+  synthetic latency workload (Milestone 5, B03 entry) have been joined; no real agent run has
+  been attributed.
 - [ ] Add automatic dashboard updates, connection status, last-update time, and stale-data indicators.
   Completed-history polling, source status, and last-refresh time now exist; live-run streaming and
   stale-event indicators remain unfinished.
@@ -1019,6 +1025,32 @@ frozen evaluation sets without tuning against them.
   calibrated probabilities, the abstention rule and the clipped excess-latency estimate. The
   current pair has `blocks_promotion: true` (four gates `not_evaluated`), so it is not to be
   served as promoted. The artifacts are local, not registered; nothing is served yet.
+  2026-11-18 (B03): the worker serves a pair from local folders only, not from the registry
+  (entry below); registry loading stays open with M05.
+- [ ] Serve live step attributions (B03) and measure step completion to visible attribution.
+  2026-11-18 (branch `feature/serve-attribution-predictions`, commits `be5f805`..`c6783aa`,
+  `796c38e` and the results commit; PR pending, not merged). `packages/attribution` holds
+  `rules-v1` (moved, identity unchanged), input encoding, temperature scaling and a contract
+  checking loader ([ADR 0014](adr/0014-attribution-serving-package.md)); the worker stores one
+  append-only attribution per terminal step after the ingest commit (migration `0005`) and
+  serves `GET /v1/live/runs/{UUID}/attributions` and `GET /v1/live/attribution/model`
+  ([attribution serving](attribution-serving.md), [live ingestion](live-ingestion.md#attribution)).
+  Verified by unit and isolated-schema PostgreSQL tests: `packages/attribution/tests`
+  (`test_served_model_load.py`, `test_served_model_predict.py`, `test_rules_identity.py`,
+  `test_hashing.py`, `test_inputs.py`, `test_temperature_scaling.py`),
+  `pipelines/model/tests/test_served_model_parity.py` and
+  `services/worker/tests/test_attribution_{model,record,store,api,latency}.py`; 2026-11-18:
+  `uv run pytest services/worker/tests packages` (588 passed) with a dedicated PostgreSQL 17
+  test database and no skips, the parity test (2 passed), and Ruff passed. Synthetic only: the
+  latency measurement used a declared synthetic workload and the synthetic test pair
+  (`ready_not_promoted`): 50 steps per run, nearest-rank p95 of client latency including the poll interval 2.026 s (run A) and
+  2.029 s (run B) at the dashboard's 2.0 s poll, 0.278 s at 0.25 s (run C, descriptive);
+  server-side p95 0.031 s in each; no step left unseen; within the 15.0 s `eval-contract-v3`
+  limit on this workload (`docs/attribution-latency/2026-11-18-run-{A,B,C}.json`; workload and
+  acceptance declared first in `796c38e`). Open: a latency measurement with the real M03/M04
+  pair (not available locally) and on real agent runs; the four `not_evaluated` promotion gates
+  and promotion itself (M05; this result changes no gate); passing the model variables in a
+  deployment (Compose has no worker service; B04); the dashboard view (F03).
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
   2026-11-12: what the dashboard must show (model identity and promotion state, abstention as
   its own state, missing telemetry beside the prediction, the excess fraction as an estimate)
