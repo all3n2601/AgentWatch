@@ -10,6 +10,7 @@ from agentwatch_agent.overhead import (
     OverheadFailed,
     measure_overhead,
 )
+from agentwatch_agent.sampling_limits import INTERVAL_FIELDS, judge_sampling
 from agentwatch_agent.session import CancellationState
 from agentwatch_agent.stats import summarize
 
@@ -37,6 +38,22 @@ def test_overhead_alternates_conditions_and_delivers_instrumented_steps(
     assert report["sampling"]["rounds"] >= 2
     assert report["workspace_removed"]
     json.dumps(report)
+
+
+def test_every_repetition_is_recorded_in_alternating_order(mean_task, server, tmp_path):
+    """Paired analysis needs each repetition's wall time, not only the summaries."""
+    report = measure(mean_task, server, tmp_path)
+    measurements = report["measurements"]
+    assert [m["index"] for m in measurements] == [0, 1, 2, 3]
+    assert [m["condition"] for m in measurements] == [
+        "uninstrumented",
+        "instrumented",
+        "uninstrumented",
+        "instrumented",
+    ]
+    for condition in ("uninstrumented", "instrumented"):
+        walls = [m["wall_seconds"] for m in measurements if m["condition"] == condition]
+        assert summarize(walls) == report["workload_wall_seconds"][condition]
 
 
 def test_unknown_patch_is_rejected_before_any_run(mean_task, server, tmp_path):
@@ -195,3 +212,12 @@ def test_transient_failure_on_completion_keeps_the_measurement(mean_task, server
     assert report["live_run_state"] == "completed_locally_undelivered"
     assert report["delivery"]["resend_needed"] is True
     assert report["workload_wall_seconds"]["instrumented"]["count"] == 2
+
+
+def test_each_samplers_intervals_and_the_coverage_verdict_are_saved(mean_task, server, tmp_path):
+    report = measure(mean_task, server, tmp_path)
+    sampling = report["sampling_coverage"]
+    # One sampler per instrumented repetition, saved so the verdict can be recomputed.
+    assert len(sampling["samplers"]) == 2
+    assert set(sampling["samplers"][0]) == set(INTERVAL_FIELDS)
+    assert sampling["limits"] == judge_sampling(sampling["samplers"], 0.01)

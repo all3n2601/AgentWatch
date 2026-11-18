@@ -92,6 +92,9 @@ class OptimizationContract:
     bootstrap_resamples: int
     interval_level: float
     enforcement_scope: str
+    # Instrumentation overhead gates (instrumentation-overhead-acceptance-v1).
+    max_median_instrumentation_overhead: float
+    max_baseline_cv: float
 
 
 @dataclass(frozen=True)
@@ -199,6 +202,8 @@ def load_optimization_contract(path: Path) -> OptimizationContract:
             bootstrap_resamples=gates["bootstrap_resamples"],
             interval_level=gates["interval_level"],
             enforcement_scope=policy["enforcement_scope"],
+            max_median_instrumentation_overhead=gates["max_median_instrumentation_overhead"],
+            max_baseline_cv=gates["max_baseline_root_step_cv"],
         )
     except KeyError as error:
         raise ManifestError(f"Optimization contract lacks {error.args[0]!r}") from error
