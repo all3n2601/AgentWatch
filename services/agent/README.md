@@ -330,8 +330,10 @@ folder>`. It copies every `.json` and `.jsonl` file with each string value passe
 header values and token-shaped bearer values, known token formats (GitHub,
 Anthropic/OpenAI-style `sk-`, AWS, Slack, Hugging Face, Google), values assigned to a name
 ending in password, secret, token or key (quoted values, including JSON such as
-`"password": "..."`, and unquoted token-shaped values; prose and code such as
-`token: expired` or `secret=None` are kept), email addresses, and host paths (POSIX paths
+`"password": "..."`; any value of an upper-case environment-style name such as
+`POSTGRES_PASSWORD=...` or `DB_PASSWORD: ...` and of a compact `password=...`; and other
+unquoted values that look like tokens. Null and boolean literals, `$VAR` references and code
+such as `token: expired`, `secret=None` or `API_KEY = os.environ[...]` are kept), email addresses, and host paths (POSIX paths
 under filesystem roots, `C:\` and `C:/` drive paths, `/c/Users`, `file://` URLs and UNC
 paths). Object keys are redacted too, and two keys that would collide are refused. Numbers and
 identifiers are kept. Other files are not copied and are listed, hidden files are skipped,

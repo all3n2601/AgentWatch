@@ -26,6 +26,12 @@ _HOST_ROOTS = (
 )
 # Characters that end an unquoted value: whitespace, quotes, separators and call/index syntax.
 _VALUE_END = r"\s\"',;()\[\]{}"
+# The value runs to a value-ending character that is not a call or index, so a match never
+# stops partway through a value (`abc123def()` is code, not `<credential>f()`).
+_WHOLE = rf"(?![^{_VALUE_END}])(?![(\[])"
+# A non-empty value that is not a null or boolean literal, a `$VAR` reference or a placeholder.
+_PLAIN_VALUE = rf"(?![$<])(?!(?i:none|null|nil|true|false){_WHOLE})[^{_VALUE_END}]+{_WHOLE}"
+_ENV_SECRET_NAME = r"[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY)"
 # Applied in order; earlier rules replace text that later, broader rules would split.
 _RULES: tuple[tuple[str, re.Pattern, str], ...] = (
     (
@@ -69,14 +75,26 @@ _RULES: tuple[tuple[str, re.Pattern, str], ...] = (
         re.compile(rf"(?i)\b({_SECRET_NAME})([\"']?)(\s*[=:]\s*)([\"'])[^\"'\n]{{4,}}\4"),
         r"\1\2\3\4<credential>\4",
     ),
-    # An unquoted value must look like a token: 8+ characters with a letter and a digit, not
-    # followed by call or index syntax. Prose and code (`token: expired`, `next_token =
-    # self.advance()`, `secret=None`) are kept.
+    # Environment-style names (upper case, as in `.env` files, `docker compose config` or `env`
+    # output) followed by `=` or `: `, and compact `name=value` in any case: any value is a
+    # secret, however plain (`POSTGRES_PASSWORD=agentwatch`).
+    (
+        "secret_assignment",
+        re.compile(rf"\b({_ENV_SECRET_NAME})(\s*=\s*|:[ \t]+){_PLAIN_VALUE}"),
+        r"\1\2<credential>",
+    ),
+    (
+        "secret_assignment",
+        re.compile(rf"(?i)\b({_SECRET_NAME})(=){_PLAIN_VALUE}"),
+        r"\1\2<credential>",
+    ),
+    # Elsewhere an unquoted value must look like a token: 8+ characters with a letter and a
+    # digit. Prose and code (`token: expired`, `next_token = self.advance()`) are kept.
     (
         "secret_assignment",
         re.compile(
             rf"(?i)\b({_SECRET_NAME})([\"']?)(\s*[=:]\s*)"
-            rf"(?=[^{_VALUE_END}]*\d)(?=[^{_VALUE_END}]*[A-Za-z])[^{_VALUE_END}]{{8,}}(?![(\[])"
+            rf"(?=[^{_VALUE_END}]*\d)(?=[^{_VALUE_END}]*[A-Za-z])[^{_VALUE_END}]{{8,}}{_WHOLE}"
         ),
         r"\1\2\3<credential>",
     ),

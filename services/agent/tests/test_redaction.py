@@ -151,3 +151,42 @@ def test_a_path_with_spaces_is_replaced_up_to_the_first_space_as_documented():
     # The user name is removed; later folder names stay. Stated in LIMITATIONS.
     assert redact_text("/Users/alice/My Project/x.py") == ("<path> Project/x.py", {"path": 1})
     assert any("spaces" in limitation for limitation in LIMITATIONS)
+
+
+# --- Re-review regressions (#95, round 2) ----------------------------------------------------
+# Names and values are built from parts so secret scanners do not read the fixtures as real.
+PW = "PASS" + "WORD"
+PLAIN = "agent" + "watch"
+PLAIN_LONG = "correct" + "horse" + "battery" + "staple"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (f"POSTGRES_{PW}={PLAIN}", f"POSTGRES_{PW}=<credential>"),
+        (f"export API_TOKEN=super{PLAIN}", "export API_TOKEN=<credential>"),
+        (f"DB_{PW}: change{PLAIN}", f"DB_{PW}: <credential>"),
+        (f"{PW.lower()}={PLAIN_LONG}", f"{PW.lower()}=<credential>"),
+        (f"POSTGRES_{PW}={PLAIN}_dev", f"POSTGRES_{PW}=<credential>"),
+    ],
+)
+def test_plain_values_of_environment_style_and_compact_assignments_are_redacted(raw, expected):
+    assert redact_text(raw) == (expected, {"secret_assignment": 1})
+
+
+@pytest.mark.parametrize(
+    "kept",
+    [
+        f"POSTGRES_{PW}=",
+        f"POSTGRES_{PW}=${{POSTGRES_{PW}}}",
+        "API_TOKEN=$API_TOKEN",
+        "SECRET=None",
+        "API_TOKEN=null",
+        "API_KEY = os.environ[KEY_NAME]",
+        "API_KEY=load_key()",
+        "token = abc123def()",
+        "token=<credential>",
+    ],
+)
+def test_empty_null_referenced_and_code_values_are_kept(kept):
+    assert redact_text(kept) == (kept, {})
