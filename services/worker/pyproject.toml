@@ -7,6 +7,7 @@ dependencies = [
   "fastapi>=0.116,<1",
   "agentwatch-sdk",
   "agentwatch-features",
+  "agentwatch-attribution",
   "uvicorn[standard]>=0.35,<1",
   "opentelemetry-sdk>=1.37,<2",
   "agentwatch-sandbox",
@@ -16,6 +17,7 @@ dependencies = [
 [tool.uv.sources]
 agentwatch-sdk = { workspace = true }
 agentwatch-features = { workspace = true }
+agentwatch-attribution = { workspace = true }
 agentwatch-sandbox = { workspace = true }
 
 [build-system]

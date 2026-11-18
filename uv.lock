@@ -168,6 +168,7 @@ name = "agentwatch-worker"
 version = "0.1.0"
 source = { editable = "services/worker" }
 dependencies = [
+    { name = "agentwatch-attribution" },
     { name = "agentwatch-features" },
     { name = "agentwatch-sandbox" },
     { name = "agentwatch-sdk" },
@@ -179,6 +180,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agentwatch-attribution", editable = "packages/attribution" },
     { name = "agentwatch-features", editable = "packages/features" },
     { name = "agentwatch-sandbox", editable = "services/sandbox" },
     { name = "agentwatch-sdk", editable = "packages/sdk-python" },
