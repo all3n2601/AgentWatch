@@ -1,0 +1,568 @@
+"""Append-only step attributions over isolated PostgreSQL history.
+
+Every run, step, sample and model pair here is a synthetic test fixture, never recorded-run
+evidence. Fixture ticks are nanoseconds: a step's window is [10, 20).
+"""
+
+import json
+import math
+import os
+import threading
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from importlib.resources import files
+from pathlib import Path
+from uuid import UUID, uuid4
+
+import psycopg
+import pytest
+from agentwatch_attribution.rules import Rules, load_rules
+from agentwatch_features import FEATURE_VERSION, FeatureRow
+from agentwatch_worker import attribution_store
+from agentwatch_worker.attribution_model import ModelService
+from agentwatch_worker.attribution_store import AttributionStore
+from agentwatch_worker.live_store import MissingRunError
+from agentwatch_worker.store import RunStore
+from fastapi.testclient import TestClient
+from pair_fixtures import CALIBRATION_VERSION, TRAINING_VERSION, write_synthetic_pair
+from psycopg import sql
+from psycopg.conninfo import make_conninfo
+from test_live_api import change, event, post, sample
+
+INTERVAL_SECONDS = 5e-9  # a 10 ns window holds two whole intervals
+MIGRATION = "0005_step_attributions.sql"
+EARLIER_MIGRATIONS = (
+    "0001_run_history.sql",
+    "0002_live_lifecycle.sql",
+    "0003_remove_duplicate_live_step_index.sql",
+    "0004_concurrency_policy.sql",
+)
+ATTRIBUTION_KEYS = {
+    "sequence",
+    "serving_key",
+    "committed_at",
+    "step_terminal_received_at",
+    "evidence_changed",
+    "record",
+}
+IDENTITY_KEYS = {
+    "training_version",
+    "calibration_version",
+    "classifier_sha256",
+    "regressor_sha256",
+    "preprocessing_sha256",
+    "calibration_sha256",
+    "temperature",
+    "abstention_threshold",
+    "class_order",
+    "blocks_promotion",
+}
+
+
+@pytest.fixture
+def rules() -> Rules:
+    return load_rules()
+
+
+@pytest.fixture
+def unavailable() -> ModelService:
+    service = ModelService.from_environ({})
+    assert service.status.state == "not_configured"
+    return service
+
+
+@pytest.fixture
+def ready(tmp_path: Path) -> ModelService:
+    candidates, calibration = write_synthetic_pair(tmp_path, blocks_promotion=True)
+    service = ModelService.from_environ(
+        {
+            "AGENTWATCH_MODEL_CANDIDATES_DIR": str(candidates),
+            "AGENTWATCH_MODEL_CALIBRATION_DIR": str(calibration),
+            "AGENTWATCH_ALLOW_UNPROMOTED_MODEL": "1",
+        }
+    )
+    assert service.status.state == "ready_not_promoted"
+    return service
+
+
+def store_of(client: TestClient) -> RunStore:
+    store = client.app.state.store
+    assert isinstance(store, RunStore)
+    return store
+
+
+def attribution_for(client: TestClient, rules: Rules, model: ModelService) -> AttributionStore:
+    return AttributionStore(store_of(client), rules, model)
+
+
+def new_run(client: TestClient, registration: dict, **changes: object) -> str:
+    response = client.post(
+        "/v1/live/runs", json=registration | {"request_id": str(uuid4())} | changes
+    )
+    assert response.status_code == 201
+    return response.json()["run_id"]
+
+
+def finish_step(
+    client: TestClient, run_id: str, step_id: str = "tool-1", state: str = "completed"
+) -> list[dict]:
+    """Post a step's whole applied lifecycle ending in `state`; return its events."""
+    if state == "cancelled":
+        steps = [event(run_id, step_id=step_id), event(run_id, 1, "cancelled", step_id=step_id)]
+    else:
+        steps = [
+            event(run_id, step_id=step_id),
+            event(run_id, 1, "running", step_id=step_id),
+            event(run_id, 2, state, step_id=step_id, started_tick_ns=10),
+        ]
+    assert post(client, run_id, *steps).status_code == 200
+    return steps
+
+
+def stored(client: TestClient, run_id: str) -> list[dict]:
+    with store_of(client).connect() as conn:
+        return conn.execute(
+            "SELECT * FROM live_step_attributions WHERE run_id=%s ORDER BY sequence", (run_id,)
+        ).fetchall()
+
+
+def received_at(client: TestClient, record_id: str) -> object:
+    with store_of(client).connect() as conn:
+        row = conn.execute(
+            "SELECT received_at FROM live_records WHERE record_id=%s", (record_id,)
+        ).fetchone()
+    assert row is not None
+    return row["received_at"]
+
+
+def model_of(record: dict) -> dict:
+    model = record["model"]
+    assert isinstance(model, dict)
+    return model
+
+
+def test_terminal_step_gets_one_row_with_rules_and_unavailable_model(
+    client: TestClient, live: str, rules: Rules, unavailable: ModelService
+) -> None:
+    steps = finish_step(client, live)
+    assert post(client, live, sample(live, tick_ns=12, value=7)).status_code == 200
+    attribution = attribution_for(client, rules, unavailable)
+
+    assert attribution.attribute_run(UUID(live)) == 1
+
+    [row] = stored(client, live)
+    assert row["step_id"] == "tool-1"
+    assert row["feature_version"] == FEATURE_VERSION
+    assert row["serving_key"] == attribution.serving_key
+    assert row["evidence_changed"] is False
+    assert row["step_terminal_received_at"] == received_at(client, steps[-1]["event_id"])
+    assert row["committed_at"] >= row["step_terminal_received_at"]
+    record = row["record"]
+    json.dumps(record, allow_nan=False)
+    assert record["run_id"] == live
+    assert record["step_state"] == "completed"
+    assert record["telemetry_status"] == "present"
+    # Queue 10 ns of a 20 ns step: a queue fraction of 0.5 meets the rules-v1 threshold.
+    assert record["feature_row"]["features"]["queue_fraction"] == 0.5
+    assert record["rules"] == {"version": rules.version, "verdict": "cpu_sandbox"}
+    model = model_of(record)
+    assert model["state"] == "not_configured"
+    assert model["outcome"] == "unavailable"
+    assert model["reason"] == "not_configured"
+    assert model["predicted_class"] is None
+
+
+def test_attribute_run_is_idempotent(
+    client: TestClient, live: str, rules: Rules, unavailable: ModelService
+) -> None:
+    finish_step(client, live)
+    attribution = attribution_for(client, rules, unavailable)
+    assert attribution.attribute_run(UUID(live)) == 1
+    [first] = stored(client, live)
+
+    assert attribution.attribute_run(UUID(live)) == 0
+    assert attribution_for(client, rules, unavailable).attribute_run(UUID(live)) == 0
+
+    assert stored(client, live) == [first]
+
+
+def test_incomplete_steps_get_no_row(
+    client: TestClient, live: str, rules: Rules, unavailable: ModelService
+) -> None:
+    running = [event(live), event(live, 1, "running")]
+    gapped = [event(live, step_id="tool-2"), event(live, 2, "completed", step_id="tool-2")]
+    assert post(client, live, *running, *gapped).status_code == 200
+    attribution = attribution_for(client, rules, unavailable)
+
+    assert attribution.pending_terminal_steps(UUID(live)) == []
+    assert attribution.attribute_run(UUID(live)) == 0
+    assert stored(client, live) == []
+
+    assert post(client, live, event(live, 2, "completed")).status_code == 200
+    assert attribution.pending_terminal_steps(UUID(live)) == ["tool-1"]
+    assert attribution.attribute_run(UUID(live)) == 1
+    assert attribution.pending_terminal_steps(UUID(live)) == []
+    assert [row["step_id"] for row in stored(client, live)] == ["tool-1"]
+
+
+def test_two_threads_attributing_one_step_leave_one_row(
+    client: TestClient,
+    live: str,
+    rules: Rules,
+    unavailable: ModelService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finish_step(client, live)
+    passes = [attribution_for(client, rules, unavailable) for _ in range(2)]
+    started, read_nothing = threading.Barrier(2), threading.Barrier(2, timeout=5)
+    real_read = AttributionStore.stored_sample_ids
+
+    def read_then_wait(
+        self: AttributionStore, conn: psycopg.Connection, run_id: UUID
+    ) -> dict[tuple[str, str], set[str]]:
+        # Both passes see no stored row before either inserts, so the unique key must decide.
+        rows = real_read(self, conn, run_id)
+        read_nothing.wait()
+        return rows
+
+    monkeypatch.setattr(AttributionStore, "stored_sample_ids", read_then_wait)
+
+    def attribute(attribution: AttributionStore) -> int:
+        started.wait()
+        return attribution.attribute_run(UUID(live))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        inserted = list(pool.map(attribute, passes))
+
+    assert sorted(inserted) == [0, 1]
+    assert len(stored(client, live)) == 1
+
+
+def test_late_sample_sets_evidence_changed_and_keeps_the_stored_row(
+    client: TestClient, live: str, rules: Rules, unavailable: ModelService
+) -> None:
+    finish_step(client, live)
+    first_sample = sample(live, tick_ns=12, value=7)
+    assert post(client, live, first_sample).status_code == 200
+    assert change(client, live, "running", 0).status_code == 200
+    assert change(client, live, "completed", 1).status_code == 200
+    attribution = attribution_for(client, rules, unavailable)
+    assert attribution.attribute_run(UUID(live)) == 1
+    [before] = stored(client, live)
+
+    assert post(client, live, sample(live, tick_ns=15, value=40)).status_code == 200
+    assert attribution.attribute_run(UUID(live)) == 0
+
+    [after] = stored(client, live)
+    assert after["evidence_changed"] is True
+    assert after["record"] == before["record"]
+    assert after["sequence"] == before["sequence"]
+    assert after["committed_at"] == before["committed_at"]
+    feature_row = after["record"]["feature_row"]
+    assert feature_row["source_sample_ids"] == [first_sample["sample_id"]]
+    assert feature_row["features"]["cpu_pressure_max_avg10"] == 7.0
+    [served] = attribution.page(UUID(live), 0, 10)["attributions"]
+    assert served["evidence_changed"] is True
+
+
+def test_new_serving_configuration_appends_a_new_row_and_keeps_the_old(
+    client: TestClient, live: str, rules: Rules, unavailable: ModelService, ready: ModelService
+) -> None:
+    finish_step(client, live)
+    old = attribution_for(client, rules, unavailable)
+    assert old.attribute_run(UUID(live)) == 1
+    [old_row] = stored(client, live)
+
+    new = attribution_for(client, rules, ready)
+    assert new.serving_key != old.serving_key
+    assert new.pending_terminal_steps(UUID(live)) == ["tool-1"]
+    assert new.attribute_run(UUID(live)) == 1
+    other_rules = attribution_for(client, replace(rules, version="rules-v1+synthetic"), ready)
+    assert other_rules.serving_key not in {old.serving_key, new.serving_key}
+    assert other_rules.attribute_run(UUID(live)) == 1
+
+    rows = stored(client, live)
+    assert [row["serving_key"] for row in rows] == [
+        old.serving_key,
+        new.serving_key,
+        other_rules.serving_key,
+    ]
+    assert rows[0] == old_row
+    model = model_of(rows[1]["record"])
+    assert model["state"] == "ready_not_promoted"
+    assert model["training_version"] == TRAINING_VERSION
+    assert model["calibration_version"] == CALIBRATION_VERSION
+    assert rows[2]["record"]["rules"]["version"] == "rules-v1+synthetic"
+    assert old.pending_terminal_steps(UUID(live)) == []
+    served = new.page(UUID(live), 0, 10)
+    assert served["model"]["state"] == "ready_not_promoted"
+    assert served["model"]["reason"] is None
+    assert served["model"]["not_promoted"] is True
+    assert set(served["model"]["identity"]) == IDENTITY_KEYS
+    assert served["model"]["identity"]["training_version"] == TRAINING_VERSION
+    assert isinstance(served["model"]["identity"]["class_order"], list)
+    # Every stored serving configuration stays readable: the page is not filtered to one key.
+    assert len(served["attributions"]) == 3
+
+
+def test_page_cursor_and_limit(
+    client: TestClient, live: str, rules: Rules, unavailable: ModelService
+) -> None:
+    for step_id in ("tool-1", "tool-2", "tool-3"):
+        finish_step(client, live, step_id)
+    attribution = attribution_for(client, rules, unavailable)
+    assert attribution.attribute_run(UUID(live)) == 3
+    sequences = [row["sequence"] for row in stored(client, live)]
+
+    first = attribution.page(UUID(live), 0, 2)
+    assert first["run_id"] == live
+    assert first["model"] == {
+        "state": "not_configured",
+        "reason": None,
+        "identity": None,
+        "not_promoted": None,
+    }
+    assert [a["sequence"] for a in first["attributions"]] == sequences[:2]
+    assert all(set(a) == ATTRIBUTION_KEYS for a in first["attributions"])
+    assert first["next_cursor"] == sequences[1]
+    second = attribution.page(UUID(live), first["next_cursor"], 2)
+    assert [a["sequence"] for a in second["attributions"]] == sequences[2:]
+    assert [a["record"]["step_id"] for a in second["attributions"]] == ["tool-3"]
+    assert second["next_cursor"] is None
+    assert attribution.page(UUID(live), 0, 3)["next_cursor"] is None
+    beyond = attribution.page(UUID(live), sequences[-1], 2)
+    assert beyond["attributions"] == []
+    assert beyond["next_cursor"] is None
+
+
+def test_unknown_run_raises_missing_run_error_and_empty_run_is_an_empty_page(
+    client: TestClient, live: str, rules: Rules, unavailable: ModelService
+) -> None:
+    attribution = attribution_for(client, rules, unavailable)
+    unknown = uuid4()
+    with pytest.raises(MissingRunError):
+        attribution.attribute_run(unknown)
+    with pytest.raises(MissingRunError):
+        attribution.page(unknown, 0, 10)
+    with pytest.raises(MissingRunError):
+        attribution.pending_terminal_steps(unknown)
+
+    assert attribution.attribute_run(UUID(live)) == 0
+    assert attribution.pending_terminal_steps(UUID(live)) == []
+    empty = attribution.page(UUID(live), 0, 10)
+    assert empty["run_id"] == live
+    assert empty["attributions"] == []
+    assert empty["next_cursor"] is None
+
+
+def test_attribution_never_mixes_runs(
+    client: TestClient,
+    live: str,
+    registration: dict,
+    rules: Rules,
+    unavailable: ModelService,
+) -> None:
+    other = new_run(client, registration)
+    finish_step(client, live)
+    finish_step(client, other)
+    live_sample, other_sample = (
+        sample(live, tick_ns=12, value=7),
+        sample(other, tick_ns=12, value=80),
+    )
+    assert post(client, live, live_sample).status_code == 200
+    assert post(client, other, other_sample).status_code == 200
+    attribution = attribution_for(client, rules, unavailable)
+
+    assert attribution.attribute_run(UUID(live)) == 1
+    assert attribution.pending_terminal_steps(UUID(other)) == ["tool-1"]
+    assert attribution.page(UUID(other), 0, 10)["attributions"] == []
+    assert attribution.attribute_run(UUID(other)) == 1
+
+    for run_id, expected_sample in ((live, live_sample), (other, other_sample)):
+        [served] = attribution.page(UUID(run_id), 0, 10)["attributions"]
+        record = served["record"]
+        assert record["run_id"] == run_id
+        assert record["feature_row"]["run_id"] == run_id
+        assert record["feature_row"]["source_sample_ids"] == [expected_sample["sample_id"]]
+    assert [row["run_id"] for row in stored(client, live)] == [UUID(live)]
+
+
+def test_registration_interval_reaches_telemetry_coverage(
+    client: TestClient, registration: dict, rules: Rules, unavailable: ModelService
+) -> None:
+    declared = new_run(client, registration, sampling_interval_seconds=INTERVAL_SECONDS)
+    undeclared = new_run(client, registration)
+    attribution = attribution_for(client, rules, unavailable)
+    features = {}
+    for run_id in (declared, undeclared):
+        finish_step(client, run_id)
+        readings = [sample(run_id, tick_ns=10, value=3), sample(run_id, tick_ns=15, value=4)]
+        assert post(client, run_id, *readings).status_code == 200
+        assert attribution.attribute_run(UUID(run_id)) == 1
+        [row] = stored(client, run_id)
+        features[run_id] = row["record"]
+
+    with_interval = features[declared]
+    assert with_interval["feature_row"]["features"]["telemetry_coverage"] == 1.0
+    assert with_interval["feature_row"]["telemetry"]["declared_interval_seconds"] == (
+        INTERVAL_SECONDS
+    )
+    assert "telemetry_coverage" not in with_interval["missing_inputs"]
+    without = features[undeclared]
+    assert without["feature_row"]["features"]["telemetry_coverage"] is None
+    assert without["feature_row"]["telemetry"]["declared_interval_seconds"] is None
+    assert "telemetry_coverage" in without["missing_inputs"]
+
+
+def test_completed_step_without_samples_is_scored_with_finite_numbers(
+    client: TestClient, live: str, rules: Rules, ready: ModelService
+) -> None:
+    finish_step(client, live)
+
+    assert attribution_for(client, rules, ready).attribute_run(UUID(live)) == 1
+
+    [row] = stored(client, live)
+    record = row["record"]
+    json.dumps(record, allow_nan=False)
+    assert record["telemetry_status"] == "empty"
+    assert "cpu_pressure_max_avg10" in record["missing_inputs"]
+    model = model_of(record)
+    assert model["outcome"] in {"predicted", "abstained"}
+    numbers = [
+        model["confidence"],
+        model["excess_fraction_estimate"],
+        *model["calibrated_probabilities"].values(),
+    ]
+    assert all(isinstance(n, float) and math.isfinite(n) for n in numbers)
+
+
+@pytest.mark.parametrize("state", ["failed", "cancelled"])
+def test_failed_and_cancelled_steps_get_a_row_that_the_model_does_not_score(
+    client: TestClient, live: str, rules: Rules, ready: ModelService, state: str
+) -> None:
+    finish_step(client, live, state=state)
+
+    assert attribution_for(client, rules, ready).attribute_run(UUID(live)) == 1
+
+    [row] = stored(client, live)
+    assert row["record"]["step_state"] == state
+    assert row["record"]["rules"]["version"] == rules.version
+    model = model_of(row["record"])
+    assert model["state"] == "ready_not_promoted"
+    assert model["outcome"] == "not_scored_step_state"
+
+
+def test_build_failure_propagates_and_leaves_no_partial_row(
+    client: TestClient,
+    live: str,
+    rules: Rules,
+    unavailable: ModelService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finish_step(client, live, "tool-1")
+    finish_step(client, live, "tool-2")
+    real_build = attribution_store.build_attribution
+
+    def fail_on_second_step(row: FeatureRow, *args: object, **kwargs: object) -> dict:
+        if row.step_id == "tool-2":
+            raise RuntimeError("synthetic serving failure")
+        return real_build(row, *args, **kwargs)
+
+    monkeypatch.setattr(attribution_store, "build_attribution", fail_on_second_step)
+    attribution = attribution_for(client, rules, unavailable)
+
+    with pytest.raises(RuntimeError, match="synthetic serving failure"):
+        attribution.attribute_run(UUID(live))
+    assert stored(client, live) == []
+
+    monkeypatch.setattr(attribution_store, "build_attribution", real_build)
+    assert attribution.attribute_run(UUID(live)) == 2
+
+
+@pytest.fixture
+def pre_0005_dsn() -> Iterator[str]:
+    """A schema migrated only through 0004 by the same SQL files, as an existing database is."""
+    dsn = os.environ.get("AGENTWATCH_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("Set AGENTWATCH_TEST_DATABASE_URL for isolated PostgreSQL migration tests")
+    schema = "aw_test_" + uuid4().hex
+    migrations = files("agentwatch_worker").joinpath("migrations")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    scoped = make_conninfo(dsn, options=f"-csearch_path={schema}")
+    try:
+        with psycopg.connect(scoped) as conn:
+            conn.execute(
+                "CREATE TABLE schema_migrations "
+                "(version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ DEFAULT now())"
+            )
+            for name in EARLIER_MIGRATIONS:
+                conn.execute(migrations.joinpath(name).read_text(), prepare=False)
+                conn.execute("INSERT INTO schema_migrations(version) VALUES (%s)", (name,))
+        yield scoped
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def schema_shape(conn: psycopg.Connection) -> dict[str, list[tuple]]:
+    """Columns, constraints and indexes of every table except the one 0005 adds."""
+    scope = "table_schema=current_schema() AND table_name<>'live_step_attributions'"
+    return {
+        "columns": conn.execute(
+            "SELECT table_name,column_name,data_type,is_nullable,column_default "
+            f"FROM information_schema.columns WHERE {scope} ORDER BY 1,2"
+        ).fetchall(),
+        "constraints": conn.execute(
+            "SELECT table_name,constraint_name,constraint_type "
+            f"FROM information_schema.table_constraints WHERE {scope} ORDER BY 1,2"
+        ).fetchall(),
+        "indexes": conn.execute(
+            "SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema() "
+            "AND tablename<>'live_step_attributions' ORDER BY 1,2"
+        ).fetchall(),
+    }
+
+
+def test_migration_is_additive_and_applies_after_0004(pre_0005_dsn: str) -> None:
+    run_id, request_id = uuid4(), uuid4()
+    with psycopg.connect(pre_0005_dsn) as conn:
+        conn.execute(
+            "INSERT INTO live_runs(run_id,request_id,registration) VALUES (%s,%s,'{}')",
+            (run_id, request_id),
+        )
+        before = schema_shape(conn)
+        existing = conn.execute("SELECT * FROM live_runs").fetchall()
+
+    RunStore(pre_0005_dsn).migrate()
+    RunStore(pre_0005_dsn).migrate()  # re-running applies nothing twice
+
+    with psycopg.connect(pre_0005_dsn) as conn:
+        assert schema_shape(conn) == before
+        assert conn.execute("SELECT * FROM live_runs").fetchall() == existing
+        versions = [
+            row[0]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations ORDER BY applied_at,version"
+            ).fetchall()
+        ]
+        assert versions == [*EARLIER_MIGRATIONS, MIGRATION]
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE "
+            "table_schema=current_schema() AND table_name='live_step_attributions' ORDER BY 1"
+        ).fetchall()
+        assert [c[0] for c in columns] == sorted(
+            [
+                "sequence",
+                "run_id",
+                "step_id",
+                "feature_version",
+                "serving_key",
+                "record",
+                "step_terminal_received_at",
+                "committed_at",
+                "evidence_changed",
+            ]
+        )
+        assert conn.execute("SELECT count(*) FROM live_step_attributions").fetchone() == (0,)

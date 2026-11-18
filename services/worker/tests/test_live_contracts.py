@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from agentwatch_features.live import validate_interval
 from agentwatch_sdk.client import LiveClient
 from agentwatch_sdk.live import LiveBatch, ResourceSample, RunCreate, StepEvent
 from agentwatch_worker.export_live_contracts import openapi_document, typescript_document
@@ -64,6 +65,24 @@ def test_sampling_interval_rejects_zero_negative_nan_and_inf(registration, inter
     # Undeclared registrations keep the pre-field wire and storage form.
     assert json.loads(undeclared.model_dump_json()) == undeclared.model_dump(mode="json")
     assert "sampling_interval_seconds" not in undeclared.model_dump(mode="json")
+
+
+@pytest.mark.parametrize("interval", [1e-9, 1e-10, 5e-10, 1e-8, 0.25, 1e299, 1e300])
+def test_sdk_interval_bound_matches_feature_validation(registration, interval):
+    # A registration the SDK accepts must never carry an interval feature computation refuses.
+    try:
+        validate_interval(interval)
+    except ValueError:
+        features_accept = False
+    else:
+        features_accept = True
+    try:
+        RunCreate.model_validate(registration | {"sampling_interval_seconds": interval})
+    except ValidationError:
+        sdk_accepts = False
+    else:
+        sdk_accepts = True
+    assert sdk_accepts == features_accept
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True, False])
