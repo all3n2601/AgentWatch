@@ -7,6 +7,8 @@ gate other than pass blocks promotion, as the contract requires.
 
 from collections import Counter
 
+from agentwatch_attribution.rules import Rules
+
 from agentwatch_model.contract import Contract
 from agentwatch_model.metrics import (
     bootstrap_macro_f1,
@@ -26,7 +28,6 @@ from agentwatch_model.mixed import (
     single_class,
 )
 from agentwatch_model.mixed import VERSION as MIXED_SCORING
-from agentwatch_model.rules import Rules
 
 # Proposed. Fewer tasks than this give an interval too unstable to report.
 BOOTSTRAP_MIN_GROUPS = 5

@@ -1,7 +1,7 @@
 """Held-out scorers on synthetic rows; nothing here is recorded evidence."""
 
+from agentwatch_attribution.rules import load_rules
 from agentwatch_model.held_out_scorers import RULES_SCORER, rule_scores, seen_task_groups
-from agentwatch_model.rules import load_rules
 from training_fixtures import dataset, featured_row
 
 

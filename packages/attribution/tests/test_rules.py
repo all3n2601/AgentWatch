@@ -1,6 +1,6 @@
 import pytest
-from agentwatch_model.rules import DEFAULT_RULES, RulesError, load_rules
-from rule_fixtures import row
+from agentwatch_attribution.rules import DEFAULT_RULES, RulesError, load_rules
+from rules_rows import row
 
 
 @pytest.fixture(scope="module")

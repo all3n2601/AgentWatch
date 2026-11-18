@@ -15,6 +15,7 @@ import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
+from agentwatch_attribution.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 from agentwatch_data.files import file_sha256, json_text, write_atomic
 from agentwatch_data.schema import MIXED
 from agentwatch_data.splits import SplitError, load_split
@@ -23,7 +24,6 @@ from agentwatch_model.contract import DEFAULT_CONTRACT, ContractError, load_cont
 from agentwatch_model.metrics import CLASSES, NONE, is_number
 from agentwatch_model.mixed import MIXED_BASES
 from agentwatch_model.report import blocked_report, build_report, dataset_version
-from agentwatch_model.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 
 # pipelines/validation/schema/steps-v1.3.pbtxt beside this package's source tree. This default
 # holds for the workspace (editable) install; the Makefile always passes the path explicitly.

@@ -9,11 +9,11 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+from agentwatch_attribution.rules import DEFAULT_RULES, load_rules
 from agentwatch_data.files import json_text
 from agentwatch_model.comparison import MODEL_NOT_EVALUATED
 from agentwatch_model.contract import DEFAULT_CONTRACT, load_contract
 from agentwatch_model.report import identity
-from agentwatch_model.rules import DEFAULT_RULES, load_rules
 from training_fixtures import featured_row
 
 COLUMNS = ("none", "cpu_sandbox", "inference", "retrieval")

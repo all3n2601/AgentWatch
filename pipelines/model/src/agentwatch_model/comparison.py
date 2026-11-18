@@ -8,6 +8,8 @@ raw LightGBM scores.
 
 from collections.abc import Sequence
 
+from agentwatch_attribution.rules import Rules
+
 from agentwatch_model.contract import Contract
 from agentwatch_model.metrics import (
     class_scores,
@@ -32,7 +34,6 @@ from agentwatch_model.report import (
     slices,
     summary,
 )
-from agentwatch_model.rules import Rules
 
 MODEL_NOT_EVALUATED = {
     "calibration": (

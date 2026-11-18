@@ -10,9 +10,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from agentwatch_data.extract import canonical_sha256
-
-from agentwatch_model.metrics import NONE, is_number
+from agentwatch_attribution.classes import NONE, is_number
+from agentwatch_attribution.hashing import canonical_sha256
 
 DEFAULT_RULES = Path(__file__).with_name("rules.toml")
 VERSION = "rules-v1"

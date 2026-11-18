@@ -4,6 +4,7 @@ and every score is measured against the recorded labels."""
 from dataclasses import replace
 
 import pytest
+from agentwatch_attribution.rules import DEFAULT_RULES, load_rules
 from agentwatch_model.contract import DEFAULT_CONTRACT, load_contract
 from agentwatch_model.mixed import (
     hit_rate,
@@ -15,7 +16,6 @@ from agentwatch_model.mixed import (
 )
 from agentwatch_model.report import build_report
 from agentwatch_model.rule_baseline import RowError, validate_rows
-from agentwatch_model.rules import DEFAULT_RULES, load_rules
 from rule_fixtures import row
 
 CLASSES = ("none", "cpu_sandbox", "inference", "retrieval")
