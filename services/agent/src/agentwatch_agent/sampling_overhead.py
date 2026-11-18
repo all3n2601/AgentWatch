@@ -37,6 +37,7 @@ from agentwatch_agent.model import chat_payload
 from agentwatch_agent.overhead import merged_availability
 from agentwatch_agent.prompts import SYSTEM_PROMPT, task_message
 from agentwatch_agent.resources import CpuProbe, GpuProbe, Probe, ResourceSampler
+from agentwatch_agent.sampling_limits import sampling_record
 from agentwatch_agent.stats import summarize
 from agentwatch_agent.tasks import Task
 from agentwatch_agent.tools import tool_definitions
@@ -278,6 +279,7 @@ def _report(
                 default=None,
             ),
         },
+        "sampling_coverage": sampling_record(sampling, sampling_interval_seconds),
         "warmups": warmups,
         "measurements": measurements,
         "limitations": [

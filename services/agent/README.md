@@ -323,7 +323,7 @@ until model-written code gets its own review, do not add free-form edits or comm
 ## Sampling evidence
 
 `uv run --package agentwatch-agent python -m agentwatch_agent coverage <run dir>` prints a
-`coverage-v4` report from the run's journal and evidence. It refuses records of another run
+`coverage-v5` report from the run's journal and evidence. It refuses records of another run
 and conflicting records under one identity, and excludes (and counts) records in a clock
 domain the run never registered. Each step joins only its own registered resource and
 service (`own`); other sampled resources are labeled `context`. Statuses follow the
@@ -344,6 +344,17 @@ declared interval, and min/mean/max of measured gauges (or the counter's increas
 a reset). Steps shorter than one interval report `shorter_than_interval`, not 0 or 100%.
 Journal lines that fail contract validation are counted, never used. This is producer-side
 evidence, not the service's window join (B02).
+
+`sampling_limits` judges the run's `sampling` entries against the A07 coverage limits
+(`instrumentation-overhead-acceptance-v1`, in `sampling_limits.py`): the median of the entries'
+median gaps within ±10% of the declared interval, no gap above twice the interval, and missed
+rounds at most 1% of expected rounds. It reports each check's value and limit, the late rounds
+(no limit), and a `met` or `not_met` verdict. It is `not_evaluated` when fewer than 10 gaps were
+measured in total, and `not_met` when a resource the run configured for sampling recorded no
+sample at all (listed in `unsampled_resources`).
+`short_steps` counts executed steps shorter than one interval and their share. `overhead` and
+`sampling-overhead` save each sampler's interval summary and the same verdict under
+`sampling_coverage`, so the verdict can be recomputed from their output.
 
 `... python -m agentwatch_agent sampling-overhead` runs protocol
 `resource-sampling-overhead-v1` (declared in `sampling_overhead.py`) against the real model

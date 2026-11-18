@@ -10,6 +10,7 @@ from agentwatch_agent.overhead import (
     OverheadFailed,
     measure_overhead,
 )
+from agentwatch_agent.sampling_limits import INTERVAL_FIELDS, judge_sampling
 from agentwatch_agent.session import CancellationState
 from agentwatch_agent.stats import summarize
 
@@ -211,3 +212,12 @@ def test_transient_failure_on_completion_keeps_the_measurement(mean_task, server
     assert report["live_run_state"] == "completed_locally_undelivered"
     assert report["delivery"]["resend_needed"] is True
     assert report["workload_wall_seconds"]["instrumented"]["count"] == 2
+
+
+def test_each_samplers_intervals_and_the_coverage_verdict_are_saved(mean_task, server, tmp_path):
+    report = measure(mean_task, server, tmp_path)
+    sampling = report["sampling_coverage"]
+    # One sampler per instrumented repetition, saved so the verdict can be recomputed.
+    assert len(sampling["samplers"]) == 2
+    assert set(sampling["samplers"][0]) == set(INTERVAL_FIELDS)
+    assert sampling["limits"] == judge_sampling(sampling["samplers"], 0.01)
