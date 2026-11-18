@@ -577,7 +577,9 @@ def test_vllm_counters_report_increases_and_its_span_supplies_the_queue(tmp_path
 
 
 def test_sampling_is_judged_against_the_declared_coverage_limits(tmp_path):
-    on_cadence = [sample(tick * 100 * MS, GPU_UTIL, 1) for tick in range(11)]
+    on_cadence = [sample(tick * 100 * MS, GPU_UTIL, 1) for tick in range(11)] + [
+        sample(tick * 100 * MS, THROTTLED, tick, resource="host-1") for tick in range(11)
+    ]
     records = [
         *executed("long", 0, 0, 1000 * MS, resource_id="gpu-1", step_type="model_call"),
         *executed("short", 0, 0, 50 * MS, resource_id="gpu-1", step_type="tool"),
@@ -588,20 +590,36 @@ def test_sampling_is_judged_against_the_declared_coverage_limits(tmp_path):
     assert report["method"] == "coverage-v5"
     limits = report["sampling_limits"]
     assert limits["verdict"] == "met"
-    assert limits["samplers"] == len(report["sampling"]) == 1
+    assert limits["samplers"] == len(report["sampling"]) == 2
+    assert limits["measured_gaps"] == 20 and limits["unsampled_resources"] == []
     assert limits["checks"]["interval_median"]["value"] == pytest.approx(0.1)
     assert report["short_steps"] == {"executed": 2, "shorter_than_interval": 1, "share": 0.5}
 
 
 def test_a_gap_in_sampling_is_reported_as_not_met(tmp_path):
-    gapped = [sample(tick * 100 * MS, GPU_UTIL, 1) for tick in (0, 1, 2, 3, 8, 9, 10)]
+    ticks = [*range(10), *range(15, 30)]
+    gapped = [sample(tick * 100 * MS, GPU_UTIL, 1) for tick in ticks] + [
+        sample(tick * 100 * MS, THROTTLED, tick, resource="host-1") for tick in range(30)
+    ]
     report = coverage_report(write_run(tmp_path, gapped, interval=0.1))
     limits = report["sampling_limits"]
     assert limits["verdict"] == "not_met"
     assert set(limits["failed_checks"]) == {"interval_max", "missed_fraction"}
 
 
-def test_a_run_without_samples_has_no_coverage_verdict(tmp_path):
+def test_a_run_that_configured_no_probe_has_no_coverage_verdict(tmp_path):
     records = executed("long", 0, 0, 1000 * MS, resource_id="gpu-1")
-    report = coverage_report(write_run(tmp_path, records))
+    report = coverage_report(
+        write_run(tmp_path, records, evidence_extra={"resource_sampling": None})
+    )
     assert report["sampling_limits"]["verdict"] == "not_evaluated"
+
+
+def test_a_configured_probe_that_never_sampled_makes_coverage_not_met(tmp_path):
+    # Regression: only resources with samples were judged, so a silent GPU probe passed.
+    host_only = [sample(tick * 100 * MS, THROTTLED, tick, resource="host-1") for tick in range(30)]
+    report = coverage_report(write_run(tmp_path, host_only, interval=0.1))
+    limits = report["sampling_limits"]
+    assert limits["verdict"] == "not_met"
+    assert limits["unsampled_resources"] == ["gpu-1"]
+    assert limits["checks"]["interval_median"]["met"]

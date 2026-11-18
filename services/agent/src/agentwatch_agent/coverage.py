@@ -401,6 +401,8 @@ def coverage_report(run_dir: Path) -> dict:
             target = (record["resource_id"], record["service_id"])
             rounds[target][(record["clock_id"], record["tick_ns"])].append(record)
     # Scope describes what the resource measures, so every service of a resource shares it.
+    # These are also the resources the run configured for sampling: one without any sample
+    # makes the coverage verdict `not_met`.
     # Host probes and HTTP service probes (agent-runner-v3) each have their own summary.
     scopes = {
         entry["resource_id"]: entry.get("scope")
@@ -442,7 +444,9 @@ def coverage_report(run_dir: Path) -> dict:
             if isinstance(r, dict)
         ],
         "sampling": sampling,
-        "sampling_limits": judge_sampling(sampling, declared),
+        "sampling_limits": judge_sampling(
+            sampling, declared, set(scopes) - {entry["resource_id"] for entry in sampling}
+        ),
         "short_steps": short_steps(steps),
         "steps": steps,
     }

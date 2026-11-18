@@ -67,8 +67,10 @@ def test_late_rounds_are_reported_without_a_limit():
 
 
 def test_samplers_are_pooled_across_repetitions():
-    judged = judge_sampling([summary(0.25, 0.25), summary(0.26, 0.26), summary(0.3)], DECLARED)
-    assert judged["samplers"] == 3
+    judged = judge_sampling(
+        [summary(*[0.25] * 4), summary(*[0.26] * 4), summary(*[0.3] * 4)], DECLARED
+    )
+    assert judged["samplers"] == 3 and judged["measured_gaps"] == 12
     # The median of the three samplers' own medians, not of their pooled gaps.
     assert judged["checks"]["interval_median"]["value"] == pytest.approx(0.26)
     assert judged["checks"]["interval_median"]["statistic"] == "median_of_sampler_medians"
@@ -76,7 +78,7 @@ def test_samplers_are_pooled_across_repetitions():
 
 
 def test_samplers_with_a_single_round_have_no_interval_and_are_counted():
-    judged = judge_sampling([summary(), summary(*[0.25] * 4)], DECLARED)
+    judged = judge_sampling([summary(), summary(*[0.25] * 12)], DECLARED)
     assert judged["samplers_without_interval"] == 1
     assert judged["verdict"] == "met"
 
@@ -106,3 +108,37 @@ def test_short_steps_are_counted_among_executed_steps_only():
         "shorter_than_interval": 0,
         "share": None,
     }
+
+
+# --- Review regressions (#94) ----------------------------------------------------------------
+
+
+def test_fewer_than_ten_gaps_is_not_evaluated_rather_than_judged():
+    judged = judge_sampling([summary(*[0.25] * 9)], DECLARED)
+    assert judged["verdict"] == "not_evaluated"
+    assert judged["measured_gaps"] == 9
+    assert judged["reason"] == "9 measured gaps, fewer than 10"
+    assert judge_sampling([summary(*[0.25] * 10)], DECLARED)["verdict"] == "met"
+
+
+def test_a_configured_resource_without_samples_is_not_met():
+    judged = judge_sampling([summary(*[0.25] * 20)], DECLARED, ["gpu-1"])
+    assert judged["verdict"] == "not_met"
+    assert judged["unsampled_resources"] == ["gpu-1"]
+    assert judged["failed_checks"] == ["unsampled_resources"]
+    # Even with no gap measured anywhere, an unsampled probe is a failure, not missing data.
+    assert judge_sampling([], DECLARED, ["gpu-1"])["verdict"] == "not_met"
+
+
+def test_a_summary_with_a_median_but_no_maximum_is_rejected():
+    broken = summary(*[0.25] * 20) | {"observed_interval_max_seconds": None}
+    with pytest.raises(ValueError, match="lacks its maximum"):
+        judge_sampling([broken], DECLARED)
+
+
+@pytest.mark.parametrize("field", ["missed_rounds", "expected_rounds", "late_rounds"])
+def test_a_missing_field_is_an_error_not_a_measured_zero(field):
+    incomplete = summary(*[0.25] * 20)
+    del incomplete[field]
+    with pytest.raises(KeyError, match=field):
+        judge_sampling([incomplete], DECLARED)
