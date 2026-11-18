@@ -9,8 +9,10 @@ events. Uninstrumented repetitions run the workload alone.
 
 Reported per condition: median and 90th-percentile workload wall time and the runner
 process's own CPU time (the workload runs in a child process, so runner CPU is the
-instrumentation plus orchestration). No pass/fail threshold is applied: the project has not
-declared an overhead budget, and this measurement does not choose one.
+instrumentation plus orchestration). The measurement applies no pass/fail threshold
+(`PROTOCOL["threshold"]` stays None because the protocol is part of the configuration digest).
+Saved results are judged against the declared instrumentation overhead budget afterwards, by
+`agentwatch_data.overhead_verdict`.
 """
 
 import hashlib
