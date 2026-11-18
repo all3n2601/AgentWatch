@@ -30,16 +30,35 @@ def test_nonfinite_and_strict_producer_records():
         LiveBatch.model_validate({"records": [record]})
 
 
-@pytest.mark.parametrize("interval", [0, -0.25, float("nan"), float("inf"), True, "0.25"])
-def test_sampling_interval_rejects_zero_negative_nan_and_inf(registration, interval):
-    with pytest.raises(ValidationError):
-        RunCreate.model_validate(registration | {"sampling_interval_seconds": interval})
-    with pytest.raises(ValidationError):
-        RunCreate.model_validate_json(
-            json.dumps(registration | {"sampling_interval_seconds": interval})
+@pytest.mark.parametrize(
+    ("interval", "valid"),
+    [
+        (0, False),
+        (-0.25, False),
+        (float("nan"), False),
+        (float("inf"), False),
+        (True, False),
+        ("0.25", False),
+        # Feature computation needs at least 1 ns and a finite nanosecond value.
+        (1e-10, False),
+        (5e-10, False),
+        (1e300, False),
+        (1e-9, True),
+        (0.25, True),
+    ],
+)
+def test_sampling_interval_rejects_zero_negative_nan_and_inf(registration, interval, valid):
+    declared = registration | {"sampling_interval_seconds": interval}
+    if valid:
+        assert RunCreate.model_validate(declared).sampling_interval_seconds == interval
+        assert RunCreate.model_validate_json(json.dumps(declared)).sampling_interval_seconds == (
+            interval
         )
-    accepted = RunCreate.model_validate(registration | {"sampling_interval_seconds": 0.25})
-    assert accepted.sampling_interval_seconds == 0.25
+    else:
+        with pytest.raises(ValidationError):
+            RunCreate.model_validate(declared)
+        with pytest.raises(ValidationError):
+            RunCreate.model_validate_json(json.dumps(declared))
     undeclared = RunCreate.model_validate(registration | {"sampling_interval_seconds": None})
     assert undeclared.sampling_interval_seconds is None
     # Undeclared registrations keep the pre-field wire and storage form.

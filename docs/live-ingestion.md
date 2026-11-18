@@ -17,8 +17,9 @@ models/client live in `agentwatch_sdk`; generated TypeScript types are exported 
    new creations return `201`.
 
    Optional `sampling_interval_seconds` declares the producer's configured resource-sampling
-   interval in seconds (a finite number greater than zero); the agent runner sends its
-   configured value. Live step features (`agentwatch_features.live`) judge
+   interval in seconds: at least `1e-9` (1 ns) and finite in both seconds and nanoseconds,
+   exactly the range live feature computation accepts; other values return `422`. The agent
+   runner sends its configured value. Live step features (`agentwatch_features.live`) judge
    `telemetry_coverage` against this declaration; when it is absent or null, coverage stays
    null (a missing model input) rather than being computed from an assumed default. An
    undeclared interval is omitted from the stored registration, so retrying a registration

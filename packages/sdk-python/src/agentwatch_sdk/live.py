@@ -1,5 +1,6 @@
 """Strict live-contracts-v1 producer records, shared with the ingestion service."""
 
+import math
 import re
 from datetime import UTC, datetime
 from typing import Annotated, Literal, Self
@@ -29,7 +30,18 @@ MAX_CURSOR = 2**63 - 1
 Tick = Annotated[int, Field(strict=True, ge=0, le=9007199254740991)]
 Number = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 Seconds = Annotated[Number, Field(ge=0)]
-PositiveSeconds = Annotated[Number, Field(gt=0)]
+NANOSECONDS_PER_SECOND = 1_000_000_000
+
+
+def finite_in_nanoseconds(value: float) -> float:
+    if not math.isfinite(value * NANOSECONDS_PER_SECOND):
+        raise ValueError("Sampling interval must be finite when converted to nanoseconds")
+    return value
+
+
+# Exactly what live feature computation accepts (agentwatch_features.live.validate_interval):
+# at least 1 ns, finite in seconds and in nanoseconds, so no accepted run is unusable later.
+SamplingIntervalSeconds = Annotated[Number, Field(ge=1e-9), AfterValidator(finite_in_nanoseconds)]
 State = Literal["queued", "running", "completed", "failed", "cancelled"]
 ResourceClass = Literal["cpu_sandbox", "inference", "retrieval"]
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
@@ -78,7 +90,7 @@ class RunCreate(LiveModel):
     # against it and stays null when undeclared. Omitted from dumps when None, so an
     # undeclared registration serializes exactly as one stored before the field existed
     # (idempotent retries) and stays accepted by services that predate it.
-    sampling_interval_seconds: PositiveSeconds | None = Field(
+    sampling_interval_seconds: SamplingIntervalSeconds | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
 

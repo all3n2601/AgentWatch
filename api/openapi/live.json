@@ -1458,7 +1458,7 @@
             "anyOf": [
               {
                 "type": "number",
-                "exclusiveMinimum": 0.0
+                "minimum": 1e-09
               },
               {
                 "type": "null"
@@ -1589,7 +1589,7 @@
             "anyOf": [
               {
                 "type": "number",
-                "exclusiveMinimum": 0.0
+                "minimum": 1e-09
               },
               {
                 "type": "null"

@@ -128,6 +128,11 @@ def test_same_request_id_with_a_different_interval_conflicts(client, registratio
     assert client.post("/v1/live/runs", json=registration).status_code == 409
 
 
+def test_sub_nanosecond_interval_is_rejected_at_registration(client, registration):
+    sub_nanosecond = registration | {"sampling_interval_seconds": 1e-10}
+    assert client.post("/v1/live/runs", json=sub_nanosecond).status_code == 422
+
+
 def test_ordering_prefix_retry_and_timing(client, live):
     queued, running, completed = event(live), event(live, 1, "running"), event(live, 2, "completed")
     response = post(client, live, completed)
