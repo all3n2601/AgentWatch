@@ -222,6 +222,10 @@ a terminal step lacks a row for the current serving key, so reading alone does n
 stored rows: a sample that arrives after the last pass is flagged only at the next pass (the
 next terminal batch, the run's close, or a read that finds a step without a row). Only rows of
 the current serving key are audited; rows of a superseded key keep the flag they had.
+`evidence_changed` can therefore turn `true` after its row was served. The cursor returns each
+row once, by `sequence`, so an incremental poller that keeps the largest `sequence` never sees
+that change: only a re-read from `after=0` shows a row's current flag. A consumer that needs
+the flag must re-read the run from `after=0` periodically (no change feed exists).
 
 | `model.state` | Meaning |
 | --- | --- |

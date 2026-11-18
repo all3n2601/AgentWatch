@@ -202,6 +202,20 @@ prediction quality.
   background pass; that step's row is written by the next read, so its server-side latency can
   be up to one poll interval longer.
 - A sample that arrives inside a step's window after the last pass is flagged
-  (`evidence_changed`) only at the next pass; see [live ingestion](live-ingestion.md#attribution).
+  (`evidence_changed`) only at the next pass, and a poller sees the flag only by re-reading from
+  `after=0`; see [live ingestion](live-ingestion.md#attribution).
+
+## Dashboard handoff (F03)
+
+The dashboard reads `GET /v1/live/runs/{UUID}/attributions` for the selected run only, drains
+`next_cursor`, then polls with the largest `sequence` received; `AttributionRecord` in
+`@agentwatch/sdk` types each row's `record`. Show the rules verdict and the model outcome side
+by side with the model state, versions and `not_promoted` label, `missing_inputs` beside the
+prediction, an abstention as its own state and `excess_fraction_estimate` as an estimate (see
+the [model serving contract](model-serving-contract.md)). `evidence_changed` can turn `true`
+after a row was served, and an incremental poll never returns that row again: to show the flag
+the dashboard must re-read the run from `after=0` periodically, for example on opening a run
+and then on a slower schedule than the incremental poll. Rows of a superseded `serving_key`
+stay on the page; compare each row's key with `model.serving_key`.
 
 The packaging decision behind serving is [ADR 0014](adr/0014-attribution-serving-package.md).

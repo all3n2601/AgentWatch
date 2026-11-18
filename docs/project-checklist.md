@@ -1033,7 +1033,7 @@ frozen evaluation sets without tuning against them.
   (entry below); registry loading stays open with M05.
 - [ ] Serve live step attributions (B03) and measure step completion to visible attribution.
   2026-11-18 (branch `feature/serve-attribution-predictions`, commits `be5f805`..`c6783aa`,
-  `796c38e` and the results commit; PR pending, not merged). `packages/attribution` holds
+  `796c38e` and the results commit `a5b780e`; PR pending, not merged). `packages/attribution` holds
   `rules-v1` (moved, identity unchanged), input encoding, temperature scaling and a contract
   checking loader ([ADR 0014](adr/0014-attribution-serving-package.md)); the worker stores one
   append-only attribution per terminal step after the ingest commit (migration `0005`) and
@@ -1047,14 +1047,22 @@ frozen evaluation sets without tuning against them.
   `uv run pytest services/worker/tests packages` (588 passed) with a dedicated PostgreSQL 17
   test database and no skips, the parity test (2 passed), and Ruff passed. Synthetic only: the
   latency measurement used a declared synthetic workload and the synthetic test pair
-  (`ready_not_promoted`): 50 steps per run, nearest-rank p95 of client latency including the poll interval 2.026 s (run A) and
-  2.029 s (run B) at the dashboard's 2.0 s poll, 0.278 s at 0.25 s (run C, descriptive);
+  (`ready_not_promoted`): 50 steps per run, nearest-rank p95 of client latency including the
+  poll interval 2.026 s (run A) and 2.029 s (run B) at the dashboard's 2.0 s poll, 0.278 s at
+  0.25 s (run C, descriptive);
   server-side p95 0.031 s in each; no step left unseen; within the 15.0 s `eval-contract-v3`
   limit on this workload (`docs/attribution-latency/2026-11-18-run-{A,B,C}.json`; workload and
   acceptance declared first in `796c38e`). Open: a latency measurement with the real M03/M04
   pair (not available locally) and on real agent runs; the four `not_evaluated` promotion gates
   and promotion itself (M05; this result changes no gate); passing the model variables in a
   deployment (Compose has no worker service; B04); the dashboard view (F03).
+  2026-11-18 review fixes (same branch, not merged): a run's attribution inserts are serialized
+  so rows commit in `sequence` order and cursor polling cannot skip one; the SDK requires
+  pydantic 2.12 (the first release honoring `exclude_if`); model load outcomes are logged; a
+  failed latency run writes a `status: "failed"` report; `AttributionRecord` types the published
+  record. `uv run pytest services/worker/tests packages` (605 passed, none skipped, dedicated
+  PostgreSQL 17 test database), Ruff and the JavaScript checks passed. `evidence_changed` turning
+  `true` after a row was served reaches a poller only on a re-read from `after=0`.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
   2026-11-12: what the dashboard must show (model identity and promotion state, abstention as
   its own state, missing telemetry beside the prediction, the excess fraction as an estimate)
