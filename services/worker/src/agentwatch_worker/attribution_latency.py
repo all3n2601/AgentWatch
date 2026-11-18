@@ -13,6 +13,11 @@ step_terminal_received_at`, comes from the database clock and is reported separa
 and server clocks are never compared. A step that never becomes visible within the declared
 timeout is a failure and makes the gate inconclusive (`null`), never a pass. The report does not
 change any promotion state.
+
+A run that stops on a failed request is still recorded: `measure` raises `MeasurementAborted`
+carrying a report with `status: "failed"`, the error and every step completed before it, and
+`main` writes that report and exits non-zero. A completed run's report has `status:
+"completed"`; reports written before the field existed have none and are completed runs.
 """
 
 import argparse
@@ -49,6 +54,7 @@ from agentwatch_sdk.live import (
     RunCreate,
     StepEvent,
 )
+from pydantic import ValidationError
 
 REPORT_VERSION = "attribution-latency-v1"
 # eval-contract-v3, [overhead] max_attribution_latency_p95_seconds; a test pins the two equal.
@@ -79,8 +85,28 @@ NOTE = (
     "the eval-contract-v3 attribution-latency gate and does not change any promotion state; "
     "model_status is copied as the worker reported it."
 )
+FAILED_NOTE = (
+    "This measurement run stopped on an error and is recorded as failed, not replaced. It "
+    "decides nothing about the attribution-latency gate (p95_within_limit is null) and does not "
+    "change any promotion state."
+)
+MAX_ERROR_MESSAGE_CHARACTERS = 500
 
 type Statistics = dict[str, int | float | None]
+
+
+class MeasurementAborted(Exception):
+    """A measurement run stopped by a failed request; `report` records it as failed.
+
+    The request's error is the `__cause__`.
+    """
+
+    def __init__(self, report: dict[str, object]) -> None:
+        error = report["error"]
+        super().__init__(
+            f"{error['type']}: {error['message']}" if isinstance(error, dict) else str(error)
+        )
+        self.report = report
 
 
 class Transport(Protocol):
@@ -448,6 +474,27 @@ class LatencyRun:
             error.add_note(f"Cancelling the run also failed: {type(cancel_error).__name__}")
 
 
+def error_summary(error: Exception) -> dict[str, object]:
+    """The error's type and a bounded message that never quotes a response body.
+
+    A validation message quotes the offending input, here the worker's response, so only each
+    issue's location and type are kept. Other errors come from the HTTP client or this module and
+    name at most the base URL, which carries no credentials (`validate_settings`).
+    """
+    if isinstance(error, ValidationError):
+        issues = error.errors(include_url=False, include_input=False, include_context=False)
+        message = f"{error.error_count()} validation issue(s) in {error.title}: " + "; ".join(
+            f"{'.'.join(str(part) for part in issue['loc'])}: {issue['type']}" for issue in issues
+        )
+    else:
+        message = str(error)
+    return {
+        "type": type(error).__name__,
+        "message": message[:MAX_ERROR_MESSAGE_CHARACTERS],
+        "notes": list(getattr(error, "__notes__", ())),
+    }
+
+
 def server_side_seconds(item: AttributionItem) -> float:
     return (item.committed_at - item.step_terminal_received_at).total_seconds()
 
@@ -470,7 +517,6 @@ def measure(
     )
     api = transport if transport is not None else HttpTransport(base_url)
     started_at = datetime.now(UTC)
-    status = ModelStatusView.model_validate_json(api("GET", "/v1/live/attribution/model", None))
     run = LatencyRun(
         api, clock, sleep, poll_interval_seconds, step_duration_seconds, visible_timeout_seconds
     )
@@ -490,15 +536,50 @@ def measure(
         "poll_interval_seconds": poll_interval_seconds,
         "visible_timeout_seconds": visible_timeout_seconds,
     }
+    status: ModelStatusView | None = None
     per_step: list[StepResult] = []
+
+    def header(report_status: str) -> dict[str, object]:
+        """The declared parameters and context every report carries, completed or failed."""
+        return {
+            "report_version": REPORT_VERSION,
+            "status": report_status,
+            "synthetic_workload": True,
+            "workload": settings,
+            "steps": steps,
+            "poll_interval_seconds": poll_interval_seconds,
+            "step_duration_seconds": step_duration_seconds,
+            "visible_timeout_seconds": visible_timeout_seconds,
+            "base_url": base_url,
+            "run_id": None if run.run_id is None else str(run.run_id),
+            "model_status": None if status is None else status.model_dump(mode="json"),
+            "model_states_seen": sorted(run.model_states_seen),
+            "machine": machine(),
+            "code_revision": revision(),
+            "started_at": started_at.isoformat(),
+            "limit_p95_seconds": LIMIT_P95_SECONDS,
+            "limit_source": LIMIT_SOURCE,
+        }
+
     try:
+        status = ModelStatusView.model_validate_json(api("GET", "/v1/live/attribution/model", None))
         run.register(settings)
         for index in range(steps):
             per_step.append(run.run_step(f"latency-step-{index:04d}", index))
         run.change("completed", None)
     except (OSError, ValueError) as error:
         run.abort(error)
-        raise
+        raise MeasurementAborted(
+            header("failed")
+            | {
+                "failed_at": datetime.now(UTC).isoformat(),
+                "error": error_summary(error),
+                "steps_completed": len(per_step),
+                "p95_within_limit": None,
+                "per_step": [step.as_report() for step in per_step],
+                "note": FAILED_NOTE,
+            }
+        ) from error
     finished_at = datetime.now(UTC)
 
     never_visible = [step.step_id for step in per_step if step.client_latency_seconds is None]
@@ -513,29 +594,13 @@ def measure(
         for s in per_step
         if s.client_latency_seconds is not None
     )
-    return {
-        "report_version": REPORT_VERSION,
-        "synthetic_workload": True,
-        "workload": settings,
-        "steps": steps,
-        "poll_interval_seconds": poll_interval_seconds,
-        "step_duration_seconds": step_duration_seconds,
-        "visible_timeout_seconds": visible_timeout_seconds,
-        "base_url": base_url,
-        "run_id": str(run.run_id),
-        "model_status": status.model_dump(mode="json"),
-        "model_states_seen": sorted(run.model_states_seen),
+    return header("completed") | {
         "serving_key_changed": run.serving_keys_seen - {status.serving_key} != set(),
-        "machine": machine(),
-        "code_revision": revision(),
-        "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
         "clock": (
             "client time.monotonic(): from just before the terminal record's request to the "
             "poll response holding the step's attribution, poll interval included"
         ),
-        "limit_p95_seconds": LIMIT_P95_SECONDS,
-        "limit_source": LIMIT_SOURCE,
         "statistic": "nearest-rank p95 of client_latency_seconds",
         "p95_within_limit": p95_within_limit(client, len(never_visible)),
         "client_latency_seconds": client,
@@ -570,7 +635,22 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def write_report(path: Path, report: dict[str, object]) -> bool:
+    """Write the report as JSON; on failure say so on stderr and return False."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    except OSError as error:
+        print(
+            f"Cannot write the report to {path}: {type(error).__name__}: {error}", file=sys.stderr
+        )
+        return False
+    return True
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    """0 for a completed run; 1 for a failed run (its report written) or an unwritable report;
+    2 for settings rejected before any request, which writes no report."""
     arguments = parse_arguments(argv)
     try:
         report = measure(
@@ -580,11 +660,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.step_duration_seconds,
             arguments.visible_timeout_seconds,
         )
-    except (OSError, ValueError) as error:
-        print(f"Latency measurement failed: {type(error).__name__}: {error}", file=sys.stderr)
+    except MeasurementAborted as aborted:
+        print(f"Latency measurement failed: {aborted}", file=sys.stderr)
+        if write_report(arguments.output, aborted.report):
+            print(f"{arguments.output}: failed run recorded", file=sys.stderr)
         return 1
-    arguments.output.parent.mkdir(parents=True, exist_ok=True)
-    arguments.output.write_text(json.dumps(report, indent=2) + "\n")
+    except ValueError as error:
+        print(f"Latency measurement not started: {error}", file=sys.stderr)
+        return 2
+    if not write_report(arguments.output, report):
+        return 1
     client = report["client_latency_seconds"]
     never = report["steps_never_visible"]
     print(

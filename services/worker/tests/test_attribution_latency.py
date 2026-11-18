@@ -9,13 +9,17 @@ import json
 import math
 import tomllib
 from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from agentwatch_attribution.rules import load_rules
+from agentwatch_worker import attribution_latency
 from agentwatch_worker.attribution_latency import (
     LIMIT_P95_SECONDS,
+    MeasurementAborted,
+    Transport,
     measure,
     p95_within_limit,
     summarize,
@@ -332,32 +336,192 @@ def test_invalid_workload_settings_are_rejected_before_any_request(changes: dict
     assert stub.requests == []
 
 
-def test_a_failed_request_cancels_the_run_and_propagates() -> None:
-    stub = StubLiveApi()
+def failing_at_ingest(stub: StubLiveApi, failing_ingest: int) -> Transport:
+    """The stub, except that its `failing_ingest`-th records request raises (from 1).
+
+    A step sends three: queued and running, its samples, then its terminal event alone.
+    """
     ingests: list[int] = []
 
-    def failing(method: str, path: str, payload: bytes | None) -> bytes:
+    def transport(method: str, path: str, payload: bytes | None) -> bytes:
         if path.endswith("/records"):
             ingests.append(1)
-            if len(ingests) == 3:  # The first step's terminal record.
+            if len(ingests) == failing_ingest:
                 raise ConnectionRefusedError("worker stopped")
         return stub(method, path, payload)
 
+    return transport
+
+
+def measure_with(transport: Transport, clock: FakeClock, steps: int = 3) -> dict:
+    return measure(
+        "http://stub.invalid",
+        steps,
+        poll_interval_seconds=1.0,
+        step_duration_seconds=0.004,
+        visible_timeout_seconds=3.0,
+        transport=transport,
+        clock=clock,
+        sleep=clock.sleep,
+        revision=lambda: dict(REVISION),
+    )
+
+
+def test_a_failed_request_cancels_the_run_and_reports_the_steps_done_so_far() -> None:
+    stub = StubLiveApi()
     clock = FakeClock()
-    with pytest.raises(ConnectionRefusedError):
-        measure(
-            "http://stub.invalid",
-            2,
-            poll_interval_seconds=1.0,
-            step_duration_seconds=0.004,
-            visible_timeout_seconds=3.0,
-            transport=failing,
+    # The second step's terminal record: the first step completed and was seen.
+    with pytest.raises(MeasurementAborted) as aborted:
+        measure_with(failing_at_ingest(stub, 6), clock)
+
+    assert isinstance(aborted.value.__cause__, ConnectionRefusedError)
+    assert stub.requests[-1] == ("POST", f"/v1/live/runs/{stub.run_id}/state")
+    assert stub.states == ["running", "cancelled"]
+    report = aborted.value.report
+    assert report["status"] == "failed"
+    assert report["error"] == {
+        "type": "ConnectionRefusedError",
+        "message": "worker stopped",
+        "notes": [],
+    }
+    assert report["run_id"] == stub.run_id
+    assert report["steps_completed"] == 1
+    [done] = report["per_step"]
+    assert done["step_id"] == "latency-step-0000"
+    assert done["visible"] is True
+    assert done["client_latency_seconds"] is not None
+    assert report["p95_within_limit"] is None
+    assert report["synthetic_workload"] is True
+    assert report["steps"] == 3
+    assert report["workload"]["poll_interval_seconds"] == 1.0
+    assert report["model_status"]["state"] == "ready_not_promoted"
+    assert report["code_revision"] == REVISION
+    json.dumps(report, allow_nan=False)
+
+
+def test_a_failure_before_registration_reports_no_run() -> None:
+    def refused(method: str, path: str, payload: bytes | None) -> bytes:
+        raise ConnectionRefusedError("no worker")
+
+    with pytest.raises(MeasurementAborted) as aborted:
+        measure_with(refused, FakeClock())
+
+    report = aborted.value.report
+    assert report["status"] == "failed"
+    assert report["run_id"] is None
+    assert report["model_status"] is None
+    assert report["steps_completed"] == 0
+    assert report["per_step"] == []
+
+
+def test_a_malformed_response_is_reported_without_echoing_its_content() -> None:
+    stub = StubLiveApi()
+
+    def malformed(method: str, path: str, payload: bytes | None) -> bytes:
+        if "/attributions" in path:
+            return json.dumps({"run_id": stub.run_id, "attributions": "producer-detail"}).encode()
+        return stub(method, path, payload)
+
+    with pytest.raises(MeasurementAborted) as aborted:
+        measure_with(malformed, FakeClock())
+
+    error = aborted.value.report["error"]
+    assert error["type"] == "ValidationError"
+    assert "attributions" in error["message"]
+    assert "producer-detail" not in json.dumps(aborted.value.report)
+
+
+def main_with(
+    monkeypatch: pytest.MonkeyPatch, transport: Transport, output: Path, steps: int = 3
+) -> int:
+    """`main` over the stub transport and a fake clock, never the network or real sleeps."""
+    clock = FakeClock()
+    monkeypatch.setattr(
+        attribution_latency,
+        "measure",
+        partial(
+            measure,
+            transport=transport,
             clock=clock,
             sleep=clock.sleep,
             revision=lambda: dict(REVISION),
-        )
-    assert stub.requests[-1] == ("POST", f"/v1/live/runs/{stub.run_id}/state")
-    assert stub.states == ["running", "cancelled"]
+        ),
+    )
+    return attribution_latency.main(
+        [
+            "--base-url=http://stub.invalid",
+            f"--steps={steps}",
+            "--poll-interval-seconds=1.0",
+            "--step-duration-seconds=0.004",
+            "--visible-timeout-seconds=3.0",
+            f"--output={output}",
+        ]
+    )
+
+
+def test_main_records_a_failed_run_and_exits_non_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stub = StubLiveApi()
+    output = tmp_path / "reports" / "failed.json"
+
+    code = main_with(monkeypatch, failing_at_ingest(stub, 6), output)
+
+    assert code == 1
+    report = json.loads(output.read_text())
+    assert report["status"] == "failed"
+    assert report["error"]["type"] == "ConnectionRefusedError"
+    assert report["steps_completed"] == 1
+    assert [step["step_id"] for step in report["per_step"]] == ["latency-step-0000"]
+    assert report["p95_within_limit"] is None
+    errors = capsys.readouterr().err
+    assert "ConnectionRefusedError" in errors
+    assert str(output) in errors
+
+
+def test_main_marks_a_completed_run_completed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "completed.json"
+
+    assert main_with(monkeypatch, StubLiveApi(), output, steps=2) == 0
+
+    report = json.loads(output.read_text())
+    assert report["status"] == "completed"
+    assert report["p95_within_limit"] is True
+    assert len(report["per_step"]) == 2
+
+
+@pytest.mark.parametrize("fails", [True, False])
+def test_main_reports_a_report_it_cannot_write_on_stderr(
+    fails: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    stub = StubLiveApi()
+    transport = failing_at_ingest(stub, 6) if fails else stub
+    output = tmp_path / "occupied"
+    output.mkdir()  # A directory where the report file should go.
+
+    assert main_with(monkeypatch, transport, output) == 1
+
+    errors = capsys.readouterr().err
+    assert f"Cannot write the report to {output}" in errors
+    assert output.is_dir()
+
+
+def test_main_rejects_invalid_settings_without_writing_a_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stub = StubLiveApi()
+    output = tmp_path / "rejected.json"
+
+    assert main_with(monkeypatch, stub, output, steps=0) == 2
+
+    assert not output.exists()
+    assert stub.requests == []
+    assert "steps must be an integer" in capsys.readouterr().err
 
 
 def test_measurement_drives_the_real_live_api(

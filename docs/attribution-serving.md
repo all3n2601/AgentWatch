@@ -97,6 +97,16 @@ passes. The run is closed as completed afterwards (cancelled if a request fails)
   outcomes, the actual first-poll delay and poll spacing, the machine, the git revision (with a
   flag for modified tracked files), UTC start and finish times and `synthetic_workload: true`.
   It does not change any promotion state.
+- **Status.** A report has `status: "completed"`, or `status: "failed"` when a request failed
+  (the run is then cancelled). The command still writes a failed run's report to `--output` and
+  exits `1`: the declared parameters, the run id if one was registered (else `null`), the model
+  status if it was read, `error` (type, a message of at most 500 characters that never quotes a
+  response body, and notes such as a failed cancel), `steps_completed` with each completed
+  step's result in `per_step`, `failed_at`, `synthetic_workload: true` and
+  `p95_within_limit: null`. A report it cannot write is reported on stderr with exit `1`.
+  Settings rejected before any request exit `2` and write no report. `status` is an additive
+  field of `attribution-latency-v1`: the three 2026-11-18 reports below predate it, have no
+  `status` and are completed runs, so a reader treats a missing `status` as completed.
 
 ### Declared workload and acceptance
 
