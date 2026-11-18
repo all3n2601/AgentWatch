@@ -38,9 +38,14 @@ class LiveStore:
     @contextmanager
     def connect(self) -> Iterator[Connection]:
         with self.store.connect() as conn:
-            conn.execute("SET LOCAL statement_timeout = '5s'")
-            conn.execute("SET LOCAL lock_timeout = '3s'")
+            self.bound_waits(conn)
             yield conn
+
+    @staticmethod
+    def bound_waits(conn: Connection) -> None:
+        """Bound the open transaction's statement and lock waits."""
+        conn.execute("SET LOCAL statement_timeout = '5s'")
+        conn.execute("SET LOCAL lock_timeout = '3s'")
 
     @staticmethod
     def lock(conn: Connection, run_id: UUID) -> dict:

@@ -11,7 +11,10 @@ step's terminal event was received, `committed_at` when the attribution row was 
 """
 
 import json
-from dataclasses import asdict
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from functools import partial
 from uuid import UUID
@@ -23,18 +26,37 @@ from agentwatch_sdk.live import TERMINAL_STATES
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-from agentwatch_worker.attribution import build_attribution
+from agentwatch_worker.attribution import build_attribution, predict_batch
 from agentwatch_worker.attribution_model import ModelService
 from agentwatch_worker.live_features import live_feature_rows
 from agentwatch_worker.live_store import LiveStore, MissingRunError
 from agentwatch_worker.store import RunStore
 
+logger = logging.getLogger(__name__)
 STEP_TERMINAL_STATES = sorted(TERMINAL_STATES)
+SCORED_STEP_STATE = "completed"
 # First key of the two-integer advisory lock serializing one run's inserts. The two-integer key
-# space is separate from the single-bigint one the migration and run-creation locks use.
-ATTRIBUTION_INSERT_LOCK_NAMESPACE = 730503
+# space is separate from the single-bigint one the migration (730501), run-creation (730502) and
+# policy (730503) locks use; the number is distinct so a grep finds one lock per number.
+ATTRIBUTION_INSERT_LOCK_NAMESPACE = 730504
 # Records reach the dashboard as strict JSON; a non-finite number must fail, not be stored.
 strict_dumps = partial(json.dumps, allow_nan=False)
+
+
+@dataclass(frozen=True)
+class StepState:
+    """A step's latest applied revision: its state and when that revision was received."""
+
+    state: str
+    received_at: datetime
+
+
+@dataclass(frozen=True)
+class StoredRow:
+    """What a stored attribution row says about the evidence it was computed from."""
+
+    sample_ids: frozenset[str]
+    evidence_changed: bool
 
 
 class AttributionStore:
@@ -74,60 +96,96 @@ class AttributionStore:
             "serving_key": self.serving_key,
         }
 
-    def attribute_run(self, run_id: UUID) -> int:
+    def attribute_run(self, run_id: UUID, *, recheck_evidence: bool = True) -> int:
         """Store a row for every terminal step lacking one for this serving key; return how many.
 
-        No transaction is open while a record is built. `live_feature_rows` takes and releases
-        the run lock on its own connection; a short read transaction then loads step states and
-        stored rows without locking the run. Each step's row is then inserted and committed in
-        its own transaction: the insert's foreign-key check holds FOR KEY SHARE on the run row,
-        which blocks `LiveStore.lock` (ingest, state changes, snapshots) only until that single
-        insert commits. Concurrent passes on one run insert one at a time, so their rows commit in
-        sequence order (see `insert`). The unique key makes them leave one row per step. An error
-        from building a record propagates; rows committed for earlier steps stay.
+        Features are computed only for the steps that need work: those lacking a row and, with
+        `recheck_evidence`, those whose stored row is not yet flagged, so a late sample inside a
+        stored step's window is noticed. Without it a pass costs only the pending steps. The
+        feature read takes no lock on the run row (`live_feature_rows(lock=False)`), so neither a
+        long pass nor a poll delays ingest.
+
+        All pending rows are scored in one model call, outside any transaction. They are then
+        inserted on one connection, each in its own short transaction: the insert's foreign-key
+        check holds FOR KEY SHARE on the run row, which blocks `LiveStore.lock` (ingest, state
+        changes, snapshots) only until that single insert commits. Concurrent passes on one run
+        insert one at a time, so their rows commit in sequence order (see `insert`), and the
+        unique key leaves one row per step. A step whose record cannot be built or stored
+        (`ValueError`) is logged and left pending; the steps after it are still attributed. A
+        failure of the feature read or of storage propagates; rows already committed stay.
         """
         interval = self.declared_interval_seconds(run_id)
-        features = live_feature_rows(self.store, run_id, interval)
-        with self.live.connect() as conn:
-            states = LiveStore.steps(conn, run_id)
-            received = self.terminal_received_at(conn, run_id)
-            stored = self.stored_sample_ids(conn, run_id)
-        inserted = 0
-        for row in features.rows:
-            stored_samples = stored.get((row.step_id, row.feature_version))
-            if stored_samples is not None:
-                if {str(s) for s in row.source_sample_ids} != stored_samples:
-                    # The update leaves run_id unchanged, so no foreign-key lock on the run.
-                    with self.live.connect() as conn:
+        with self.session() as conn:
+            with self.transaction(conn):
+                steps = self.terminal_steps(conn, run_id)
+                stored = self.stored_rows(conn, run_id)
+            pending = [step_id for step_id in steps if step_id not in stored]
+            audited = [
+                step_id
+                for step_id, row in stored.items()
+                if recheck_evidence and step_id in steps and not row.evidence_changed
+            ]
+            wanted = sorted({*pending, *audited})
+            if not wanted:
+                return 0
+            features = live_feature_rows(self.store, run_id, interval, step_ids=wanted, lock=False)
+            new_rows = []
+            for row in features.rows:
+                known = stored.get(row.step_id)
+                if known is None:
+                    new_rows.append(row)
+                elif {str(sample) for sample in row.source_sample_ids} != known.sample_ids:
+                    with self.transaction(conn):
                         self.flag_evidence_changed(conn, run_id, row)
-                continue
-            record = build_attribution(
-                row,
-                states[row.step_id].state,
-                self.rules,
-                self.model.status,
+            return self.store_new_rows(conn, run_id, new_rows, steps)
+
+    def store_new_rows(
+        self, conn: Connection, run_id: UUID, rows: list[FeatureRow], steps: dict[str, StepState]
+    ) -> int:
+        scored = (
+            {}
+            if self.model.served is None
+            else predict_batch(
                 self.model.served,
+                [row for row in rows if steps[row.step_id].state == SCORED_STEP_STATE],
             )
-            with self.live.connect() as conn:
-                inserted += self.insert(conn, run_id, row, record, received[row.step_id])
+        )
+        inserted = 0
+        for row in rows:
+            step = steps[row.step_id]
+            try:
+                record = build_attribution(
+                    row,
+                    step.state,
+                    self.rules,
+                    self.model.status,
+                    self.model.served,
+                    scored.get(row.step_id),
+                )
+                with self.transaction(conn):
+                    inserted += self.insert(conn, run_id, row, record, step.received_at)
+            except ValueError as error:
+                logger.warning(
+                    "Attribution skipped one step; it stays pending: type=%s", type(error).__name__
+                )
         return inserted
 
-    def pending_terminal_steps(self, run_id: UUID) -> list[str]:
-        """Terminal applied steps without a row for this serving key; no feature computation."""
+    def has_pending_terminal_steps(self, run_id: UUID) -> bool:
+        """Whether a terminal applied step lacks a row for this serving key; no feature work."""
         with self.live.connect() as conn:
             self.require_run(conn, run_id)
-            rows = conn.execute(
-                "SELECT step.step_id FROM ("
+            row = conn.execute(
+                "SELECT EXISTS (SELECT 1 FROM ("
                 "SELECT DISTINCT ON (step_id) step_id,payload->>'state' AS state "
                 "FROM live_records WHERE run_id=%s AND record_type='step_event' "
                 "AND disposition='applied' ORDER BY step_id,step_revision DESC) step "
                 "WHERE step.state=ANY(%s) AND NOT EXISTS ("
                 "SELECT 1 FROM live_step_attributions a WHERE a.run_id=%s "
-                "AND a.step_id=step.step_id AND a.feature_version=%s AND a.serving_key=%s) "
-                "ORDER BY step.step_id",
+                "AND a.step_id=step.step_id AND a.feature_version=%s AND a.serving_key=%s)"
+                ") AS pending",
                 (run_id, STEP_TERMINAL_STATES, run_id, FEATURE_VERSION, self.serving_key),
-            ).fetchall()
-        return [row["step_id"] for row in rows]
+            ).fetchone()
+        return bool(row["pending"])
 
     def page(self, run_id: UUID, after: int, limit: int) -> dict:
         """Stored rows of the selected run after the `after` cursor, oldest first.
@@ -174,25 +232,48 @@ class AttributionStore:
         if conn.execute("SELECT 1 FROM live_runs WHERE run_id=%s", (run_id,)).fetchone() is None:
             raise MissingRunError("Live run not found")
 
+    @contextmanager
+    def session(self) -> Iterator[Connection]:
+        """One connection for a whole pass; its transactions are explicit (`transaction`)."""
+        with self.store.connect() as conn:
+            conn.autocommit = True
+            yield conn
+
     @staticmethod
-    def terminal_received_at(conn: Connection, run_id: UUID) -> dict[str, datetime]:
-        """When each step's latest applied revision (its terminal one, once terminal) arrived."""
+    @contextmanager
+    def transaction(conn: Connection) -> Iterator[Connection]:
+        """A transaction with the live store's statement and lock timeouts."""
+        with conn.transaction():
+            LiveStore.bound_waits(conn)
+            yield conn
+
+    @staticmethod
+    def terminal_steps(conn: Connection, run_id: UUID) -> dict[str, StepState]:
+        """Each terminal step's latest applied revision: its state and when it was received."""
         rows = conn.execute(
-            "SELECT DISTINCT ON (step_id) step_id,received_at FROM live_records "
-            "WHERE run_id=%s AND record_type='step_event' AND disposition='applied' "
-            "ORDER BY step_id,step_revision DESC",
+            "SELECT DISTINCT ON (step_id) step_id,payload->>'state' AS state,received_at "
+            "FROM live_records WHERE run_id=%s AND record_type='step_event' "
+            "AND disposition='applied' ORDER BY step_id,step_revision DESC",
             (run_id,),
         ).fetchall()
-        return {row["step_id"]: row["received_at"] for row in rows}
+        return {
+            row["step_id"]: StepState(row["state"], row["received_at"])
+            for row in rows
+            if row["state"] in TERMINAL_STATES
+        }
 
-    def stored_sample_ids(self, conn: Connection, run_id: UUID) -> dict[tuple[str, str], set[str]]:
-        """The source sample ids of each stored row for this serving key."""
+    def stored_rows(self, conn: Connection, run_id: UUID) -> dict[str, StoredRow]:
+        """The stored rows of this serving key and feature version, by step."""
         rows = conn.execute(
-            "SELECT step_id,feature_version,record->'feature_row'->'source_sample_ids' AS samples "
-            "FROM live_step_attributions WHERE run_id=%s AND serving_key=%s",
-            (run_id, self.serving_key),
+            "SELECT step_id,evidence_changed,"
+            "record->'feature_row'->'source_sample_ids' AS samples "
+            "FROM live_step_attributions WHERE run_id=%s AND serving_key=%s AND feature_version=%s",
+            (run_id, self.serving_key, FEATURE_VERSION),
         ).fetchall()
-        return {(row["step_id"], row["feature_version"]): set(row["samples"]) for row in rows}
+        return {
+            row["step_id"]: StoredRow(frozenset(row["samples"]), row["evidence_changed"])
+            for row in rows
+        }
 
     def flag_evidence_changed(self, conn: Connection, run_id: UUID, row: FeatureRow) -> None:
         conn.execute(

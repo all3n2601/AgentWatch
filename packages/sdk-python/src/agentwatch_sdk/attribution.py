@@ -72,7 +72,8 @@ class ModelPredictionView(ResponseModel):
     """The model half of a record: the serving labels at write time, then the outcome.
 
     `reason` is the load check code for `load_failed`, the state itself for `not_configured` and
-    `not_promoted_refused`, `non_finite_prediction` for an unusable prediction, otherwise None.
+    `not_promoted_refused`, `non_finite_prediction` for an unusable prediction,
+    `prediction_failed` when the served pair raised on the step, otherwise None.
     The prediction fields are None unless `outcome` is predicted or abstained; an abstention has
     `predicted_class` None, never `none`. `excess_fraction_estimate` is the regressor's estimated
     share of the step's duration spent as excess waiting, not a measured queue delay.

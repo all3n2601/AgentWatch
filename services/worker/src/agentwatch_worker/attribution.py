@@ -1,6 +1,6 @@
 """One terminal step's attribution record: the rules verdict and the served model's prediction.
 
-Pure: no database, files or clock. The record follows docs/model-serving-contract.md ("Outputs"
+No database, files or clock. The record follows docs/model-serving-contract.md ("Outputs"
 and "What the dashboard must show") and attributes the resource the step likely waited on; it
 does not establish a cause.
 
@@ -16,10 +16,14 @@ does not establish a cause.
   excess waiting, not a measured queue delay; `queue_seconds` stays in the feature row.
 - A prediction with a non-finite number is never emitted: its outcome is `unavailable` with
   reason `non_finite_prediction`, and the rules verdict is still recorded.
+- A prediction call that raises leaves that step `unavailable` with reason `prediction_failed`
+  (the error type is logged, never its message): one step the loaded pair cannot score must not
+  stop the steps after it from being attributed, and the rules verdict is still recorded.
 """
 
+import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from agentwatch_attribution.inputs import MODEL_INPUTS
 from agentwatch_attribution.rules import Rules
@@ -33,6 +37,8 @@ NOT_LIVE_INPUTS: tuple[str, ...] = ("workload_iterations", "tests_per_step", "wo
 SCORED_STEP_STATE = "completed"
 STEP_STATES = frozenset({"completed", "failed", "cancelled"})
 NON_FINITE_PREDICTION = "non_finite_prediction"
+PREDICTION_FAILED = "prediction_failed"
+logger = logging.getLogger(__name__)
 PREDICTION_FIELDS = (
     "predicted_class",
     "confidence",
@@ -60,11 +66,14 @@ def build_attribution(
     rules: Rules,
     status: ModelStatus,
     model: ServedModel | None,
+    prediction: ModelPrediction | None = None,
 ) -> dict[str, object]:
     """The JSON-ready attribution record for one terminal step.
 
     `step_state` is the step's terminal state, which the feature row does not carry. `model` is
-    the served pair, or None when `status` says none is served.
+    the served pair, or None when `status` says none is served. `prediction` is the model's
+    prediction for this row when the caller already scored it in a batch (`predict_batch`); None
+    makes the model score the row here.
     """
     if step_state not in STEP_STATES:
         raise ValueError(f"step_state must be one of {sorted(STEP_STATES)}, got {step_state!r}")
@@ -78,7 +87,7 @@ def build_attribution(
         "missing_inputs": [name for name in MODEL_INPUTS if inputs[name] is None],
         "telemetry_status": row.telemetry.status,
         "rules": {"version": rules.version, "verdict": rules.predict(row.features.model_dump())},
-        "model": model_attribution(inputs, step_state, status, model),
+        "model": model_attribution(inputs, step_state, status, model, prediction),
     }
 
 
@@ -87,6 +96,7 @@ def model_attribution(
     step_state: str,
     status: ModelStatus,
     model: ServedModel | None,
+    prediction: ModelPrediction | None = None,
 ) -> dict[str, object]:
     """The model half of the record: serving identity, then the outcome and its numbers."""
     served: dict[str, object] = {
@@ -99,7 +109,13 @@ def model_attribution(
         return served | {"reason": status.reason or status.state} | no_prediction("unavailable")
     if step_state != SCORED_STEP_STATE:
         return served | no_prediction("not_scored_step_state")
-    [prediction] = model.predict([inputs])
+    if prediction is None:
+        try:
+            [prediction] = model.predict([inputs])
+        # LightGBM and numpy raise assorted types: record the step instead of failing the pass.
+        except Exception as error:  # noqa: BLE001
+            logger.warning("Model prediction failed for one step: type=%s", type(error).__name__)
+            return served | {"reason": PREDICTION_FAILED} | no_prediction("unavailable")
     if not is_finite_prediction(prediction):
         return served | {"reason": NON_FINITE_PREDICTION} | no_prediction("unavailable")
     return served | {
@@ -111,6 +127,26 @@ def model_attribution(
         "calibrated_probabilities": dict(prediction.calibrated_probabilities),
         "excess_fraction_estimate": prediction.excess_fraction,
     }
+
+
+def predict_batch(model: ServedModel, rows: Sequence[FeatureRow]) -> dict[str, ModelPrediction]:
+    """One model call for many rows, by step id; empty when the call raises.
+
+    A batch costs one LightGBM call instead of one per step. If it raises, no prediction is
+    returned and each row is scored alone by `build_attribution`, so one bad row fails only
+    its own step.
+    """
+    if not rows:
+        return {}
+    try:
+        predictions = model.predict([model_input_row(row) for row in rows])
+    # As in model_attribution: any prediction error leaves the rows to be scored one by one.
+    except Exception as error:  # noqa: BLE001
+        logger.warning(
+            "Batch model prediction failed; scoring steps one by one: type=%s", type(error).__name__
+        )
+        return {}
+    return {row.step_id: prediction for row, prediction in zip(rows, predictions, strict=True)}
 
 
 def identity_labels(identity: ModelIdentity | None) -> dict[str, object]:

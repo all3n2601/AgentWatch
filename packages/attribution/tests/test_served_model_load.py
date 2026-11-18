@@ -182,6 +182,19 @@ def test_calibration_parameter_must_be_a_positive_finite_number(
     assert field in str(error)
 
 
+@pytest.mark.parametrize("value", [1.0001, 1.5, 95])
+def test_abstention_threshold_above_one_is_refused(pair: Pair, value: float) -> None:
+    rewrite(pair[1] / CALIBRATION, lambda document: document.update(abstention_threshold=value))
+    error = refusal(pair)
+    assert error.check == "artifact_unreadable"
+    assert "abstention_threshold" in str(error) and "at most 1" in str(error)
+
+
+def test_abstention_threshold_of_exactly_one_is_a_valid_probability(pair: Pair) -> None:
+    rewrite(pair[1] / CALIBRATION, lambda document: document.update(abstention_threshold=1.0))
+    assert load_served_model(*pair).identity.abstention_threshold == 1.0
+
+
 @pytest.mark.parametrize("value", [1, "true", None])
 def test_blocks_promotion_must_be_a_boolean(pair: Pair, value: object) -> None:
     rewrite(pair[1] / CALIBRATION, lambda document: document.update(blocks_promotion=value))

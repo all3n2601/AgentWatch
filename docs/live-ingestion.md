@@ -218,11 +218,16 @@ event received) are both database-clock times. A step's feature row is computed 
 later pass would compute a different one (a sample inside the step's window arriving late),
 the stored row keeps its record and `evidence_changed` becomes `true`. Background passes run
 after a batch holding a terminal step event and after a run closes. A read runs a pass only when
-a terminal step lacks a row for the current serving key, so reading alone does not re-audit
-stored rows: a sample that arrives after the last pass is flagged only at the next pass (the
-next terminal batch, the run's close, or a read that finds a step without a row). Only rows of
-the current serving key are audited; rows of a superseded key keep the flag they had.
-`evidence_changed` can therefore turn `true` after its row was served. The cursor returns each
+a terminal step lacks a row for the current serving key. Those passes compute features only for
+the steps that lack a row, so a pass costs the steps it attributes, not the whole run. Only the
+pass after a run closes re-checks the stored rows, so `evidence_changed` is set at the run's
+close: a sample that arrives in a step's window before then is not flagged earlier. Rows already
+flagged are not re-checked, and only rows of the current serving key are audited; rows of a
+superseded key keep the flag they had. Passes read the run's records without the run row lock,
+so they never delay ingest. A step whose record cannot be built is logged by error type and
+left pending, and the steps after it are still attributed; a pass that fails before a read
+leaves the read returning the rows already stored. `evidence_changed` can turn `true` after its
+row was served. The cursor returns each
 row once, by `sequence`, so an incremental poller that keeps the largest `sequence` never sees
 that change: only a re-read from `after=0` shows a row's current flag. A consumer that needs
 the flag must re-read the run from `after=0` periodically (no change feed exists).
@@ -244,8 +249,8 @@ holds `run_id`, `step_id`, `step_state`, `feature_version`, the stored
 rules never abstain and carry no confidence) and `model` (the serving labels, then
 `outcome`). The model scores only `completed` steps: `outcome` is `predicted` or `abstained`
 with calibrated probabilities, `confidence` and `abstention_threshold`; `not_scored_step_state`
-for failed and cancelled steps; `unavailable` with a `reason` when no pair is served or a
-prediction was not finite. An abstention is its own state with `predicted_class` null, never
+for failed and cancelled steps; `unavailable` with a `reason` when no pair is served, a
+prediction was not finite or the served pair raised on the step. An abstention is its own state with `predicted_class` null, never
 `none`. `excess_fraction_estimate` is the regressor's estimated share of the step's duration
 spent as excess waiting, not a measured queue delay; `queue_seconds` stays in the feature row.
 `feature_row` is the `step-features-v1` FeatureRow ([shared step features](step-features.md));
@@ -255,8 +260,9 @@ The two `reason` fields differ. A status view's `reason` (`GET .../attribution/m
 page's `model`) is the load check code for `load_failed` and null in every other state,
 `not_configured` and `not_promoted_refused` included. A record's `model.reason` is never null
 when `outcome` is `unavailable`: it equals the state for `not_configured` and
-`not_promoted_refused`, the same check code for `load_failed`, and `non_finite_prediction` when
-a served pair's prediction was not finite. It is null for the other outcomes.
+`not_promoted_refused`, the same check code for `load_failed`, `non_finite_prediction` when
+a served pair's prediction was not finite, and `prediction_failed` when the served pair raised on
+that step (the rules verdict is still recorded). It is null for the other outcomes.
 
 `missing_inputs` lists the model inputs passed as missing (NaN, never 0). Three are always
 missing live, because no live feature measures them: `workload_iterations`, `tests_per_step`

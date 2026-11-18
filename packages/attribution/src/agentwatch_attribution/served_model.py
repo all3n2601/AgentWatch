@@ -329,6 +329,12 @@ def load_served_model(candidates_dir: Path, calibration_dir: Path) -> ServedMode
 
     temperature = positive_finite(calibration, "temperature", cal_path)
     threshold = positive_finite(calibration, "abstention_threshold", cal_path)
+    if threshold > 1:
+        # Confidence is a probability, so a threshold above 1 would abstain on every step.
+        raise ServedModelError(
+            "artifact_unreadable",
+            f"{cal_path} abstention_threshold must be at most 1 (a probability), got {threshold!r}",
+        )
     blocks_promotion = field(calibration, "blocks_promotion", where=cal_path)
     if not isinstance(blocks_promotion, bool):
         raise ServedModelError(

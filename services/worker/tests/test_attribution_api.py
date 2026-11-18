@@ -108,9 +108,9 @@ def count_calls(monkeypatch: pytest.MonkeyPatch, attribution: AttributionStore) 
     calls: list[UUID] = []
     real = attribution.attribute_run
 
-    def counted(run_id: UUID) -> int:
+    def counted(run_id: UUID, **options: bool) -> int:
         calls.append(run_id)
-        return real(run_id)
+        return real(run_id, **options)
 
     monkeypatch.setattr(attribution, "attribute_run", counted)
     return calls
@@ -250,11 +250,11 @@ def test_ingest_succeeds_and_next_read_reconciles_when_attribution_fails_after_c
     real = unconfigured.attribute_run
     failures: list[UUID] = []
 
-    def fail_once(run_id: UUID) -> int:
+    def fail_once(run_id: UUID, **options: bool) -> int:
         if not failures:
             failures.append(run_id)
             raise psycopg.OperationalError(f"connection lost while storing {SECRET}")
-        return real(run_id)
+        return real(run_id, **options)
 
     monkeypatch.setattr(unconfigured, "attribute_run", fail_once)
     steps = [event(live), event(live, 1, "running"), event(live, 2, "completed")]
@@ -275,10 +275,82 @@ def test_ingest_succeeds_and_next_read_reconciles_when_attribution_fails_after_c
     assert [row["step_id"] for row in stored(client, live)] == ["tool-1"]
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ValueError(f"Row 0 feature cpu_seconds is not a finite number: {SECRET}"),
+        psycopg.errors.LockNotAvailable(f"canceling statement due to lock timeout {SECRET}"),
+    ],
+    ids=["unusable_evidence", "lock_timeout"],
+)
+def test_a_poll_still_returns_stored_rows_when_the_reconcile_pass_fails(
+    client: TestClient,
+    live: str,
+    unconfigured: AttributionStore,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: Exception,
+) -> None:
+    finish_step(client, live, "tool-1")
+    assert [a.record.step_id for a in poll(client, live).attributions] == ["tool-1"]
+
+    def broken(run_id: UUID, **options: bool) -> int:
+        raise failure
+
+    monkeypatch.setattr(unconfigured, "attribute_run", broken)
+    with caplog.at_level(logging.WARNING):
+        # The pass after this ingest fails too, so tool-2 is still pending when polled.
+        finish_step(client, live, "tool-2")
+        page = poll(client, live)
+
+    assert [a.record.step_id for a in page.attributions] == ["tool-1"]
+    assert type(failure).__name__ in caplog.text
+    assert SECRET not in caplog.text
+
+
+def test_a_background_pass_logs_unusable_evidence_by_type_only(
+    client: TestClient,
+    live: str,
+    unconfigured: AttributionStore,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def unusable(run_id: UUID, **options: bool) -> int:
+        raise ValueError(f"Row 0 feature cpu_seconds is not a finite number: {SECRET}")
+
+    monkeypatch.setattr(unconfigured, "attribute_run", unusable)
+    with caplog.at_level(logging.WARNING):
+        response = post(
+            client, live, event(live), event(live, 1, "running"), event(live, 2, "completed")
+        )
+
+    assert response.status_code == 200
+    assert "ValueError" in caplog.text
+    assert SECRET not in caplog.text
+
+
+def test_a_poll_computes_only_the_pending_steps_and_leaves_evidence_to_the_close_pass(
+    client: TestClient, live: str, unconfigured: AttributionStore
+) -> None:
+    finish_step(client, live, "tool-1")
+    # A late sample inside tool-1's window, then another step finishing in a batch of its own.
+    assert post(client, live, sample(live, tick_ns=15, value=40)).status_code == 200
+    finish_step(
+        client,
+        live,
+        "tool-2",
+    )
+
+    page = poll(client, live)
+
+    assert [a.record.step_id for a in page.attributions] == ["tool-1", "tool-2"]
+    assert [a.evidence_changed for a in page.attributions] == [False, False]
+
+
 def test_ingest_does_not_swallow_programming_faults_in_the_background_pass(
     client: TestClient, live: str, unconfigured: AttributionStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def broken(run_id: UUID) -> int:
+    def broken(run_id: UUID, **options: bool) -> int:
         raise TypeError("record builder fault")
 
     monkeypatch.setattr(unconfigured, "attribute_run", broken)
@@ -350,7 +422,7 @@ def test_attribution_error_bodies_do_not_echo_producer_values(
         (psycopg.DatabaseError, 500, "Internal storage failure"),
         (psycopg.OperationalError, 503, "Database unavailable"),
     ):
-        monkeypatch.setattr(unconfigured, "pending_terminal_steps", leak(error))
+        monkeypatch.setattr(unconfigured, "has_pending_terminal_steps", leak(error))
         response = client.get(attributions_url(live))
         assert response.status_code == status
         assert response.json() == {"detail": detail}

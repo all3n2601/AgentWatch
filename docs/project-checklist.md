@@ -1063,6 +1063,17 @@ frozen evaluation sets without tuning against them.
   record. `uv run pytest services/worker/tests packages` (605 passed, none skipped, dedicated
   PostgreSQL 17 test database), Ruff and the JavaScript checks passed. `evidence_changed` turning
   `true` after a row was served reaches a poller only on a re-read from `after=0`.
+  2026-11-18 reviewer fixes (PR #96): a poll returns the stored rows even when its reconcile pass
+  fails, and a pass that fails after an ingest logs the error type only; one step that cannot
+  be built or scored no longer blocks the steps after it (`prediction_failed`, or the step stays
+  pending); passes read only the steps that need work, without the run row lock, score them in
+  one model call and write them over one connection, and only the pass after a run closes
+  re-checks stored rows for `evidence_changed`; an abstention threshold above 1 is refused at
+  load; the insert lock number is 730504; the feature-join docstring names the registration's
+  sampling interval. `uv run pytest` (3558 passed, 32 skipped for Docker and DVC, dedicated
+  PostgreSQL test database), Ruff, `uv lock --check` and `pnpm typecheck` passed. These are
+  synthetic-fixture tests; no latency was re-measured, since the 2026-11-18 reports predate the
+  one-call scoring change and the pending-only reads.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
   2026-11-12: what the dashboard must show (model identity and promotion state, abstention as
   its own state, missing telemetry beside the prediction, the excess fraction as an estimate)

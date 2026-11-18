@@ -201,9 +201,13 @@ prediction quality.
 - A non-terminal batch that fills a gap and so applies an earlier-sent terminal event starts no
   background pass; that step's row is written by the next read, so its server-side latency can
   be up to one poll interval longer.
-- A sample that arrives inside a step's window after the last pass is flagged
-  (`evidence_changed`) only at the next pass, and a poller sees the flag only by re-reading from
-  `after=0`; see [live ingestion](live-ingestion.md#attribution).
+- A sample that arrives inside a step's window after its row was written is flagged
+  (`evidence_changed`) only by the pass after the run closes, and a poller sees the flag only by
+  re-reading from `after=0`; see [live ingestion](live-ingestion.md#attribution). Earlier passes
+  compute features only for steps lacking a row, which keeps a pass proportional to the steps it
+  attributes.
+- A served pair that raises on one step leaves that step `unavailable` (`prediction_failed`) with
+  its rules verdict; the other steps are scored in the same pass.
 
 ## Dashboard handoff (F03)
 

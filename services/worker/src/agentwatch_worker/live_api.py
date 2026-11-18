@@ -143,7 +143,9 @@ def change_run(run_id: UUID, change: RunChange, request: Request, background: Ba
         raise HTTPException(409, str(error)) from error
     if change.state in TERMINAL_STATES:
         # A closing run gets a final audit, which flags rows whose window gained late samples.
-        background.add_task(attribute_after_ingest, request.app.state.attribution, run_id)
+        background.add_task(
+            attribute_after_ingest, request.app.state.attribution, run_id, recheck_evidence=True
+        )
     return result
 
 
