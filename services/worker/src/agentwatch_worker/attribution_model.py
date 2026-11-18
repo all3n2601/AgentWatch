@@ -10,7 +10,6 @@ promoted. When a pair is not served, `status.reason` and `status.identity` say w
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from agentwatch_attribution.served_model import (
     ModelIdentity,
@@ -18,6 +17,7 @@ from agentwatch_attribution.served_model import (
     ServedModelError,
     load_served_model,
 )
+from agentwatch_sdk.attribution import ModelState
 
 CANDIDATES_DIR_VARIABLE = "AGENTWATCH_MODEL_CANDIDATES_DIR"
 CALIBRATION_DIR_VARIABLE = "AGENTWATCH_MODEL_CALIBRATION_DIR"
@@ -25,14 +25,6 @@ ALLOW_UNPROMOTED_VARIABLE = "AGENTWATCH_ALLOW_UNPROMOTED_MODEL"
 ALLOW_UNPROMOTED_VALUES = frozenset({"1", "true"})
 # The same code the loader uses for an artifact it cannot read.
 UNREADABLE = "artifact_unreadable"
-
-ModelState = Literal[
-    "not_configured",
-    "not_promoted_refused",
-    "ready_not_promoted",
-    "ready_promoted",
-    "load_failed",
-]
 
 
 @dataclass(frozen=True)

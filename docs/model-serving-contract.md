@@ -69,7 +69,7 @@ One row per completed agent step. The 14 features, in `preprocessing.json`'s `fe
 | `telemetry_sample_count` | count | Resource samples inside the window |
 | `telemetry_coverage` | 0–1, or missing | Samples received / samples expected at the measured interval |
 
-Encoding (`pipelines/model/src/agentwatch_model/features.py`, `encode` and `feature_matrix`):
+Encoding (`packages/attribution/src/agentwatch_attribution/inputs.py`, `encode` and `feature_matrix`):
 
 - A missing reading is passed as NaN and never imputed. LightGBM routes NaN down each split's
   learned default branch. A server must never turn a missing reading into 0: a measured zero

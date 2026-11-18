@@ -20,7 +20,7 @@ import psycopg
 import pytest
 from agentwatch_attribution.rules import Rules, load_rules
 from agentwatch_features import FEATURE_VERSION, FeatureRow
-from agentwatch_worker import attribution_store
+from agentwatch_worker import attribution_store, live_api
 from agentwatch_worker.attribution_model import ModelService
 from agentwatch_worker.attribution_store import AttributionStore
 from agentwatch_worker.live_features import live_feature_rows
@@ -62,6 +62,19 @@ IDENTITY_KEYS = {
     "class_order",
     "blocks_promotion",
 }
+
+
+@pytest.fixture(autouse=True)
+def no_background_attribution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests drive AttributionStore passes directly, so ingest schedules none.
+
+    test_attribution_api.py covers the passes the live API schedules.
+    """
+
+    def skip(store: AttributionStore, run_id: UUID) -> None:
+        return None
+
+    monkeypatch.setattr(live_api, "attribute_after_ingest", skip)
 
 
 @pytest.fixture

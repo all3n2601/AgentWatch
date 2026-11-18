@@ -178,7 +178,73 @@ states survive history; absent readings never become measured zero. B02 alignmen
 coverage are defined in [shared step features](step-features.md); `step-features-v1` reads only
 `cpu.psi.some.avg10.v1` and `cpu.cgroup.throttled_usec.v1`, so the GPU readings and the newer
 CPU counters need a new feature version. No predictions or host-saturation diagnosis are
-produced here.
+produced here; [Attribution](#attribution) serves step verdicts and model predictions.
+
+## Attribution
+
+B03 serves one attribution per terminal step of a live run
+([attribution OpenAPI](../api/openapi/attribution.json); `AttributionPage`, `AttributionItem`
+and `ModelStatusView` in `agentwatch_sdk.attribution` and `@agentwatch/sdk`). The prediction
+semantics follow the [model serving contract](model-serving-contract.md).
+
+- `GET /v1/live/runs/{UUID}/attributions?after=0&limit=50` returns `run_id`, the serving
+  `model` status, `attributions` oldest first and `next_cursor`. `after` is the largest
+  `sequence` already received (0 to `2**63 - 1`); `limit` is 1–256, default 50. `next_cursor`
+  is set only when more rows exist: drain with it, then keep polling with the largest
+  `sequence` received. Out-of-range values return `422`.
+- `GET /v1/live/attribution/model` returns the same `model` object on its own.
+
+An unknown UUID returns `404` (`Live run not found`); the service never substitutes another
+run. A run that exists but has no terminal step returns `200` with an empty `attributions`
+list. Both differ from model unavailability, which is reported in `model.state` beside the
+rows. The transport is polling, as for the run snapshot, not SSE.
+
+A row is attempted after the commit of a `POST .../records` batch that holds a terminal
+`step_event`, and after a `POST .../state` that closes the run. That pass runs after the
+response is sent: a database failure in it is logged (type and SQLSTATE only) and never
+fails or rolls back the acknowledged ingest. Every attributions read first attributes the
+run's terminal steps that lack a row for the current serving key, so a failed pass, or a
+terminal event applied later by a non-terminal batch that fills its gap, is reconciled by
+the next poll.
+
+Rows are append-only and never rewritten. Each carries the `serving_key` (rules version plus
+model state, reason and identity) that produced it. After the worker restarts with other
+rules or another model pair, the next read appends rows for the new key beside the old ones;
+a page can therefore hold rows of more than one key, and the current one is
+`model.serving_key`. `committed_at` (row written) and `step_terminal_received_at` (terminal
+event received) are both database-clock times. A step's feature row is computed once; when a
+later pass would compute a different one (a sample inside the step's window arriving late),
+the stored row keeps its record and `evidence_changed` becomes `true`. Passes run only after
+terminal batches, on run close and on reads, so a sample that arrives after the last pass is
+flagged only at the next one. Only rows of the current serving key are audited; rows of a
+superseded key keep the flag they had.
+
+| `model.state` | Meaning |
+| --- | --- |
+| `not_configured` | No model pair is configured; rows carry the rules verdict and model outcome `unavailable`. |
+| `load_failed` | The configured pair failed a load check, named in `reason`. |
+| `not_promoted_refused` | The pair loaded but its promotion gates did not pass and serving it is not allowed; its `identity` is reported, nothing is predicted. |
+| `ready_not_promoted` | That unpromoted pair is served because `AGENTWATCH_ALLOW_UNPROMOTED_MODEL` allows it; label its predictions not promoted. |
+| `ready_promoted` | A pair whose gates passed is served. |
+
+`identity` (versions, artifact hashes, temperature, abstention threshold, class order and
+`blocks_promotion`) is set whenever a pair was loaded, including a refused one;
+`not_promoted` is null when none was. Each `record` holds `step_state`, the stored
+`feature_row`, `missing_inputs`, `telemetry_status`, `rules` (`version` and a `verdict`; the
+rules never abstain and carry no confidence) and `model` (the serving labels, then
+`outcome`). The model scores only `completed` steps: `outcome` is `predicted` or `abstained`
+with calibrated probabilities, `confidence` and `abstention_threshold`; `not_scored_step_state`
+for failed and cancelled steps; `unavailable` with a `reason` when no pair is served or a
+prediction was not finite. An abstention is its own state with `predicted_class` null, never
+`none`. `excess_fraction_estimate` is the regressor's estimated share of the step's duration
+spent as excess waiting, not a measured queue delay; `queue_seconds` stays in the feature row.
+
+`missing_inputs` lists the model inputs passed as missing (NaN, never 0). Three are always
+missing live, because no live feature measures them: `workload_iterations`, `tests_per_step`
+and `worker_capacity`. Others are missing when their reading is, for example
+`telemetry_coverage` for a run registered without `sampling_interval_seconds`. Show them beside
+the prediction. A verdict or prediction attributes the resource a step likely waited on; it
+does not establish a cause, so never describe it causally.
 
 ## Producer and frontend handoff
 

@@ -1,4 +1,4 @@
-"""Export the live router OpenAPI and matching TypeScript data contracts."""
+"""Export the live, policy and attribution router OpenAPI and matching TypeScript contracts."""
 
 import json
 import re
@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi.openapi.utils import get_openapi
 
+from agentwatch_worker.attribution_api import router as attribution_router
 from agentwatch_worker.live_api import router
 from agentwatch_worker.policy_api import router as policy_router
 
@@ -26,6 +27,16 @@ def policy_openapi_document() -> dict:
         version="live-contracts-v1",
         routes=policy_router.routes,
         description="Versioned manual concurrency policy with append-only audit history.",
+    )
+
+
+def attribution_openapi_document() -> dict:
+    return get_openapi(
+        title="AgentWatch live attribution API",
+        version="live-contracts-v1",
+        routes=attribution_router.routes,
+        description="UUID-specific polling of stored step attributions and the serving model's "
+        "status. See docs/live-ingestion.md (Attribution) for cursor, state and wording rules.",
     )
 
 
@@ -75,17 +86,33 @@ def typescript_document(document: dict, doc_path: str = "docs/live-ingestion.md"
     return "\n".join(lines)
 
 
-def policy_typescript_document(policy_document: dict, live_document: dict) -> str:
-    """Declare only schemas absent from live.ts; `export type *` re-exports would collide."""
+def dependent_typescript_document(document: dict, live_document: dict, doc_path: str) -> str:
+    """Declare only schemas absent from live.ts; `export type *` re-exports would collide.
+
+    Shared schemas the declared ones reference are imported from ./live.
+    """
     shared = set(live_document["components"]["schemas"])
-    schemas = policy_document["components"]["schemas"]
+    schemas = document["components"]["schemas"]
     own = {name: schema for name, schema in schemas.items() if name not in shared}
-    referenced = set(re.findall(r"#/components/schemas/(\w+)", json.dumps(own)))
-    lines = typescript_document(
-        {"components": {"schemas": own}}, "docs/concurrency-policy.md"
-    ).split("\n", 3)
-    imports = f'import type {{ {", ".join(sorted(referenced & shared))} }} from "./live";'
+    referenced = sorted(set(re.findall(r"#/components/schemas/(\w+)", json.dumps(own))) & shared)
+    text = typescript_document({"components": {"schemas": own}}, doc_path)
+    if not referenced:
+        return text
+    lines = text.split("\n", 3)
+    imports = f'import type {{ {", ".join(referenced)} }} from "./live";'
     return "\n".join([*lines[:3], imports, "", lines[3]])
+
+
+def policy_typescript_document(policy_document: dict, live_document: dict) -> str:
+    return dependent_typescript_document(
+        policy_document, live_document, "docs/concurrency-policy.md"
+    )
+
+
+def attribution_typescript_document(attribution_document: dict, live_document: dict) -> str:
+    return dependent_typescript_document(
+        attribution_document, live_document, "docs/live-ingestion.md"
+    )
 
 
 def main() -> None:
@@ -97,6 +124,13 @@ def main() -> None:
     (root / "api/openapi/policy.json").write_text(json.dumps(policy_document, indent=2) + "\n")
     (root / "packages/sdk-typescript/src/policy.ts").write_text(
         policy_typescript_document(policy_document, document)
+    )
+    attribution_document = attribution_openapi_document()
+    (root / "api/openapi/attribution.json").write_text(
+        json.dumps(attribution_document, indent=2) + "\n"
+    )
+    (root / "packages/sdk-typescript/src/attribution.ts").write_text(
+        attribution_typescript_document(attribution_document, document)
     )
 
 

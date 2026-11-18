@@ -4,6 +4,7 @@ from uuid import UUID
 
 from agentwatch_sdk.live import (
     MAX_CURSOR,
+    TERMINAL_STATES,
     BatchResult,
     ChangeResult,
     CreateResult,
@@ -13,10 +14,12 @@ from agentwatch_sdk.live import (
     RunCreate,
     RunPage,
     RunSnapshot,
+    StepEvent,
 )
 from agentwatch_sdk.policy import RunPolicy
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 
+from agentwatch_worker.attribution_api import attribute_after_ingest
 from agentwatch_worker.live_limits import BODY_TIMEOUT_SECONDS, MAX_BODY_BYTES
 from agentwatch_worker.live_store import LiveStore, MissingRunError
 from agentwatch_worker.policy_store import PolicyStore
@@ -113,24 +116,41 @@ def get_run_policy(run_id: UUID, request: Request):
 @router.post(
     "/{run_id}/records", response_model=BatchResult, responses={**WRITE_ERRORS, **MISSING_RUN}
 )
-def ingest_records(run_id: UUID, batch: LiveBatch, request: Request):
+def ingest_records(run_id: UUID, batch: LiveBatch, request: Request, background: BackgroundTasks):
     try:
-        return store(request).ingest(run_id, batch)
+        result = store(request).ingest(run_id, batch)
     except MissingRunError as error:
         raise HTTPException(404, str(error)) from error
     except ConflictError as error:
         raise HTTPException(409, str(error)) from error
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+    if holds_terminal_step_event(batch):
+        # After the commit: an attribution failure must not fail the acknowledged ingest.
+        background.add_task(attribute_after_ingest, request.app.state.attribution, run_id)
+    return result
 
 
 @router.post(
     "/{run_id}/state", response_model=ChangeResult, responses={**WRITE_ERRORS, **MISSING_RUN}
 )
-def change_run(run_id: UUID, change: RunChange, request: Request):
+def change_run(run_id: UUID, change: RunChange, request: Request, background: BackgroundTasks):
     try:
-        return store(request).change(run_id, change)
+        result = store(request).change(run_id, change)
     except MissingRunError as error:
         raise HTTPException(404, str(error)) from error
     except ConflictError as error:
         raise HTTPException(409, str(error)) from error
+    if change.state in TERMINAL_STATES:
+        # A closing run gets a final audit, which flags rows whose window gained late samples.
+        background.add_task(attribute_after_ingest, request.app.state.attribution, run_id)
+    return result
+
+
+def holds_terminal_step_event(batch: LiveBatch) -> bool:
+    """A terminal event that arrives before its predecessors and is applied by a later
+    non-terminal batch triggers nothing here; the next attribution read reconciles it."""
+    return any(
+        isinstance(record, StepEvent) and record.state in TERMINAL_STATES
+        for record in batch.records
+    )
