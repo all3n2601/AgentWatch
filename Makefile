@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset sweep-truth optimization-schedule compare-optimization rule-baseline train-candidates calibrate score-held-out freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment agent-capacity-sweep agent-capacity-sweep-steps sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset sweep-truth optimization-schedule compare-optimization rule-baseline train-candidates calibrate score-held-out measure-attribution-latency freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment agent-capacity-sweep agent-capacity-sweep-steps sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -151,6 +151,9 @@ held-out-feature-availability: ## Compare the frozen classifier's feature availa
 	@test -n "$(TRUTH)" || { echo 'Set TRUTH to one or more sweep-truth-v2 folders: make held-out-feature-availability TRUTH="<truth dir> ..." SPLIT=<split file>' >&2; exit 2; }
 	@test -n "$(SPLIT)" || { echo 'Set SPLIT to the frozen split file: make held-out-feature-availability TRUTH="<truth dir> ..." SPLIT=<split file>' >&2; exit 2; }
 	uv run --package agentwatch-model python -m agentwatch_model.feature_availability --truth $(TRUTH) --sweep-root "$(SWEEP_ROOT)" --split "$(SPLIT)" --contract $(EVALUATION_CONTRACT) --frozen-schema $(VALIDATION_SCHEMA) --candidates $(CANDIDATES_OUTPUT) --calibrated $(CALIBRATION_OUTPUT) --output $(HELD_OUT_FEATURES_OUTPUT)
+
+measure-attribution-latency: ## Time step completion to visible attribution on a synthetic workload through a running worker (BASE_URL, STEPS, POLL_INTERVAL_SECONDS, STEP_DURATION_SECONDS, VISIBLE_TIMEOUT_SECONDS, OUTPUT optional)
+	uv run --package agentwatch-worker python -m agentwatch_worker.attribution_latency --base-url "$(or $(BASE_URL),http://127.0.0.1:8090)" --steps "$(or $(STEPS),50)" --poll-interval-seconds "$(or $(POLL_INTERVAL_SECONDS),2.0)" --step-duration-seconds "$(or $(STEP_DURATION_SECONDS),0.2)" --visible-timeout-seconds "$(or $(VISIBLE_TIMEOUT_SECONDS),30)" --output "$(or $(OUTPUT),.data/attribution-latency/report.json)"
 
 freeze-dataset-schema: ## Regenerate the frozen TFDV schema from the newest release; review the diff in a PR
 	release=$$($(LATEST_RELEASE)) && uv run --project pipelines/validation python -m agentwatch_validation freeze-schema --release "$$release" --schema $(VALIDATION_SCHEMA)
