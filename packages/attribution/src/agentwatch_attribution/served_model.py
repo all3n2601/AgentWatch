@@ -201,7 +201,9 @@ def load_booster(library: ModuleType, model: Artifact, classes: int) -> "lightgb
     output per class."""
     try:
         booster = library.Booster(model_str=model.content.decode("utf-8"))
-    except (UnicodeDecodeError, library.basic.LightGBMError) as error:
+    # ValueError covers text that is not UTF-8 and a malformed `pandas_categorical:` last line,
+    # which LightGBM parses with json.loads and so fails as a JSONDecodeError.
+    except (ValueError, library.basic.LightGBMError) as error:
         raise ServedModelError("model_load_failed", f"Cannot load {model.path}: {error}") from error
     if booster.num_feature() != len(MODEL_INPUTS):
         raise ServedModelError(

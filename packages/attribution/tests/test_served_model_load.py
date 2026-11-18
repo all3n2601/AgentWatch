@@ -274,6 +274,19 @@ def test_corrupt_model_text_is_model_load_failed(pair: Pair, key: str) -> None:
     assert MODEL_FILES[key] in str(error)
 
 
+@pytest.mark.parametrize("key", ["classifier", "regressor"])
+def test_malformed_pandas_categorical_line_is_model_load_failed(pair: Pair, key: str) -> None:
+    # LightGBM parses this last line with json.loads, so it fails as a JSONDecodeError.
+    path = pair[0] / MODEL_FILES[key]
+    lines = path.read_text().splitlines()
+    assert lines[-1].startswith("pandas_categorical:")
+    path.write_text("\n".join([*lines[:-1], "pandas_categorical:{bad"]) + "\n")
+    record_model_hash(pair, key)
+    error = refusal(pair)
+    assert error.check == "model_load_failed"
+    assert MODEL_FILES[key] in str(error)
+
+
 def test_classifier_with_the_wrong_class_count_is_model_load_failed(pair: Pair) -> None:
     rewrite(
         pair[0] / PREPROCESSING,
