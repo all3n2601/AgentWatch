@@ -116,6 +116,9 @@ def test_retry_of_a_registration_stored_without_the_interval_is_idempotent(clien
     assert retry.json() == {"run_id": str(run_id), "created": False}
     undeclared = registration | {"sampling_interval_seconds": None}
     assert client.post("/v1/live/runs", json=undeclared).json() == retry.json()
+    # Newly declaring an interval changes the registration, so the request_id conflicts.
+    declared = registration | {"sampling_interval_seconds": 0.25}
+    assert client.post("/v1/live/runs", json=declared).status_code == 409
     assert snapshot(client, str(run_id))["registration"].get("sampling_interval_seconds") is None
 
 

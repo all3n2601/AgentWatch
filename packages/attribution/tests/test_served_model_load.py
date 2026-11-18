@@ -90,6 +90,33 @@ def test_identity_is_fixed_at_load(pair: Pair) -> None:
     assert served.classifier.num_feature() == len(MODEL_INPUTS)
 
 
+@pytest.mark.parametrize("redirect", ["sibling", "parent"])
+def test_model_files_file_entries_are_never_followed(pair: Pair, redirect: str) -> None:
+    """The loader reads the fixed names from the candidates folder, whatever `file` says."""
+    candidates_dir, calibration_dir = pair
+    decoys: dict[str, Path] = {}
+    for key, name in MODEL_FILES.items():
+        folder = candidates_dir if redirect == "sibling" else candidates_dir.parent
+        decoy = folder / f"decoy-{name}"
+        # A readable file with other content: following `file` would change the hash.
+        decoy.write_text((candidates_dir / name).read_text() + "\n# decoy\n")
+        decoys[key] = decoy
+
+    def point_at_decoys(document: dict) -> None:
+        for key, decoy in decoys.items():
+            relative = decoy.name if redirect == "sibling" else f"../{decoy.name}"
+            document["model_files"][key]["file"] = relative
+
+    rewrite(candidates_dir / PREPROCESSING, point_at_decoys)
+
+    identity = load_served_model(candidates_dir, calibration_dir).identity
+    assert identity.classifier_sha256 == sha256_of(candidates_dir / MODEL_FILES["classifier"])
+    assert identity.regressor_sha256 == sha256_of(candidates_dir / MODEL_FILES["regressor"])
+    assert identity.classifier_sha256 != sha256_of(decoys["classifier"])
+    assert identity.regressor_sha256 != sha256_of(decoys["regressor"])
+    assert identity.preprocessing_sha256 == sha256_of(candidates_dir / PREPROCESSING)
+
+
 def test_unblocked_pair_reports_it(tmp_path: Path) -> None:
     served = load_served_model(*write_synthetic_pair(tmp_path, blocks_promotion=False))
     assert served.identity.blocks_promotion is False
