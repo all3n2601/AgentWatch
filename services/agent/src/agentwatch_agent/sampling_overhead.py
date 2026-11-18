@@ -11,8 +11,9 @@ relative to a long run.
 
 Reported per condition: median and 90th-percentile runner wall time and Ollama's reported
 total, prompt-evaluation and generation durations, the generated token counts (identical
-output is not guaranteed at temperature 0), and the sampler's own per-round cost. No
-pass/fail threshold is applied: the project has not declared an overhead budget. A failed or
+output is not guaranteed at temperature 0), and the sampler's own per-round cost. The
+measurement applies no pass/fail threshold; saved results are judged against the declared
+instrumentation overhead budget afterwards, by `agentwatch_data.overhead_verdict`. A failed or
 interrupted measurement still returns everything measured, with its status and error.
 """
 

@@ -9,8 +9,10 @@ events. Uninstrumented repetitions run the workload alone.
 
 Reported per condition: median and 90th-percentile workload wall time and the runner
 process's own CPU time (the workload runs in a child process, so runner CPU is the
-instrumentation plus orchestration). No pass/fail threshold is applied: the project has not
-declared an overhead budget, and this measurement does not choose one.
+instrumentation plus orchestration). The measurement applies no pass/fail threshold
+(`PROTOCOL["threshold"]` stays None because the protocol is part of the configuration digest).
+Saved results are judged against the declared instrumentation overhead budget afterwards, by
+`agentwatch_data.overhead_verdict`.
 """
 
 import hashlib
@@ -235,6 +237,8 @@ def measure_overhead(
         emit=delivery.emit,
     )
     walls: dict[str, list[float]] = {condition: [] for condition in CONDITIONS}
+    # Each measured repetition in run order, so analyses can pair adjacent repetitions.
+    measurements: list[dict] = []
     runner_cpu: dict[str, float] = dict.fromkeys(CONDITIONS, 0.0)
     sampling: list[dict] = []
     workspace: Workspace | None = None
@@ -287,6 +291,7 @@ def measure_overhead(
             wall = instrumented(index) if condition == "instrumented" else workload()
             runner_cpu[condition] += _process_cpu_seconds() - cpu_before
             walls[condition].append(wall)
+            measurements.append({"index": index, "condition": condition, "wall_seconds": wall})
         final_state = _close_completed(delivery, session)
     except BaseException as error:
         # Close the live run so it is not left running, then report how it was left.
@@ -339,6 +344,7 @@ def measure_overhead(
             "availability_counts": merged_availability(sampling),
         },
         "workload_wall_seconds": {"uninstrumented": baseline, "instrumented": measured},
+        "measurements": measurements,
         "median_difference_seconds": measured["median"] - baseline["median"],
         "median_difference_fraction": (measured["median"] - baseline["median"])
         / baseline["median"],
