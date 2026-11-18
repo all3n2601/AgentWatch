@@ -57,43 +57,54 @@ class AttributionStore:
         )
 
     def model_status(self) -> dict[str, object]:
-        """The serving model's status, as every attribution response reports it."""
+        """The serving model's status, as every attribution response reports it.
+
+        `serving_key` is the key this store writes: rows carrying another key were served by a
+        superseded rules version or model pair.
+        """
         identity = self.model.status.identity
         return {
             "state": self.model.status.state,
             "reason": self.model.status.reason,
             "identity": None if self.identity is None else dict(self.identity),
             "not_promoted": None if identity is None else identity.blocks_promotion,
+            "serving_key": self.serving_key,
         }
 
     def attribute_run(self, run_id: UUID) -> int:
         """Store a row for every terminal step lacking one for this serving key; return how many.
 
-        Feature rows are computed first: `live_feature_rows` takes the run lock on its own
-        connection, so it must not run while this store holds that lock elsewhere. The insert
-        transaction relies on the unique key, so concurrent passes leave one row per step.
-        Errors from building a record propagate and roll back the whole pass.
+        No transaction is open while a record is built. `live_feature_rows` takes and releases
+        the run lock on its own connection; a short read transaction then loads step states and
+        stored rows without locking the run. Each step's row is then inserted and committed in
+        its own transaction: the insert's foreign-key check holds FOR KEY SHARE on the run row,
+        which blocks `LiveStore.lock` (ingest, state changes, snapshots) only until that single
+        insert commits. The unique key makes concurrent passes leave one row per step. An error
+        from building a record propagates; rows committed for earlier steps stay.
         """
         interval = self.declared_interval_seconds(run_id)
         features = live_feature_rows(self.store, run_id, interval)
-        inserted = 0
         with self.live.connect() as conn:
             states = LiveStore.steps(conn, run_id)
             received = self.terminal_received_at(conn, run_id)
             stored = self.stored_sample_ids(conn, run_id)
-            for row in features.rows:
-                stored_samples = stored.get((row.step_id, row.feature_version))
-                if stored_samples is not None:
-                    if {str(s) for s in row.source_sample_ids} != stored_samples:
+        inserted = 0
+        for row in features.rows:
+            stored_samples = stored.get((row.step_id, row.feature_version))
+            if stored_samples is not None:
+                if {str(s) for s in row.source_sample_ids} != stored_samples:
+                    # The update leaves run_id unchanged, so no foreign-key lock on the run.
+                    with self.live.connect() as conn:
                         self.flag_evidence_changed(conn, run_id, row)
-                    continue
-                record = build_attribution(
-                    row,
-                    states[row.step_id].state,
-                    self.rules,
-                    self.model.status,
-                    self.model.served,
-                )
+                continue
+            record = build_attribution(
+                row,
+                states[row.step_id].state,
+                self.rules,
+                self.model.status,
+                self.model.served,
+            )
+            with self.live.connect() as conn:
                 inserted += self.insert(conn, run_id, row, record, received[row.step_id])
         return inserted
 

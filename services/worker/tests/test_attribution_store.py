@@ -8,6 +8,7 @@ import json
 import math
 import os
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -22,6 +23,7 @@ from agentwatch_features import FEATURE_VERSION, FeatureRow
 from agentwatch_worker import attribution_store
 from agentwatch_worker.attribution_model import ModelService
 from agentwatch_worker.attribution_store import AttributionStore
+from agentwatch_worker.live_features import live_feature_rows
 from agentwatch_worker.live_store import MissingRunError
 from agentwatch_worker.store import RunStore
 from fastapi.testclient import TestClient
@@ -32,6 +34,8 @@ from test_live_api import change, event, post, sample
 
 INTERVAL_SECONDS = 5e-9  # a 10 ns window holds two whole intervals
 MIGRATION = "0005_step_attributions.sql"
+# An ingest or poll that waited behind an attribution transaction would take the 3 s lock_timeout.
+PROMPT_SECONDS = 2.0
 EARLIER_MIGRATIONS = (
     "0001_run_history.sql",
     "0002_live_lifecycle.sql",
@@ -302,8 +306,14 @@ def test_new_serving_configuration_appends_a_new_row_and_keeps_the_old(
     assert set(served["model"]["identity"]) == IDENTITY_KEYS
     assert served["model"]["identity"]["training_version"] == TRAINING_VERSION
     assert isinstance(served["model"]["identity"]["class_order"], list)
-    # Every stored serving configuration stays readable: the page is not filtered to one key.
-    assert len(served["attributions"]) == 3
+    # Every stored serving configuration stays readable: the page is not filtered to one key,
+    # and names the current key so superseded rows are never mistaken for current ones.
+    for store, current_row in ((old, rows[0]), (new, rows[1]), (other_rules, rows[2])):
+        page = store.page(UUID(live), 0, 10)
+        assert page["model"]["serving_key"] == store.serving_key
+        assert len(page["attributions"]) == 3
+        current = [a for a in page["attributions"] if a["serving_key"] == store.serving_key]
+        assert [a["sequence"] for a in current] == [current_row["sequence"]]
 
 
 def test_page_cursor_and_limit(
@@ -322,6 +332,7 @@ def test_page_cursor_and_limit(
         "reason": None,
         "identity": None,
         "not_promoted": None,
+        "serving_key": attribution.serving_key,
     }
     assert [a["sequence"] for a in first["attributions"]] == sequences[:2]
     assert all(set(a) == ATTRIBUTION_KEYS for a in first["attributions"])
@@ -453,15 +464,15 @@ def test_failed_and_cancelled_steps_get_a_row_that_the_model_does_not_score(
     assert model["outcome"] == "not_scored_step_state"
 
 
-def test_build_failure_propagates_and_leaves_no_partial_row(
+def test_build_failure_propagates_and_keeps_the_rows_committed_before_it(
     client: TestClient,
     live: str,
     rules: Rules,
     unavailable: ModelService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    finish_step(client, live, "tool-1")
-    finish_step(client, live, "tool-2")
+    for step_id in ("tool-1", "tool-2", "tool-3"):
+        finish_step(client, live, step_id)
     real_build = attribution_store.build_attribution
 
     def fail_on_second_step(row: FeatureRow, *args: object, **kwargs: object) -> dict:
@@ -474,10 +485,88 @@ def test_build_failure_propagates_and_leaves_no_partial_row(
 
     with pytest.raises(RuntimeError, match="synthetic serving failure"):
         attribution.attribute_run(UUID(live))
-    assert stored(client, live) == []
+    # Steps are processed in step_id order; each committed alone, so tool-1 stays.
+    assert [row["step_id"] for row in stored(client, live)] == ["tool-1"]
+    assert attribution.pending_terminal_steps(UUID(live)) == ["tool-2", "tool-3"]
 
     monkeypatch.setattr(attribution_store, "build_attribution", real_build)
     assert attribution.attribute_run(UUID(live)) == 2
+    assert [row["step_id"] for row in stored(client, live)] == ["tool-1", "tool-2", "tool-3"]
+
+
+def test_ingest_and_snapshot_proceed_while_a_pass_scores_between_inserts(
+    client: TestClient,
+    live: str,
+    rules: Rules,
+    unavailable: ModelService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finish_step(client, live, "tool-1")
+    finish_step(client, live, "tool-2")
+    real_build = attribution_store.build_attribution
+    scoring_second, release = threading.Event(), threading.Event()
+
+    def pause_on_second_step(row: FeatureRow, *args: object, **kwargs: object) -> dict:
+        if row.step_id == "tool-2":
+            scoring_second.set()
+            assert release.wait(timeout=10)
+        return real_build(row, *args, **kwargs)
+
+    monkeypatch.setattr(attribution_store, "build_attribution", pause_on_second_step)
+    attribution = attribution_for(client, rules, unavailable)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(attribution.attribute_run, UUID(live))
+        try:
+            assert scoring_second.wait(timeout=5)
+            started = time.monotonic()
+            ingested = post(client, live, sample(live, tick_ns=12, value=7))
+            polled = client.get(f"/v1/live/runs/{live}")
+            elapsed_seconds = time.monotonic() - started
+            # tool-1's insert committed before tool-2 was scored.
+            committed = [row["step_id"] for row in stored(client, live)]
+        finally:
+            release.set()
+        assert pending.result(timeout=10) == 2
+
+    assert ingested.status_code == 200
+    assert polled.status_code == 200
+    assert committed == ["tool-1"]
+    # Well under the 3 s lock_timeout an ingest would hit behind an open insert transaction.
+    assert elapsed_seconds < PROMPT_SECONDS
+
+
+def test_evidence_flag_takes_no_lock_on_the_run_row_but_an_insert_does(
+    client: TestClient, live: str, rules: Rules, unavailable: ModelService
+) -> None:
+    finish_step(client, live, "tool-1")
+    finish_step(client, live, "tool-2")
+    attribution = attribution_for(client, rules, unavailable)
+    store = store_of(client)
+    tool_1, tool_2 = live_feature_rows(store, UUID(live), None).rows
+    record = attribution_store.build_attribution(
+        tool_1, "completed", rules, unavailable.status, unavailable.served
+    )
+
+    def run_row_is_free() -> bool:
+        with store.connect() as other:
+            other.execute("SET LOCAL lock_timeout = '100ms'")
+            try:
+                other.execute("SELECT 1 FROM live_runs WHERE run_id=%s FOR UPDATE", (live,))
+            except psycopg.errors.LockNotAvailable:
+                return False
+            return True
+
+    with store.connect() as conn:
+        received = attribution.terminal_received_at(conn, UUID(live))
+        assert attribution.insert(conn, UUID(live), tool_1, record, received["tool-1"]) == 1
+        # The foreign-key check holds FOR KEY SHARE on the run row until this commits.
+        assert run_row_is_free() is False
+    with store.connect() as conn:
+        attribution.flag_evidence_changed(conn, UUID(live), tool_1)
+        attribution.flag_evidence_changed(conn, UUID(live), tool_2)  # no row: updates nothing
+        assert run_row_is_free() is True
+    assert [row["evidence_changed"] for row in stored(client, live)] == [True]
 
 
 @pytest.fixture
