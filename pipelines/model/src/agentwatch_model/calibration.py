@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from agentwatch_attribution.calibration import PROBABILITY_FLOOR, scale
 from agentwatch_data.extract import canonical_sha256
 
 from agentwatch_model.contract import ABSTENTION_SCOPES
@@ -21,8 +22,6 @@ from agentwatch_model.metrics import f1_score, is_number, macro_f1
 DEFAULT_CALIBRATION = Path(__file__).with_name("calibration.toml")
 VERSION = "calibration-v1"
 HASH_DIGITS = 8  # matches the rules, training and contract identifiers
-# Log of a zero probability would be minus infinity; this floor keeps scaling finite.
-PROBABILITY_FLOOR = 1e-12
 GOLDEN_RATIO = (math.sqrt(5) - 1) / 2
 
 
@@ -64,13 +63,6 @@ def load_calibration_config(path: Path = DEFAULT_CALIBRATION) -> CalibrationConf
         tolerance=positive_number(parsed, "tolerance"),
         min_validation_steps=steps,
     )
-
-
-def scale(probabilities: np.ndarray, temperature: float) -> np.ndarray:
-    """Class probabilities after dividing their log scores by the temperature."""
-    logits = np.log(np.clip(probabilities, PROBABILITY_FLOOR, 1.0)) / temperature
-    shifted = np.exp(logits - logits.max(axis=1, keepdims=True))
-    return shifted / shifted.sum(axis=1, keepdims=True)
 
 
 def log_loss(probabilities: np.ndarray, targets: np.ndarray, temperature: float) -> float:

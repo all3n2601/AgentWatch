@@ -1,6 +1,7 @@
 import math
 
 import pytest
+from agentwatch_attribution.inputs import MODEL_INPUTS
 from agentwatch_data.schema import feature_columns
 from agentwatch_model.features import FEATURES, FeatureError, feature_matrix, preprocessing_contract
 from training_fixtures import featured_row
@@ -9,6 +10,10 @@ from training_fixtures import featured_row
 def test_features_are_exactly_the_schema_feature_columns_in_order():
     assert FEATURES == tuple(feature_columns())
     assert "label_resource" not in FEATURES and "condition" not in FEATURES
+
+
+def test_model_inputs_equal_the_dataset_schema_feature_columns():
+    assert MODEL_INPUTS == tuple(feature_columns())
 
 
 def test_missing_readings_stay_nan_and_booleans_become_numbers():
