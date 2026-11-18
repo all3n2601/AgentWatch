@@ -9,17 +9,26 @@ raises ServedModelError naming the failed check, the file and the field.
 Each file is read once, at load: the hashes are of the bytes that are then parsed or loaded, so
 a file replaced after its check is never served under the checked identity, and the identity
 cannot change while the pair is served.
+
+`ServedModel.predict` follows the contract's "Outputs": raw class probabilities from every tree
+of the classifier, temperature-scaled with the calibration's temperature; confidence is the top
+calibrated probability; the prediction abstains, and names no class, when confidence is below
+the abstention threshold; the regressor's excess fraction is clipped to `excess_fraction_clip`.
 """
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
 
+import numpy as np
+
+from agentwatch_attribution.calibration import scale
 from agentwatch_attribution.classes import is_number
-from agentwatch_attribution.inputs import MODEL_INPUTS
+from agentwatch_attribution.inputs import MODEL_INPUTS, feature_matrix
 
 if TYPE_CHECKING:
     import lightgbm
@@ -69,6 +78,23 @@ class ModelIdentity:
     blocks_promotion: bool
 
 
+@dataclass(frozen=True)
+class ModelPrediction:
+    """One step's model output. Both probability maps are keyed in class_order.
+
+    `predicted_class` is None when the prediction abstains: an abstention is uncertain, never
+    `none`. `excess_fraction` is the regressor's estimated share of the step's duration spent as
+    excess waiting, not a measured queue delay.
+    """
+
+    raw_probabilities: dict[str, float]
+    calibrated_probabilities: dict[str, float]
+    confidence: float
+    abstained: bool
+    predicted_class: str | None
+    excess_fraction: float
+
+
 @dataclass(frozen=True, eq=False)
 class ServedModel:
     """A checked pair: both boosters, their identity and the excess-fraction clip range."""
@@ -78,6 +104,42 @@ class ServedModel:
     regressor: "lightgbm.Booster"
     excess_fraction_low: float
     excess_fraction_high: float
+
+    def predict(self, rows: Sequence[Mapping[str, object]]) -> list[ModelPrediction]:
+        """One prediction per row; a missing reading (None) reaches the models as NaN, and a
+        row lacking a MODEL_INPUTS column raises FeatureError."""
+        if not rows:
+            return []
+        features = feature_matrix(rows)
+        # No num_iteration: a booster loaded from text has no best iteration, so every tree is
+        # used, and M03 saved only the trees up to its best iteration.
+        raw = np.asarray(self.classifier.predict(features), dtype=np.float64)
+        calibrated = scale(raw, self.identity.temperature)
+        excess = np.clip(
+            np.asarray(self.regressor.predict(features), dtype=np.float64),
+            self.excess_fraction_low,
+            self.excess_fraction_high,
+        )
+        classes = self.identity.class_order
+        predictions = []
+        for raw_row, calibrated_row, excess_fraction in zip(raw, calibrated, excess, strict=True):
+            top = int(calibrated_row.argmax())
+            confidence = float(calibrated_row[top])
+            # A confidence equal to the threshold does not abstain (abstain_when: "below").
+            abstained = confidence < self.identity.abstention_threshold
+            predictions.append(
+                ModelPrediction(
+                    raw_probabilities=dict(zip(classes, map(float, raw_row), strict=True)),
+                    calibrated_probabilities=dict(
+                        zip(classes, map(float, calibrated_row), strict=True)
+                    ),
+                    confidence=confidence,
+                    abstained=abstained,
+                    predicted_class=None if abstained else classes[top],
+                    excess_fraction=float(excess_fraction),
+                )
+            )
+        return predictions
 
 
 @dataclass(frozen=True)
