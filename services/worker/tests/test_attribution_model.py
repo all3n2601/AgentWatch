@@ -1,14 +1,22 @@
+import logging
 import sys
 from pathlib import Path
 
 import pytest
 from agentwatch_attribution.served_model import CHECK_CODES, ServedModel
 from agentwatch_worker.attribution_model import ModelService
-from pair_fixtures import CALIBRATION, MODEL_FILES, TRAINING_VERSION, write_synthetic_pair
+from pair_fixtures import (
+    CALIBRATION,
+    CALIBRATION_VERSION,
+    MODEL_FILES,
+    TRAINING_VERSION,
+    write_synthetic_pair,
+)
 
 CANDIDATES = "AGENTWATCH_MODEL_CANDIDATES_DIR"
 CALIBRATION_DIR = "AGENTWATCH_MODEL_CALIBRATION_DIR"
 ALLOW_UNPROMOTED = "AGENTWATCH_ALLOW_UNPROMOTED_MODEL"
+LOGGER = "agentwatch_worker.attribution_model"
 
 
 def environment(pair: tuple[Path, Path], **extra: str) -> dict[str, str]:
@@ -129,3 +137,67 @@ def test_flag_values_other_than_one_or_true_do_not_enable(
     service = ModelService.from_environ(environment(blocked_pair, **{ALLOW_UNPROMOTED: value}))
     assert service.status.state == "not_promoted_refused"
     assert service.served is None
+
+
+def test_load_failure_logs_the_loader_message_naming_the_file(
+    promoted_pair: tuple[Path, Path], caplog: pytest.LogCaptureFixture
+) -> None:
+    candidates, _ = promoted_pair
+    classifier = candidates / MODEL_FILES["classifier"]
+    classifier.write_text(classifier.read_text() + "\n# tampered\n")
+    caplog.set_level(logging.INFO, logger=LOGGER)
+
+    service = ModelService.from_environ(environment(promoted_pair))
+
+    # The status keeps the check code only; the operator's log has the whole message.
+    assert service.status.reason == "hash_mismatch"
+    [record] = [r for r in caplog.records if r.name == LOGGER]
+    assert record.levelno == logging.WARNING
+    assert "load_failed" in record.getMessage()
+    assert "hash_mismatch" in record.getMessage()
+    assert str(classifier) in record.getMessage()
+
+
+def test_one_directory_only_logs_which_variable_is_missing(
+    promoted_pair: tuple[Path, Path], caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER)
+
+    ModelService.from_environ({CANDIDATES: environment(promoted_pair)[CANDIDATES]})
+
+    [record] = [r for r in caplog.records if r.name == LOGGER]
+    assert record.levelno == logging.WARNING
+    assert "artifact_unreadable" in record.getMessage()
+    assert CALIBRATION_DIR in record.getMessage()
+
+
+def test_ready_not_promoted_logs_the_served_identity(
+    blocked_pair: tuple[Path, Path], caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER)
+
+    ModelService.from_environ(environment(blocked_pair, **{ALLOW_UNPROMOTED: "1"}))
+
+    [record] = [r for r in caplog.records if r.name == LOGGER]
+    assert record.levelno == logging.INFO
+    message = record.getMessage()
+    assert "ready_not_promoted" in message
+    assert TRAINING_VERSION in message
+    assert CALIBRATION_VERSION in message
+    assert "not_promoted=True" in message
+
+
+def test_refused_unpromoted_pair_logs_a_warning_with_its_identity(
+    blocked_pair: tuple[Path, Path], caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger=LOGGER)
+
+    service = ModelService.from_environ(environment(blocked_pair))
+
+    assert service.status.reason is None
+    [record] = [r for r in caplog.records if r.name == LOGGER]
+    assert record.levelno == logging.WARNING
+    message = record.getMessage()
+    assert "not_promoted_refused" in message
+    assert TRAINING_VERSION in message
+    assert ALLOW_UNPROMOTED in message
