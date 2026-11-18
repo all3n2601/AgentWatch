@@ -10,7 +10,7 @@ import os
 import threading
 import time
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
@@ -580,6 +580,91 @@ def test_evidence_flag_takes_no_lock_on_the_run_row_but_an_insert_does(
         attribution.flag_evidence_changed(conn, UUID(live), tool_2)  # no row: updates nothing
         assert run_row_is_free() is True
     assert [row["evidence_changed"] for row in stored(client, live)] == [True]
+
+
+def waits_for_an_advisory_lock(store: RunStore, pid: int, pending: Future[int]) -> bool:
+    """True once backend `pid` waits for an advisory lock; False if `pending` finishes first."""
+    deadline = time.monotonic() + PROMPT_SECONDS
+    while time.monotonic() < deadline:
+        with store.connect() as conn:
+            if conn.execute(
+                "SELECT 1 FROM pg_locks WHERE pid=%s AND locktype='advisory' AND NOT granted",
+                (pid,),
+            ).fetchone():
+                return True
+        # Doubles as the poll delay: returns at once if the insert already finished.
+        if wait([pending], timeout=0.01).done:
+            return False
+    return False
+
+
+def test_inserts_for_one_run_commit_in_sequence_order(
+    client: TestClient, live: str, rules: Rules, unavailable: ModelService
+) -> None:
+    """A poller that advanced past a committed sequence must never miss an earlier one."""
+    finish_step(client, live, "tool-1")
+    finish_step(client, live, "tool-2")
+    attribution = attribution_for(client, rules, unavailable)
+    store = store_of(client)
+    tool_1, tool_2 = live_feature_rows(store, UUID(live), None).rows
+    records = [
+        attribution_store.build_attribution(
+            row, "completed", rules, unavailable.status, unavailable.served
+        )
+        for row in (tool_1, tool_2)
+    ]
+    with store.connect() as conn:
+        received = attribution.terminal_received_at(conn, UUID(live))
+    second = store.connect()
+    second_pid = second.info.backend_pid
+
+    def insert_second() -> int:
+        with second:
+            second.execute("SET LOCAL lock_timeout = '5s'")
+            return attribution.insert(second, UUID(live), tool_2, records[1], received["tool-2"])
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with store.connect() as first:
+            assert attribution.insert(first, UUID(live), tool_1, records[0], received["tool-1"])
+            pending = pool.submit(insert_second)
+            # tool-1's sequence is taken but not committed: tool-2 must not take a later one
+            # and commit first.
+            blocked = waits_for_an_advisory_lock(store, second_pid, pending)
+            finished_before_commit = pending.done()
+        assert pending.result(timeout=5) == 1
+
+    assert blocked is True
+    assert finished_before_commit is False
+    rows = stored(client, live)
+    assert [row["step_id"] for row in rows] == ["tool-1", "tool-2"]
+    assert rows[0]["committed_at"] <= rows[1]["committed_at"]
+
+
+def test_inserts_for_different_runs_do_not_wait_for_each_other(
+    client: TestClient, live: str, registration: dict, rules: Rules, unavailable: ModelService
+) -> None:
+    other = new_run(client, registration)
+    finish_step(client, live)
+    finish_step(client, other)
+    attribution = attribution_for(client, rules, unavailable)
+    store = store_of(client)
+    [live_row] = live_feature_rows(store, UUID(live), None).rows
+    [other_row] = live_feature_rows(store, UUID(other), None).rows
+
+    def insert(conn: psycopg.Connection, run_id: str, row: FeatureRow) -> int:
+        record = attribution_store.build_attribution(
+            row, "completed", rules, unavailable.status, unavailable.served
+        )
+        received = attribution.terminal_received_at(conn, UUID(run_id))[row.step_id]
+        return attribution.insert(conn, UUID(run_id), row, record, received)
+
+    with store.connect() as first:
+        assert insert(first, live, live_row) == 1
+        with store.connect() as second:
+            # A wait on the first run's uncommitted insert would raise LockNotAvailable.
+            second.execute("SET LOCAL lock_timeout = '500ms'")
+            assert insert(second, other, other_row) == 1
+    assert len(stored(client, live)) == len(stored(client, other)) == 1
 
 
 @pytest.fixture

@@ -192,7 +192,8 @@ states and the latency measurement are in [attribution serving](attribution-serv
   `model` status, `attributions` oldest first and `next_cursor`. `after` is the largest
   `sequence` already received (0 to `2**63 - 1`); `limit` is 1–256, default 50. `next_cursor`
   is set only when more rows exist: drain with it, then keep polling with the largest
-  `sequence` received. Out-of-range values return `422`.
+  `sequence` received. Out-of-range values return `422`. A run's rows commit in `sequence`
+  order (its inserts are serialized), so that cursor never skips a row.
 - `GET /v1/live/attribution/model` returns the same `model` object on its own.
 
 An unknown UUID returns `404` (`Live run not found`); the service never substitutes another

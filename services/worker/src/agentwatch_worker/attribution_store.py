@@ -30,6 +30,9 @@ from agentwatch_worker.live_store import LiveStore, MissingRunError
 from agentwatch_worker.store import RunStore
 
 STEP_TERMINAL_STATES = sorted(TERMINAL_STATES)
+# First key of the two-integer advisory lock serializing one run's inserts. The two-integer key
+# space is separate from the single-bigint one the migration and run-creation locks use.
+ATTRIBUTION_INSERT_LOCK_NAMESPACE = 730503
 # Records reach the dashboard as strict JSON; a non-finite number must fail, not be stored.
 strict_dumps = partial(json.dumps, allow_nan=False)
 
@@ -79,7 +82,8 @@ class AttributionStore:
         stored rows without locking the run. Each step's row is then inserted and committed in
         its own transaction: the insert's foreign-key check holds FOR KEY SHARE on the run row,
         which blocks `LiveStore.lock` (ingest, state changes, snapshots) only until that single
-        insert commits. The unique key makes concurrent passes leave one row per step. An error
+        insert commits. Concurrent passes on one run insert one at a time, so their rows commit in
+        sequence order (see `insert`). The unique key makes them leave one row per step. An error
         from building a record propagates; rows committed for earlier steps stay.
         """
         interval = self.declared_interval_seconds(run_id)
@@ -205,7 +209,21 @@ class AttributionStore:
         record: dict[str, object],
         step_terminal_received_at: datetime,
     ) -> int:
-        """1 if this pass wrote the row, 0 if a concurrent pass already had."""
+        """1 if this pass wrote the row, 0 if a concurrent pass already had.
+
+        Invariant: a run's rows commit in `sequence` order, so a poller that has read sequence n
+        never later finds a smaller one. `sequence` is assigned at INSERT but visible only at
+        COMMIT, so without it two passes on one run could commit out of order and a poller that
+        advanced past the later row would skip the earlier one for good. The transaction first
+        takes an advisory lock keyed on the run id, held until it commits, so the next insert
+        for the run draws its sequence only after this one is visible. It never locks the
+        `live_runs` row: ingest, state changes and polls are not delayed by it. Other runs use
+        other keys; a hash collision only serializes two runs' inserts.
+        """
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(%s, hashtext(%s))",
+            (ATTRIBUTION_INSERT_LOCK_NAMESPACE, str(run_id)),
+        )
         inserted = conn.execute(
             "INSERT INTO live_step_attributions(run_id,step_id,feature_version,serving_key,"
             "record,step_terminal_received_at) VALUES (%s,%s,%s,%s,%s,%s) "
