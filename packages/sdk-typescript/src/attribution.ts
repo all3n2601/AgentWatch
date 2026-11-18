@@ -7,7 +7,7 @@ export interface AttributionItem {
   committed_at: string;
   step_terminal_received_at: string;
   evidence_changed: boolean;
-  record: Record<string, unknown>;
+  record: AttributionRecord;
 }
 
 export interface AttributionPage {
@@ -15,6 +15,18 @@ export interface AttributionPage {
   model: ModelStatusView;
   attributions: Array<AttributionItem>;
   next_cursor: number | null;
+}
+
+export interface AttributionRecord {
+  run_id: string;
+  step_id: string;
+  step_state: "completed" | "failed" | "cancelled";
+  feature_version: string;
+  feature_row: Record<string, unknown>;
+  missing_inputs: Array<string>;
+  telemetry_status: "present" | "empty" | "missing" | "no_overlap" | "unaligned";
+  rules: RulesVerdictView;
+  model: ModelPredictionView;
 }
 
 export interface ModelIdentityView {
@@ -30,10 +42,30 @@ export interface ModelIdentityView {
   blocks_promotion: boolean;
 }
 
+export interface ModelPredictionView {
+  state: "not_configured" | "not_promoted_refused" | "ready_not_promoted" | "ready_promoted" | "load_failed";
+  reason: string | null;
+  training_version: string | null;
+  calibration_version: string | null;
+  not_promoted: boolean | null;
+  outcome: "predicted" | "abstained" | "not_scored_step_state" | "unavailable";
+  predicted_class: string | null;
+  confidence: number | null;
+  abstention_threshold: number | null;
+  abstained: boolean | null;
+  calibrated_probabilities: Record<string, number> | null;
+  excess_fraction_estimate: number | null;
+}
+
 export interface ModelStatusView {
   state: "not_configured" | "not_promoted_refused" | "ready_not_promoted" | "ready_promoted" | "load_failed";
   reason: string | null;
   identity: ModelIdentityView | null;
   not_promoted: boolean | null;
   serving_key: string;
+}
+
+export interface RulesVerdictView {
+  version: string;
+  verdict: string;
 }

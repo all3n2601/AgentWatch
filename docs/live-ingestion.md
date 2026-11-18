@@ -233,7 +233,9 @@ the current serving key are audited; rows of a superseded key keep the flag they
 
 `identity` (versions, artifact hashes, temperature, abstention threshold, class order and
 `blocks_promotion`) is set whenever a pair was loaded, including a refused one;
-`not_promoted` is null when none was. Each `record` holds `step_state`, the stored
+`not_promoted` is null when none was. Each `record` (typed as `AttributionRecord`, with
+`RulesVerdictView` and `ModelPredictionView`; FastAPI validates every returned row against it)
+holds `run_id`, `step_id`, `step_state`, `feature_version`, the stored
 `feature_row`, `missing_inputs`, `telemetry_status`, `rules` (`version` and a `verdict`; the
 rules never abstain and carry no confidence) and `model` (the serving labels, then
 `outcome`). The model scores only `completed` steps: `outcome` is `predicted` or `abstained`
@@ -242,6 +244,15 @@ for failed and cancelled steps; `unavailable` with a `reason` when no pair is se
 prediction was not finite. An abstention is its own state with `predicted_class` null, never
 `none`. `excess_fraction_estimate` is the regressor's estimated share of the step's duration
 spent as excess waiting, not a measured queue delay; `queue_seconds` stays in the feature row.
+`feature_row` is the `step-features-v1` FeatureRow ([shared step features](step-features.md));
+the contract leaves it an untyped object.
+
+The two `reason` fields differ. A status view's `reason` (`GET .../attribution/model` and a
+page's `model`) is the load check code for `load_failed` and null in every other state,
+`not_configured` and `not_promoted_refused` included. A record's `model.reason` is never null
+when `outcome` is `unavailable`: it equals the state for `not_configured` and
+`not_promoted_refused`, the same check code for `load_failed`, and `non_finite_prediction` when
+a served pair's prediction was not finite. It is null for the other outcomes.
 
 `missing_inputs` lists the model inputs passed as missing (NaN, never 0). Three are always
 missing live, because no live feature measures them: `workload_iterations`, `tests_per_step`

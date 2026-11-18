@@ -7,6 +7,7 @@ import json
 import math
 from dataclasses import replace
 from pathlib import Path
+from typing import get_args
 from uuid import UUID
 
 import pytest
@@ -14,7 +15,14 @@ from agentwatch_attribution.inputs import MODEL_INPUTS
 from agentwatch_attribution.rules import Rules, load_rules
 from agentwatch_attribution.served_model import ModelPrediction, ServedModel
 from agentwatch_features import FEATURE_NAMES, FeatureRow
-from agentwatch_worker.attribution import NOT_LIVE_INPUTS, build_attribution, model_input_row
+from agentwatch_features.live import TelemetryStatus as FeatureTelemetryStatus
+from agentwatch_sdk.attribution import AttributionRecord, ModelOutcome, StepState, TelemetryStatus
+from agentwatch_worker.attribution import (
+    NOT_LIVE_INPUTS,
+    STEP_STATES,
+    build_attribution,
+    model_input_row,
+)
 from agentwatch_worker.attribution_model import ModelService, ModelStatus
 from pair_fixtures import CALIBRATION_VERSION, TRAINING_VERSION, write_synthetic_pair
 
@@ -433,3 +441,52 @@ def test_non_finite_prediction_is_unavailable(
     assert model["state"] == "ready_not_promoted"
     assert model["training_version"] == TRAINING_VERSION
     assert all(model[key] is None for key in PREDICTION_KEYS)
+
+
+def test_a_record_of_every_outcome_matches_the_published_record_type(
+    rules: Rules, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The typed contract mirrors exactly what is built: nothing dropped, nothing coerced."""
+    unpromoted = service_for(tmp_path / "unpromoted")
+    abstaining = service_for(tmp_path / "abstaining", abstention_threshold=1.0)
+    refused = service_for(tmp_path / "refused", allow_unpromoted=False)
+    load_failed = ModelService(ModelStatus("load_failed", reason="hash_mismatch"))
+    row = feature_row(pressure=HIGH_PRESSURE_AVG10)
+    records = {
+        "predicted": record_for(row, "completed", rules, unpromoted),
+        "abstained": record_for(row, "completed", rules, abstaining),
+        "not_scored_step_state": record_for(row, "failed", rules, unpromoted),
+        "never_executed": record_for(never_executed_row(), "cancelled", rules, unpromoted),
+        "not_configured": record_for(row, "completed", rules, ModelService.from_environ({})),
+        "not_promoted_refused": record_for(row, "completed", rules, refused),
+        "load_failed": record_for(row, "completed", rules, load_failed),
+    }
+    real_predict = ServedModel.predict
+
+    def non_finite(self: ServedModel, rows: list[dict[str, object]]) -> list[ModelPrediction]:
+        [prediction] = real_predict(self, rows)
+        return [replace(prediction, confidence=math.nan)]
+
+    monkeypatch.setattr(ServedModel, "predict", non_finite)
+    records["non_finite_prediction"] = record_for(row, "completed", rules, unpromoted)
+
+    outcomes = {name: model_of(record)["outcome"] for name, record in records.items()}
+    assert set(outcomes.values()) == OUTCOMES
+    unavailable = {"not_configured", "not_promoted_refused", "load_failed", "non_finite_prediction"}
+    assert {name: model_of(records[name])["reason"] for name in unavailable} == {
+        "not_configured": "not_configured",
+        "not_promoted_refused": "not_promoted_refused",
+        "load_failed": "hash_mismatch",
+        "non_finite_prediction": "non_finite_prediction",
+    }
+    for name, record in records.items():
+        typed = AttributionRecord.model_validate(record)
+        assert typed.model_dump(mode="json") == record, name
+        # The stored form is JSON: it validates the same way after a round trip.
+        assert AttributionRecord.model_validate_json(json.dumps(record)) == typed, name
+
+
+def test_record_literals_match_the_values_the_builder_and_features_use() -> None:
+    assert set(get_args(StepState)) == STEP_STATES
+    assert set(get_args(ModelOutcome)) == OUTCOMES
+    assert get_args(TelemetryStatus) == get_args(FeatureTelemetryStatus)

@@ -429,8 +429,8 @@ class LatencyRun:
             self.serving_keys_seen.add(page.model.serving_key)
             for item in page.attributions:
                 self.cursor = max(self.cursor, item.sequence)
-                item_step = item.record.get("step_id")
-                if isinstance(item_step, str) and item_step not in self.seen:
+                item_step = item.record.step_id
+                if item_step not in self.seen:
                     self.seen[item_step] = item
                     if item_step == step_id and visible_at is None:
                         visible_at = received
@@ -450,12 +450,6 @@ class LatencyRun:
 
 def server_side_seconds(item: AttributionItem) -> float:
     return (item.committed_at - item.step_terminal_received_at).total_seconds()
-
-
-def model_outcome(item: AttributionItem) -> str:
-    model = item.record.get("model")
-    outcome = model.get("outcome") if isinstance(model, dict) else None
-    return outcome if isinstance(outcome, str) else "missing"
 
 
 def measure(
@@ -515,7 +509,9 @@ def measure(
         [s.server_side_seconds for s in per_step if s.server_side_seconds is not None]
     )
     outcomes = Counter(
-        model_outcome(run.seen[s.step_id]) for s in per_step if s.client_latency_seconds is not None
+        run.seen[s.step_id].record.model.outcome
+        for s in per_step
+        if s.client_latency_seconds is not None
     )
     return {
         "report_version": REPORT_VERSION,

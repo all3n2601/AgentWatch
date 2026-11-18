@@ -143,8 +143,8 @@ def test_terminal_event_makes_its_attribution_visible_on_the_next_poll(
     assert item.serving_key == unconfigured.serving_key == page.model.serving_key
     assert item.evidence_changed is False
     assert item.committed_at >= item.step_terminal_received_at
-    assert item.record["step_id"] == "tool-1"
-    assert item.record["run_id"] == live
+    assert item.record.step_id == "tool-1"
+    assert item.record.run_id == UUID(live)
     assert page.model.state == "not_configured"
     assert page.next_cursor is None
 
@@ -156,17 +156,17 @@ def test_poll_with_cursor_returns_only_new_rows(
         finish_step(client, live, step_id)
 
     first = poll(client, live, limit=2)
-    assert [a.record["step_id"] for a in first.attributions] == ["tool-1", "tool-2"]
+    assert [a.record.step_id for a in first.attributions] == ["tool-1", "tool-2"]
     assert first.next_cursor == first.attributions[-1].sequence
     second = poll(client, live, after=first.next_cursor, limit=2)
-    assert [a.record["step_id"] for a in second.attributions] == ["tool-3"]
+    assert [a.record.step_id for a in second.attributions] == ["tool-3"]
     assert second.next_cursor is None
     last_seen = second.attributions[-1].sequence
 
     assert poll(client, live, after=last_seen).attributions == []
     finish_step(client, live, "tool-4")
     newer = poll(client, live, after=last_seen)
-    assert [a.record["step_id"] for a in newer.attributions] == ["tool-4"]
+    assert [a.record.step_id for a in newer.attributions] == ["tool-4"]
     assert newer.attributions[0].sequence > last_seen
 
 
@@ -233,11 +233,11 @@ def test_a_ready_model_scores_the_step_the_poll_returns(
     assert page.model.state == "ready_not_promoted"
     assert page.model.not_promoted is True
     [item] = page.attributions
-    model = item.record["model"]
-    assert isinstance(model, dict)
-    assert model["state"] == "ready_not_promoted"
-    assert model["outcome"] in {"predicted", "abstained"}
-    assert model["training_version"] == TRAINING_VERSION
+    model = item.record.model
+    assert model.state == "ready_not_promoted"
+    assert model.outcome in {"predicted", "abstained"}
+    assert model.training_version == TRAINING_VERSION
+    assert model.not_promoted is True
 
 
 def test_ingest_succeeds_and_next_read_reconciles_when_attribution_fails_after_commit(
@@ -271,7 +271,7 @@ def test_ingest_succeeds_and_next_read_reconciles_when_attribution_fails_after_c
     assert SECRET not in caplog.text
 
     page = poll(client, live)
-    assert [a.record["step_id"] for a in page.attributions] == ["tool-1"]
+    assert [a.record.step_id for a in page.attributions] == ["tool-1"]
     assert [row["step_id"] for row in stored(client, live)] == ["tool-1"]
 
 
@@ -373,7 +373,7 @@ def test_run_close_triggers_attribution_audit(
     assert [row["evidence_changed"] for row in stored(client, live)] == [True]
     [item] = poll(client, live).attributions
     assert item.evidence_changed is True
-    assert item.record["feature_row"]["source_sample_ids"] == []
+    assert item.record.feature_row["source_sample_ids"] == []
 
 
 def test_attributions_stay_within_the_selected_run(
@@ -386,8 +386,8 @@ def test_attributions_stay_within_the_selected_run(
     for run_id, step_id in ((live, "live-step"), (other, "other-step")):
         page = poll(client, run_id)
         assert page.run_id == UUID(run_id)
-        assert [a.record["step_id"] for a in page.attributions] == [step_id]
-        assert [a.record["run_id"] for a in page.attributions] == [run_id]
+        assert [a.record.step_id for a in page.attributions] == [step_id]
+        assert [a.record.run_id for a in page.attributions] == [UUID(run_id)]
     missing = client.get(attributions_url(uuid4()))
     assert missing.status_code == 404
 
@@ -407,6 +407,9 @@ def test_published_attribution_contracts_match_router() -> None:
 def test_attribution_typescript_declares_only_new_schemas() -> None:
     text = attribution_typescript_document(attribution_openapi_document(), openapi_document())
     assert "export interface AttributionPage {" in text
-    assert "  record: Record<string, unknown>;" in text
+    assert "  record: AttributionRecord;" in text
+    assert "export interface AttributionRecord {" in text
+    assert "  calibrated_probabilities: Record<string, number> | null;" in text
+    assert '  outcome: "predicted" | "abstained" | "not_scored_step_state" | "unavailable";' in text
     assert "export interface ErrorResponse" not in text
     assert "export interface ValidationIssue" not in text

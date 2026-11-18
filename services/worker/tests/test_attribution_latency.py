@@ -75,6 +75,39 @@ def model_status(state: str = "ready_not_promoted", not_promoted: bool | None = 
     }
 
 
+def stub_record(run_id: str, step_id: str) -> dict:
+    """A record of the published shape; the feature row is not read by the measurement."""
+    return {
+        "run_id": run_id,
+        "step_id": step_id,
+        "step_state": "completed",
+        "feature_version": "step-features-v1",
+        "feature_row": {},
+        "missing_inputs": ["workload_iterations", "tests_per_step", "worker_capacity"],
+        "telemetry_status": "present",
+        "rules": {"version": "rules-v1+synthetic", "verdict": "cpu_sandbox"},
+        "model": {
+            "state": "ready_not_promoted",
+            "reason": None,
+            "training_version": "training-v1+synthetic",
+            "calibration_version": "calibration-v1+synthetic",
+            "not_promoted": True,
+            "outcome": "predicted",
+            "predicted_class": "cpu_sandbox",
+            "confidence": 0.7,
+            "abstention_threshold": 0.6,
+            "abstained": False,
+            "calibrated_probabilities": {
+                "none": 0.1,
+                "cpu_sandbox": 0.7,
+                "inference": 0.1,
+                "retrieval": 0.1,
+            },
+            "excess_fraction_estimate": 0.2,
+        },
+    }
+
+
 class StubLiveApi:
     """Answers the routes `measure` calls. A terminal step becomes visible on the poll after it
     arrives unless its id is in `hidden`."""
@@ -140,11 +173,7 @@ class StubLiveApi:
                         "committed_at": COMMITTED_AT,
                         "step_terminal_received_at": TERMINAL_RECEIVED_AT,
                         "evidence_changed": False,
-                        "record": {
-                            "run_id": self.run_id,
-                            "step_id": step_id,
-                            "model": {"outcome": "predicted"},
-                        },
+                        "record": stub_record(self.run_id, step_id),
                     }
                 )
         return {
