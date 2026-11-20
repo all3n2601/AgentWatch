@@ -263,6 +263,21 @@ def test_samples_and_events_must_belong_to_one_run():
         compute_feature_rows(completed() + completed("tool-2", run_id=str(other)), [], 0.5)
 
 
+def test_one_invalid_step_fails_the_call_unless_it_is_isolated():
+    queued, _, done = completed("tool-2")
+    events = [*completed("tool-1"), queued, done]
+    with pytest.raises(ValueError, match="Invalid step transition"):
+        compute_feature_rows(events, [], 0.5)
+
+    rows = compute_feature_rows(events, [], 0.5, isolate_invalid_steps=True)
+    assert [row.step_id for row in rows.rows] == ["tool-1"]
+    assert rows.invalid_step_ids == ["tool-2"]
+    assert rows.incomplete_step_ids == []
+    # Evidence shared by every step is never isolated.
+    with pytest.raises(ValueError, match="interval"):
+        compute_feature_rows(events, [], -1.0, isolate_invalid_steps=True)
+
+
 def test_history_must_be_a_contiguous_lifecycle():
     queued, _, done = completed()
     with pytest.raises(ValueError, match="Invalid step transition"):

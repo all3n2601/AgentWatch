@@ -8,6 +8,7 @@ import psycopg
 import pytest
 from agentwatch_sdk.live import RunCreate
 from agentwatch_worker.live_store import LiveStore
+from psycopg.types.json import Jsonb
 
 
 def event(run_id, sequence=0, state="queued", step_id="tool-1", **changes):
@@ -91,6 +92,48 @@ def test_create_retry_and_concurrent_identity(client, registration):
     assert retry.status_code == 200
     assert retry.json()["created"] is False
     assert client.post("/v1/live/runs", json=registration | {"task_id": "other"}).status_code == 409
+
+
+def test_registration_with_interval_round_trips_in_the_run_summary(client, registration):
+    created = client.post("/v1/live/runs", json=registration | {"sampling_interval_seconds": 0.25})
+    assert created.status_code == 201
+    run_id = created.json()["run_id"]
+    assert snapshot(client, run_id)["registration"]["sampling_interval_seconds"] == 0.25
+    listed = client.get("/v1/live/runs").json()["runs"]
+    assert [r["registration"]["sampling_interval_seconds"] for r in listed] == [0.25]
+
+
+def test_retry_of_a_registration_stored_without_the_interval_is_idempotent(client, registration):
+    # A row written before the field existed holds registration JSON without the key.
+    run_id = uuid4()
+    with client.app.state.store.connect() as conn:
+        conn.execute(
+            "INSERT INTO live_runs(run_id,request_id,registration) VALUES (%s,%s,%s)",
+            (run_id, registration["request_id"], Jsonb(registration)),
+        )
+    retry = client.post("/v1/live/runs", json=registration)
+    assert retry.status_code == 200
+    assert retry.json() == {"run_id": str(run_id), "created": False}
+    undeclared = registration | {"sampling_interval_seconds": None}
+    assert client.post("/v1/live/runs", json=undeclared).json() == retry.json()
+    # Newly declaring an interval changes the registration, so the request_id conflicts.
+    declared = registration | {"sampling_interval_seconds": 0.25}
+    assert client.post("/v1/live/runs", json=declared).status_code == 409
+    assert snapshot(client, str(run_id))["registration"].get("sampling_interval_seconds") is None
+
+
+def test_same_request_id_with_a_different_interval_conflicts(client, registration):
+    declared = registration | {"sampling_interval_seconds": 0.25}
+    assert client.post("/v1/live/runs", json=declared).status_code == 201
+    assert client.post("/v1/live/runs", json=declared).status_code == 200
+    changed = registration | {"sampling_interval_seconds": 0.5}
+    assert client.post("/v1/live/runs", json=changed).status_code == 409
+    assert client.post("/v1/live/runs", json=registration).status_code == 409
+
+
+def test_sub_nanosecond_interval_is_rejected_at_registration(client, registration):
+    sub_nanosecond = registration | {"sampling_interval_seconds": 1e-10}
+    assert client.post("/v1/live/runs", json=sub_nanosecond).status_code == 422
 
 
 def test_ordering_prefix_retry_and_timing(client, live):
@@ -414,7 +457,7 @@ def test_migration_preserves_populated_legacy_history(client, evidence, live):
     assert snapshot(client, live)["state"] == "queued"
     assert client.get(f"/v1/runs/{live}").status_code == 404
     with client.app.state.store.connect() as conn:
-        assert len(conn.execute("SELECT version FROM schema_migrations").fetchall()) == 4
+        assert len(conn.execute("SELECT version FROM schema_migrations").fetchall()) == 6
 
 
 def test_migration_upgrades_existing_schema(client, evidence):

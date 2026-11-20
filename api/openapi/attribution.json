@@ -1,0 +1,665 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AgentWatch live attribution API",
+    "description": "UUID-specific polling of stored step attributions and the serving model's status. See docs/live-ingestion.md (Attribution) for cursor, state and wording rules.",
+    "version": "live-contracts-v1"
+  },
+  "paths": {
+    "/v1/live/runs/{run_id}/attributions": {
+      "get": {
+        "tags": [
+          "live attribution"
+        ],
+        "summary": "Get Attributions",
+        "description": "Stored step attributions of the selected run after the `after` cursor, oldest first, with the serving model's status. Terminal steps lacking a row for the current serving key are attributed before the page is read. A run without terminal steps returns an empty page. A record attributes the resource a step likely waited on; it does not establish a cause. See docs/live-ingestion.md (Attribution).",
+        "operationId": "get_attributions_v1_live_runs__run_id__attributions_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "default": 0,
+              "title": "After"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 256,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttributionPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or semantic validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal storage failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database unavailable or statement/lock timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Selected live run does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/live/attribution/model": {
+      "get": {
+        "tags": [
+          "live attribution"
+        ],
+        "summary": "Get Model Status",
+        "description": "The serving model's state, reason and identity, as every attribution page reports it. A record attributes the resource a step likely waited on; it does not establish a cause. See docs/live-ingestion.md (Attribution).",
+        "operationId": "get_model_status_v1_live_attribution_model_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelStatusView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or semantic validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal storage failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database unavailable or statement/lock timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AttributionItem": {
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "title": "Sequence"
+          },
+          "serving_key": {
+            "type": "string",
+            "title": "Serving Key"
+          },
+          "committed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Committed At"
+          },
+          "step_terminal_received_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Step Terminal Received At"
+          },
+          "evidence_changed": {
+            "type": "boolean",
+            "title": "Evidence Changed"
+          },
+          "record": {
+            "$ref": "#/components/schemas/AttributionRecord"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sequence",
+          "serving_key",
+          "committed_at",
+          "step_terminal_received_at",
+          "evidence_changed",
+          "record"
+        ],
+        "title": "AttributionItem",
+        "description": "One stored step attribution. Both times are database-clock times; `evidence_changed` is\nset when a later audit computed a different feature row, possibly after the row was\nserved."
+      },
+      "AttributionPage": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelStatusView"
+          },
+          "attributions": {
+            "items": {
+              "$ref": "#/components/schemas/AttributionItem"
+            },
+            "type": "array",
+            "title": "Attributions"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "model",
+          "attributions",
+          "next_cursor"
+        ],
+        "title": "AttributionPage",
+        "description": "Stored attributions of the selected run after the `after` cursor, oldest first. Rows of\nevery serving key are returned; the current one is `model.serving_key`."
+      },
+      "AttributionRecord": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          },
+          "step_id": {
+            "type": "string",
+            "title": "Step Id"
+          },
+          "step_state": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Step State"
+          },
+          "feature_version": {
+            "type": "string",
+            "title": "Feature Version"
+          },
+          "feature_row": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Feature Row"
+          },
+          "missing_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Inputs"
+          },
+          "telemetry_status": {
+            "type": "string",
+            "enum": [
+              "present",
+              "empty",
+              "missing",
+              "no_overlap",
+              "unaligned"
+            ],
+            "title": "Telemetry Status"
+          },
+          "rules": {
+            "$ref": "#/components/schemas/RulesVerdictView"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelPredictionView"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "step_id",
+          "step_state",
+          "feature_version",
+          "feature_row",
+          "missing_inputs",
+          "telemetry_status",
+          "rules",
+          "model"
+        ],
+        "title": "AttributionRecord",
+        "description": "One terminal step's attribution record, as the worker built and stored it.\n\n`feature_row` is the stored `step-features-v1` FeatureRow (`agentwatch_features.FeatureRow`,\ndocs/step-features.md) and is left untyped here. `missing_inputs` lists the model inputs\npassed as missing (NaN, never 0). A record attributes the resource a step likely waited on;\nit does not establish a cause."
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ValidationIssue"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse"
+      },
+      "ModelIdentityView": {
+        "properties": {
+          "training_version": {
+            "type": "string",
+            "title": "Training Version"
+          },
+          "calibration_version": {
+            "type": "string",
+            "title": "Calibration Version"
+          },
+          "classifier_sha256": {
+            "type": "string",
+            "title": "Classifier Sha256"
+          },
+          "regressor_sha256": {
+            "type": "string",
+            "title": "Regressor Sha256"
+          },
+          "preprocessing_sha256": {
+            "type": "string",
+            "title": "Preprocessing Sha256"
+          },
+          "calibration_sha256": {
+            "type": "string",
+            "title": "Calibration Sha256"
+          },
+          "temperature": {
+            "type": "number",
+            "title": "Temperature"
+          },
+          "abstention_threshold": {
+            "type": "number",
+            "title": "Abstention Threshold"
+          },
+          "class_order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Class Order"
+          },
+          "blocks_promotion": {
+            "type": "boolean",
+            "title": "Blocks Promotion"
+          }
+        },
+        "type": "object",
+        "required": [
+          "training_version",
+          "calibration_version",
+          "classifier_sha256",
+          "regressor_sha256",
+          "preprocessing_sha256",
+          "calibration_sha256",
+          "temperature",
+          "abstention_threshold",
+          "class_order",
+          "blocks_promotion"
+        ],
+        "title": "ModelIdentityView",
+        "description": "What was loaded: versions, artifact hashes and calibration parameters."
+      },
+      "ModelPredictionView": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "not_configured",
+              "not_promoted_refused",
+              "ready_not_promoted",
+              "ready_promoted",
+              "load_failed"
+            ],
+            "title": "State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "training_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Version"
+          },
+          "calibration_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calibration Version"
+          },
+          "not_promoted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Promoted"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "predicted",
+              "abstained",
+              "not_scored_step_state",
+              "unavailable"
+            ],
+            "title": "Outcome"
+          },
+          "predicted_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicted Class"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "abstention_threshold": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Abstention Threshold"
+          },
+          "abstained": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Abstained"
+          },
+          "calibrated_probabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calibrated Probabilities"
+          },
+          "excess_fraction_estimate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excess Fraction Estimate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "reason",
+          "training_version",
+          "calibration_version",
+          "not_promoted",
+          "outcome",
+          "predicted_class",
+          "confidence",
+          "abstention_threshold",
+          "abstained",
+          "calibrated_probabilities",
+          "excess_fraction_estimate"
+        ],
+        "title": "ModelPredictionView",
+        "description": "The model half of a record: the serving labels at write time, then the outcome.\n\n`reason` is the load check code for `load_failed`, the state itself for `not_configured` and\n`not_promoted_refused`, `non_finite_prediction` for an unusable prediction,\n`prediction_failed` when the served pair raised on the step, otherwise None.\nThe prediction fields are None unless `outcome` is predicted or abstained; an abstention has\n`predicted_class` None, never `none`. `excess_fraction_estimate` is the regressor's estimated\nshare of the step's duration spent as excess waiting, not a measured queue delay."
+      },
+      "ModelStatusView": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "not_configured",
+              "not_promoted_refused",
+              "ready_not_promoted",
+              "ready_promoted",
+              "load_failed"
+            ],
+            "title": "State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelIdentityView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "not_promoted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Promoted"
+          },
+          "serving_key": {
+            "type": "string",
+            "title": "Serving Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "reason",
+          "identity",
+          "not_promoted",
+          "serving_key"
+        ],
+        "title": "ModelStatusView",
+        "description": "The serving model's status. `identity` is set whenever a pair was loaded, refused ones\nincluded; `not_promoted` is None when none was. `serving_key` identifies the rules version\nand model configuration that rows written now carry."
+      },
+      "RulesVerdictView": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "verdict": {
+            "type": "string",
+            "title": "Verdict"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "verdict"
+        ],
+        "title": "RulesVerdictView",
+        "description": "The rules baseline's verdict. The rules never abstain and carry no confidence."
+      },
+      "ValidationIssue": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Loc"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Msg"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationIssue"
+      }
+    }
+  }
+}

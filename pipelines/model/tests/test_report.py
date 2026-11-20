@@ -4,9 +4,9 @@ import tomllib
 from dataclasses import replace
 
 import pytest
+from agentwatch_attribution.rules import DEFAULT_RULES, load_rules
 from agentwatch_model.contract import DEFAULT_CONTRACT, ContractError, load_contract
 from agentwatch_model.report import NOT_EVALUATED_FOR_RULES, blocked_report, build_report
-from agentwatch_model.rules import DEFAULT_RULES, load_rules
 from rule_fixtures import row
 
 

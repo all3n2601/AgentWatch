@@ -304,6 +304,12 @@ These can be completed before adding an agent.
   2026-10-24: the producer-side `coverage-v3` report applies the contract's join rules to a
   run's journal (own resource and service, registered clocks, `[started, finished)`), aligned
   with `step-features-v1`'s statuses and join key; it does not import the service join.
+  2026-11-18 (B03, branch `feature/serve-attribution-predictions`, PR pending): attribution
+  passes now call the join for every terminal live step, and registration declares
+  `sampling_interval_seconds` (`51e71be`, `3fc0ca6`; the agent runner sends its configured
+  value), so coverage is computed when declared. Still open: only synthetic fixtures and the
+  synthetic latency workload (Milestone 5, B03 entry) have been joined; no real agent run has
+  been attributed.
 - [ ] Add automatic dashboard updates, connection status, last-update time, and stale-data indicators.
   Completed-history polling, source status, and last-refresh time now exist; live-run streaming and
   stale-event indicators remain unfinished.
@@ -1023,6 +1029,60 @@ frozen evaluation sets without tuning against them.
   calibrated probabilities, the abstention rule and the clipped excess-latency estimate. The
   current pair has `blocks_promotion: true` (four gates `not_evaluated`), so it is not to be
   served as promoted. The artifacts are local, not registered; nothing is served yet.
+  2026-11-18 (B03): the worker serves a pair from local folders only, not from the registry
+  (entry below); registry loading stays open with M05.
+- [ ] Serve live step attributions (B03) and measure step completion to visible attribution.
+  2026-11-18 (branch `feature/serve-attribution-predictions`, commits `be5f805`..`c6783aa`,
+  `796c38e` and the results commit `a5b780e`; PR pending, not merged). `packages/attribution` holds
+  `rules-v1` (moved, identity unchanged), input encoding, temperature scaling and a contract
+  checking loader ([ADR 0014](adr/0014-attribution-serving-package.md)); the worker stores one
+  append-only attribution per terminal step after the ingest commit (migration `0005`) and
+  serves `GET /v1/live/runs/{UUID}/attributions` and `GET /v1/live/attribution/model`
+  ([attribution serving](attribution-serving.md), [live ingestion](live-ingestion.md#attribution)).
+  Verified by unit and isolated-schema PostgreSQL tests: `packages/attribution/tests`
+  (`test_served_model_load.py`, `test_served_model_predict.py`, `test_rules_identity.py`,
+  `test_hashing.py`, `test_inputs.py`, `test_temperature_scaling.py`),
+  `pipelines/model/tests/test_served_model_parity.py` and
+  `services/worker/tests/test_attribution_{model,record,store,api,latency}.py`; 2026-11-18:
+  `uv run pytest services/worker/tests packages` (588 passed) with a dedicated PostgreSQL 17
+  test database and no skips, the parity test (2 passed), and Ruff passed. Synthetic only: the
+  latency measurement used a declared synthetic workload and the synthetic test pair
+  (`ready_not_promoted`): 50 steps per run, nearest-rank p95 of client latency including the
+  poll interval 2.026 s (run A) and 2.029 s (run B) at the dashboard's 2.0 s poll, 0.278 s at
+  0.25 s (run C, descriptive);
+  server-side p95 0.031 s in each; no step left unseen; within the 15.0 s `eval-contract-v3`
+  limit on this workload (`docs/attribution-latency/2026-11-18-run-{A,B,C}.json`; workload and
+  acceptance declared first in `796c38e`). Open: a latency measurement with the real M03/M04
+  pair (not available locally) and on real agent runs; the four `not_evaluated` promotion gates
+  and promotion itself (M05; this result changes no gate); passing the model variables in a
+  deployment (Compose has no worker service; B04); the dashboard view (F03).
+  2026-11-18 review fixes (same branch, not merged): a run's attribution inserts are serialized
+  so rows commit in `sequence` order and cursor polling cannot skip one; the SDK requires
+  pydantic 2.12 (the first release honoring `exclude_if`); model load outcomes are logged; a
+  failed latency run writes a `status: "failed"` report; `AttributionRecord` types the published
+  record. `uv run pytest services/worker/tests packages` (605 passed, none skipped, dedicated
+  PostgreSQL 17 test database), Ruff and the JavaScript checks passed. `evidence_changed` turning
+  `true` after a row was served reaches a poller only on a re-read from `after=0`.
+  2026-11-18 reviewer fixes (PR #96): a poll returns the stored rows even when its reconcile pass
+  fails, and a pass that fails after an ingest logs the error type only; one step that cannot
+  be built or scored no longer blocks the steps after it (`prediction_failed`, or the step stays
+  pending); passes read only the steps that need work, without the run row lock, score them in
+  one model call and write them over one connection, and only the pass after a run closes
+  re-checks stored rows for `evidence_changed`; an abstention threshold above 1 is refused at
+  load; the insert lock number is 730504; the feature-join docstring names the registration's
+  sampling interval. `uv run pytest` (3558 passed, 32 skipped for Docker and DVC, dedicated
+  PostgreSQL test database), Ruff, `uv lock --check` and `pnpm typecheck` passed. These are
+  synthetic-fixture tests; no latency was re-measured, since the 2026-11-18 reports predate the
+  one-call scoring change and the pending-only reads.
+  2026-11-19 second review of PR #96: one step whose evidence fails validation no longer fails
+  the feature pass for every step (`isolate_invalid_steps`; it stays pending); the evidence
+  audit no longer depends on one background pass, since migration 0006 adds
+  `evidence_audited` and every pass on a closed run audits the rows not yet audited, so a
+  failed close-time pass is retried by the next read and an audited row costs nothing; a
+  prediction error that is not about the row's own values leaves the step pending instead of a
+  permanent `prediction_failed` row. Tests in `test_attribution_store.py` (failed audit
+  retried, invalid step isolated, deferred prediction) and `test_live_features.py`. Synthetic
+  fixtures only; the audit still misses a sample that arrives after a row was audited.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
   2026-11-12: what the dashboard must show (model identity and promotion state, abstention as
   its own state, missing telemetry beside the prediction, the excess fraction as an estimate)

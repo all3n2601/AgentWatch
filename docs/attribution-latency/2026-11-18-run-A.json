@@ -1,0 +1,507 @@
+{
+  "report_version": "attribution-latency-v1",
+  "synthetic_workload": true,
+  "workload": {
+    "description": "synthetic steps: a client-side sleep per step with made-up resource readings; no agent, model call or real resource contention",
+    "task_id": "synthetic-latency-v1",
+    "steps": 50,
+    "step_duration_seconds": 0.2,
+    "samples_per_step": 4,
+    "sampling_interval_seconds": 0.05,
+    "metrics": [
+      "cpu.psi.some.avg10.v1",
+      "cpu.cgroup.throttled_usec.v1"
+    ],
+    "steps_in_sequence": true,
+    "first_poll": "one poll interval after the terminal request is sent",
+    "poll_interval_seconds": 2.0,
+    "visible_timeout_seconds": 30.0
+  },
+  "steps": 50,
+  "poll_interval_seconds": 2.0,
+  "step_duration_seconds": 0.2,
+  "visible_timeout_seconds": 30.0,
+  "base_url": "http://127.0.0.1:8091",
+  "run_id": "7c8321a5-0347-4389-96e7-e1331a2dd81c",
+  "model_status": {
+    "state": "ready_not_promoted",
+    "reason": null,
+    "identity": {
+      "training_version": "training-v1+synthetic",
+      "calibration_version": "calibration-v1+synthetic",
+      "classifier_sha256": "2fa3380b7883b1abbbcf1a1d3b4a9a6b9a7434ea4f2c99d4b1f83b94f57a6129",
+      "regressor_sha256": "5b7e59d85e6c22ef562e70645407f5a2ef927d6c79fc20cc839ffa67cb6c9199",
+      "preprocessing_sha256": "84edf030ec8f9c4530fa59863bbe241707208864eb225f10e3080f302dbbec46",
+      "calibration_sha256": "c4568cee07f2b6f692d7b010dc9b2ed796aba68dd0087d36e0292c0023f67e26",
+      "temperature": 0.9,
+      "abstention_threshold": 0.6,
+      "class_order": [
+        "none",
+        "cpu_sandbox",
+        "inference",
+        "retrieval"
+      ],
+      "blocks_promotion": true
+    },
+    "not_promoted": true,
+    "serving_key": "856f5f327def7073849294120d13d5f32363f97e2ca0a5736e72c5d001ff7a6e"
+  },
+  "model_states_seen": [
+    "ready_not_promoted"
+  ],
+  "serving_key_changed": false,
+  "machine": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.7",
+    "cpu_count": 14
+  },
+  "code_revision": {
+    "git_sha": "796c38ec2a860f92a837d1646e4f222ae1603e0c",
+    "dirty": false,
+    "dirty_scope": "tracked files"
+  },
+  "started_at": "2026-11-18T04:26:43.756966+00:00",
+  "finished_at": "2026-11-18T04:28:37.046496+00:00",
+  "clock": "client time.monotonic(): from just before the terminal record's request to the poll response holding the step's attribution, poll interval included",
+  "limit_p95_seconds": 15.0,
+  "limit_source": "pipelines/model/evaluation-contract.toml (eval-contract-v3) [overhead] max_attribution_latency_p95_seconds",
+  "statistic": "nearest-rank p95 of client_latency_seconds",
+  "p95_within_limit": true,
+  "client_latency_seconds": {
+    "count": 50,
+    "p50": 2.019133625086397,
+    "p95": 2.0261636250652373,
+    "max": 2.0273828750941902
+  },
+  "server_side_seconds": {
+    "count": 50,
+    "p50": 0.024567,
+    "p95": 0.031169,
+    "max": 0.061275
+  },
+  "server_side_clock": "database clock: committed_at - step_terminal_received_at; never compared with the client clock",
+  "first_poll_after_terminal_seconds": {
+    "count": 50,
+    "p50": 2.0050254999659956,
+    "p95": 2.0050827090162784,
+    "max": 2.005183583125472
+  },
+  "later_poll_spacing_seconds": {
+    "count": 0,
+    "p50": null,
+    "p95": null,
+    "max": null
+  },
+  "steps_never_visible": {
+    "count": 0,
+    "step_ids": []
+  },
+  "steps_visible_after_timeout": [],
+  "model_outcomes": {
+    "predicted": 50
+  },
+  "per_step": [
+    {
+      "step_id": "latency-step-0000",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0229507081676275,
+      "server_side_seconds": 0.022268,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0001",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.025100833037868,
+      "server_side_seconds": 0.02229,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0002",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0151246250607073,
+      "server_side_seconds": 0.022729,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0003",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0273828750941902,
+      "server_side_seconds": 0.022202,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0004",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0170550839975476,
+      "server_side_seconds": 0.01849,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0005",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.019133625086397,
+      "server_side_seconds": 0.021654,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0006",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0225331250112504,
+      "server_side_seconds": 0.015381,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0007",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.01967304199934,
+      "server_side_seconds": 0.022513,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0008",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0114440410397947,
+      "server_side_seconds": 0.022816,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0009",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0273338751867414,
+      "server_side_seconds": 0.0193,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0010",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0230387919582427,
+      "server_side_seconds": 0.019404,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0011",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.015560249798,
+      "server_side_seconds": 0.022216,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0012",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0247670421376824,
+      "server_side_seconds": 0.025875,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0013",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.015625916188583,
+      "server_side_seconds": 0.022908,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0014",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.021036999998614,
+      "server_side_seconds": 0.017927,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0015",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0189592498354614,
+      "server_side_seconds": 0.024647,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0016",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0119254579767585,
+      "server_side_seconds": 0.021357,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0017",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0259475000202656,
+      "server_side_seconds": 0.018278,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0018",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.02520141704008,
+      "server_side_seconds": 0.026151,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0019",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.023672915995121,
+      "server_side_seconds": 0.025949,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0020",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0261636250652373,
+      "server_side_seconds": 0.025675,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0021",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0166672088671476,
+      "server_side_seconds": 0.023251,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0022",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0197770830709487,
+      "server_side_seconds": 0.025084,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0023",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0215457079466432,
+      "server_side_seconds": 0.026129,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0024",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.015709500061348,
+      "server_side_seconds": 0.026263,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0025",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.015499416971579,
+      "server_side_seconds": 0.02911,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0026",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.024164624977857,
+      "server_side_seconds": 0.020791,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0027",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0136312500108033,
+      "server_side_seconds": 0.022985,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0028",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0132279999088496,
+      "server_side_seconds": 0.024567,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0029",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.025616917060688,
+      "server_side_seconds": 0.024079,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0030",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0222333329729736,
+      "server_side_seconds": 0.026926,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0031",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0189924591686577,
+      "server_side_seconds": 0.023174,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0032",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.019453499931842,
+      "server_side_seconds": 0.029444,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0033",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0230442909523845,
+      "server_side_seconds": 0.029585,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0034",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0153346660081297,
+      "server_side_seconds": 0.025417,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0035",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.01365950005129,
+      "server_side_seconds": 0.028831,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0036",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0191227081231773,
+      "server_side_seconds": 0.026176,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0037",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0252496670000255,
+      "server_side_seconds": 0.025927,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0038",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0187485001515597,
+      "server_side_seconds": 0.026556,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0039",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.01097087492235,
+      "server_side_seconds": 0.029331,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0040",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.020286416867748,
+      "server_side_seconds": 0.027449,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0041",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.015023124869913,
+      "server_side_seconds": 0.0308,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0042",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.022234959062189,
+      "server_side_seconds": 0.023631,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0043",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.013783250004053,
+      "server_side_seconds": 0.029415,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0044",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.010665209032595,
+      "server_side_seconds": 0.023703,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0045",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.019041165942326,
+      "server_side_seconds": 0.023746,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0046",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.021695875097066,
+      "server_side_seconds": 0.061275,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0047",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.0143275829032063,
+      "server_side_seconds": 0.031169,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0048",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.019026790978387,
+      "server_side_seconds": 0.045814,
+      "polls": 1,
+      "visible": true
+    },
+    {
+      "step_id": "latency-step-0049",
+      "terminal_disposition": "applied",
+      "client_latency_seconds": 2.025894582970068,
+      "server_side_seconds": 0.026232,
+      "polls": 1,
+      "visible": true
+    }
+  ],
+  "note": "Synthetic workload through the real live API on one machine. This report is one input to the eval-contract-v3 attribution-latency gate and does not change any promotion state; model_status is copied as the worker reported it."
+}

@@ -134,6 +134,7 @@ export interface RunCreate {
   configuration_digest: string;
   clock_ids: Array<string>;
   resources: Array<ResourceRegistration>;
+  sampling_interval_seconds?: number | null;
 }
 
 export interface RunPage {
@@ -155,6 +156,7 @@ export interface RunRegistrationSnapshot {
   configuration_digest: string;
   clock_ids: Array<string>;
   resources: Array<ResourceRegistrationSnapshot>;
+  sampling_interval_seconds?: number | null;
 }
 
 export interface RunSnapshot {

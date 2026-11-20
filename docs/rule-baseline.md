@@ -15,10 +15,10 @@ a step waited on from measured features, and is scored against
 
 ## Rules
 
-Thresholds live in `pipelines/model/src/agentwatch_model/rules.toml`. They are proposed values,
-declared before any evaluation and never tuned on the test split. The rules version is
-`rules-v1` plus the first 8 hex digits of the SHA-256 of the parsed file as canonical JSON, so
-any retuned threshold gets a new version.
+Thresholds live in `packages/attribution/src/agentwatch_attribution/rules.toml`. They are
+proposed values, declared before any evaluation and never tuned on the test split. The rules
+version is `rules-v1` plus the first 8 hex digits of the SHA-256 of the parsed file as canonical
+JSON, so any retuned threshold gets a new version.
 
 | Prediction | When | Basis |
 |---|---|---|

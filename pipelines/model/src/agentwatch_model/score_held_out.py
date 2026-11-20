@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from agentwatch_attribution.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 from agentwatch_data.extract import canonical_sha256
 from agentwatch_data.files import file_sha256, json_text, write_atomic
 from agentwatch_data.replay_evidence import EVIDENCE_FILE, JOURNAL_FILE
@@ -78,7 +79,6 @@ from agentwatch_model.rule_baseline import (
     EXIT_ERROR,
     split_identity,
 )
-from agentwatch_model.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 from agentwatch_model.tracking import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_TRACKING_URI,

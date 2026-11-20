@@ -6,9 +6,8 @@ Nothing here trains, calibrates or loads a model: the frozen M03/M04 classifier 
 
 from dataclasses import dataclass
 
+from agentwatch_attribution.rules import Rules
 from agentwatch_data.replay_labels import task_group
-
-from agentwatch_model.rules import Rules
 
 RULES_SCORER = "rules-v1"
 

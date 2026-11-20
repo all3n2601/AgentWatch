@@ -5,11 +5,15 @@ from contextlib import asynccontextmanager
 from uuid import UUID
 
 import psycopg
+from agentwatch_attribution.rules import load_rules
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from agentwatch_worker.attribution_api import router as attribution_router
+from agentwatch_worker.attribution_model import ModelService
+from agentwatch_worker.attribution_store import AttributionStore
 from agentwatch_worker.contracts import RunIngest, TelemetryBatch
 from agentwatch_worker.live_api import router as live_router
 from agentwatch_worker.live_limits import LiveBodyLimit
@@ -25,6 +29,11 @@ async def lifespan(app):
         )
     )
     app.state.store.migrate()
+    # Rules and the model pair are read once here; a pair that cannot be served is reported
+    # through the model status, never a worker that fails to start.
+    app.state.attribution = AttributionStore(
+        app.state.store, load_rules(), ModelService.from_environ(os.environ)
+    )
     yield
 
 
@@ -34,6 +43,7 @@ LIVE_API_PREFIXES = ("/v1/live/", "/v1/policies/")
 app = FastAPI(title="AgentWatch Ingestion API", version="0.3.0", lifespan=lifespan)
 app.include_router(live_router)
 app.include_router(policy_router)
+app.include_router(attribution_router)
 app.add_middleware(LiveBodyLimit)
 
 

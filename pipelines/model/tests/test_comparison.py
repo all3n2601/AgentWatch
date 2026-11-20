@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 import pytest
+from agentwatch_attribution.rules import DEFAULT_RULES, load_rules
 from agentwatch_model.comparison import (
     MODEL_NOT_EVALUATED,
     build_model_report,
@@ -9,7 +10,6 @@ from agentwatch_model.comparison import (
     regression_gate,
 )
 from agentwatch_model.contract import DEFAULT_CONTRACT, load_contract
-from agentwatch_model.rules import DEFAULT_RULES, load_rules
 from rule_fixtures import row
 
 

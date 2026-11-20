@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "AgentWatch attribution models: rule baseline evaluation against the evaluation contract"
 requires-python = ">=3.13,<3.15"
 dependencies = [
+    "agentwatch-attribution",
     "agentwatch-data",
     # LightGBM core API only (no scikit-learn wrapper). MIT. Needs OpenMP: libgomp on Linux,
     # libomp on macOS (not bundled).
@@ -19,6 +20,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
+agentwatch-attribution = { workspace = true }
 agentwatch-data = { workspace = true }
 
 [build-system]

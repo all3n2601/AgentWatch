@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 
+from agentwatch_attribution.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 from agentwatch_data.files import file_sha256, json_text, write_atomic
 from agentwatch_data.splits import SplitError, load_split
 
@@ -49,7 +50,6 @@ from agentwatch_model.rule_baseline import (
     validate_dataset_version,
     validate_rows,
 )
-from agentwatch_model.rules import DEFAULT_RULES, Rules, RulesError, load_rules
 from agentwatch_model.tracking import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_TRACKING_URI,

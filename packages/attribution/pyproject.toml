@@ -1,0 +1,15 @@
+[project]
+name = "agentwatch-attribution"
+version = "0.1.0"
+description = "Attribution serving code shared by the worker and the model pipeline: rules, input encoding and model loading"
+requires-python = ">=3.13,<3.15"
+dependencies = [
+  # LightGBM core API only (no scikit-learn wrapper). MIT. Needs OpenMP: libgomp on Linux,
+  # libomp on macOS (not bundled).
+  "lightgbm>=4.6,<5",
+  "numpy>=2,<3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -21,7 +21,7 @@ Meghana shows the configurations.
 
 ## Findings that shaped the design
 
-- `rules-v1` (`pipelines/model/src/agentwatch_model/rules.toml`) predicts only
+- `rules-v1` (`packages/attribution/src/agentwatch_attribution/rules.toml`) predicts only
   `cpu_sandbox` or `none`; it never predicts `inference` or `retrieval`.
 - `steps-v1.3` (`pipelines/validation/schema/steps-v1.3.pbtxt`) has no vLLM queue, GPU or
   server feature. vLLM's per-request queue time exists only in each run's

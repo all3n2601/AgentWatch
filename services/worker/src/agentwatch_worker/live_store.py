@@ -38,9 +38,14 @@ class LiveStore:
     @contextmanager
     def connect(self) -> Iterator[Connection]:
         with self.store.connect() as conn:
-            conn.execute("SET LOCAL statement_timeout = '5s'")
-            conn.execute("SET LOCAL lock_timeout = '3s'")
+            self.bound_waits(conn)
             yield conn
+
+    @staticmethod
+    def bound_waits(conn: Connection) -> None:
+        """Bound the open transaction's statement and lock waits."""
+        conn.execute("SET LOCAL statement_timeout = '5s'")
+        conn.execute("SET LOCAL lock_timeout = '3s'")
 
     @staticmethod
     def lock(conn: Connection, run_id: UUID) -> dict:
@@ -63,6 +68,8 @@ class LiveStore:
         )
 
     def create(self, registration: RunCreate) -> dict:
+        # RunCreate omits an undeclared sampling_interval_seconds, so the stored and compared
+        # payload of such a registration matches rows stored before that field existed.
         payload = registration.model_dump(mode="json")
         with self.connect() as conn:
             # Serialize creation retries before assigning the server-owned run UUID.

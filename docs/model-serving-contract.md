@@ -69,7 +69,7 @@ One row per completed agent step. The 14 features, in `preprocessing.json`'s `fe
 | `telemetry_sample_count` | count | Resource samples inside the window |
 | `telemetry_coverage` | 0–1, or missing | Samples received / samples expected at the measured interval |
 
-Encoding (`pipelines/model/src/agentwatch_model/features.py`, `encode` and `feature_matrix`):
+Encoding (`packages/attribution/src/agentwatch_attribution/inputs.py`, `encode` and `feature_matrix`):
 
 - A missing reading is passed as NaN and never imputed. LightGBM routes NaN down each split's
   learned default branch. A server must never turn a missing reading into 0: a measured zero
@@ -125,3 +125,11 @@ From the M03 and M04 results and the held-out A06 scoring (PR #76, not yet merge
 task group, one test task, a small validation split shared with early stopping, test ECE worse after
 calibration than before (0.0178 against 0.0074), and on the A06 vLLM sweeps a 0.288 miss rate on
 queued model calls with 13% abstention. These bound what the dashboard may claim for it.
+
+## Served live
+
+B03 serves this contract from the worker for live runs: configuration, model states and the
+step-completion-to-visible-attribution measurement are in
+[attribution serving](attribution-serving.md), and the wire contract is in
+[live ingestion](live-ingestion.md#attribution). The current pair is served only behind
+`AGENTWATCH_ALLOW_UNPROMOTED_MODEL`, with every prediction labelled not promoted.

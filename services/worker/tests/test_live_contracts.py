@@ -5,8 +5,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from agentwatch_features.live import validate_interval
 from agentwatch_sdk.client import LiveClient
-from agentwatch_sdk.live import LiveBatch, ResourceSample, StepEvent
+from agentwatch_sdk.live import LiveBatch, ResourceSample, RunCreate, StepEvent
 from agentwatch_worker.export_live_contracts import openapi_document, typescript_document
 from pydantic import ValidationError
 from test_live_api import event, sample
@@ -28,6 +29,60 @@ def test_nonfinite_and_strict_producer_records():
         StepEvent.model_validate(record)
     with pytest.raises(ValidationError):
         LiveBatch.model_validate({"records": [record]})
+
+
+@pytest.mark.parametrize(
+    ("interval", "valid"),
+    [
+        (0, False),
+        (-0.25, False),
+        (float("nan"), False),
+        (float("inf"), False),
+        (True, False),
+        ("0.25", False),
+        # Feature computation needs at least 1 ns and a finite nanosecond value.
+        (1e-10, False),
+        (5e-10, False),
+        (1e300, False),
+        (1e-9, True),
+        (0.25, True),
+    ],
+)
+def test_sampling_interval_rejects_zero_negative_nan_and_inf(registration, interval, valid):
+    declared = registration | {"sampling_interval_seconds": interval}
+    if valid:
+        assert RunCreate.model_validate(declared).sampling_interval_seconds == interval
+        assert RunCreate.model_validate_json(json.dumps(declared)).sampling_interval_seconds == (
+            interval
+        )
+    else:
+        with pytest.raises(ValidationError):
+            RunCreate.model_validate(declared)
+        with pytest.raises(ValidationError):
+            RunCreate.model_validate_json(json.dumps(declared))
+    undeclared = RunCreate.model_validate(registration | {"sampling_interval_seconds": None})
+    assert undeclared.sampling_interval_seconds is None
+    # Undeclared registrations keep the pre-field wire and storage form.
+    assert json.loads(undeclared.model_dump_json()) == undeclared.model_dump(mode="json")
+    assert "sampling_interval_seconds" not in undeclared.model_dump(mode="json")
+
+
+@pytest.mark.parametrize("interval", [1e-9, 1e-10, 5e-10, 1e-8, 0.25, 1e299, 1e300])
+def test_sdk_interval_bound_matches_feature_validation(registration, interval):
+    # A registration the SDK accepts must never carry an interval feature computation refuses.
+    try:
+        validate_interval(interval)
+    except ValueError:
+        features_accept = False
+    else:
+        features_accept = True
+    try:
+        RunCreate.model_validate(registration | {"sampling_interval_seconds": interval})
+    except ValidationError:
+        sdk_accepts = False
+    else:
+        sdk_accepts = True
+    assert sdk_accepts == features_accept
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True, False])
