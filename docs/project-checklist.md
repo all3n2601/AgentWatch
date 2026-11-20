@@ -1110,6 +1110,15 @@ Retraining reproduces evaluation, promotion updates the served version, and roll
 - [ ] Add Helm deployment, resource requests/limits, readiness checks, and service configuration.
 - [ ] Implement GCP/GKE infrastructure, GPU quota/access, and artifact storage as needed.
 - [ ] Add secrets management, trace redaction, retention rules, and access control for shared use.
+  2026-11-16 (A07, branch `feature/trace-redaction`, PR #95): live reasons and the new
+  `redact` command's shared copies remove credentials, emails and host paths
+  (`trace-redaction-v1`); local evidence stays complete for replay. Tests:
+  `services/agent/tests/test_redaction.py` (rules, false positives, reviewer-reported Windows,
+  MSYS, `file://`, UNC and quoted-name cases), `test_redacted_copy.py` (copy, colliding keys kept apart, byte-for-byte unchanged files, refusals)
+  and `test_replay.py` (altered copies refused, unchanged copies replay). Re-run on the current
+  rules over the 104 local `data/evidence` run folders: 0 replacements (2026-11-19). Not run
+  on GPU-host evidence yet. Secrets
+  management, retention and access control remain open.
 - [ ] Document threat boundaries, backups, restoration, deployment, and incident procedures.
 - [ ] Set cloud budgets and measure workload, instrumentation, and serving costs.
 - [ ] Reconcile the unused Go control plane/CLI and placeholder SDK/Protobuf contracts with the
