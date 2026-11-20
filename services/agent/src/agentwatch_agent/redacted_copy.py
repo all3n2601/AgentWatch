@@ -6,8 +6,10 @@ never redacted in place. Sharing uses a copy instead. Every string value in each
 path or email would otherwise pass unchanged); numbers, booleans and nulls are kept, so the
 copy keeps its structure. Keys of one object that redact to the same text are kept apart with
 a numeric suffix (`<path>`, `<path>#2`) rather than merged, and counted in `keys_redacted`.
-A file with no replacements and no changed keys is copied byte for byte, so its hash is
-unchanged; any other file is re-serialized. Files that cannot be scanned are not copied and
+A file with no replacements, no changed keys and no duplicate keys is copied byte for byte,
+so its hash is unchanged; any other file is re-serialized. A duplicate key matters because
+the parser keeps only the last value, so an earlier one is never scanned and must not be
+copied through. Files that cannot be scanned are not copied and
 are listed, and hidden files (tool state such as `.DS_Store`) are skipped. `redaction.json`
 in the copy records the method, each file's source SHA-256 and replacements by kind, without
 host paths.
@@ -66,6 +68,18 @@ def _redact_value(value, counts: Counter[str], keys: Counter[str]):
     return value
 
 
+def _load(text: str, keys: Counter[str]):
+    """Parse JSON, counting objects that repeat a key (the parser drops the earlier value)."""
+
+    def pairs(items: list[tuple[str, object]]) -> dict:
+        result = dict(items)
+        if len(result) != len(items):
+            keys["duplicate"] += 1
+        return result
+
+    return json.loads(text, object_pairs_hook=pairs)
+
+
 def _redact_file(data: bytes, relative: str, counts: Counter[str], keys: Counter[str]) -> bytes:
     """Return the bytes to write: the original when nothing changed, else the redacted text."""
     try:
@@ -74,7 +88,7 @@ def _redact_file(data: bytes, relative: str, counts: Counter[str], keys: Counter
         if str(error).startswith(relative):
             raise
         raise RedactionError(f"{relative}: {error}") from error
-    if not counts and not keys["redacted"]:
+    if not counts and not keys["redacted"] and not keys["duplicate"]:
         return data
     return redacted.encode("utf-8")
 
@@ -86,7 +100,7 @@ def _redact_document(data: bytes, relative: str, counts: Counter[str], keys: Cou
         raise RedactionError(f"{relative} is not UTF-8 text") from error
     if relative.endswith(".json"):
         try:
-            value = json.loads(text)
+            value = _load(text, keys)
         except json.JSONDecodeError as error:
             raise RedactionError(f"{relative} is not valid JSON: {error.msg}") from error
         return json.dumps(_redact_value(value, counts, keys), indent=2, ensure_ascii=False) + "\n"
@@ -95,7 +109,7 @@ def _redact_document(data: bytes, relative: str, counts: Counter[str], keys: Cou
         if not line.strip():
             continue
         try:
-            value = json.loads(line)
+            value = _load(line, keys)
         except json.JSONDecodeError as error:
             raise RedactionError(f"{relative} line {number} is not valid JSON") from error
         lines.append(json.dumps(_redact_value(value, counts, keys), ensure_ascii=False) + "\n")

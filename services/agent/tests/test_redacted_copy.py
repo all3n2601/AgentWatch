@@ -199,6 +199,18 @@ def test_a_file_with_nothing_to_redact_is_copied_byte_for_byte(tmp_path):
     assert files["live-journal.jsonl"]["source_sha256"] == hashlib.sha256(original).hexdigest()
 
 
+@pytest.mark.parametrize("name", ["a.json", "a.jsonl"])
+def test_a_shadowed_duplicate_key_value_is_not_copied_through(tmp_path, name):
+    source = tmp_path / "run"
+    source.mkdir()
+    # The parser keeps the last value, so the first is never scanned; it must not survive.
+    (source / name).write_bytes(f'{{"note": "mail {EMAIL}", "note": "ok"}}\n'.encode())
+    write_redacted_copy(source, tmp_path / "shared")
+    copy = (tmp_path / "shared" / name).read_text()
+    assert EMAIL not in copy
+    assert json.loads(copy.splitlines()[0] if name.endswith("l") else copy) == {"note": "ok"}
+
+
 def test_a_file_with_a_replacement_is_reserialized(tmp_path):
     source = tmp_path / "run"
     source.mkdir()
