@@ -258,6 +258,8 @@ These can be completed before adding an agent.
   runner CPU +4.2 to +5.3 ms per repetition; sampler thread 1.0–2.4% of a core in runs.
   2026-11-16 (A07): decision rule (5% budget, paired bootstrap, two attempts per host) declared
   in [the instrumentation overhead protocol](instrumentation-overhead-protocol.md); not yet evaluated.
+  2026-11-20 (A07): the GPU-laptop attempts and the GPU-host redaction run are handed to Benoy in
+  [the A07 handoff](a07-gpu-handoff.md). No GPU attempt has been run or judged.
 - [ ] Repeat experiments across more workload sizes and host loads; establish false-positive rates.
 - [ ] Verify task timeout/cancellation cleans up worker and child processes under failure.
 
