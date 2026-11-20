@@ -11,8 +11,9 @@ relative to a long run.
 
 Reported per condition: median and 90th-percentile runner wall time and Ollama's reported
 total, prompt-evaluation and generation durations, the generated token counts (identical
-output is not guaranteed at temperature 0), and the sampler's own per-round cost. No
-pass/fail threshold is applied: the project has not declared an overhead budget. A failed or
+output is not guaranteed at temperature 0), and the sampler's own per-round cost. The
+measurement applies no pass/fail threshold; saved results are judged against the declared
+instrumentation overhead budget afterwards, by `agentwatch_data.overhead_verdict`. A failed or
 interrupted measurement still returns everything measured, with its status and error.
 """
 
@@ -36,6 +37,7 @@ from agentwatch_agent.model import chat_payload
 from agentwatch_agent.overhead import merged_availability
 from agentwatch_agent.prompts import SYSTEM_PROMPT, task_message
 from agentwatch_agent.resources import CpuProbe, GpuProbe, Probe, ResourceSampler
+from agentwatch_agent.sampling_limits import sampling_record
 from agentwatch_agent.stats import summarize
 from agentwatch_agent.tasks import Task
 from agentwatch_agent.tools import tool_definitions
@@ -277,6 +279,7 @@ def _report(
                 default=None,
             ),
         },
+        "sampling_coverage": sampling_record(sampling, sampling_interval_seconds),
         "warmups": warmups,
         "measurements": measurements,
         "limitations": [
