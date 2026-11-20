@@ -9,6 +9,8 @@ once in this process; it exits with the most severe of its runs' codes, in the o
 `sampling-overhead` measures resource sampling's effect on a real model request; it exits 1
 if the measurement did not complete (its partial evidence is kept). `coverage` reports how a
 recorded run's samples cover its steps; it exits 2 if the run directory cannot support one.
+`redact` writes a redacted copy of an evidence folder for sharing; it exits 2 if the copy is
+refused (existing output, links, unreadable files) and leaves no partial output.
 `experiment` replays one verified run cleanly and under bounded contention; it exits 1 when
 it stopped early or a declared check failed (its evidence is kept), and 3 when a replay's live
 evidence needs `resend`. `capacity-sweep` ramps concurrent replays on one vLLM configuration
@@ -90,6 +92,7 @@ from agentwatch_agent.experiment import (
 )
 from agentwatch_agent.model import ChatModel, OllamaChatModel, VllmChatModel
 from agentwatch_agent.overhead import OverheadFailed, measure_overhead
+from agentwatch_agent.redacted_copy import RedactionError, write_redacted_copy
 from agentwatch_agent.replay import (
     ReplayPlan,
     ReplayPlanError,
@@ -549,6 +552,12 @@ def parser() -> argparse.ArgumentParser:
         "coverage", help="Report how a recorded run's resource samples cover its steps"
     )
     coverage.add_argument("run_dir", type=Path, help="A run's output directory")
+
+    redact = commands.add_parser(
+        "redact", help="Write a redacted copy of an evidence folder for sharing"
+    )
+    redact.add_argument("source", type=Path, help="An evidence folder, such as a run's output")
+    redact.add_argument("--output", type=Path, required=True, help="A new folder for the copy")
 
     resend = commands.add_parser("resend", help="Resend a run journal with original identities")
     resend.add_argument("journal", type=Path)
@@ -1455,6 +1464,21 @@ def coverage_command(args: argparse.Namespace) -> int:
     return EXIT_PASSED
 
 
+def redact_command(args: argparse.Namespace) -> int:
+    try:
+        manifest = write_redacted_copy(args.source, args.output)
+    except (RedactionError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    totals = manifest["totals"]
+    kinds = ", ".join(f"{kind} {count}" for kind, count in totals.items()) or "none"
+    print(f"Redacted copy: {args.output} ({sum(totals.values())} replacements: {kinds})")
+    if manifest["not_copied"]:
+        print(f"Not copied (not scanned): {', '.join(manifest['not_copied'])}")
+    print("Review the copy before sharing: redaction is pattern-based.")
+    return EXIT_PASSED
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.command == "run":
@@ -1479,4 +1503,6 @@ def main(argv: list[str] | None = None) -> int:
         return sampling_overhead_command(args)
     if args.command == "coverage":
         return coverage_command(args)
+    if args.command == "redact":
+        return redact_command(args)
     return resend_command(args)

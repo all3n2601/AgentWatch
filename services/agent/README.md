@@ -320,6 +320,35 @@ isolation sandbox**. The isolated container runner (`agentwatch_sandbox.containe
 [sandbox README](../sandbox/README.md)) is ready for the agent to adopt; until it does, and
 until model-written code gets its own review, do not add free-form edits or commands.
 
+## Sharing evidence
+
+Local evidence keeps the full conversation, tool results and test output, because replays
+resend the recorded conversation exactly. Share a redacted copy instead:
+`uv run --package agentwatch-agent python -m agentwatch_agent redact <folder> --output <new
+folder>`. It copies every `.json` and `.jsonl` file with each string value passed through
+`trace-redaction-v1` (`redaction.py`): private keys, credentials in URLs, `Authorization`
+header values and token-shaped bearer values, known token formats (GitHub,
+Anthropic/OpenAI-style `sk-`, AWS, Slack, Hugging Face, Google), values assigned to a name
+ending in password, secret, token or key (quoted values, including JSON such as
+`"password": "..."`; any value of an upper-case environment-style name such as
+`POSTGRES_PASSWORD=...` or `DB_PASSWORD: ...` and of a compact `password=...`; and other
+unquoted values that look like tokens. Null and boolean literals, `$VAR` references and code
+such as `token: expired`, `secret=None` or `API_KEY = os.environ[...]` are kept), email addresses, and host paths (POSIX paths
+under filesystem roots, `C:\` and `C:/` drive paths, `/c/Users`, `file://` URLs and UNC
+paths). Object keys are redacted too, and keys that would collide are kept apart with a
+suffix (`<path>`, `<path>#2`) and counted in `keys_redacted`. Numbers and
+identifiers are kept. Other files are not copied and are listed, hidden files are skipped,
+symbolic links and an existing output are refused (exit 2, no partial output), and
+`redaction.json` records each file's source SHA-256, replacements by kind, redacted keys and
+the limitations. Live reasons use the same rules. Redaction is pattern-based: an unlabeled
+secret is not found, a path containing spaces is replaced only up to the first space, and
+hostnames in URLs are kept, an upper-case name such as `TOKEN: expired` is redacted as in `.env`
+output, and a route such as `/a/home/page` is read as an MSYS drive path, so review the copy
+before sharing. A file with no replacements and no changed keys is copied byte for byte; any
+other file is re-serialized as indented JSON (or one-line JSONL), so its hash differs from
+the source's, which `redaction.json` records. `experiment --source` refuses a redacted copy whose evidence was changed, because it
+could no longer resend the original requests.
+
 ## Sampling evidence
 
 `uv run --package agentwatch-agent python -m agentwatch_agent coverage <run dir>` prints a
