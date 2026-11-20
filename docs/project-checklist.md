@@ -1074,6 +1074,15 @@ frozen evaluation sets without tuning against them.
   PostgreSQL test database), Ruff, `uv lock --check` and `pnpm typecheck` passed. These are
   synthetic-fixture tests; no latency was re-measured, since the 2026-11-18 reports predate the
   one-call scoring change and the pending-only reads.
+  2026-11-19 second review of PR #96: one step whose evidence fails validation no longer fails
+  the feature pass for every step (`isolate_invalid_steps`; it stays pending); the evidence
+  audit no longer depends on one background pass, since migration 0006 adds
+  `evidence_audited` and every pass on a closed run audits the rows not yet audited, so a
+  failed close-time pass is retried by the next read and an audited row costs nothing; a
+  prediction error that is not about the row's own values leaves the step pending instead of a
+  permanent `prediction_failed` row. Tests in `test_attribution_store.py` (failed audit
+  retried, invalid step isolated, deferred prediction) and `test_live_features.py`. Synthetic
+  fixtures only; the audit still misses a sample that arrives after a row was audited.
 - [ ] Show model version, telemetry coverage, and estimated attribution in the dashboard.
   2026-11-12: what the dashboard must show (model identity and promotion state, abstention as
   its own state, missing telemetry beside the prediction, the excess fraction as an estimate)

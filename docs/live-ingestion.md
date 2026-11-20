@@ -219,13 +219,16 @@ later pass would compute a different one (a sample inside the step's window arri
 the stored row keeps its record and `evidence_changed` becomes `true`. Background passes run
 after a batch holding a terminal step event and after a run closes. A read runs a pass only when
 a terminal step lacks a row for the current serving key. Those passes compute features only for
-the steps that lack a row, so a pass costs the steps it attributes, not the whole run. Only the
-pass after a run closes re-checks the stored rows, so `evidence_changed` is set at the run's
-close: a sample that arrives in a step's window before then is not flagged earlier. Rows already
-flagged are not re-checked, and only rows of the current serving key are audited; rows of a
+the steps that lack a row, so a pass costs the steps it attributes, not the whole run. Once a
+run is closed, a pass also audits the stored rows not yet audited (`evidence_audited`), so
+`evidence_changed` is set at the run's close: a sample that arrives in a step's window before
+then is not flagged earlier. The pass after the close does it, and if that pass fails or the
+worker restarts first, the next read does; audited rows are never re-checked, so a settled run
+costs a read two cheap queries. Only rows of the current serving key are audited; rows of a
 superseded key keep the flag they had. Passes read the run's records without the run row lock,
-so they never delay ingest. A step whose record cannot be built is logged by error type and
-left pending, and the steps after it are still attributed; a pass that fails before a read
+so they never delay ingest. A step whose record cannot be built, whose evidence fails
+validation, or whose prediction failed for a reason that may not repeat is logged by error type
+and left pending, and the steps after it are still attributed; a pass that fails before a read
 leaves the read returning the rows already stored. `evidence_changed` can turn `true` after its
 row was served. The cursor returns each
 row once, by `sequence`, so an incremental poller that keeps the largest `sequence` never sees
@@ -261,8 +264,8 @@ page's `model`) is the load check code for `load_failed` and null in every other
 `not_configured` and `not_promoted_refused` included. A record's `model.reason` is never null
 when `outcome` is `unavailable`: it equals the state for `not_configured` and
 `not_promoted_refused`, the same check code for `load_failed`, `non_finite_prediction` when
-a served pair's prediction was not finite, and `prediction_failed` when the served pair raised on
-that step (the rules verdict is still recorded). It is null for the other outcomes.
+a served pair's prediction was not finite, and `prediction_failed` when the served pair rejected
+that step's values (the rules verdict is still recorded). It is null for the other outcomes.
 
 `missing_inputs` lists the model inputs passed as missing (NaN, never 0). Three are always
 missing live, because no live feature measures them: `workload_iterations`, `tests_per_step`

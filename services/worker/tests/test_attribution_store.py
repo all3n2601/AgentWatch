@@ -21,6 +21,7 @@ import psycopg
 import pytest
 from agentwatch_attribution.rules import Rules, load_rules
 from agentwatch_features import FEATURE_VERSION, FeatureRow
+from agentwatch_features import live as features_live
 from agentwatch_worker import attribution_store, live_api
 from agentwatch_worker.attribution_model import ModelService
 from agentwatch_worker.attribution_store import AttributionStore, StoredRow
@@ -35,6 +36,7 @@ from test_live_api import change, event, post, sample
 
 INTERVAL_SECONDS = 5e-9  # a 10 ns window holds two whole intervals
 MIGRATION = "0005_step_attributions.sql"
+AUDIT_MIGRATION = "0006_attribution_evidence_audit.sql"
 # An ingest or poll that waited behind an attribution transaction would take the 3 s lock_timeout.
 PROMPT_SECONDS = 2.0
 SECRET = "producer-secret-7f3a"
@@ -214,14 +216,14 @@ def test_incomplete_steps_get_no_row(
     assert post(client, live, *running, *gapped).status_code == 200
     attribution = attribution_for(client, rules, unavailable)
 
-    assert not attribution.has_pending_terminal_steps(UUID(live))
+    assert not attribution.has_attribution_work(UUID(live))
     assert attribution.attribute_run(UUID(live)) == 0
     assert stored(client, live) == []
 
     assert post(client, live, event(live, 2, "completed")).status_code == 200
-    assert attribution.has_pending_terminal_steps(UUID(live))
+    assert attribution.has_attribution_work(UUID(live))
     assert attribution.attribute_run(UUID(live)) == 1
-    assert not attribution.has_pending_terminal_steps(UUID(live))
+    assert not attribution.has_attribution_work(UUID(live))
     assert [row["step_id"] for row in stored(client, live)] == ["tool-1"]
 
 
@@ -265,12 +267,12 @@ def test_late_sample_sets_evidence_changed_and_keeps_the_stored_row(
     first_sample = sample(live, tick_ns=12, value=7)
     assert post(client, live, first_sample).status_code == 200
     assert change(client, live, "running", 0).status_code == 200
-    assert change(client, live, "completed", 1).status_code == 200
     attribution = attribution_for(client, rules, unavailable)
     assert attribution.attribute_run(UUID(live)) == 1
     [before] = stored(client, live)
 
     assert post(client, live, sample(live, tick_ns=15, value=40)).status_code == 200
+    assert change(client, live, "completed", 1).status_code == 200
     assert attribution.attribute_run(UUID(live)) == 0
 
     [after] = stored(client, live)
@@ -295,7 +297,7 @@ def test_new_serving_configuration_appends_a_new_row_and_keeps_the_old(
 
     new = attribution_for(client, rules, ready)
     assert new.serving_key != old.serving_key
-    assert new.has_pending_terminal_steps(UUID(live))
+    assert new.has_attribution_work(UUID(live))
     assert new.attribute_run(UUID(live)) == 1
     other_rules = attribution_for(client, replace(rules, version="rules-v1+synthetic"), ready)
     assert other_rules.serving_key not in {old.serving_key, new.serving_key}
@@ -313,7 +315,7 @@ def test_new_serving_configuration_appends_a_new_row_and_keeps_the_old(
     assert model["training_version"] == TRAINING_VERSION
     assert model["calibration_version"] == CALIBRATION_VERSION
     assert rows[2]["record"]["rules"]["version"] == "rules-v1+synthetic"
-    assert not old.has_pending_terminal_steps(UUID(live))
+    assert not old.has_attribution_work(UUID(live))
     served = new.page(UUID(live), 0, 10)
     assert served["model"]["state"] == "ready_not_promoted"
     assert served["model"]["reason"] is None
@@ -372,10 +374,10 @@ def test_unknown_run_raises_missing_run_error_and_empty_run_is_an_empty_page(
     with pytest.raises(MissingRunError):
         attribution.page(unknown, 0, 10)
     with pytest.raises(MissingRunError):
-        attribution.has_pending_terminal_steps(unknown)
+        attribution.has_attribution_work(unknown)
 
     assert attribution.attribute_run(UUID(live)) == 0
-    assert not attribution.has_pending_terminal_steps(UUID(live))
+    assert not attribution.has_attribution_work(UUID(live))
     empty = attribution.page(UUID(live), 0, 10)
     assert empty["run_id"] == live
     assert empty["attributions"] == []
@@ -401,7 +403,7 @@ def test_attribution_never_mixes_runs(
     attribution = attribution_for(client, rules, unavailable)
 
     assert attribution.attribute_run(UUID(live)) == 1
-    assert attribution.has_pending_terminal_steps(UUID(other))
+    assert attribution.has_attribution_work(UUID(other))
     assert attribution.page(UUID(other), 0, 10)["attributions"] == []
     assert attribution.attribute_run(UUID(other)) == 1
 
@@ -500,12 +502,12 @@ def test_a_step_that_cannot_be_built_stays_pending_and_the_steps_after_it_are_at
 
     assert attribution.attribute_run(UUID(live)) == 2
     assert [row["step_id"] for row in stored(client, live)] == ["tool-1", "tool-3"]
-    assert attribution.has_pending_terminal_steps(UUID(live))
+    assert attribution.has_attribution_work(UUID(live))
 
     monkeypatch.setattr(attribution_store, "build_attribution", real_build)
     assert attribution.attribute_run(UUID(live)) == 1
     assert [row["step_id"] for row in stored(client, live)] == ["tool-1", "tool-3", "tool-2"]
-    assert not attribution.has_pending_terminal_steps(UUID(live))
+    assert not attribution.has_attribution_work(UUID(live))
 
 
 def test_a_fault_in_building_a_step_propagates_and_keeps_the_rows_committed_before_it(
@@ -575,8 +577,10 @@ def test_a_step_the_model_cannot_score_is_unavailable_and_the_others_are_scored(
     def fail_batch_and_second_row(self: object, rows: list) -> list:
         # The batch call fails; the rows are then scored alone, in step order.
         calls.append(len(rows))
-        if len(rows) > 1 or calls.count(1) == 2:
-            raise RuntimeError(f"synthetic LightGBM failure {SECRET}")
+        if len(rows) > 1:
+            raise RuntimeError(f"synthetic batch failure {SECRET}")
+        if calls.count(1) == 2:
+            raise ValueError(f"synthetic row failure {SECRET}")
         return real_predict(self, rows)
 
     monkeypatch.setattr(served, "predict", fail_batch_and_second_row)
@@ -593,6 +597,44 @@ def test_a_step_the_model_cannot_score_is_unavailable_and_the_others_are_scored(
     # Every step, the failed one included, keeps its rules verdict.
     assert all(row["record"]["rules"]["verdict"] for row in stored(client, live))
     assert "RuntimeError" in caplog.text
+    assert "ValueError" in caplog.text
+    assert SECRET not in caplog.text
+
+
+def test_a_prediction_error_that_may_not_repeat_leaves_the_step_pending(
+    client: TestClient,
+    live: str,
+    rules: Rules,
+    ready: ModelService,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    for step_id in ("tool-1", "tool-2"):
+        finish_step(client, live, step_id)
+    served = type(ready.served)
+    real_predict = served.predict
+    failing = {"on": True}
+
+    def predict(self: object, rows: list) -> list:
+        # Fails the batch and the single-row call alike with an error that is not about the row.
+        if failing["on"]:
+            raise MemoryError(f"synthetic memory pressure {SECRET}")
+        return real_predict(self, rows)
+
+    monkeypatch.setattr(served, "predict", predict)
+    attribution = attribution_for(client, rules, ready)
+    with caplog.at_level(logging.WARNING):
+        assert attribution.attribute_run(UUID(live)) == 0
+
+    # No permanent `unavailable` row: both steps stay pending and are scored by a later pass.
+    assert stored(client, live) == []
+    assert "PredictionDeferredError" in caplog.text
+    assert SECRET not in caplog.text
+    assert attribution.has_attribution_work(UUID(live))
+    failing["on"] = False
+    assert attribution.attribute_run(UUID(live)) == 2
+    for row in stored(client, live):
+        assert model_of(row["record"])["outcome"] in {"predicted", "abstained"}
     assert SECRET not in caplog.text
 
 
@@ -610,7 +652,12 @@ def recorded_step_ids(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return reads
 
 
-def test_a_pass_computes_features_only_for_pending_steps_when_not_rechecking(
+def flags(client: TestClient, live: str) -> list[tuple[bool, bool]]:
+    """(evidence_changed, evidence_audited) of each stored row, oldest first."""
+    return [(r["evidence_changed"], r["evidence_audited"]) for r in stored(client, live)]
+
+
+def test_a_pass_on_an_open_run_computes_features_only_for_pending_steps(
     client: TestClient,
     live: str,
     rules: Rules,
@@ -623,10 +670,10 @@ def test_a_pass_computes_features_only_for_pending_steps_when_not_rechecking(
     finish_step(client, live, "tool-2")
     reads = recorded_step_ids(monkeypatch)
 
-    assert attribution.attribute_run(UUID(live), recheck_evidence=False) == 1
+    assert attribution.attribute_run(UUID(live)) == 1
     assert reads == [["tool-2"]]
-    # Nothing is pending and nothing is rechecked: no feature read at all.
-    assert attribution.attribute_run(UUID(live), recheck_evidence=False) == 0
+    # Nothing is pending and an open run is not audited: no feature read at all.
+    assert attribution.attribute_run(UUID(live)) == 0
     assert reads == [["tool-2"]]
 
 
@@ -639,36 +686,107 @@ def test_a_flagged_row_is_not_recomputed_by_later_passes(
 ) -> None:
     finish_step(client, live, "tool-1")
     finish_step(client, live, "tool-2")
+    assert change(client, live, "running", 0).status_code == 200
     attribution = attribution_for(client, rules, unavailable)
     assert attribution.attribute_run(UUID(live)) == 2
     assert post(client, live, sample(live, tick_ns=15, value=40)).status_code == 200
+    assert change(client, live, "completed", 1).status_code == 200
     reads = recorded_step_ids(monkeypatch)
 
+    assert attribution.has_attribution_work(UUID(live))
     assert attribution.attribute_run(UUID(live)) == 0
     assert reads == [["tool-1", "tool-2"]]
-    assert [row["evidence_changed"] for row in stored(client, live)] == [True, True]
+    assert flags(client, live) == [(True, True), (True, True)]
 
-    # Both rows are flagged now: later passes neither read features nor open connections to
-    # update them.
+    # Both rows are audited now: later passes neither read features nor open connections to
+    # update them, and a poll finds no work.
+    assert not attribution.has_attribution_work(UUID(live))
     assert attribution.attribute_run(UUID(live)) == 0
     assert reads == [["tool-1", "tool-2"]]
 
 
-def test_a_poll_style_pass_does_not_flag_evidence_but_a_full_pass_does(
+def test_an_open_run_is_not_audited_and_the_first_pass_after_it_closes_audits(
     client: TestClient, live: str, rules: Rules, unavailable: ModelService
 ) -> None:
     finish_step(client, live, "tool-1")
+    assert change(client, live, "running", 0).status_code == 200
     attribution = attribution_for(client, rules, unavailable)
     assert attribution.attribute_run(UUID(live)) == 1
     assert post(client, live, sample(live, tick_ns=15, value=40)).status_code == 200
     finish_step(client, live, "tool-2")
 
-    assert attribution.attribute_run(UUID(live), recheck_evidence=False) == 1
-    assert [row["evidence_changed"] for row in stored(client, live)] == [False, False]
+    assert attribution.attribute_run(UUID(live)) == 1
+    assert flags(client, live) == [(False, False), (False, False)]
+    assert not attribution.has_attribution_work(UUID(live))
 
+    assert change(client, live, "completed", 1).status_code == 200
+    assert attribution.has_attribution_work(UUID(live))
     assert attribution.attribute_run(UUID(live)) == 0
     # tool-2 was stored after the sample arrived, so its row already holds it.
-    assert [row["evidence_changed"] for row in stored(client, live)] == [True, False]
+    assert flags(client, live) == [(True, True), (False, True)]
+
+
+def test_a_failed_audit_after_the_run_closes_is_retried_by_the_next_pass(
+    client: TestClient,
+    live: str,
+    rules: Rules,
+    unavailable: ModelService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finish_step(client, live, "tool-1")
+    assert change(client, live, "running", 0).status_code == 200
+    attribution = attribution_for(client, rules, unavailable)
+    assert attribution.attribute_run(UUID(live)) == 1
+    assert post(client, live, sample(live, tick_ns=15, value=40)).status_code == 200
+    assert change(client, live, "completed", 1).status_code == 200
+
+    real = attribution_store.live_feature_rows
+
+    def failing(*args: object, **kwargs: object) -> object:
+        raise psycopg.errors.QueryCanceled("synthetic statement timeout")
+
+    monkeypatch.setattr(attribution_store, "live_feature_rows", failing)
+    with pytest.raises(psycopg.errors.QueryCanceled):
+        attribution.attribute_run(UUID(live))
+    assert flags(client, live) == [(False, False)]
+    assert attribution.has_attribution_work(UUID(live))
+
+    monkeypatch.setattr(attribution_store, "live_feature_rows", real)
+    assert attribution.attribute_run(UUID(live)) == 0
+    assert flags(client, live) == [(True, True)]
+    assert not attribution.has_attribution_work(UUID(live))
+
+
+def test_one_step_with_invalid_evidence_does_not_stop_the_other_steps(
+    client: TestClient,
+    live: str,
+    rules: Rules,
+    unavailable: ModelService,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    for step_id in ("tool-1", "tool-2", "tool-3"):
+        finish_step(client, live, step_id)
+    real = features_live.row_from_history
+
+    def fail_tool_2(history: list, *args: object) -> object:
+        if history[0].step_id == "tool-2":
+            raise ValueError(f"synthetic invalid evidence {SECRET}")
+        return real(history, *args)
+
+    monkeypatch.setattr(features_live, "row_from_history", fail_tool_2)
+    attribution = attribution_for(client, rules, unavailable)
+    with caplog.at_level(logging.WARNING):
+        assert attribution.attribute_run(UUID(live)) == 2
+
+    assert [row["step_id"] for row in stored(client, live)] == ["tool-1", "tool-3"]
+    assert "1 step(s) with invalid evidence" in caplog.text
+    assert SECRET not in caplog.text
+    # The invalid step stays pending; once its evidence is usable it is attributed.
+    assert attribution.has_attribution_work(UUID(live))
+    monkeypatch.setattr(features_live, "row_from_history", real)
+    assert attribution.attribute_run(UUID(live)) == 1
+    assert [row["step_id"] for row in stored(client, live)] == ["tool-1", "tool-3", "tool-2"]
 
 
 def test_the_feature_read_for_a_pass_does_not_wait_for_the_run_row_lock(
@@ -764,16 +882,20 @@ def test_evidence_flag_takes_no_lock_on_the_run_row_but_an_insert_does(
     with store.connect() as conn:
         received = attribution.terminal_steps(conn, UUID(live))
         assert (
-            attribution.insert(conn, UUID(live), tool_1, record, received["tool-1"].received_at)
+            attribution.insert(
+                conn, UUID(live), tool_1, record, received["tool-1"].received_at, False
+            )
             == 1
         )
         # The foreign-key check holds FOR KEY SHARE on the run row until this commits.
         assert run_row_is_free() is False
     with store.connect() as conn:
-        attribution.flag_evidence_changed(conn, UUID(live), tool_1)
-        attribution.flag_evidence_changed(conn, UUID(live), tool_2)  # no row: updates nothing
+        attribution.mark_audited(conn, UUID(live), [tool_1.step_id, tool_2.step_id], [])
         assert run_row_is_free() is True
-    assert [row["evidence_changed"] for row in stored(client, live)] == [True]
+    # tool-2 has no row: only tool-1 is updated.
+    assert [(row["evidence_changed"], row["evidence_audited"]) for row in stored(client, live)] == [
+        (True, True)
+    ]
 
 
 def waits_for_an_advisory_lock(store: RunStore, pid: int, pending: Future[int]) -> bool:
@@ -816,13 +938,13 @@ def test_inserts_for_one_run_commit_in_sequence_order(
         with second:
             second.execute("SET LOCAL lock_timeout = '5s'")
             return attribution.insert(
-                second, UUID(live), tool_2, records[1], received["tool-2"].received_at
+                second, UUID(live), tool_2, records[1], received["tool-2"].received_at, False
             )
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         with store.connect() as first:
             assert attribution.insert(
-                first, UUID(live), tool_1, records[0], received["tool-1"].received_at
+                first, UUID(live), tool_1, records[0], received["tool-1"].received_at, False
             )
             pending = pool.submit(insert_second)
             # tool-1's sequence is taken but not committed: tool-2 must not take a later one
@@ -854,7 +976,7 @@ def test_inserts_for_different_runs_do_not_wait_for_each_other(
             row, "completed", rules, unavailable.status, unavailable.served
         )
         received = attribution.terminal_steps(conn, UUID(run_id))[row.step_id].received_at
-        return attribution.insert(conn, UUID(run_id), row, record, received)
+        return attribution.insert(conn, UUID(run_id), row, record, received, False)
 
     with store.connect() as first:
         assert insert(first, live, live_row) == 1
@@ -932,7 +1054,7 @@ def test_migration_is_additive_and_applies_after_0004(pre_0005_dsn: str) -> None
                 "SELECT version FROM schema_migrations ORDER BY applied_at,version"
             ).fetchall()
         ]
-        assert versions == [*EARLIER_MIGRATIONS, MIGRATION]
+        assert versions == [*EARLIER_MIGRATIONS, MIGRATION, AUDIT_MIGRATION]
         columns = conn.execute(
             "SELECT column_name FROM information_schema.columns WHERE "
             "table_schema=current_schema() AND table_name='live_step_attributions' ORDER BY 1"
@@ -948,6 +1070,7 @@ def test_migration_is_additive_and_applies_after_0004(pre_0005_dsn: str) -> None
                 "step_terminal_received_at",
                 "committed_at",
                 "evidence_changed",
+                "evidence_audited",
             ]
         )
         assert conn.execute("SELECT count(*) FROM live_step_attributions").fetchone() == (0,)

@@ -12,7 +12,7 @@ import statistics
 from bisect import bisect_left
 from collections import defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import groupby, pairwise
 from typing import Annotated, Literal, Self
 from uuid import UUID
@@ -182,6 +182,9 @@ class FeatureRows:
     # Steps whose applied history has not reached a terminal state. Their windows are not
     # final, so they get no row yet; they are reported rather than silently dropped.
     incomplete_step_ids: list[str]
+    # Steps whose evidence failed validation, reported instead of raised when the caller asked
+    # to `isolate_invalid_steps`; empty otherwise.
+    invalid_step_ids: list[str] = field(default_factory=list)
 
 
 def applied_history(events: Iterable[StepEventFields]) -> list[StepEventFields]:
@@ -370,10 +373,17 @@ def compute_feature_rows(
     events: Iterable[StepEventFields],
     samples: Iterable[ResourceSampleFields],
     declared_interval_seconds: float | None,
+    *,
+    isolate_invalid_steps: bool = False,
 ) -> FeatureRows:
-    """Rows for every terminal step of one run, in step_id order; incomplete steps listed."""
+    """Rows for every terminal step of one run, in step_id order; incomplete steps listed.
+
+    A step whose own evidence is invalid raises `ValueError`, failing the whole call. With
+    `isolate_invalid_steps` it is listed in `invalid_step_ids` and the other steps still get
+    rows. Evidence shared by every step (the interval, the run's samples) still raises.
+    """
     validate_interval(declared_interval_seconds)
-    rows, incomplete = [], []
+    rows, incomplete, invalid = [], [], []
     by_step = sorted(events, key=lambda event: (event.step_id, event.sequence))
     run_ids = {event.run_id for event in by_step}
     if len(run_ids) > 1:
@@ -388,4 +398,8 @@ def compute_feature_rows(
             )
         except IncompleteStepError:
             incomplete.append(step_id)
-    return FeatureRows(rows, incomplete)
+        except ValueError:
+            if not isolate_invalid_steps:
+                raise
+            invalid.append(step_id)
+    return FeatureRows(rows, incomplete, invalid)

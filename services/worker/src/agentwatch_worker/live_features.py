@@ -17,6 +17,7 @@ def live_feature_rows(
     *,
     step_ids: Collection[str] | None = None,
     lock: bool = True,
+    isolate_invalid_steps: bool = False,
 ) -> FeatureRows:
     """Feature rows for the selected run's terminal steps, from applied evidence only.
 
@@ -30,6 +31,9 @@ def live_feature_rows(
     first applies gap expiry, as snapshots do. `lock=False` reads the applied records in one
     statement, so one consistent snapshot, without delaying ingest: expiry only turns pending
     records into expired ones, so it cannot change applied evidence.
+
+    `isolate_invalid_steps` reports a step whose evidence fails validation in the result's
+    `invalid_step_ids` instead of failing every step (`compute_feature_rows`).
     """
     live = LiveStore(store)
     with live.connect() as conn:
@@ -57,4 +61,6 @@ def live_feature_rows(
         for r in records
         if r["record_type"] == "resource_sample"
     ]
-    return compute_feature_rows(events, samples, declared_interval_seconds)
+    return compute_feature_rows(
+        events, samples, declared_interval_seconds, isolate_invalid_steps=isolate_invalid_steps
+    )

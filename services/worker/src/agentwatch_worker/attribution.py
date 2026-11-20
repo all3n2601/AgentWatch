@@ -16,9 +16,12 @@ does not establish a cause.
   excess waiting, not a measured queue delay; `queue_seconds` stays in the feature row.
 - A prediction with a non-finite number is never emitted: its outcome is `unavailable` with
   reason `non_finite_prediction`, and the rules verdict is still recorded.
-- A prediction call that raises leaves that step `unavailable` with reason `prediction_failed`
-  (the error type is logged, never its message): one step the loaded pair cannot score must not
-  stop the steps after it from being attributed, and the rules verdict is still recorded.
+- A prediction call that rejects the row's own values (`ValueError`, which includes
+  `FeatureError`) leaves that step `unavailable` with reason `prediction_failed` (the error type
+  is logged, never its message): it would fail the same way again, and the rules verdict is
+  still recorded. Any other error (memory pressure, a fault in the booster call or in our code)
+  may not repeat, so it raises `PredictionDeferredError` and the step stays pending to be
+  scored again instead of getting a permanent `unavailable` row.
 """
 
 import logging
@@ -39,6 +42,12 @@ STEP_STATES = frozenset({"completed", "failed", "cancelled"})
 NON_FINITE_PREDICTION = "non_finite_prediction"
 PREDICTION_FAILED = "prediction_failed"
 logger = logging.getLogger(__name__)
+
+
+class PredictionDeferredError(Exception):
+    """Scoring one step failed for a reason that may not repeat; the step is left pending."""
+
+
 PREDICTION_FIELDS = (
     "predicted_class",
     "confidence",
@@ -112,10 +121,13 @@ def model_attribution(
     if prediction is None:
         try:
             [prediction] = model.predict([inputs])
-        # LightGBM and numpy raise assorted types: record the step instead of failing the pass.
-        except Exception as error:  # noqa: BLE001
+        except ValueError as error:
             logger.warning("Model prediction failed for one step: type=%s", type(error).__name__)
             return served | {"reason": PREDICTION_FAILED} | no_prediction("unavailable")
+        # LightGBM and numpy raise assorted types and some are transient: leave the step pending
+        # rather than store a permanent `unavailable` row for an error that may not repeat.
+        except Exception as error:
+            raise PredictionDeferredError(type(error).__name__) from error
     if not is_finite_prediction(prediction):
         return served | {"reason": NON_FINITE_PREDICTION} | no_prediction("unavailable")
     return served | {

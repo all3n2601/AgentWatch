@@ -202,12 +202,19 @@ prediction quality.
   background pass; that step's row is written by the next read, so its server-side latency can
   be up to one poll interval longer.
 - A sample that arrives inside a step's window after its row was written is flagged
-  (`evidence_changed`) only by the pass after the run closes, and a poller sees the flag only by
-  re-reading from `after=0`; see [live ingestion](live-ingestion.md#attribution). Earlier passes
-  compute features only for steps lacking a row, which keeps a pass proportional to the steps it
-  attributes.
-- A served pair that raises on one step leaves that step `unavailable` (`prediction_failed`) with
-  its rules verdict; the other steps are scored in the same pass.
+  (`evidence_changed`) only once the run is closed: the pass after the close audits the stored
+  rows, and if that pass fails the next read does, until every row is audited
+  (`evidence_audited`). A poller sees the flag only by re-reading from `after=0`; see
+  [live ingestion](live-ingestion.md#attribution). While a run is open, passes compute features
+  only for steps lacking a row, which keeps a pass proportional to the steps it attributes. A
+  sample that arrives after a row was audited is never flagged.
+- A served pair that rejects one step's own values (`ValueError`) leaves that step `unavailable`
+  (`prediction_failed`) with its rules verdict; the other steps are scored in the same pass.
+  Any other prediction error may not repeat, so the step stays pending and is scored again by
+  the next pass.
+- A step whose evidence fails validation is logged by count, left pending and retried by every
+  pass; the other steps are attributed. Evidence shared by every step, such as a malformed
+  sample window, fails the whole pass, so no step of that run gets a new row until it is fixed.
 
 ## Dashboard handoff (F03)
 

@@ -2,8 +2,9 @@
 
 Attribution runs after the evidence commits: a background pass follows an ingest that holds a
 terminal step event and a run closing, and every read first attributes terminal steps that lack
-a row for the current serving configuration. A failed pass, in the background or before a read,
-therefore delays a row until the next read; it never fails or rolls back the ingest, and never
+a row for the current serving configuration and, on a closed run, audits rows not yet audited.
+A failed pass, in the background or before a read, therefore delays a row or an audit until the
+next read; it never fails or rolls back the ingest, and never
 stops a read from returning the rows already stored.
 """
 
@@ -48,7 +49,7 @@ def store(request: Request) -> AttributionStore:
     return request.app.state.attribution
 
 
-def attribute_run_logged(store: AttributionStore, run_id: UUID, **options: bool) -> None:
+def attribute_run_logged(store: AttributionStore, run_id: UUID) -> None:
     """Attribute the run's terminal steps; a failure is logged and dropped, never raised.
 
     The failures dropped are expected ones: storage (`psycopg.Error`) and evidence that cannot
@@ -58,7 +59,7 @@ def attribute_run_logged(store: AttributionStore, run_id: UUID, **options: bool)
     faults and propagate too.
     """
     try:
-        store.attribute_run(run_id, **options)
+        store.attribute_run(run_id)
     except psycopg.Error as error:
         logger.warning(
             "Attribution pass failed; the next read reconciles: type=%s sqlstate=%s",
@@ -72,18 +73,15 @@ def attribute_run_logged(store: AttributionStore, run_id: UUID, **options: bool)
         )
 
 
-def attribute_after_ingest(
-    store: AttributionStore, run_id: UUID, *, recheck_evidence: bool = False
-) -> None:
+def attribute_after_ingest(store: AttributionStore, run_id: UUID) -> None:
     """Attribute the run's terminal steps after its evidence committed.
 
     The evidence is already committed and the next read reconciles, so failures are logged and
-    dropped (`attribute_run_logged`), as is a vanished run. Only a run closing re-checks the
-    stored rows' evidence (`recheck_evidence`); a pass after a terminal ingest computes features
-    for the steps still lacking a row.
+    dropped (`attribute_run_logged`), as is a vanished run. The pass after a run closes also
+    audits the stored rows' evidence; if it fails, the next read does.
     """
     try:
-        attribute_run_logged(store, run_id, recheck_evidence=recheck_evidence)
+        attribute_run_logged(store, run_id)
     except MissingRunError as error:
         logger.warning(
             "Attribution after ingest found no run; nothing to reconcile: type=%s",
@@ -108,10 +106,10 @@ def get_attributions(
 ) -> dict:
     attribution = store(request)
     try:
-        # Only the pending steps are computed here; the evidence re-check is left to the pass
-        # that follows a run closing, so a poll costs no more than the steps it attributes.
-        if attribution.has_pending_terminal_steps(run_id):
-            attribute_run_logged(attribution, run_id, recheck_evidence=False)
+        # A poll computes only the steps that lack a row and, on a closed run, the rows not yet
+        # audited, so once a run is settled it costs two cheap queries.
+        if attribution.has_attribution_work(run_id):
+            attribute_run_logged(attribution, run_id)
         return attribution.page(run_id, after, limit)
     except MissingRunError as error:
         raise HTTPException(404, str(error)) from error

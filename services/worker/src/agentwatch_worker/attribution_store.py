@@ -4,7 +4,9 @@ A row holds one terminal step's attribution record (`build_attribution`) for one
 and one serving key: the rules version plus the served model's state, reason and identity. A new
 rules file or model pair therefore appends rows beside the old ones instead of rewriting them.
 A stored record is never rewritten. When a later pass would compute a different feature row
-for the same step (a late sample inside its window), only `evidence_changed` is set.
+for the same step (a late sample inside its window), only `evidence_changed` is set. A row
+written before its run closed is audited once after the close (`evidence_audited`): by the
+pass that follows the close or, if that pass failed, by the next read.
 
 Both stored timestamps come from the database clock: `step_terminal_received_at` is when the
 step's terminal event was received, `committed_at` when the attribution row was written.
@@ -26,7 +28,11 @@ from agentwatch_sdk.live import TERMINAL_STATES
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-from agentwatch_worker.attribution import build_attribution, predict_batch
+from agentwatch_worker.attribution import (
+    PredictionDeferredError,
+    build_attribution,
+    predict_batch,
+)
 from agentwatch_worker.attribution_model import ModelService
 from agentwatch_worker.live_features import live_feature_rows
 from agentwatch_worker.live_store import LiveStore, MissingRunError
@@ -56,7 +62,7 @@ class StoredRow:
     """What a stored attribution row says about the evidence it was computed from."""
 
     sample_ids: frozenset[str]
-    evidence_changed: bool
+    evidence_audited: bool
 
 
 class AttributionStore:
@@ -96,52 +102,78 @@ class AttributionStore:
             "serving_key": self.serving_key,
         }
 
-    def attribute_run(self, run_id: UUID, *, recheck_evidence: bool = True) -> int:
+    def attribute_run(self, run_id: UUID) -> int:
         """Store a row for every terminal step lacking one for this serving key; return how many.
 
-        Features are computed only for the steps that need work: those lacking a row and, with
-        `recheck_evidence`, those whose stored row is not yet flagged, so a late sample inside a
-        stored step's window is noticed. Without it a pass costs only the pending steps. The
-        feature read takes no lock on the run row (`live_feature_rows(lock=False)`), so neither a
-        long pass nor a poll delays ingest.
+        Features are computed only for the steps that need work: those lacking a row and, once
+        the run is closed, those whose stored row is not yet audited, so a late sample inside a
+        stored step's window is noticed. Every pass on a closed run audits what is left, so a
+        failed pass is retried by the next one. While the run is open a pass costs only the
+        pending steps. The feature read takes no lock on the run row
+        (`live_feature_rows(lock=False)`), so neither a long pass nor a poll delays ingest.
 
         All pending rows are scored in one model call, outside any transaction. They are then
         inserted on one connection, each in its own short transaction: the insert's foreign-key
         check holds FOR KEY SHARE on the run row, which blocks `LiveStore.lock` (ingest, state
         changes, snapshots) only until that single insert commits. Concurrent passes on one run
         insert one at a time, so their rows commit in sequence order (see `insert`), and the
-        unique key leaves one row per step. A step whose record cannot be built or stored
-        (`ValueError`) is logged and left pending; the steps after it are still attributed. A
-        failure of the feature read or of storage propagates; rows already committed stay.
+        unique key leaves one row per step. A step whose evidence is invalid, or whose record
+        cannot be built, stored or scored for a reason that may not repeat, is logged and left
+        pending; the steps after it are still attributed. Evidence shared by every step (the
+        run's samples) that fails validation fails the whole pass. A failure of the feature read
+        or of storage propagates; rows already committed stay.
         """
         interval = self.declared_interval_seconds(run_id)
         with self.session() as conn:
             with self.transaction(conn):
+                closed = self.run_is_closed(conn, run_id)
                 steps = self.terminal_steps(conn, run_id)
                 stored = self.stored_rows(conn, run_id)
             pending = [step_id for step_id in steps if step_id not in stored]
-            audited = [
+            unaudited = [
                 step_id
                 for step_id, row in stored.items()
-                if recheck_evidence and step_id in steps and not row.evidence_changed
+                if closed and step_id in steps and not row.evidence_audited
             ]
-            wanted = sorted({*pending, *audited})
+            wanted = sorted({*pending, *unaudited})
             if not wanted:
                 return 0
-            features = live_feature_rows(self.store, run_id, interval, step_ids=wanted, lock=False)
-            new_rows = []
+            features = live_feature_rows(
+                self.store,
+                run_id,
+                interval,
+                step_ids=wanted,
+                lock=False,
+                isolate_invalid_steps=True,
+            )
+            if features.invalid_step_ids:
+                logger.warning(
+                    "Attribution skipped %d step(s) with invalid evidence; they stay pending",
+                    len(features.invalid_step_ids),
+                )
+            new_rows, changed, unchanged = [], [], []
             for row in features.rows:
                 known = stored.get(row.step_id)
                 if known is None:
                     new_rows.append(row)
-                elif {str(sample) for sample in row.source_sample_ids} != known.sample_ids:
-                    with self.transaction(conn):
-                        self.flag_evidence_changed(conn, run_id, row)
-            return self.store_new_rows(conn, run_id, new_rows, steps)
+                elif row.step_id in unaudited:
+                    same = {str(sample) for sample in row.source_sample_ids} == known.sample_ids
+                    (unchanged if same else changed).append(row.step_id)
+            if changed or unchanged:
+                with self.transaction(conn):
+                    self.mark_audited(conn, run_id, changed, unchanged)
+            return self.store_new_rows(conn, run_id, new_rows, steps, audited=closed)
 
     def store_new_rows(
-        self, conn: Connection, run_id: UUID, rows: list[FeatureRow], steps: dict[str, StepState]
+        self,
+        conn: Connection,
+        run_id: UUID,
+        rows: list[FeatureRow],
+        steps: dict[str, StepState],
+        *,
+        audited: bool,
     ) -> int:
+        """Score and insert the rows; `audited` marks them as computed from a closed run."""
         scored = (
             {}
             if self.model.served is None
@@ -163,15 +195,17 @@ class AttributionStore:
                     scored.get(row.step_id),
                 )
                 with self.transaction(conn):
-                    inserted += self.insert(conn, run_id, row, record, step.received_at)
-            except ValueError as error:
+                    inserted += self.insert(conn, run_id, row, record, step.received_at, audited)
+            except (ValueError, PredictionDeferredError) as error:
                 logger.warning(
                     "Attribution skipped one step; it stays pending: type=%s", type(error).__name__
                 )
         return inserted
 
-    def has_pending_terminal_steps(self, run_id: UUID) -> bool:
-        """Whether a terminal applied step lacks a row for this serving key; no feature work."""
+    def has_attribution_work(self, run_id: UUID) -> bool:
+        """Whether a pass has something to do: a terminal applied step lacking a row for this
+        serving key, or a closed run with a stored row of this key not yet audited. No feature
+        work happens here."""
         with self.live.connect() as conn:
             self.require_run(conn, run_id)
             row = conn.execute(
@@ -182,10 +216,24 @@ class AttributionStore:
                 "WHERE step.state=ANY(%s) AND NOT EXISTS ("
                 "SELECT 1 FROM live_step_attributions a WHERE a.run_id=%s "
                 "AND a.step_id=step.step_id AND a.feature_version=%s AND a.serving_key=%s)"
-                ") AS pending",
-                (run_id, STEP_TERMINAL_STATES, run_id, FEATURE_VERSION, self.serving_key),
+                ") OR (EXISTS (SELECT 1 FROM live_runs WHERE run_id=%s AND state=ANY(%s)) "
+                "AND EXISTS (SELECT 1 FROM live_step_attributions a WHERE a.run_id=%s "
+                "AND a.feature_version=%s AND a.serving_key=%s AND NOT a.evidence_audited)"
+                ") AS work",
+                (
+                    run_id,
+                    STEP_TERMINAL_STATES,
+                    run_id,
+                    FEATURE_VERSION,
+                    self.serving_key,
+                    run_id,
+                    STEP_TERMINAL_STATES,
+                    run_id,
+                    FEATURE_VERSION,
+                    self.serving_key,
+                ),
             ).fetchone()
-        return bool(row["pending"])
+        return bool(row["work"])
 
     def page(self, run_id: UUID, after: int, limit: int) -> dict:
         """Stored rows of the selected run after the `after` cursor, oldest first.
@@ -248,6 +296,13 @@ class AttributionStore:
             yield conn
 
     @staticmethod
+    def run_is_closed(conn: Connection, run_id: UUID) -> bool:
+        row = conn.execute("SELECT state FROM live_runs WHERE run_id=%s", (run_id,)).fetchone()
+        if row is None:
+            raise MissingRunError("Live run not found")
+        return row["state"] in TERMINAL_STATES
+
+    @staticmethod
     def terminal_steps(conn: Connection, run_id: UUID) -> dict[str, StepState]:
         """Each terminal step's latest applied revision: its state and when it was received."""
         rows = conn.execute(
@@ -265,21 +320,28 @@ class AttributionStore:
     def stored_rows(self, conn: Connection, run_id: UUID) -> dict[str, StoredRow]:
         """The stored rows of this serving key and feature version, by step."""
         rows = conn.execute(
-            "SELECT step_id,evidence_changed,"
+            "SELECT step_id,evidence_audited,"
             "record->'feature_row'->'source_sample_ids' AS samples "
             "FROM live_step_attributions WHERE run_id=%s AND serving_key=%s AND feature_version=%s",
             (run_id, self.serving_key, FEATURE_VERSION),
         ).fetchall()
         return {
-            row["step_id"]: StoredRow(frozenset(row["samples"]), row["evidence_changed"])
+            row["step_id"]: StoredRow(frozenset(row["samples"]), row["evidence_audited"])
             for row in rows
         }
 
-    def flag_evidence_changed(self, conn: Connection, run_id: UUID, row: FeatureRow) -> None:
+    def mark_audited(
+        self, conn: Connection, run_id: UUID, changed: list[str], unchanged: list[str]
+    ) -> None:
+        """Mark the steps audited in one statement; `changed` ones also get `evidence_changed`.
+
+        Both stay true once set, so an audited row is never read again by a pass.
+        """
         conn.execute(
-            "UPDATE live_step_attributions SET evidence_changed=true WHERE run_id=%s "
-            "AND step_id=%s AND feature_version=%s AND serving_key=%s AND NOT evidence_changed",
-            (run_id, row.step_id, row.feature_version, self.serving_key),
+            "UPDATE live_step_attributions SET evidence_audited=true,"
+            "evidence_changed=evidence_changed OR step_id=ANY(%s) WHERE run_id=%s "
+            "AND step_id=ANY(%s) AND feature_version=%s AND serving_key=%s",
+            (changed, run_id, [*changed, *unchanged], FEATURE_VERSION, self.serving_key),
         )
 
     def insert(
@@ -289,6 +351,7 @@ class AttributionStore:
         row: FeatureRow,
         record: dict[str, object],
         step_terminal_received_at: datetime,
+        audited: bool,
     ) -> int:
         """1 if this pass wrote the row, 0 if a concurrent pass already had.
 
@@ -307,7 +370,7 @@ class AttributionStore:
         )
         inserted = conn.execute(
             "INSERT INTO live_step_attributions(run_id,step_id,feature_version,serving_key,"
-            "record,step_terminal_received_at) VALUES (%s,%s,%s,%s,%s,%s) "
+            "record,step_terminal_received_at,evidence_audited) VALUES (%s,%s,%s,%s,%s,%s,%s) "
             "ON CONFLICT (run_id,step_id,feature_version,serving_key) DO NOTHING "
             "RETURNING sequence",
             (
@@ -317,6 +380,7 @@ class AttributionStore:
                 self.serving_key,
                 Jsonb(record, dumps=strict_dumps),
                 step_terminal_received_at,
+                audited,
             ),
         ).fetchone()
         return 0 if inserted is None else 1

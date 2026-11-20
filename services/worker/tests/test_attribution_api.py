@@ -422,7 +422,7 @@ def test_attribution_error_bodies_do_not_echo_producer_values(
         (psycopg.DatabaseError, 500, "Internal storage failure"),
         (psycopg.OperationalError, 503, "Database unavailable"),
     ):
-        monkeypatch.setattr(unconfigured, "has_pending_terminal_steps", leak(error))
+        monkeypatch.setattr(unconfigured, "has_attribution_work", leak(error))
         response = client.get(attributions_url(live))
         assert response.status_code == status
         assert response.json() == {"detail": detail}
