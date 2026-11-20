@@ -335,14 +335,18 @@ ending in password, secret, token or key (quoted values, including JSON such as
 unquoted values that look like tokens. Null and boolean literals, `$VAR` references and code
 such as `token: expired`, `secret=None` or `API_KEY = os.environ[...]` are kept), email addresses, and host paths (POSIX paths
 under filesystem roots, `C:\` and `C:/` drive paths, `/c/Users`, `file://` URLs and UNC
-paths). Object keys are redacted too, and two keys that would collide are refused. Numbers and
+paths). Object keys are redacted too, and keys that would collide are kept apart with a
+suffix (`<path>`, `<path>#2`) and counted in `keys_redacted`. Numbers and
 identifiers are kept. Other files are not copied and are listed, hidden files are skipped,
 symbolic links and an existing output are refused (exit 2, no partial output), and
 `redaction.json` records each file's source SHA-256, replacements by kind, redacted keys and
 the limitations. Live reasons use the same rules. Redaction is pattern-based: an unlabeled
 secret is not found, a path containing spaces is replaced only up to the first space, and
-hostnames in URLs are kept, so review the copy before sharing. An unchanged file is copied
-byte for byte. `experiment --source` refuses a redacted copy whose evidence was changed, because it
+hostnames in URLs are kept, an upper-case name such as `TOKEN: expired` is redacted as in `.env`
+output, and a route such as `/a/home/page` is read as an MSYS drive path, so review the copy
+before sharing. A file with no replacements and no changed keys is copied byte for byte; any
+other file is re-serialized as indented JSON (or one-line JSONL), so its hash differs from
+the source's, which `redaction.json` records. `experiment --source` refuses a redacted copy whose evidence was changed, because it
 could no longer resend the original requests.
 
 ## Sampling evidence

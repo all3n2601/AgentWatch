@@ -1,5 +1,6 @@
 """Redacted copies of evidence folders for sharing. All content is a synthetic fixture."""
 
+import hashlib
 import json
 import os
 
@@ -168,14 +169,42 @@ def test_object_keys_are_redacted_and_counted(tmp_path):
     assert entry["replacements"] == {"email": 1, "path": 1}
 
 
-def test_keys_that_redact_to_the_same_text_are_refused(tmp_path):
+def test_keys_that_redact_to_the_same_text_are_kept_apart_and_counted(tmp_path):
     source = tmp_path / "run"
     source.mkdir()
-    colliding = {"/Users/alice/a.py": 1, "/Users/bob/b.py": 2}
+    colliding = {"/Users/alice/a.py": 1, "/Users/bob/b.py": 2, "<path>": 3, "/Users/eve/c.py": 4}
     (source / "index.json").write_text(json.dumps(colliding), encoding="utf-8")
-    with pytest.raises(RedactionError, match=r"index.json: two keys redact to the same text"):
-        write_redacted_copy(source, tmp_path / "shared")
-    assert not (tmp_path / "shared").exists()
+    manifest = write_redacted_copy(source, tmp_path / "shared")
+    assert read(tmp_path / "shared/index.json") == {
+        "<path>": 1,
+        "<path>#2": 2,
+        "<path>#3": 3,
+        "<path>#4": 4,
+    }
+    (entry,) = manifest["files"]
+    assert entry["keys_redacted"] == 4
+
+
+def test_a_file_with_nothing_to_redact_is_copied_byte_for_byte(tmp_path):
+    source = tmp_path / "run"
+    source.mkdir()
+    # Formatting the copy would never produce: compact JSON, blank line, trailing spaces.
+    original = b'{"run_id":  "abc","n":1}  \n\n{"b": [1,2]}\r\n'
+    (source / "agent-evidence.json").write_bytes(b'{"run_id":  "abc","n":1}')
+    (source / "live-journal.jsonl").write_bytes(original)
+    manifest = write_redacted_copy(source, tmp_path / "shared")
+    assert (tmp_path / "shared/live-journal.jsonl").read_bytes() == original
+    assert (tmp_path / "shared/agent-evidence.json").read_bytes() == b'{"run_id":  "abc","n":1}'
+    files = {entry["path"]: entry for entry in manifest["files"]}
+    assert files["live-journal.jsonl"]["source_sha256"] == hashlib.sha256(original).hexdigest()
+
+
+def test_a_file_with_a_replacement_is_reserialized(tmp_path):
+    source = tmp_path / "run"
+    source.mkdir()
+    (source / "a.json").write_bytes(f'{{"to":"{EMAIL}"}}'.encode())
+    write_redacted_copy(source, tmp_path / "shared")
+    assert (tmp_path / "shared/a.json").read_text() == '{\n  "to": "<email>"\n}\n'
 
 
 def test_the_manifest_states_the_redaction_limitations(tmp_path):

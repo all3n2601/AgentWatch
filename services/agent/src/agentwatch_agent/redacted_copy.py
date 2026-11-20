@@ -4,10 +4,13 @@ Local evidence stays complete: replays resend the recorded conversation exactly,
 never redacted in place. Sharing uses a copy instead. Every string value in each `.json` and
 `.jsonl` file is passed through `redact_text`, and so is every object key (a map keyed by a
 path or email would otherwise pass unchanged); numbers, booleans and nulls are kept, so the
-copy keeps its structure. Two keys of one object that redact to the same text are refused
-rather than merged. Files that cannot be scanned are not copied and are listed, and
-hidden files (tool state such as `.DS_Store`) are skipped. `redaction.json` in the copy records
-the method, each file's source SHA-256 and replacements by kind, without host paths.
+copy keeps its structure. Keys of one object that redact to the same text are kept apart with
+a numeric suffix (`<path>`, `<path>#2`) rather than merged, and counted in `keys_redacted`.
+A file with no replacements and no changed keys is copied byte for byte, so its hash is
+unchanged; any other file is re-serialized. Files that cannot be scanned are not copied and
+are listed, and hidden files (tool state such as `.DS_Store`) are skipped. `redaction.json`
+in the copy records the method, each file's source SHA-256 and replacements by kind, without
+host paths.
 
 The copy is built in a hidden staging folder beside the output and renamed into place, so a
 failure leaves no partial output. An existing output is never overwritten.
@@ -36,6 +39,16 @@ def _redact_string(text: str, counts: Counter[str]) -> str:
     return redacted
 
 
+def _unique_key(key: str, taken: dict) -> str:
+    """Return key, or key with the first free `#n` suffix (n >= 2) when it is already taken."""
+    if key not in taken:
+        return key
+    suffix = 2
+    while f"{key}#{suffix}" in taken:
+        suffix += 1
+    return f"{key}#{suffix}"
+
+
 def _redact_value(value, counts: Counter[str], keys: Counter[str]):
     """Redact strings and object keys; `keys` counts the keys that changed."""
     if isinstance(value, str):
@@ -45,23 +58,25 @@ def _redact_value(value, counts: Counter[str], keys: Counter[str]):
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
-            redacted_key = _redact_string(key, counts)
+            redacted_key = _unique_key(_redact_string(key, counts), result)
             if redacted_key != key:
                 keys["redacted"] += 1
-            if redacted_key in result:
-                raise RedactionError(f"two keys redact to the same text {redacted_key!r}")
             result[redacted_key] = _redact_value(item, counts, keys)
         return result
     return value
 
 
-def _redact_file(data: bytes, relative: str, counts: Counter[str], keys: Counter[str]) -> str:
+def _redact_file(data: bytes, relative: str, counts: Counter[str], keys: Counter[str]) -> bytes:
+    """Return the bytes to write: the original when nothing changed, else the redacted text."""
     try:
-        return _redact_document(data, relative, counts, keys)
+        redacted = _redact_document(data, relative, counts, keys)
     except RedactionError as error:
         if str(error).startswith(relative):
             raise
         raise RedactionError(f"{relative}: {error}") from error
+    if not counts and not keys["redacted"]:
+        return data
+    return redacted.encode("utf-8")
 
 
 def _redact_document(data: bytes, relative: str, counts: Counter[str], keys: Counter[str]) -> str:
@@ -131,7 +146,7 @@ def write_redacted_copy(source: Path, output: Path) -> dict:
             redacted = _redact_file(data, relative, counts, keys)
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(redacted, encoding="utf-8")
+            target.write_bytes(redacted)
             totals.update(counts)
             entries.append(
                 {

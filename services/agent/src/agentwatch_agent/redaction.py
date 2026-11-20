@@ -121,6 +121,8 @@ LIMITATIONS = (
     "Pattern-based: an unlabeled random secret is indistinguishable from data",
     "A path containing spaces is replaced only up to the first space; later folder names stay",
     "Host names inside URLs are kept",
+    "An upper-case name such as TOKEN: followed by prose is redacted, as in .env output",
+    "A web route such as /a/home/page is read as an MSYS drive path and redacted",
 )
 
 
