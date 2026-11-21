@@ -60,7 +60,7 @@ def test_paired_effects_on_a_complete_experiment(tmp_path):
     assert report["missing_batches"] == [] and report["hidden_files"] == []
     assert all(batch["accepted"] for batch in report["batches"])
     contended = entry(report, "contended")
-    assert contended["pairs"] == {"scheduled": 10, "complete": 10, "unpaired": []}
+    assert contended["pairs"] == {"scheduled": 5, "complete": 5, "unpaired": []}
     assert contended["sufficient"] and contended["insufficient_reasons"] == []
     effects = contended["effects"]
     # 10 s baseline batches against 8 s candidate batches in every pair.
@@ -72,7 +72,7 @@ def test_paired_effects_on_a_complete_experiment(tmp_path):
     assert effects["throughput_ratio"] == pytest.approx(1.25)
     assert effects["baseline"]["completed_tasks"] == 20
     assert contended["outcome_changes"] == {
-        "pairs_compared": 10,
+        "pairs_compared": 5,
         "new_failures": 0,
         "new_timeouts": 0,
         "newly_failing_acceptance": 0,
@@ -92,7 +92,7 @@ def test_the_record_is_deterministic_and_names_its_lineage(tmp_path):
     assert json_text(first) == json_text(second)
     assert first["manifest_sha256"] == manifest.sha256
     assert first["contract"] == {
-        "version": "opt-contract-v1",
+        "version": "opt-contract-v2",
         "status": CONTRACT.status,
         "sha256": CONTRACT.sha256[:8],
     }
@@ -112,12 +112,12 @@ def test_an_aborted_candidate_batch_still_counts_the_failures_it_caused(tmp_path
 
     write_experiment(tmp_path, CONTRACT, change=editing(slot.index, abort))
     contended = entry(compare(tmp_path, CONTRACT), "contended")
-    assert contended["pairs"]["complete"] == 9
-    assert contended["outcome_changes"]["pairs_compared"] == 10
-    assert contended["outcome_changes"]["new_timeouts"] == 2
-    assert contended["outcome_changes"]["newly_failing_acceptance"] == 2
-    assert contended["attempts"][CANDIDATE]["batches_by_status"] == {"aborted": 1, "completed": 9}
-    assert contended["attempts"][CANDIDATE]["tasks_by_state"] == {"completed": 18, "timed_out": 2}
+    assert contended["pairs"]["complete"] == 4
+    assert contended["outcome_changes"]["pairs_compared"] == 5
+    assert contended["outcome_changes"]["new_timeouts"] == 4
+    assert contended["outcome_changes"]["newly_failing_acceptance"] == 4
+    assert contended["attempts"][CANDIDATE]["batches_by_status"] == {"aborted": 1, "completed": 4}
+    assert contended["attempts"][CANDIDATE]["tasks_by_state"] == {"completed": 16, "timed_out": 4}
     assert not contended["sufficient"]
     assert "1 scheduled pairs are unpaired" in contended["insufficient_reasons"]
 
@@ -138,13 +138,13 @@ def test_a_failed_candidate_batch_leaves_its_pair_unpaired_but_listed(tmp_path):
     assert contended["outcome_changes"]["new_failures"] == 1
     kept = next(batch for batch in report["batches"] if batch["index"] == slot.index)
     assert (kept["status"], kept["reason"]) == ("failed", "Model server stopped responding")
-    # 9 pairs of 2 tasks complete 18 per configuration: below the contract's 20.
-    assert any("18 completed" in reason for reason in contended["insufficient_reasons"])
+    # 4 pairs of 4 tasks complete 16 per configuration: below the contract's 20.
+    assert any("16 completed" in reason for reason in contended["insufficient_reasons"])
 
 
 def test_rejected_or_missing_evidence_keeps_every_comparison_insufficient(tmp_path):
     # Two extra pairs, so the remaining pairs still reach the contract's minimums.
-    repetitions = {"pairs": 12, "warmup_batches": 1, "seed": 3}
+    repetitions = {"pairs": 7, "warmup_batches": 1, "seed": 3}
     manifest = planned(repetitions=repetitions)
     missing = first_slot(manifest, "clean", BASELINE)
     rejected = first_slot(manifest, "contended", BASELINE)
@@ -162,7 +162,7 @@ def test_rejected_or_missing_evidence_keeps_every_comparison_insufficient(tmp_pa
     assert report["missing_batches"] == [missing.index]
     for condition in ("clean", "contended"):
         item = entry(report, condition)
-        assert item["pairs"]["complete"] == 11
+        assert item["pairs"]["complete"] == 6
         assert not item["sufficient"]
         reasons = item["insufficient_reasons"]
         assert "the experiment has rejected batch records (1 hardware_mismatch)" in reasons
@@ -255,7 +255,7 @@ def test_new_failures_timeouts_and_acceptance_regressions_are_counted(tmp_path):
     write_experiment(tmp_path, CONTRACT, change=change)
     contended = entry(compare(tmp_path, CONTRACT), "contended")
     assert contended["outcome_changes"] == {
-        "pairs_compared": 10,
+        "pairs_compared": 5,
         "new_failures": 1,
         "new_timeouts": 1,
         "newly_failing_acceptance": 1,
@@ -317,11 +317,11 @@ def test_cli_writes_the_record_and_refuses_an_invalid_manifest(tmp_path, capsys)
     assert main(command) == 0
     written = json.loads((output / "comparison.json").read_text())
     assert written == compare(experiment, CONTRACT)
-    assert "contended inference-1: 10/10 pairs, sufficient" in capsys.readouterr().out
+    assert "contended inference-1: 5/5 pairs, sufficient" in capsys.readouterr().out
     manifest = str(experiment / "manifest.json")
     assert main(["schedule", "--manifest", manifest, "--contract", str(CONTRACT_PATH)]) == 0
     planned_batches = json.loads(capsys.readouterr().out)["batches"]
-    assert len(planned_batches) == 42
+    assert len(planned_batches) == 22  # 2 conditions x (1 warm-up + 5 pairs x 2)
     assert {batch["limits"].get("inference_requests") for batch in planned_batches} == {None, 1}
     document = json.loads((experiment / "manifest.json").read_text())
     document["contract"]["sha256"] = "0" * 64
