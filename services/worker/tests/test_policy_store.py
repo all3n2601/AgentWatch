@@ -120,6 +120,59 @@ def test_disable_and_restore(policies):
     assert baseline["version"] == 4
 
 
+def inference_service(policy):
+    return policy["controlled_services"]["inference_requests"]["service_id"]
+
+
+def test_each_version_records_the_inference_service_it_limits(policies):
+    assert inference_service(policies.active(TARGET)) == "ollama"  # the baseline's default
+    vllm = change(0, limits={"inference_requests": 1}, inference_service="vllm")
+    assert inference_service(policies.change(TARGET, vllm)["policy"]) == "vllm"
+    # A set that names no service keeps the active one, so a test-job change made by an older
+    # client never moves the inference limit to another server.
+    kept = policies.change(TARGET, change(1, limits={"inference_requests": 2, "test_jobs": 1}))
+    assert inference_service(kept["policy"]) == "vllm"
+    assert inference_service(policies.change(TARGET, change(2, action="disable"))["policy"]) == (
+        "vllm"
+    )
+    ollama = change(3, limits={"inference_requests": 4}, inference_service="ollama")
+    assert inference_service(policies.change(TARGET, ollama)["policy"]) == "ollama"
+    # Restore applies the restored limits to the service they were set for.
+    restored = policies.change(TARGET, change(4, action="restore", restored_from=1))["policy"]
+    assert restored["limits"] == {"inference_requests": 1}
+    assert inference_service(restored) == "vllm"
+    baseline = policies.change(TARGET, change(5, action="restore", restored_from=0))["policy"]
+    assert inference_service(baseline) == "ollama"
+    # Only the inference service varies; the test-job control always names the runner.
+    for version in policies.history(TARGET, None, 50)["versions"]:
+        assert version["controlled_services"]["test_jobs"]["service_id"] == RUNNER_SERVICE_ID
+        assert version["controlled_services"]["inference_requests"]["resource_class"] == (
+            "inference"
+        )
+
+
+def test_retry_matches_on_the_inference_service(policies):
+    first = change(0, limits={"inference_requests": 1}, inference_service="vllm")
+    created = policies.change(TARGET, first)
+    assert policies.change(TARGET, first) == {"created": False, "policy": created["policy"]}
+    with pytest.raises(ConflictError):
+        policies.change(TARGET, first.model_copy(update={"inference_service": "ollama"}))
+
+
+def test_a_request_stored_before_the_service_field_still_retries(client, policies):
+    # Requests recorded before this field existed have no inference_service key. A faithful
+    # retry from such a client sends the same body, which must still match.
+    old = change(0, limits={"test_jobs": 3})
+    created = policies.change(TARGET, old)
+    with client.app.state.store.connect() as conn:
+        stored = conn.execute(
+            "SELECT request FROM concurrency_policy_versions WHERE request_id=%s",
+            (old.request_id,),
+        ).fetchone()["request"]
+    assert "inference_service" not in stored
+    assert policies.change(TARGET, old) == {"created": False, "policy": created["policy"]}
+
+
 def test_restore_missing_version_rejected(policies):
     policies.change(TARGET, change(0, limits={"test_jobs": 1}))
     with pytest.raises(InvalidRestoreError):

@@ -9,6 +9,7 @@ export interface PolicyChange {
   action: "set" | "disable" | "restore";
   limits?: PolicyLimits | null;
   restored_from?: number | null;
+  inference_service?: "ollama" | "vllm" | null;
   operator: string;
   reason: string;
 }

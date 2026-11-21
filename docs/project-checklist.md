@@ -1275,6 +1275,16 @@ from M3 through M6 and do not renumber the implementation milestones above.
   resends and Read again keeps focus. Verified locally: web lint, typecheck, 261 unit tests,
   production build and 55 Playwright tests passed. Not yet pushed or re-reviewed.
 - [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
+  2026-11-21 prerequisite (branch `feature/vllm-inference-admission`,
+  [ADR 0015](adr/0015-policy-versions-name-their-inference-service.md)): a policy `set` may
+  name the inference service (`ollama` or `vllm`), stored in that version's
+  `controlled_services`; omitted keeps the active one, disable keeps it and restore takes the
+  restored version's. Runners on the named server apply the limit, so vLLM runs can now be
+  limited; the runner itself is unchanged. API, both SDKs and the Controls page (service choice,
+  "Inference: 1 on vLLM") updated. Verified locally with synthetic policies: worker suite and
+  agent policy tests against PostgreSQL (WSL 410 passed, Windows attribution modules 119
+  passed), web lint, typecheck, unit tests, production build and Playwright
+  `concurrency-controls` and `run-policy` specs (21 passed). No hardware run; O06 stays open.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.
