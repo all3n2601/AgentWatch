@@ -1,4 +1,4 @@
-"""opt-contract-v1 stays well-formed and in step with every document and gate it restates."""
+"""opt-contract-v2 stays well-formed and in step with every document and gate it restates."""
 
 import math
 import re
@@ -57,7 +57,7 @@ def test_spoken_list_reads_like_the_contract_page():
 
 
 def test_version_and_status_are_declared():
-    assert CONTRACT["version"] == "opt-contract-v1"
+    assert CONTRACT["version"] == "opt-contract-v2"
     assert CONTRACT["status"] in {"proposed", "accepted"}
 
 
@@ -166,7 +166,7 @@ WORKLOAD = CONTRACT["workload"]
                 f"{REPETITIONS['min_completed_tasks_per_configuration']} completed tasks"
             ),
         ),
-        ("Minimum frozen evaluation tasks", f"{WORKLOAD['min_evaluation_tasks']}, a placeholder"),
+        ("Minimum frozen evaluation tasks", f"{WORKLOAD['min_evaluation_tasks']}: every batch"),
     ],
 )
 def test_each_contract_page_row_states_the_toml_value(row, text):

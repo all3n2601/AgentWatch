@@ -3,7 +3,7 @@
 # docs/optimization-contract.md. Never edit a threshold after seeing evaluation results;
 # change the version instead. Reports identify this file by SHA-256 of its parsed contents
 # as canonical JSON, the same method as eval-contract-v1.
-version = "opt-contract-v1"
+version = "opt-contract-v2"
 # "proposed" until every team has accepted it; values marked "proposed" have no supporting data.
 status = "proposed"
 
@@ -30,9 +30,9 @@ unlimited_encoding = "absent"
 unit = "batch"
 # Development tasks choose settings; frozen evaluation tasks are disjoint and used once.
 require_disjoint_evaluation_tasks = true
-# Proposed placeholder, to be revisited before first use: the agent has two fixed tasks, so
-# disjoint development and evaluation tasks cannot both exist until more tasks land.
-min_evaluation_tasks = 2
+# Every batch runs every frozen evaluation task, so 4 tasks over the minimum 5 pairs give the
+# 20 completed tasks per configuration below. The agent's six tasks leave two for development.
+min_evaluation_tasks = 4
 conditions = ["clean", "contended"]
 # The contended condition's injector set and intensity, the arrival schedule, and the
 # test and retrieval state are preregistered in the manifest.

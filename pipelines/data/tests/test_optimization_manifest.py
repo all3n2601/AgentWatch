@@ -1,4 +1,4 @@
-"""Optimization manifests: preregistration checked against opt-contract-v1, and the seeded order."""
+"""Optimization manifests: preregistration checked against opt-contract-v2, and the seeded order."""
 
 import json
 import tomllib
@@ -46,7 +46,7 @@ def test_contract_is_identified_by_its_parsed_contents():
     parsed = tomllib.loads(CONTRACT_PATH.read_text())
     assert CONTRACT.sha256 == canonical_sha256(parsed)
     assert (CONTRACT.version, CONTRACT.controls) == (
-        "opt-contract-v1",
+        "opt-contract-v2",
         ("inference_requests", "test_jobs"),
     )
     assert CONTRACT.candidate_limits == (1, 2, 4) and CONTRACT.min_paired_batches == 5
@@ -54,7 +54,7 @@ def test_contract_is_identified_by_its_parsed_contents():
 
 def test_contract_with_another_version_is_refused(tmp_path):
     path = tmp_path / "contract.toml"
-    path.write_text(CONTRACT_PATH.read_text().replace('"opt-contract-v1"', '"opt-contract-v0"'))
+    path.write_text(CONTRACT_PATH.read_text().replace('"opt-contract-v2"', '"opt-contract-v1"'))
     with pytest.raises(ManifestError, match="version"):
         load_optimization_contract(path)
 
@@ -66,8 +66,18 @@ def test_valid_manifest_parses_with_a_formatting_independent_hash(tmp_path):
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(dict(reversed(document.items())), indent=4))
     assert read_manifest(path, CONTRACT).sha256 == manifest.sha256
-    assert [task.task_id for task in manifest.tasks] == ["fix-mean-empty-r1", "fix-window-count-r1"]
-    assert manifest.arrivals == {"fix-mean-empty-r1": 0.0, "fix-window-count-r1": 1.5}
+    assert [task.task_id for task in manifest.tasks] == [
+        "fix-mean-empty-r1",
+        "fix-window-count-r1",
+        "fix-slug-case-r1",
+        "fix-config-precedence-r1",
+    ]
+    assert manifest.arrivals == {
+        "fix-mean-empty-r1": 0.0,
+        "fix-window-count-r1": 1.5,
+        "fix-slug-case-r1": 0.5,
+        "fix-config-precedence-r1": 1.0,
+    }
 
 
 @pytest.mark.parametrize(
@@ -135,8 +145,6 @@ def test_every_control_declares_queue_bounds():
     ("repetitions", "message"),
     [
         ({"pairs": 4, "warmup_batches": 1, "seed": 1}, "at least 5"),
-        # 5 pairs of 2 tasks complete only 10 tasks per configuration; the contract needs 20.
-        ({"pairs": 5, "warmup_batches": 1, "seed": 1}, "cannot reach"),
         ({"pairs": 10, "seed": 1}, "warmup_batches"),
         ({"pairs": 10, "warmup_batches": 1, "seed": -1}, "seed"),
     ],
@@ -144,6 +152,19 @@ def test_every_control_declares_queue_bounds():
 def test_repetitions_meet_the_contract_minimums_before_any_batch_runs(repetitions, message):
     with pytest.raises(ManifestError, match=message):
         parse_manifest(broken(repetitions=repetitions), CONTRACT)
+
+
+def test_pairs_must_reach_the_contract_minimum_of_completed_tasks():
+    # An evaluation has at least 4 tasks, so its minimum 5 pairs always reach 20. A development
+    # manifest has no task minimum: 5 pairs of 2 tasks complete only 10 per configuration.
+    document = manifest_document(
+        CONTRACT, purpose="development", repetitions={"pairs": 5, "warmup_batches": 1, "seed": 1}
+    )
+    del document["workload"]["development_tasks"]
+    document["workload"]["tasks"] = document["workload"]["tasks"][:2]
+    document["workload"]["arrivals"]["offsets"] = document["workload"]["arrivals"]["offsets"][:2]
+    with pytest.raises(ManifestError, match="5 pairs of 2 tasks cannot reach"):
+        parse_manifest(document, CONTRACT)
 
 
 def test_conditions_preregister_contention_only_where_the_contract_gates_it():
@@ -176,7 +197,7 @@ def test_an_evaluation_needs_the_contract_minimum_of_tasks():
     )
     document["workload"]["tasks"] = document["workload"]["tasks"][:1]
     document["workload"]["arrivals"]["offsets"] = document["workload"]["arrivals"]["offsets"][:1]
-    with pytest.raises(ManifestError, match="at least 2 frozen tasks"):
+    with pytest.raises(ManifestError, match="at least 4 frozen tasks"):
         parse_manifest(document, CONTRACT)
 
 
@@ -208,7 +229,7 @@ def test_schedule_is_reproducible_paired_and_randomized_by_the_seed():
     slots = schedule(manifest)
     assert slots == schedule(manifest)
     assert [slot.index for slot in slots] == list(range(len(slots)))
-    assert len(slots) == 2 * (1 + 10 * 2)
+    assert len(slots) == 2 * (1 + 5 * 2)
     by_pair: dict[str, list] = {}
     for slot in slots:
         if slot.kind == PAIR:
@@ -238,7 +259,7 @@ def test_design_fields_name_the_policy_and_injection_metadata():
         ('status = "proposed"', 'status = "draft"', "status"),
         ("[repetitions]", "[repeats]", r"no \[repetitions\] table"),
         ("min_paired_batches = 5", "minimum_pairs = 5", "lacks 'min_paired_batches'"),
-        ('version = "opt-contract-v1"', 'version = "opt-contract-v1', "cannot be read"),
+        ('version = "opt-contract-v2"', 'version = "opt-contract-v2', "cannot be read"),
     ],
 )
 def test_an_unusable_contract_is_refused(tmp_path, old, new, message):

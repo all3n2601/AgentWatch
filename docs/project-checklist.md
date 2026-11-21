@@ -1151,6 +1151,13 @@ from M3 through M6 and do not renumber the implementation milestones above.
 - [ ] O01 — Rohit: accept policy/evaluation contracts and numerical gates after C01/A04/M01.
   Proposed as `opt-contract-v1` (2026-10-26): [the optimization contract](optimization-contract.md)
   and `pipelines/model/optimization-contract.toml`. Open until all three teams accept it.
+  2026-11-20 (Benoy, branch `docs/optimization-contract-v2`): proposed `opt-contract-v2` replaces
+  v1's placeholder minimum of 2 frozen evaluation tasks with 4. Every batch runs every frozen
+  task, so 4 tasks over the minimum 5 pairs give the 20 completed tasks per configuration; the
+  agent's six tasks (PR #85) leave two for development. No other value changed and v1 was never
+  used by an evaluation. The O04 synthetic fixtures now freeze four tasks over 5 pairs.
+  Verified in WSL Ubuntu: `pipelines/data/tests` and `tests/contract` 1,306 passed; Ruff clean.
+  Still proposed: acceptance needs every team's row in the contract page's acceptance table.
 - [ ] O02 — Allen: validated versioned manual controls and audit history after O01/B01/B02.
   Implemented 2026-11-03 on branch `feature/concurrency-policy` (not yet merged):
   [versioned manual concurrency policy](concurrency-policy.md), migration
