@@ -246,6 +246,12 @@ These can be completed before adding an agent.
   about half of the model-call windows held fewer than two CPU readings.
   2026-11-16 (A07): coverage limits declared before measurement in
   [the instrumentation overhead protocol](instrumentation-overhead-protocol.md); not yet evaluated.
+  2026-11-20 (A07, Benoy, RTX 5070 Laptop/WSL2 only): coverage `met` in all four
+  `sampling-overhead` attempts (GPU Ollama and GPU vLLM, two each): 30–60 measured gaps,
+  interval median 0.2502–0.2503 s, max at most 0.2519 s, no missed or late rounds. Every gap
+  comes from 0.28–0.37 s requests. With `--gpm-file`, each sampler's first GPM window is a
+  baseline, so GPM was measured in 27–28 of 60 samples; DCGM profiling fields were unavailable
+  throughout (WSL2). Open: CPU container (Akshayaa) and full-run coverage on other hosts.
 - [ ] Compare a genuinely CPU-starved task with a busy worker queue and a naturally long clean task.
 - [ ] Verify boundaries under clock changes and specify monotonic timing for duration calculations.
 - [ ] Measure profiler and sampler overhead against uninstrumented execution.
@@ -258,6 +264,17 @@ These can be completed before adding an agent.
   runner CPU +4.2 to +5.3 ms per repetition; sampler thread 1.0–2.4% of a core in runs.
   2026-11-16 (A07): decision rule (5% budget, paired bootstrap, two attempts per host) declared
   in [the instrumentation overhead protocol](instrumentation-overhead-protocol.md); not yet evaluated.
+  2026-11-20 (A07, Benoy, RTX 5070 Laptop/WSL2, host label `benoy-rtx5070-wsl2`): four attempts,
+  all completed, none rerun. GPU vLLM (`resource-sampling-overhead-v2`, DCGM + GPM probes):
+  `within_budget`, attempts +2.63% [+1.42%, +3.52%] and +0.68% [−0.95%, +3.58%]. GPU Ollama
+  (`resource-sampling-overhead-v1`): `inconclusive`, attempt 1 `within_budget` +1.40%
+  [−0.29%, +2.84%], attempt 2 `inconclusive` (−0.72%, baseline CV 0.716 from two
+  uninstrumented requests of 1.2–1.4 s; cause not identified). Identical replies in both
+  conditions (43 tokens Ollama, 22 vLLM). Attempts `ollama-attempt-{1,2}` and
+  `vllm-attempt-{1,2}`, both verdict reports and the settings notes were shared as
+  `a07-gpu-evidence-20261120.zip` (not in the repository).
+  Display apps shared the laptop GPU. Open: CPU container attempts (Akshayaa), O01's budget
+  decision, other hosts, and live delivery under sustained sampling.
 - [ ] Repeat experiments across more workload sizes and host loads; establish false-positive rates.
 - [ ] Verify task timeout/cancellation cleans up worker and child processes under failure.
 
@@ -1128,6 +1145,14 @@ Retraining reproduces evaluation, promotion updates the served version, and roll
   rules over the 104 local `data/evidence` run folders: 0 replacements (2026-11-19). Not run
   on GPU-host evidence yet. Secrets
   management, retention and access control remain open.
+  2026-11-20 (A07, Benoy): run on GPU-host evidence. The A06 Ollama-GPU capacity sweep
+  `cfg-default-20261111T211237Z-2d75ea` (566 files) had 350 absolute `output_dir` host paths,
+  all replaced, but the path contains a space, so each keeps the tail
+  `Watch/AgentWatch/.data/...` (the documented limitation; no user or host name remains). The
+  M2 vLLM/DCGM and GPM folders (72 and 58 files) had no host identifiers in JSON; their 216
+  replacements were vLLM in-container library paths. Host paths remain in those folders'
+  scripts and logs, which `redact` does not copy. The four A07 attempt folders: 0
+  replacements; all copies reviewed by hand. Open: handle paths containing spaces.
 - [ ] Document threat boundaries, backups, restoration, deployment, and incident procedures.
 - [ ] Set cloud budgets and measure workload, instrumentation, and serving costs.
 - [ ] Reconcile the unused Go control plane/CLI and placeholder SDK/Protobuf contracts with the
