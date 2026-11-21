@@ -16,6 +16,10 @@ export const MAX_POLICY_LIMIT = 1024;
 export const MAX_OPERATOR_LENGTH = 128;
 export const MAX_REASON_LENGTH = 512;
 
+/** Model servers an inference limit can name (agentwatch_sdk.policy.InferenceService). */
+export const INFERENCE_SERVICES = ["ollama", "vllm"] as const;
+export type InferenceService = (typeof INFERENCE_SERVICES)[number];
+
 const limit = z.number().int().min(1).max(MAX_POLICY_LIMIT);
 const version = z.number().int().nonnegative().max(MAX_LIVE_CURSOR);
 const timestamp = z.iso.datetime({ offset: true });
@@ -82,6 +86,8 @@ export const policyChangeSchema = z.strictObject({
   action: z.enum(["set", "disable", "restore"]),
   limits: policyLimitsSchema.optional(),
   restored_from: version.optional(),
+  /** Only with `set`; omitted keeps the active version's service. */
+  inference_service: z.enum(INFERENCE_SERVICES).optional(),
   operator: text(MAX_OPERATOR_LENGTH),
   reason: text(MAX_REASON_LENGTH),
 });
