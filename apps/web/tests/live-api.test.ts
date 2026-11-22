@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ATTRIBUTION_PAGE_LIMIT,
   createLiveApi,
   failureStatus,
   isLiveRunId,
   LIVE_RUN_LIST_LIMIT,
+  parseAttributionQuery,
   parseListQuery,
   parseSnapshotQuery,
 } from "../lib/live-api";
+import { attributionPage } from "./attribution-fixtures";
 import {
   fakeFetch,
   resourceSample,
@@ -211,4 +214,33 @@ test("only UUIDs are accepted as live run IDs", () => {
   assert.ok(isLiveRunId(RUN_ID));
   assert.ok(!isLiveRunId("../../v1/runs"));
   assert.ok(!isLiveRunId("not-a-uuid"));
+});
+
+test("attributions are read by the selected UUID with the cursor and page limit", async () => {
+  const { fetchImpl, requested } = fakeFetch((url) =>
+    url.pathname === `/v1/live/runs/${RUN_ID}/attributions`
+      ? json(attributionPage(RUN_ID, []))
+      : json({ detail: "Live run not found" }, 404),
+  );
+  const api = createLiveApi(RUNS_URL, { fetchImpl });
+  const result = await api.attributions(RUN_ID, 7);
+  assert.ok(result.ok);
+  assert.equal(requested[0].searchParams.get("after"), "7");
+  assert.equal(
+    requested[0].searchParams.get("limit"),
+    String(ATTRIBUTION_PAGE_LIMIT),
+  );
+
+  const missing = await api.attributions(runIdFor(9));
+  assert.equal(missing.ok, false);
+  assert.equal(!missing.ok && missing.kind, "not_found");
+
+  assert.equal(
+    parseAttributionQuery(new URLSearchParams({ limit: "257" })).success,
+    false,
+  );
+  assert.deepEqual(parseAttributionQuery(new URLSearchParams()).data, {
+    after: 0,
+    limit: ATTRIBUTION_PAGE_LIMIT,
+  });
 });

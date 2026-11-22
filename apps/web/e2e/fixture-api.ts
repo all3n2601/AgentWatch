@@ -14,7 +14,13 @@ import {
 
 type JsonObject = Record<string, unknown>;
 type Snapshot = JsonObject & { records: { sequence: number }[] };
-type RunState = FixtureRun & { index: number; reads: number[] };
+type RunState = FixtureRun & {
+  index: number;
+  reads: number[];
+  attributionIndex: number;
+  attributionReads: number[];
+};
+type AttributionRow = { sequence: number };
 
 const runs = new Map<string, RunState>();
 const savedRuns = new Map<string, SavedRun>();
@@ -74,6 +80,42 @@ function snapshotPage(snapshot: Snapshot, after: number, limit: number) {
   };
 }
 
+/** B03 paging: rows after `after`, oldest first; `next_cursor` only when more rows remain. */
+function attributionsPage(
+  page: { attributions: AttributionRow[] } & JsonObject,
+  after: number,
+  limit: number,
+) {
+  const remaining = page.attributions
+    .filter((row) => row.sequence > after)
+    .sort((a, b) => a.sequence - b.sequence);
+  const attributions = remaining.slice(0, limit);
+  return {
+    ...page,
+    attributions,
+    next_cursor:
+      remaining.length > limit
+        ? attributions[attributions.length - 1].sequence
+        : null,
+  };
+}
+
+function serveAttributions(res: http.ServerResponse, run: RunState, url: URL) {
+  const after = Number(url.searchParams.get("after") ?? 0);
+  const limit = Number(url.searchParams.get("limit") ?? 50);
+  run.attributionReads.push(after);
+  const state = run.attributions?.[run.attributionIndex];
+  if (!state)
+    return send(res, 503, { detail: "No scripted attributions for this run" });
+  if ("status" in state)
+    return send(
+      res,
+      state.status,
+      state.body ?? { detail: "Scripted failure" },
+    );
+  return send(res, 200, attributionsPage(state.page, after, limit));
+}
+
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -103,7 +145,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       const fixture = fixtureRunSchema.safeParse(await bodyOf(req));
       if (!fixture.success)
         return send(res, 400, { detail: fixture.error.message });
-      runs.set(parts[2], { ...fixture.data, index: 0, reads: [] });
+      runs.set(parts[2], {
+        ...fixture.data,
+        index: 0,
+        reads: [],
+        attributionIndex: 0,
+        attributionReads: [],
+      });
       return send(res, 204);
     }
     if (!run) return send(res, 404, { detail: "No such fixture run" });
@@ -111,8 +159,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       run.index = Math.min(run.index + 1, run.states.length - 1);
       return send(res, 200, { index: run.index });
     }
+    if (req.method === "POST" && parts[3] === "advance-attributions") {
+      const last = (run.attributions?.length ?? 1) - 1;
+      run.attributionIndex = Math.min(run.attributionIndex + 1, last);
+      return send(res, 200, { index: run.attributionIndex });
+    }
     if (req.method === "GET" && parts[3] === "reads")
       return send(res, 200, run.reads);
+    if (req.method === "GET" && parts[3] === "attribution-reads")
+      return send(res, 200, run.attributionReads);
     return send(res, 404, { detail: "Unknown control request" });
   }
 
@@ -126,6 +181,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       : send(res, 404, { detail: "Run not found" });
   }
   if (parts.join("/") === "v1/live/runs") return send(res, 200, listRuns(url));
+  if (
+    parts.length === 5 &&
+    parts.slice(0, 3).join("/") === "v1/live/runs" &&
+    parts[4] === "attributions"
+  ) {
+    const run = runs.get(parts[3]);
+    return run
+      ? serveAttributions(res, run, url)
+      : send(res, 404, { detail: "Live run not found" });
+  }
   if (parts.length === 4 && parts[0] === "v1" && parts[2] === "runs") {
     const run = runs.get(parts[3]);
     if (!run) return send(res, 404, { detail: "Live run not found" });

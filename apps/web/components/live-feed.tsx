@@ -15,6 +15,7 @@ import {
   Timer,
   Waypoints,
 } from "lucide-react";
+import { LiveAttributionView } from "@/components/live-attribution";
 import {
   LiveGaps,
   LiveRunStatus,
@@ -692,12 +693,17 @@ export function liveRunTabs(live: LiveRunState) {
     timeline: <LiveTimelineView run={run} />,
     resources: <LiveResourcesView run={run} />,
     evidence: <LiveEvidenceView runId={feed.runId} run={run} />,
+    // Polls its own route while mounted, so hosts mount it only while its tab is open.
+    attribution: (
+      <LiveAttributionView runId={feed.runId} runOpen={!runClosed(feed)} />
+    ),
   };
 }
 
 /**
  * One live run's status, timeline, resources and evidence stacked, read by UUID. For views
- * without tabs; the Live and Run pages show the same panels as tabs.
+ * without tabs; the Live and Run pages show the same panels as tabs. Attribution is left out:
+ * it polls only while its tab is open, and a stacked view has no tab to close.
  */
 export function LiveRunDetail({ runId }: { runId: string }) {
   const live = useLiveRun(runId);
@@ -848,6 +854,13 @@ function SelectedRun({ runId }: { runId: string }) {
                 lazy: true,
               },
               { id: "evidence", label: "Evidence", content: tabs.evidence },
+              // Lazy: it polls only while open, including its slow full re-read.
+              {
+                id: "attribution",
+                label: "Attribution",
+                content: tabs.attribution,
+                lazy: true,
+              },
             ]
           : [
               {

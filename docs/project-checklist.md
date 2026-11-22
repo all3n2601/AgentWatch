@@ -1087,6 +1087,22 @@ frozen evaluation sets without tuning against them.
   2026-11-12: what the dashboard must show (model identity and promotion state, abstention as
   its own state, missing telemetry beside the prediction, the excess fraction as an estimate)
   is in the [serving contract](model-serving-contract.md); no UI change yet.
+  2026-11-22 (F03, branch `feature/verdict-evidence`, not pushed or merged): live runs gain an
+  Attribution tab on `/live` and on a live run's page, read by UUID from
+  `GET /v1/live/runs/{UUID}/attributions` through `/api/live/runs/[runId]/attributions`. Each
+  terminal step shows the rules verdict beside the model outcome; measured queue, execution and
+  CPU time; the excess fraction as an estimate; calibrated confidence and threshold; abstention
+  as "Uncertain", never `none`; telemetry status, coverage and missing inputs; and rules,
+  training, calibration and feature versions with the not-promoted label. Mixed evidence is
+  rules and model naming different resources, or `evidence_changed`; comparisons are counted per
+  serving key and feature version, never across keys. Contradictory or invalid rows show as
+  malformed while the others render. The tab polls only while open: every 2 s while the run is
+  open, plus a re-read from `after=0` every 30 s. Verified with synthetic fixtures only:
+  `apps/web/tests/attribution-{view,poll}.test.ts` and `live-api.test.ts` (286 web unit tests
+  passed), and `apps/web/e2e/attribution-evidence.spec.ts` (missing versus zero, uncertainty,
+  mixed evidence, compatible comparisons, draining, not found versus empty, no page overflow at
+  390, 720, 768 and 1440 px; full Playwright suite 72 passed). Open: checking against a running
+  worker with a real model pair, and saved runs, which have no attribution endpoint.
 
 **Exit test:** Report accuracy/macro F1, regression MAE, clean-run false positives, and calibration.
 Validate missing features and model load failures. Measure time from step completion to visible

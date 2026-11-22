@@ -492,7 +492,7 @@ export function buildRunDetail(view: RunView): RunDetailModel {
     const { snapshot } = view;
     const steps = liveSteps(snapshot);
     const notes = [
-      "Live runs record which resource each step ran on and its timings. No per-step attribution of waiting is stored, so none is shown.",
+      "Live runs record which resource each step ran on and its timings. Served step attributions (rules verdict and model outcome) are on the Attribution tab; this diagnosis does not use them.",
     ];
     if (snapshot.reason) notes.push(`Run state reason: ${snapshot.reason}`);
     if (snapshot.gaps.length > 0)
