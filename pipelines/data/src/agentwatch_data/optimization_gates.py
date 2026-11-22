@@ -72,6 +72,8 @@ JOURNAL_FILE = "live-journal.jsonl"
 MAX_JOURNAL_BYTES = 64 * 1024 * 1024
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 MAX_VERDICT_BYTES = 4 * 1024 * 1024
+# The agent's admission overhead measurement (agentwatch_agent.admission_overhead).
+ADMISSION_PROTOCOL = "admission-overhead-v1"
 # Gates whose threshold is zero occurrences: one observed failure decides them on any sample.
 ZERO_TOLERANCE_GATES = ("failures_and_timeouts", "quality", "starvation_and_leaks")
 
@@ -343,49 +345,40 @@ def read_record(root: Path, file: str) -> dict:
 # --- Experiment-wide gates ----------------------------------------------------------------
 
 
-def instrumentation_gate(verdict: dict | None, model: str, limits: Thresholds) -> dict:
-    """The A07 overhead verdict for this experiment's model, when one was given."""
-    threshold = limits.max_median_instrumentation_overhead
+def overhead_gate(
+    name: str, verdict: dict | None, model: str, threshold: float, *, admission: bool
+) -> dict:
+    """An overhead verdict's group for this experiment's model, when a verdict was given.
+
+    Admission groups (`admission-overhead-v1`) judge the admission gate and every other
+    protocol the instrumentation gate, so one verdict file can never stand in for the other.
+    """
     if verdict is None:
-        return gate(
-            "instrumentation_overhead",
-            NOT_EVALUATED,
-            "no overhead verdict was given",
-            None,
-            threshold,
-        )
+        return gate(name, NOT_EVALUATED, "no overhead verdict was given", None, threshold)
     groups = [
         group
         for group in verdict.get("groups") or []
         if group.get("settings", {}).get("model") == model
+        and (group.get("settings", {}).get("protocol") == ADMISSION_PROTOCOL) == admission
     ]
     if len(groups) != 1:
         return gate(
-            "instrumentation_overhead",
+            name,
             NOT_EVALUATED,
-            f"the overhead verdict has {len(groups)} groups for model {model}, not one",
+            f"the verdict has {len(groups)} matching groups for model {model}, not one",
             None,
             threshold,
         )
     status = OVERHEAD_VERDICTS.get(groups[0].get("verdict"))
     if status is None:
         raise GateInputError(f"Unknown overhead verdict {groups[0].get('verdict')!r}")
+    protocol = groups[0]["settings"].get("protocol")
     return gate(
-        "instrumentation_overhead",
+        name,
         status,
-        f"A07 verdict {groups[0]['verdict']} for {model}",
+        f"{protocol} verdict {groups[0]['verdict']} for {model}",
         groups[0]["verdict"],
         threshold,
-    )
-
-
-def admission_gate(limits: Thresholds) -> dict:
-    return gate(
-        "admission_overhead",
-        NOT_EVALUATED,
-        "no measurement of admission overhead with unchanged limits exists",
-        None,
-        limits.max_median_admission_overhead,
     )
 
 
@@ -493,21 +486,46 @@ def promotion(candidates: list[dict], contract: OptimizationContract) -> dict:
     }
 
 
-def evaluate(root: Path, contract_path: Path, overhead_verdict: Path | None = None) -> dict:
+def read_verdict(path: Path | None) -> dict | None:
+    if path is None:
+        return None
+    verdict = parse_json(read_bounded_text(path, MAX_VERDICT_BYTES, GateInputError))
+    if not isinstance(verdict, dict):
+        raise GateInputError(f"{path.name} is not a JSON object")
+    return verdict
+
+
+def evaluate(
+    root: Path,
+    contract_path: Path,
+    overhead_verdict: Path | None = None,
+    admission_verdict: Path | None = None,
+) -> dict:
     contract = load_optimization_contract(contract_path)
     limits = load_thresholds(contract_path, contract)
     root = root.resolve()
     manifest = read_manifest(root / MANIFEST_FILE, contract)
     comparison = compare(root, contract)
-    verdict = None
-    if overhead_verdict is not None:
-        verdict = parse_json(read_bounded_text(overhead_verdict, MAX_VERDICT_BYTES, GateInputError))
-        if not isinstance(verdict, dict):
-            raise GateInputError("The overhead verdict is not a JSON object")
+    model = manifest.model["name"]
     files = {
         batch["batch_id"]: batch["file"] for batch in comparison["batches"] if batch["accepted"]
     }
-    shared = [admission_gate(limits), instrumentation_gate(verdict, manifest.model["name"], limits)]
+    shared = [
+        overhead_gate(
+            "admission_overhead",
+            read_verdict(admission_verdict),
+            model,
+            limits.max_median_admission_overhead,
+            admission=True,
+        ),
+        overhead_gate(
+            "instrumentation_overhead",
+            read_verdict(overhead_verdict),
+            model,
+            limits.max_median_instrumentation_overhead,
+            admission=False,
+        ),
+    ]
     candidates = []
     for name in sorted({item["candidate"] for item in comparison["comparisons"]}):
         items = [item for item in comparison["comparisons"] if item["candidate"] == name]
@@ -546,7 +564,7 @@ def evaluate(root: Path, contract_path: Path, overhead_verdict: Path | None = No
         "promotion": promotion(candidates, contract),
         "limitations": [
             "Describes the declared workload, model and host; not a general causal improvement",
-            "Admission overhead has no measurement, so no candidate can pass every gate yet",
+            "Without an admission overhead verdict, no candidate can pass every gate",
             "Starvation and leaks are judged on candidate batches; the baseline has no limits",
         ],
     }
@@ -557,10 +575,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("experiment", type=Path)
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--overhead-verdict", type=Path, help="A07 overhead-verdict.json")
+    parser.add_argument(
+        "--admission-verdict", type=Path, help="overhead-verdict.json of admission-overhead-v1"
+    )
     parser.add_argument("--output", type=Path, help=f"report directory (default {DEFAULT_REPORTS})")
     args = parser.parse_args(argv)
     try:
-        report = evaluate(args.experiment, args.contract, args.overhead_verdict)
+        report = evaluate(
+            args.experiment, args.contract, args.overhead_verdict, args.admission_verdict
+        )
     except (ManifestError, GateInputError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

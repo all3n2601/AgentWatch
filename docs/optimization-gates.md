@@ -4,7 +4,8 @@ Status: O06 gate evaluation, implemented 2026-11-22 on branch `feature/optimizat
 and verified on synthetic experiments only. The contract is still proposed, so nothing is
 promoted, and no hardware experiment has been judged. Nothing here is an optimization result.
 
-`make optimization-gates EXPERIMENT=<dir> [OVERHEAD_VERDICT=<A07 overhead-verdict.json>]`
+`make optimization-gates EXPERIMENT=<dir> [OVERHEAD_VERDICT=<A07 overhead-verdict.json>]
+[ADMISSION_VERDICT=<admission overhead-verdict.json>]`
 recomputes the experiment's [comparison record](optimization-evidence.md) and applies every
 gate of [the optimization contract](optimization-contract.md). It writes
 `.data/reports/optimization/<first 12 hex of the manifest hash>/gates.json`, next to
@@ -29,8 +30,8 @@ Each gate is `pass`, `fail`, `inconclusive` (the evidence cannot decide it) or
 | `failures_and_timeouts` | Both | No new failure or timeout, counted over every pair with two accepted records |
 | `quality` | Both | No task passing at baseline fails with the candidate; unknown acceptance is inconclusive |
 | `baseline_stability` | Both | For each frozen task, the coefficient of variation of its root step's total duration over the baseline batches of complete pairs (completed, warm tasks, from each run's journal) is at most `max_baseline_root_step_cv`. A missing journal or a task with fewer than two durations is inconclusive |
-| `admission_overhead` | Experiment | Not evaluated: no measurement with unchanged limits exists yet |
-| `instrumentation_overhead` | Experiment | The A07 overhead verdict's group for this experiment's model: `within_budget` passes, `over_budget` fails, otherwise inconclusive; not evaluated without a verdict or with no single matching group |
+| `admission_overhead` | Experiment | The [admission overhead](admission-overhead.md) verdict's `admission-overhead-v1` group for this experiment's model: `within_budget` passes, `over_budget` fails, otherwise inconclusive; not evaluated without a verdict or with no single matching group |
+| `instrumentation_overhead` | Experiment | The same, from the A07 overhead verdict's group of any other protocol for this model. A verdict file given for the wrong gate has no matching group, so it is never used |
 
 ## Candidate outcome and promotion
 
@@ -53,10 +54,10 @@ that one passes by luck.
 ## Known limitations
 
 - Synthetic experiments only (`pipelines/data/tests/test_optimization_gates.py`).
-- Admission overhead has no measurement, so today no candidate can reach `pass`; a
-  measurement of runs under unchanged limits is needed first.
-- The instrumentation gate trusts the A07 verdict file it is given; it matches by model only,
-  not by host or sampling settings.
+- Without an admission overhead verdict (`make agent-admission-overhead`, then
+  `make overhead-verdict`), no candidate can reach `pass`.
+- Both overhead gates trust the verdict files they are given; they match a group by protocol
+  and model only, not by host or sampling settings.
 - Root step durations are read from each run's journal (`live-journal.jsonl`, the root step
   `agent-run`), a format the data pipeline declares separately from the agent.
 - A pass describes the declared workload, model and host only, not a general causal

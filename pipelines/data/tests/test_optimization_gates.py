@@ -281,3 +281,61 @@ def test_the_command_writes_the_report_and_refuses_a_bad_manifest(tmp_path, caps
     assert "inference-1: inconclusive" in capsys.readouterr().out
     (tmp_path / "experiment" / "manifest.json").write_text("{}")
     assert main([str(tmp_path / "experiment"), "--contract", str(CONTRACT_PATH)]) == 1
+
+
+ADMISSION = {
+    "settings": {"protocol": "admission-overhead-v1", "model": MODEL["name"]},
+    "verdict": "within_budget",
+}
+INSTRUMENTATION = {
+    "settings": {"protocol": "resource-sampling-overhead-v2", "model": MODEL["name"]},
+    "verdict": "within_budget",
+}
+
+
+def write_verdict(path, *groups):
+    path.write_text(json.dumps({"groups": list(groups)}))
+    return path
+
+
+def test_with_both_overhead_verdicts_every_gate_can_pass(tmp_path):
+    experiment(tmp_path / "experiment")
+    report = evaluate(
+        tmp_path / "experiment",
+        CONTRACT_PATH,
+        overhead_verdict=write_verdict(tmp_path / "a07.json", INSTRUMENTATION),
+        admission_verdict=write_verdict(tmp_path / "admission.json", ADMISSION),
+    )
+    shared = {item["gate"]: item["status"] for item in report["experiment_gates"]}
+    assert shared == {"admission_overhead": PASS, "instrumentation_overhead": PASS}
+    entry, _gates = by_condition(report)
+    assert (entry["outcome"], entry["reasons"]) == (PASS, [])
+    # A pass under a proposed contract still promotes nothing.
+    assert report["promotion"]["promoted"] is None
+
+
+def test_a_verdict_given_for_the_other_gate_is_not_used(tmp_path):
+    experiment(tmp_path / "experiment")
+    # Each file holds only the other protocol's group, so neither gate finds its own.
+    report = evaluate(
+        tmp_path / "experiment",
+        CONTRACT_PATH,
+        overhead_verdict=write_verdict(tmp_path / "a07.json", ADMISSION),
+        admission_verdict=write_verdict(tmp_path / "admission.json", INSTRUMENTATION),
+    )
+    shared = {item["gate"]: item for item in report["experiment_gates"]}
+    for name in ("admission_overhead", "instrumentation_overhead"):
+        assert shared[name]["status"] == NOT_EVALUATED
+        assert "0 matching groups" in shared[name]["reason"]
+
+
+def test_an_over_budget_admission_verdict_fails_the_candidate(tmp_path):
+    experiment(tmp_path / "experiment")
+    over = ADMISSION | {"verdict": "over_budget"}
+    report = evaluate(
+        tmp_path / "experiment",
+        CONTRACT_PATH,
+        admission_verdict=write_verdict(tmp_path / "admission.json", over),
+    )
+    entry, _gates = by_condition(report)
+    assert entry["outcome"] == FAIL and "experiment: admission_overhead" in entry["reasons"]

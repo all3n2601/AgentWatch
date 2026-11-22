@@ -83,9 +83,9 @@ compare-optimization: ## Validate an optimization experiment's batches and write
 	$(if $(EXPERIMENT),,$(error Set EXPERIMENT to an optimization experiment directory))
 	$(DATA).optimization_comparison compare "$(EXPERIMENT)" --contract $(OPTIMIZATION_CONTRACT)
 
-optimization-gates: ## Judge an optimization experiment against the contract's gates and write gates.json (EXPERIMENT=dir, OVERHEAD_VERDICT=A07 overhead-verdict.json optional)
+optimization-gates: ## Judge an optimization experiment against the contract's gates and write gates.json (EXPERIMENT=dir; OVERHEAD_VERDICT and ADMISSION_VERDICT, overhead-verdict.json files, optional)
 	$(if $(EXPERIMENT),,$(error Set EXPERIMENT to an optimization experiment directory))
-	$(DATA).optimization_gates "$(EXPERIMENT)" --contract $(OPTIMIZATION_CONTRACT) $(if $(OVERHEAD_VERDICT),--overhead-verdict "$(OVERHEAD_VERDICT)")
+	$(DATA).optimization_gates "$(EXPERIMENT)" --contract $(OPTIMIZATION_CONTRACT) $(if $(OVERHEAD_VERDICT),--overhead-verdict "$(OVERHEAD_VERDICT)") $(if $(ADMISSION_VERDICT),--admission-verdict "$(ADMISSION_VERDICT)")
 
 overhead-verdict: ## Judge one host's saved overhead/sampling-overhead attempts against the instrumentation overhead budget (ATTEMPTS="a.json b.json" HOST_LABEL=name; paths with spaces: run the module directly)
 	$(if $(ATTEMPTS),,$(error Set ATTEMPTS to overhead.json or sampling-overhead.json files))

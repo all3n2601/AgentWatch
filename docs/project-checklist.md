@@ -1291,9 +1291,10 @@ from M3 through M6 and do not renumber the implementation milestones above.
   `[gates]` table (same file, checked by hash), including baseline stability from each
   baseline run's root step and the A07 overhead verdict for the experiment's model. Zero-tolerance
   failures decide a candidate on any sample; otherwise insufficient evidence or an unstable
-  baseline is inconclusive. Nothing is promoted while the contract is proposed, and admission
-  overhead is not evaluated (no measurement exists), so no candidate can pass yet. Verified on
-  synthetic experiments only: `pipelines/data/tests/test_optimization_gates.py`.
+  baseline is inconclusive. Nothing is promoted while the contract is proposed. Admission
+  overhead comes from an `admission-overhead-v1` verdict (`ADMISSION_VERDICT`); without one it
+  is not evaluated and no candidate can pass. Verified on synthetic experiments only:
+  `pipelines/data/tests/test_optimization_gates.py`.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.
