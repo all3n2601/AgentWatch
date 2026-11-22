@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset sweep-truth optimization-schedule compare-optimization overhead-verdict rule-baseline train-candidates calibrate score-held-out measure-attribution-latency freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment agent-capacity-sweep agent-capacity-sweep-steps sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset sweep-truth optimization-schedule optimization-plan optimization-run compare-optimization overhead-verdict rule-baseline train-candidates calibrate score-held-out measure-attribution-latency freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment agent-capacity-sweep agent-capacity-sweep-steps sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -78,6 +78,17 @@ OPTIMIZATION_CONTRACT ?= pipelines/model/optimization-contract.toml
 optimization-schedule: ## Print the seeded batch order an optimization experiment's manifest preregisters (MANIFEST=<experiment>/manifest.json)
 	$(if $(MANIFEST),,$(error Set MANIFEST to an optimization experiment's manifest.json))
 	$(DATA).optimization_comparison schedule --manifest "$(MANIFEST)" --contract $(OPTIMIZATION_CONTRACT)
+
+optimization-plan: ## Print the manifest blocks this host preregisters: task digests, queue bounds, identity (TASKS="a b", HOST_ID=label, OPTIMIZATION_ARGS="--model-backend vllm ..." optional)
+	$(if $(TASKS),,$(error Set TASKS to the frozen task names))
+	$(if $(HOST_ID),,$(error Set HOST_ID to a neutral label for this machine))
+	uv run --package agentwatch-agent python -m agentwatch_agent optimization-plan $(foreach task,$(TASKS),--task $(task)) --host-id $(HOST_ID) $(OPTIMIZATION_ARGS)
+
+optimization-run: ## Derive the schedule, then run an optimization experiment's batches in order (EXPERIMENT=dir with manifest.json, HOST_ID=label, OPTIMIZATION_ARGS optional; resumes at the first unrecorded slot)
+	$(if $(EXPERIMENT),,$(error Set EXPERIMENT to an optimization experiment directory))
+	$(if $(HOST_ID),,$(error Set HOST_ID to the label the manifest's hardware block names))
+	$(DATA).optimization_comparison schedule --manifest "$(EXPERIMENT)/manifest.json" --contract $(OPTIMIZATION_CONTRACT) > "$(EXPERIMENT)/schedule.json.tmp" && mv "$(EXPERIMENT)/schedule.json.tmp" "$(EXPERIMENT)/schedule.json"
+	uv run --package agentwatch-agent python -m agentwatch_agent optimization-run "$(EXPERIMENT)" --host-id $(HOST_ID) $(OPTIMIZATION_ARGS)
 
 compare-optimization: ## Validate an optimization experiment's batches and write its paired comparison record (EXPERIMENT=dir; an invalid manifest exits 1)
 	$(if $(EXPERIMENT),,$(error Set EXPERIMENT to an optimization experiment directory))

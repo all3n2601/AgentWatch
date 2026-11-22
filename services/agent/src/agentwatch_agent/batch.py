@@ -8,8 +8,13 @@ apply across them. Limits still count this process only (ADR 0010).
 `batch.json` records each run's outcome and the process's admission state. Its wall time
 covers the batch from the first run's setup to the last run's closure, so it includes setup
 and closure work; the per-task times compared by an evaluation come from each run's steps.
+
+Runs may be submitted at preregistered offsets from the batch's start (the optimization
+contract's arrival schedule). Each run's submission is ticked on the batch's shared clock just
+before it starts; a run cancelled while it waits for its offset is never started.
 """
 
+import math
 import threading
 import time
 from collections.abc import Sequence
@@ -28,12 +33,19 @@ MAX_BATCH_RUNS = 32
 # After the runs close, permits held by abandoned model requests are given this long to come
 # back; any still held are reported, never assumed returned.
 DEFAULT_DRAIN_SECONDS = 30.0
+# An arrival schedule longer than this is a mistake, not a workload: a run's deadline starts at
+# its submission, so a late offset would only hold the batch open.
+MAX_START_OFFSET_SECONDS = 3600.0
+CANCELLED_BEFORE_SUBMISSION = "Cancelled before its preregistered submission"
 
 
 @dataclass
 class BatchRun:
     index: int
     runner: AgentRunner
+    start_offset_seconds: float = 0.0
+    # Tick on the batch's clock when the run was handed to its runner; None if never submitted.
+    submitted_tick_ns: int | None = None
     outcome: RunOutcome | None = None
     not_started: RunNotStarted | None = None
     error: BaseException | None = None
@@ -50,6 +62,8 @@ class BatchRun:
             "index": self.index,
             "task_id": self.runner.task.task_id,
             "output_dir": str(self.runner.output_dir),
+            "start_offset_seconds": self.start_offset_seconds,
+            "submitted_tick_ns": self.submitted_tick_ns,
             "run_id": str(outcome.run_id) if outcome else self.runner.evidence.get("run_id"),
             "state": self.state(),
             "reason": outcome.reason if outcome else None,
@@ -79,9 +93,25 @@ class AgentBatch:
         *,
         watcher: PolicyWatcher | None = None,
         drain_seconds: float = DEFAULT_DRAIN_SECONDS,
+        start_offsets_seconds: Sequence[float] | None = None,
     ):
         if not 1 <= len(runners) <= MAX_BATCH_RUNS:
             raise ValueError(f"A batch has from 1 to {MAX_BATCH_RUNS} runs")
+        offsets = (
+            [0.0] * len(runners) if start_offsets_seconds is None else list(start_offsets_seconds)
+        )
+        if len(offsets) != len(runners):
+            raise ValueError("A batch needs one start offset per run")
+        for offset in offsets:
+            if (
+                isinstance(offset, bool)
+                or not isinstance(offset, int | float)
+                or not math.isfinite(offset)
+                or not 0 <= offset <= MAX_START_OFFSET_SECONDS
+            ):
+                raise ValueError(
+                    f"Start offsets are seconds from 0 to {MAX_START_OFFSET_SECONDS:g}"
+                )
         clocks = {id(runner.clock) for runner in runners}
         if len(clocks) != 1:
             raise ValueError("A batch's runs share one clock domain: this process's")
@@ -92,7 +122,10 @@ class AgentBatch:
         if controllers != {id(controller)}:
             raise ValueError("A batch's runs share one admission controller, or none")
         self.batch_id = str(uuid4())
-        self.runs = [BatchRun(index, runner) for index, runner in enumerate(runners, 1)]
+        self.runs = [
+            BatchRun(index, runner, float(offset))
+            for index, (runner, offset) in enumerate(zip(runners, offsets, strict=True), 1)
+        ]
         self.controller = controller
         self.watcher = watcher
         self.output_dir = output_dir
@@ -128,7 +161,9 @@ class AgentBatch:
                 raise not_started from error
         started = time.monotonic()
         threads = [
-            threading.Thread(target=self._run_one, args=(run,), name=f"batch-run-{run.index}")
+            threading.Thread(
+                target=self._run_one, args=(run, started), name=f"batch-run-{run.index}"
+            )
             for run in self.runs
         ]
         for thread in threads:
@@ -168,8 +203,14 @@ class AgentBatch:
         )
 
     @staticmethod
-    def _run_one(run: BatchRun) -> None:
+    def _run_one(run: BatchRun, batch_started: float) -> None:
+        delay = batch_started + run.start_offset_seconds - time.monotonic()
+        # The runner's own cancellation event, so a signal or cancel during the wait is seen.
+        if delay > 0 and run.runner.cancellation.event.wait(delay):
+            run.not_started = RunNotStarted(CANCELLED_BEFORE_SUBMISSION, "setup")
+            return
         try:
+            run.submitted_tick_ns = run.runner.clock.tick()
             run.outcome = run.runner.run()
         except RunNotStarted as not_started:
             run.not_started = not_started

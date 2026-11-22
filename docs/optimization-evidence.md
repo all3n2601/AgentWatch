@@ -157,7 +157,7 @@ the step dataset, the replay labels or `step-features-v1`.
 
 | Consumer | Uses |
 |---|---|
-| Benoy (O06) | Writes manifests and batch records in these formats, runs the schedule, then applies the contract's gates to comparison records. The improvement statistic and its interval should be confirmed against the contract before gating |
+| Benoy (O06) | Writes manifests and batch records in these formats, runs the schedule ([the batch runner](optimization-run.md)), then applies the contract's gates to comparison records. The improvement statistic and its interval should be confirmed against the contract before gating |
 | Akshayaa (O03) | Records the applied policy version, per-control admission waits, starvation and leaked permits per batch, so those fields stop being `null` |
 | Meghana and Allen (O05) | Show comparison records by manifest hash and batch UUID, with unpaired, rejected and missing evidence shown as such |
 | Rohit | Reproducible evaluation inputs: the manifest hash, contract hash and seed reproduce the schedule, bootstrap and record |

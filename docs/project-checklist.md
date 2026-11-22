@@ -1285,6 +1285,20 @@ from M3 through M6 and do not renumber the implementation milestones above.
   agent policy tests against PostgreSQL (WSL 410 passed, Windows attribution modules 119
   passed), web lint, typecheck, unit tests, production build and Playwright
   `concurrency-controls` and `run-policy` specs (21 passed). No hardware run; O06 stays open.
+  2026-11-22 batch runner (branch `test/optimization-evaluation`,
+  [running an optimization experiment](optimization-run.md)): `make optimization-plan` prints
+  the manifest blocks this host preregisters (task configuration digests, queue bounds, and the
+  measured model, hardware, power and fixture state); `make optimization-run` derives the
+  schedule and runs its slots in order, applying and reading back each batch's policy,
+  submitting tasks at the preregistered offsets in one runner process, running the contended
+  condition's injectors and writing one `opt-batch-v1` record per attempted batch. Records are
+  never overwritten, any batch that does not complete stops the experiment, and the baseline is
+  restored and read back on every exit. A host that no longer matches the manifest stops before
+  the batch is attempted. `AgentRunner.configuration_digest()` gives the digest before a run.
+  Verified with test doubles only: `services/agent/tests/test_optimization_run.py`,
+  `test_host_identity.py`, and `tests/contract/test_optimization_batch_records.py`, whose
+  records the O04 checker accepts for both conditions (it found that a pre-run digest omitted
+  the task's tools). No hardware run; gate evaluation not yet implemented.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.
