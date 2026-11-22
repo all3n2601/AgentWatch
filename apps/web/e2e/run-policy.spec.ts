@@ -117,14 +117,14 @@ test("a run shows its own linked versions, unknown applied limits and the curren
   });
   await page.goto(`/live?liveRun=${runId}`);
   await expect(policy(page)).toContainText(
-    "v1 (Inference: 1 · Tests: no limit) → v2 (Inference: 1 · Tests: 2)",
+    "v1 (Inference: 1 on Ollama · Tests: no limit) → v2 (Inference: 1 on Ollama · Tests: 2)",
   );
   await expect(policy(page)).not.toContainText("Policy while open");
   await expect(policy(page)).toContainText(
     "Not available from the API. Each agent runner records the limits it applied",
   );
   await expect(policy(page)).toContainText(
-    "Version 2: Inference: 1 · Tests: 2",
+    "Version 2: Inference: 1 on Ollama · Tests: 2",
   );
   await expect(policy(page)).toContainText("Current policy read at");
 });
@@ -139,7 +139,7 @@ test("the run page's Live status tab shows the same run's policy", async ({
   });
   await page.goto(`/runs/${runId}?tab=status`);
   await expect(policy(page)).toContainText(
-    "v1 (Inference: 1 · Tests: no limit) → v2 (Inference: 1 · Tests: 2)",
+    "v1 (Inference: 1 on Ollama · Tests: no limit) → v2 (Inference: 1 on Ollama · Tests: 2)",
   );
   await expect(policy(page)).toContainText("Not recorded");
 });
@@ -199,11 +199,15 @@ test("a late answer for the previous run never replaces the selected run's polic
     .filter({ hasText: second.slice(0, 8) })
     .click();
   await expect(page).toHaveURL(new RegExp(`liveRun=${second}`));
-  await expect(policy(page)).toContainText("v2 (Inference: 1 · Tests: 2)");
+  await expect(policy(page)).toContainText(
+    "v2 (Inference: 1 on Ollama · Tests: 2)",
+  );
 
   release();
   await expect.poll(() => answered).toContain(first);
-  await expect(policy(page)).toContainText("v2 (Inference: 1 · Tests: 2)");
+  await expect(policy(page)).toContainText(
+    "v2 (Inference: 1 on Ollama · Tests: 2)",
+  );
   await expect(policy(page)).not.toContainText("v1 (");
 });
 
@@ -220,7 +224,7 @@ test("a policy change while the same run stays active replaces the current polic
   const answered = await servePolicies(page, runs, () => current);
   await page.goto(`/live?liveRun=${runId}`);
   await expect(policy(page)).toContainText(
-    "Version 2: Inference: 1 · Tests: 2",
+    "Version 2: Inference: 1 on Ollama · Tests: 2",
   );
 
   // An operator changes the policy; the run stays open and links the new version.
@@ -228,10 +232,12 @@ test("a policy change while the same run stays active replaces the current polic
   current = controls(v3);
   await page.clock.runFor(RUN_POLICY_REFRESH_MS);
   await expect(policy(page)).toContainText(
-    "Version 3: Inference: 4 · Tests: 2",
+    "Version 3: Inference: 4 on Ollama · Tests: 2",
   );
   await expect(policy(page)).not.toContainText("Version 2:");
-  await expect(policy(page)).toContainText("→ v3 (Inference: 4 · Tests: 2)");
+  await expect(policy(page)).toContainText(
+    "→ v3 (Inference: 4 on Ollama · Tests: 2)",
+  );
   expect(answered.reads.current).toBeGreaterThanOrEqual(2);
   expect(answered.reads.full).toBe(0);
 });

@@ -23,11 +23,15 @@ request or test job was limited; each run's admission records are.
 - Version 0 is the synthesized baseline: `action: "baseline"`, empty limits, and null
   `operator`, `reason`, `request_id` and `created_at`. It has no database row. Stored versions
   start at 1 and are never updated or deleted; the versions table is the append-only audit log.
-- Every version records `controlled_services` (`inference_requests` → `ollama`, class `inference`;
-  `test_jobs` → `agentwatch-agent-runner`, class `cpu_sandbox`) and
-  `enforcement_scope: "runner_process"`. These are stored per row, so a later change to the target
-  definition never rewrites history. Per-process resource IDs are unknown when a policy is set;
-  O03 must record them per admission.
+- Every version records `controlled_services` (`inference_requests` → the model server its
+  inference limit names, `ollama` or `vllm`, class `inference`; `test_jobs` →
+  `agentwatch-agent-runner`, class `cpu_sandbox`) and `enforcement_scope: "runner_process"`.
+  These are stored per row, so a later change to the target definition never rewrites history.
+  Per-process resource IDs are unknown when a policy is set; O03 records them per admission.
+- A runner applies the inference limit only to model requests sent to the service the version
+  names, so a version naming `vllm` limits vLLM runners and leaves Ollama runners unlimited, and
+  the reverse. Version 0 names `ollama`
+  ([ADR 0015](adr/0015-policy-versions-name-their-inference-service.md)).
 
 ## API
 
@@ -38,17 +42,20 @@ request or test job was limited; each run's admission records are.
 | `POST /v1/policies/concurrency/{target}/versions` | `PolicyChangeResult`: `201` new version, `200` exact retry (`created: false`) |
 | `GET /v1/live/runs/{UUID}/policy` | `RunPolicy`: `{run_id, target, applicable, versions}`; `404` for an unknown run |
 
-The change body is `{request_id, expected_version, action, limits?, restored_from?, operator,
-reason}`. `operator` is bounded free text (max 128) and `reason` is required (max 512); no login
+The change body is `{request_id, expected_version, action, limits?, restored_from?,
+inference_service?, operator, reason}`. `operator` is bounded free text (max 128) and `reason` is required (max 512); no login
 system exists, so `operator` is self-reported.
 
 | Action | Body shape | Resulting limits |
 | --- | --- | --- |
-| `set` | At least one limit; no `restored_from` | The supplied limits |
-| `disable` | Neither `limits` nor `restored_from` | Empty (baseline limits) |
-| `restore` | `restored_from`; no `limits` | Copied from that earlier version; version 0 is allowed and equals disable |
+| `set` | At least one limit; no `restored_from`; optional `inference_service` (`ollama` or `vllm`) | The supplied limits, on the named service, or the active version's service when omitted |
+| `disable` | Neither `limits`, `restored_from` nor `inference_service` | Empty (baseline limits); keeps the active version's service |
+| `restore` | `restored_from`; neither `limits` nor `inference_service` | Copied from that earlier version together with the service it named; version 0 is allowed and equals disable on `ollama` |
 
 Restoring creates a new version that references `restored_from`; the earlier row is untouched.
+An omitted `inference_service` is not stored in the request body, so clients that predate the
+field (added 2026-11-21) send, store and retry identical bodies; an explicit `null` means the
+same as omitting it.
 A nonexistent `restored_from` returns `422`. The table also enforces that `restored_from` is set
 exactly on `restore` rows.
 
@@ -98,6 +105,11 @@ a `disable` version is not mislabelled.
 - The limit inputs start from the active limits, so a `set` keeps a control the operator did
   not change. The form previews the change per control and refuses a `set` equal to the
   active limits. Disable and restore ask for confirmation.
+- An "Inference service" choice (Ollama or vLLM, `SegmentedControl`) starts from the active
+  version's service and is sent with every `set`; changing only the service is a change. Limit
+  text names the service of an inference limit ("Inference: 1 on vLLM"). A version naming a
+  service the page cannot offer shows that ID, and a `set` then omits `inference_service`, so
+  the service keeps it.
 - A `409` is reported as a stale `expected_version` or a reused `request_id`. The service has
   no error code, so the page matches its `detail` text; anything else is a generic conflict.
   After a conflict or a stored change the page reads the policy again.

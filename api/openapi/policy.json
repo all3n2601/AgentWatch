@@ -406,6 +406,21 @@
             ],
             "title": "Restored From"
           },
+          "inference_service": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ollama",
+                  "vllm"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inference Service"
+          },
           "operator": {
             "type": "string",
             "maxLength": 128,

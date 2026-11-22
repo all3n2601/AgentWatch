@@ -11,10 +11,17 @@ from agentwatch_sdk.live import Identifier, LiveModel, Reason, ResourceClass
 
 PolicyTarget = Literal["coding-agent"]
 RUNNER_SERVICE_ID = "agentwatch-agent-runner"
+# Model servers a coding-agent inference limit can name. A runner enforces the limit only on
+# requests to the service the version names, so each version records which one it limits.
+InferenceService = Literal["ollama", "vllm"]
+DEFAULT_INFERENCE_SERVICE: InferenceService = "ollama"
 SUPPORTED_TARGETS: dict[str, dict[str, Any]] = {
     "coding-agent": {
         "controlled_services": {
-            "inference_requests": {"service_id": "ollama", "resource_class": "inference"},
+            "inference_requests": {
+                "service_id": DEFAULT_INFERENCE_SERVICE,
+                "resource_class": "inference",
+            },
             "test_jobs": {"service_id": RUNNER_SERVICE_ID, "resource_class": "cpu_sandbox"},
         },
         "enforcement_scope": "runner_process",
@@ -55,6 +62,9 @@ class PolicyChange(LiveModel):
     action: PolicyAction
     limits: PolicyLimits | None = None
     restored_from: Version | None = None
+    # The model server a `set` limits. Omitted keeps the active version's service; disable
+    # keeps it too, and restore takes the restored version's.
+    inference_service: InferenceService | None = None
     operator: Identifier
     reason: Reason
 
@@ -74,7 +84,19 @@ class PolicyChange(LiveModel):
                 raise ValueError("restore needs restored_from")
             if self.limits is not None:
                 raise ValueError("restore does not accept limits")
+        if self.action != "set" and self.inference_service is not None:
+            raise ValueError(f"{self.action} does not accept inference_service; only set does")
         return self
+
+    @model_serializer(mode="wrap")
+    def omit_unset_inference_service(self, handler: SerializerFunctionWrapHandler):
+        # An omitted service is sent and stored as an absent key, so requests from clients that
+        # predate the field, and their stored idempotency records, keep the same body. The
+        # return type is left unannotated so the published schema keeps the declared properties.
+        dumped = handler(self)
+        if dumped.get("inference_service") is None:
+            dumped.pop("inference_service", None)
+        return dumped
 
 
 class ControlledService(LiveModel):

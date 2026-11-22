@@ -4,6 +4,7 @@ import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FieldRow, GlassInput } from "@/components/ui/field-row";
 import { InsetCard } from "@/components/ui/glass-panel";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { AlertBanner } from "@/components/widgets/alert-banner";
 import { KeyValueList } from "@/components/widgets/evidence-lists";
@@ -15,6 +16,7 @@ import {
 import {
   MAX_OPERATOR_LENGTH,
   MAX_REASON_LENGTH,
+  type InferenceService,
   type PolicyChangeRequest,
   type PolicyControls,
   type PolicyVersionView,
@@ -25,9 +27,13 @@ import {
   controlsConsistent,
   EFFECTIVE_LIMITS_UNAVAILABLE,
   formFromLimits,
+  INFERENCE_SERVICE_OPTIONS,
+  inferenceServiceId,
+  knownInferenceService,
   limitChanges,
   limitsFromForm,
   policyStatusText,
+  serviceLabel,
   versionLimitsText,
 } from "@/lib/policy-view";
 
@@ -170,6 +176,9 @@ export function ConcurrencyControls() {
     operator: "",
     reason: "",
   });
+  // The model server a `set` names; null when the active version names one this page cannot
+  // offer, and a `set` then omits it so the service keeps the active one.
+  const [service, setService] = useState<InferenceService | null>(null);
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [retry, setRetry] = useState<ChangeIntent | null>(null);
@@ -191,6 +200,7 @@ export function ConcurrencyControls() {
       ...old,
       ...formFromLimits(result.data.active.limits),
     }));
+    setService(knownInferenceService(result.data.active));
   }, []);
   const load = async () => show(await policyApi.controls());
 
@@ -209,8 +219,14 @@ export function ConcurrencyControls() {
     ? { ok: true as const, data: loaded.data.active }
     : loaded;
   const proposed = active ? limitsFromForm(form) : null;
+  const services = {
+    active: active ? inferenceServiceId(active) : undefined,
+    proposed: service ?? undefined,
+  };
   const changes =
-    active && proposed?.ok ? limitChanges(active.limits, proposed.limits) : [];
+    active && proposed?.ok
+      ? limitChanges(active.limits, proposed.limits, services)
+      : [];
 
   async function submit(intent: ChangeIntent) {
     if (busy.current) return;
@@ -267,11 +283,11 @@ export function ConcurrencyControls() {
         detail: limits.message,
         fields: limits.fields,
       });
-    if (limitChanges(active.limits, limits.limits).length === 0)
+    if (limitChanges(active.limits, limits.limits, services).length === 0)
       return setNotice({
         tone: "danger",
         title: "Not saved",
-        detail: `These limits match active version ${active.version}; nothing to change.`,
+        detail: `These limits and this inference service match active version ${active.version}; nothing to change.`,
         fields: ["inference", "tests"],
       });
     const who = attribution();
@@ -280,6 +296,7 @@ export function ConcurrencyControls() {
         action: "set",
         expected_version: active.version,
         limits: limits.limits,
+        ...(service !== null && { inference_service: service }),
         ...who,
       });
   }
@@ -464,6 +481,26 @@ export function ConcurrencyControls() {
                 {...field("inference")}
               />
             </FieldRow>
+            <FieldRow
+              label="Inference service"
+              labelId={`${idPrefix}-service-label`}
+            >
+              {service !== null ? (
+                <SegmentedControl
+                  value={service}
+                  onValueChange={setService}
+                  options={INFERENCE_SERVICE_OPTIONS}
+                  labelledBy={`${idPrefix}-service-label`}
+                  disabled={pending || !active}
+                />
+              ) : (
+                <p className="text-sm text-ink-muted">
+                  {active
+                    ? `${serviceLabel(inferenceServiceId(active) ?? "Not recorded")}; kept, because this page cannot set it`
+                    : "Not read yet"}
+                </p>
+              )}
+            </FieldRow>
             <FieldRow label="Test jobs" htmlFor={`${idPrefix}-tests`}>
               <GlassInput
                 type="text"
@@ -491,10 +528,12 @@ export function ConcurrencyControls() {
           </div>
           <p className="text-sm text-ink-muted">
             The inputs start from the active limits; leave a limit empty for no
-            limit. A new version is recorded and linked to coding-agent runs
-            open now or registered later. Each agent runner process applies it
-            to model requests and test jobs it admits afterwards; work already
-            running is not stopped. Changes are checked against version{" "}
+            limit. The inference limit applies only to model requests a runner
+            sends to the chosen service; runners using the other service are not
+            limited by it. A new version is recorded and linked to coding-agent
+            runs open now or registered later. Each agent runner process applies
+            it to model requests and test jobs it admits afterwards; work
+            already running is not stopped. Changes are checked against version{" "}
             {active ? active.version : "–"}.
           </p>
           {active && proposed?.ok && (
