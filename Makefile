@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset sweep-truth optimization-schedule compare-optimization overhead-verdict rule-baseline train-candidates calibrate score-held-out measure-attribution-latency freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment agent-capacity-sweep agent-capacity-sweep-steps sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset sweep-truth optimization-schedule compare-optimization optimization-gates overhead-verdict rule-baseline train-candidates calibrate score-held-out measure-attribution-latency freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment agent-capacity-sweep agent-capacity-sweep-steps sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -82,6 +82,10 @@ optimization-schedule: ## Print the seeded batch order an optimization experimen
 compare-optimization: ## Validate an optimization experiment's batches and write its paired comparison record (EXPERIMENT=dir; an invalid manifest exits 1)
 	$(if $(EXPERIMENT),,$(error Set EXPERIMENT to an optimization experiment directory))
 	$(DATA).optimization_comparison compare "$(EXPERIMENT)" --contract $(OPTIMIZATION_CONTRACT)
+
+optimization-gates: ## Judge an optimization experiment against the contract's gates and write gates.json (EXPERIMENT=dir, OVERHEAD_VERDICT=A07 overhead-verdict.json optional)
+	$(if $(EXPERIMENT),,$(error Set EXPERIMENT to an optimization experiment directory))
+	$(DATA).optimization_gates "$(EXPERIMENT)" --contract $(OPTIMIZATION_CONTRACT) $(if $(OVERHEAD_VERDICT),--overhead-verdict "$(OVERHEAD_VERDICT)")
 
 overhead-verdict: ## Judge one host's saved overhead/sampling-overhead attempts against the instrumentation overhead budget (ATTEMPTS="a.json b.json" HOST_LABEL=name; paths with spaces: run the module directly)
 	$(if $(ATTEMPTS),,$(error Set ATTEMPTS to overhead.json or sampling-overhead.json files))
