@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset sweep-truth optimization-schedule compare-optimization overhead-verdict rule-baseline train-candidates calibrate score-held-out measure-attribution-latency freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-experiment agent-capacity-sweep agent-capacity-sweep-steps sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
+.PHONY: help bootstrap dev dev-web dev-api dev-worker demo-cpu demo-coding record-coding record-cpu import-runs add-evidence dataset validate-dataset split-dataset slice-dataset sweep-truth optimization-schedule compare-optimization overhead-verdict rule-baseline train-candidates calibrate score-held-out measure-attribution-latency freeze-dataset-schema version-dataset retire-release push-dataset pull-dataset fetch-dataset dataset-status dataset-merge-driver requirements pipeline-setup pipeline-run pipeline-ui llm-up llm-down vllm-up vllm-down dcgm-up dcgm-down gpm-exporter agent-tasks agent-run agent-batch agent-resend agent-overhead agent-admission-overhead agent-experiment agent-capacity-sweep agent-capacity-sweep-steps sandbox-image sandbox-verify sandbox-sweep infra-up infra-down format lint typecheck test check
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "AgentWatch commands:\n"} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -276,6 +276,9 @@ agent-resend: ## Resend a run journal after a live API outage (JOURNAL=path)
 
 agent-overhead: ## Measure agent instrumentation overhead (live API must be running)
 	uv run --package agentwatch-agent python -m agentwatch_agent overhead
+
+agent-admission-overhead: ## Measure what policy admission adds to a real model request, limits unchanged (live API must be running; ADMISSION_ARGS="--model-backend vllm" optional)
+	uv run --package agentwatch-agent python -m agentwatch_agent admission-overhead $(ADMISSION_ARGS)
 
 agent-experiment: ## Replay a task cleanly and under bounded CPU/inference/retrieval/mixed contention (AGENT_TASK=name, SOURCE=run dir to replay)
 	uv run --package agentwatch-agent python -m agentwatch_agent experiment --task $(AGENT_TASK) $(if $(SOURCE),--source "$(SOURCE)")

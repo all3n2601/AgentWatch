@@ -30,11 +30,10 @@ STABLE = [1.0 + 0.01 * ((i % 5) - 2) for i in range(30)]
 
 def attempt_document(baseline, treated, protocol="agent-overhead-v1", **changes) -> dict:
     """A synthetic attempt whose repetitions alternate baseline, treated, baseline, ..."""
-    names = (
-        ("uninstrumented", "instrumented")
-        if protocol == "agent-overhead-v1"
-        else ("unsampled", "sampled")
-    )
+    names = {
+        "agent-overhead-v1": ("uninstrumented", "instrumented"),
+        "admission-overhead-v1": ("admission_off", "admission_on"),
+    }.get(protocol, ("unsampled", "sampled"))
     measurements = []
     for pair, (base, test) in enumerate(zip(baseline, treated, strict=True)):
         measurements.append({"index": 2 * pair, "condition": names[0], "wall_seconds": base})
@@ -408,3 +407,39 @@ def test_an_over_budget_verdict_still_exits_0_with_the_report_written(tmp_path):
     assert main([*args, "--output", str(output)]) == 0
     report = json.loads((output / "overhead-verdict.json").read_text(encoding="utf-8"))
     assert report["groups"][0]["verdict"] == "over_budget"
+
+
+def test_admission_measurements_are_judged_against_the_admission_budget(tmp_path):
+    # A copy of the contract whose admission budget alone is 20%: +10% with admission passes it,
+    # while the same walls measured as sampling overhead exceed the 5% instrumentation budget.
+    contract_path = tmp_path / "contract.toml"
+    contract_path.write_text(
+        CONTRACT_PATH.read_text().replace(
+            "max_median_admission_overhead = 0.05", "max_median_admission_overhead = 0.2"
+        )
+    )
+    contract = load_optimization_contract(contract_path)
+    treated = [wall * 1.10 for wall in STABLE]
+    for protocol, expected in (
+        ("admission-overhead-v1", "within_budget"),
+        ("resource-sampling-overhead-v1", "over_budget"),
+    ):
+        paths = [
+            write(
+                tmp_path / protocol / f"attempt-{n}.json",
+                attempt_document(STABLE, treated, protocol),
+            )
+            for n in (1, 2)
+        ]
+        report = evaluate(paths, contract, HOST)
+        assert report["budget"]["max_median_admission_overhead"] == 0.2
+        (group,) = report["groups"]
+        assert group["settings"]["protocol"] == protocol
+        assert group["verdict"] == expected, group
+
+
+def test_admission_conditions_must_alternate_off_then_on(tmp_path):
+    document = attempt_document(STABLE, STABLE, "admission-overhead-v1")
+    document["measurements"][0]["condition"] = "admission_on"
+    with pytest.raises(AttemptError, match="alternate admission_off, admission_on"):
+        read_attempt(write(tmp_path / "a" / "admission-overhead.json", document))

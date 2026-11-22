@@ -30,6 +30,7 @@ line-length = 100
 [tool.pytest.ini_options]
 # Worker tests build the attribution package's synthetic model pair (`import pair_fixtures`), so
 # its tests folder must resolve however the suite is selected, not only after it was collected.
-pythonpath = ["packages/attribution/tests"]
+# The optimization records contract test (tests/contract) drives the agent with its test doubles.
+pythonpath = ["packages/attribution/tests", "services/agent/tests"]
 testpaths = ["packages/features/tests", "packages/attribution/tests", "services/worker/tests", "services/sandbox/tests", "services/agent/tests", "services/injectors/tests", "pipelines/data/tests", "pipelines/model/tests", "deploy/diagnostics/tests", "tests/contract"]
 

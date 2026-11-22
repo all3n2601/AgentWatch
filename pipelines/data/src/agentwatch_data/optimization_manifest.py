@@ -95,6 +95,8 @@ class OptimizationContract:
     # Instrumentation overhead gates (instrumentation-overhead-acceptance-v1).
     max_median_instrumentation_overhead: float
     max_baseline_cv: float
+    # The admission overhead gate, judged the same way (admission-overhead-v1 measurements).
+    max_median_admission_overhead: float
 
 
 @dataclass(frozen=True)
@@ -204,6 +206,7 @@ def load_optimization_contract(path: Path) -> OptimizationContract:
             enforcement_scope=policy["enforcement_scope"],
             max_median_instrumentation_overhead=gates["max_median_instrumentation_overhead"],
             max_baseline_cv=gates["max_baseline_root_step_cv"],
+            max_median_admission_overhead=gates["max_median_admission_overhead"],
         )
     except KeyError as error:
         raise ManifestError(f"Optimization contract lacks {error.args[0]!r}") from error
