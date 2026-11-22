@@ -1,8 +1,9 @@
 # Running an optimization experiment
 
-Status: O06 batch runner, implemented 2026-11-22 on branch `test/optimization-evaluation` and
-verified with test doubles only. No experiment has been run on hardware yet, and the contract
-is still proposed. Nothing here is an optimization result.
+Status: O06 batch runner, implemented 2026-11-22 on branch `test/optimization-evaluation`,
+verified with test doubles and by a short development pilot on the GPU laptop
+([below](#development-pilot-2026-11-22)). The contract is still proposed, and no evaluation has
+run. Nothing here is an optimization result.
 
 The runner executes a preregistered experiment ([experiment evidence](optimization-evidence.md))
 on one host and writes the batch records that `make compare-optimization` validates. It applies
@@ -21,10 +22,12 @@ derives the schedule, never evaluates gates, and never tunes anything between ba
 
    It prints the manifest's `workload.tasks` (each task's content hash and configuration
    digest), `queue_bounds`, `model`, `hardware`, `power` and `state`. Every flag that changes
-   a run's configuration digest (model, sampling interval, run timeout, queue bounds, the GPU
-   evidence flags `--dcgm-url`, `--gpm-file`, `--vllm-traces-file`) must be passed the same
-   way to the run in step 3. The host label is chosen by the operator and must not contain a
-   user or host name.
+   a run's configuration digest (model, sampling interval, run timeout, the GPU evidence flags
+   `--dcgm-url`, `--gpm-file`, `--vllm-traces-file`) must be passed the same way to the run in
+   step 3. The queue-bound flags are the exception: they are plan-only, and the run takes the
+   bounds from the manifest's `queue_bounds` (it rejects `--inference-max-queue` and the other
+   queue flags). The host label is chosen by the operator and must not contain a user or host
+   name.
 2. **Preregister.** Write `<experiment>/manifest.json` once, before any batch, from those blocks
    plus the contract's version and hash, purpose, arrivals, conditions and injectors, policies,
    and repetitions. Never edit it afterwards: every record names its hash.
@@ -32,7 +35,8 @@ derives the schedule, never evaluates gates, and never tunes anything between ba
    sleep disabled):
 
    ```bash
-   make optimization-run EXPERIMENT=<experiment> HOST_ID=rtx5070-laptop-wsl2 OPTIMIZATION_ARGS="<the same flags>"
+   make optimization-run EXPERIMENT=<experiment> HOST_ID=rtx5070-laptop-wsl2 \
+     OPTIMIZATION_ARGS="--model-backend vllm --run-timeout 450"
    ```
 
    This derives `schedule.json` from the manifest, checks that the checkout's tasks and this
@@ -89,11 +93,48 @@ completed batch, recorded as they happened.
 - On every exit the policy is restored to the baseline (no limits) and read back. The command
   exits non-zero, and the log says so, if that restore failed; check Controls.
 
+## Development pilot (2026-11-22)
+
+A pilot on development tasks only, run to check the runner on hardware and to time batches
+before the evaluation is preregistered. It is not evaluation evidence and was never compared.
+
+- **Host:** `rtx5070-laptop-wsl2` (RTX 5070 Laptop, WSL2), on AC power with the Balanced plan,
+  sleep disabled, no other GPU process. vLLM `Qwen/Qwen3-1.7B@70d244cc86cc`, `max_num_seqs` 2,
+  `gpu_memory_utilization` 0.6. Runner commit `fde030f`, `opt-contract-v1` (proposed).
+- **Design:** two `development` manifests with tasks `fix-mean-empty-r1` (offset 0 s) and
+  `fix-median-even-r1` (offset 5 s), candidates `inference-1` and `tests-1`, 10 pairs and 1
+  warm-up, contended condition `prefill-flood-openai-chat-v1` at concurrency 2 and 2,048
+  prompt tokens. One manifest lists the contended condition first, the other the clean one.
+  Each was stopped with `SIGINT` after 7 records, so its 8th slot is recorded as `not_started`
+  (cancelled during the injector ramp) or `aborted` (cancelled as its tasks finished).
+- **Runner behaviour:** all 14 completed batches applied, read back and enforced their policy,
+  matched the manifest's host identity, applied and cleaned up their injectors, and had no
+  starved admissions or leaked permits. Every run passed its task's tests. The baseline was
+  restored and read back after each stop.
+- **Batch times** (first submission to last finish):
+
+  | Condition | Configuration | Batches | Batch time |
+  |---|---|---|---|
+  | contended | baseline | 4 | 14.8–15.0 s |
+  | contended | `inference-1` | 2 | 22.3–22.4 s; permit waits up to 4.3 s |
+  | contended | `tests-1` | 1 | 14.9 s |
+  | clean | baseline | 4 | 7.2–7.5 s |
+  | clean | `inference-1`, `tests-1` | 3 | 7.2 s |
+
+- **Planning consequences:** a slot takes about 18 s (clean) to 30 s (contended) with the
+  default 10 s pacing, so a full evaluation schedule takes well under an hour. Repeat batches
+  differed by about 1%. Under the prefill flood, which reaches vLLM without admission, a limit
+  on the agent's own requests only queues them behind the flood; `inference-1` was 50% slower
+  in both of its pairs. The design is kept unchanged for the evaluation, and a failing or
+  inconclusive candidate is reported as such.
+- **Evidence:** `.data/o06-pilot-20261122/{contended-first,clean-first}/` (manifest, schedule,
+  batch records, run evidence, runner log), not committed.
+
 ## Known limitations
 
-- Verified with test doubles only (`services/agent/tests/test_optimization_run.py`, and
+- Verified with test doubles (`services/agent/tests/test_optimization_run.py`, and
   `tests/contract/test_optimization_batch_records.py`, which passes every record through the
-  O04 checker). No hardware experiment has run.
+  O04 checker) and the development pilot above. No evaluation has run.
 - Power is read from Windows (natively or through WSL interop). A native Linux or macOS host
   cannot run an experiment yet.
 - Supported injectors: `prefill-flood-openai-chat-v1` (kind `inference`) and

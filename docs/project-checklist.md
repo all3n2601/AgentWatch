@@ -1299,6 +1299,15 @@ from M3 through M6 and do not renumber the implementation milestones above.
   `test_host_identity.py`, and `tests/contract/test_optimization_batch_records.py`, whose
   records the O04 checker accepts for both conditions (it found that a pre-run digest omitted
   the task's tools). No hardware run; gate evaluation not yet implemented.
+  2026-11-22 development pilot on the GPU laptop (runner `fde030f`, vLLM `max_num_seqs` 2,
+  [results](optimization-run.md#development-pilot-2026-11-22)): two development manifests
+  (`fix-mean-empty-r1`, `fix-median-even-r1`; candidates `inference-1`, `tests-1`; prefill flood
+  at concurrency 2), each stopped after 7 records; 14 batches completed with every run passing,
+  policies enforced and restored, no starvation or leaks. Contended baseline batches took
+  14.8–15.0 s and `inference-1` batches 22.3–22.4 s; clean batches 7.2–7.5 s for every
+  configuration. Development evidence only, never compared. It also showed that
+  `optimization-run` takes queue bounds from the manifest only, so the run's documented flags
+  were corrected. The evaluation keeps this design and waits for contract acceptance.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.
