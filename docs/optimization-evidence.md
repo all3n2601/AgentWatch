@@ -63,7 +63,7 @@ Every key is required unless noted; unknown keys are rejected.
 | `repetitions` | `{pairs, warmup_batches, seed}`; at most 1,000 pairs and 100 warm-ups | `pairs ≥ min_paired_batches`, and `pairs × tasks ≥ min_completed_tasks_per_configuration` |
 
 Factorial experiments, which change both controls at once, are outside this format. The
-contract reports them as not evaluated in v1.
+contract reports them as not evaluated in this version.
 
 **Policy hash.** A policy is identified by
 `canonical_sha256({target: "coding-agent", limits, enforcement_scope})`. Two stored O02 policy
@@ -167,8 +167,8 @@ the step dataset, the replay labels or `step-features-v1`.
 - Synthetic experiments only. The real producer (O06) and admission statistics (O03) don't exist yet.
 - An evaluation manifest needs at least four frozen tasks that share no name with its
   development tasks. The agent has six, so two remain for development.
-- "Frozen evaluation tasks are used once" is not enforced across experiments: no registry of
-  used evaluation tasks exists yet.
+- "Frozen evaluation tasks are used once per experiment" is not enforced: no registry of
+  used evaluation tasks exists yet, so a later experiment that reuses them must say so itself.
 - Hardware, model and power identity, and the applied injector set, are declared by the
   producer. O04 compares them with the manifest but cannot measure them. Task content and
   configuration are verified against each run's agent evidence.
