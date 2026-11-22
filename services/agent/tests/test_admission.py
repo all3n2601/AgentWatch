@@ -285,6 +285,25 @@ def test_the_inference_limit_never_applies_to_a_service_the_policy_does_not_name
     assert controls["test_jobs"]["enforced"] is True
 
 
+def test_a_version_naming_vllm_limits_vllm_runners_and_not_ollama_ones():
+    vllm_policy = policy_version(1, inference=1, inference_service="vllm")
+    made = controller(vllm_policy, inference_service="vllm")
+    first = acquire(made, "inference_requests", "first")
+    assert (first.snapshot()["enforced"], first.snapshot()["limit"]) == (True, 1)
+    with pytest.raises(AdmissionRefused):
+        acquire(made, "inference_requests", "refused", deadline=time.monotonic() + 0.05)
+    first.release()
+    assert made.summary()["controls"]["inference_requests"]["enforced"] is True
+    # The same version leaves an Ollama runner's model requests alone.
+    ollama = controller(vllm_policy, inference_service="ollama")
+    held = [acquire(ollama, "inference_requests", step) for step in ("a", "b")]
+    record = held[1].snapshot()
+    assert (record["enforced"], record["limit"]) == (False, None)
+    assert "vllm" in record["not_enforced_reason"] and "ollama" in record["not_enforced_reason"]
+    for permit in held:
+        permit.release()
+
+
 def test_release_is_idempotent_and_claimed_work_returns_its_own_permit():
     made = controller(policy_version(1, inference=1))
     permit = acquire(made, "inference_requests", "call")

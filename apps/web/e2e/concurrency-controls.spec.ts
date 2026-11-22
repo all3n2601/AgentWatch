@@ -168,6 +168,10 @@ test("a limit set from the keyboard keeps the other control's active limit", asy
 
   await page.getByLabel("Inference requests").focus();
   await page.keyboard.type("1");
+  // The service choice sits between the two limits and keeps the active version's service.
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("radio", { name: "Ollama" })).toBeFocused();
+  await expect(page.getByRole("radio", { name: "Ollama" })).toBeChecked();
   await page.keyboard.press("Tab");
   await expect(page.getByLabel("Test jobs")).toBeFocused();
   await page.keyboard.press("Tab");
@@ -185,10 +189,91 @@ test("a limit set from the keyboard keeps the other control's active limit", asy
       action: "set",
       expected_version: 1,
       limits: { inference_requests: 1, test_jobs: 2 },
+      inference_service: "ollama",
       operator: "review",
       reason: "Limit model requests",
     }),
   ]);
+});
+
+test("the inference limit can be moved to vLLM and the service is shown", async ({
+  page,
+}) => {
+  const vllm = policyVersion(
+    3,
+    { inference_requests: 1, test_jobs: 2 },
+    {
+      controlled_services: {
+        ...v2.controlled_services,
+        inference_requests: { service_id: "vllm", resource_class: "inference" },
+      },
+    },
+  );
+  const writes = await servePolicy(page, {
+    reads: [
+      { active: v2, versions: [v2, v1, v0] },
+      { active: vllm, versions: [vllm, v2, v1, v0] },
+    ],
+    writes: [{ status: 201, json: { created: true, policy: vllm } }],
+  });
+  await page.goto("/controls");
+  await expect(
+    page.getByText("Version 2: Inference: 1 on Ollama · Tests: 2"),
+  ).toBeVisible();
+  // Changing only the service is a change: the limits stay, the server they limit moves.
+  await page.getByRole("radio", { name: "vLLM" }).click();
+  await expect(
+    page.getByText("Inference service: Ollama → vLLM"),
+  ).toBeVisible();
+  await attribute(page);
+  await page.getByRole("button", { name: "Set limits" }).click();
+  await expect(page.getByText("Saved as version 3.")).toBeVisible();
+  expect(writes).toEqual([
+    expect.objectContaining({
+      action: "set",
+      expected_version: 2,
+      limits: { inference_requests: 1, test_jobs: 2 },
+      inference_service: "vllm",
+    }),
+  ]);
+  await expect(
+    page.getByText("Version 3: Inference: 1 on vLLM · Tests: 2"),
+  ).toBeVisible();
+  await expect(page.getByRole("radio", { name: "vLLM" })).toBeChecked();
+  await expect(
+    page.getByRole("listitem").filter({ hasText: "v2" }),
+  ).toContainText("Inference: 1 on Ollama · Tests: 2");
+});
+
+test("a service this page cannot set is shown and kept", async ({ page }) => {
+  const other = policyVersion(
+    2,
+    { inference_requests: 1 },
+    {
+      controlled_services: {
+        ...v1.controlled_services,
+        inference_requests: {
+          service_id: "sglang",
+          resource_class: "inference",
+        },
+      },
+    },
+  );
+  const writes = await servePolicy(page, {
+    reads: [{ active: other, versions: [other, v1, v0] }],
+    writes: [{ status: 201, json: { created: true, policy: other } }],
+  });
+  await page.goto("/controls");
+  await expect(
+    page.getByText("sglang; kept, because this page cannot set it"),
+  ).toBeVisible();
+  await expect(page.getByRole("radio")).toHaveCount(0);
+  await page.getByLabel("Inference requests").fill("2");
+  await attribute(page);
+  await page.getByRole("button", { name: "Set limits" }).click();
+  await expect(page.getByText("Saved as version 2.")).toBeVisible();
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).not.toHaveProperty("inference_service");
 });
 
 test("limits equal to the active version are not saved", async ({ page }) => {
@@ -277,7 +362,7 @@ test("a stale version is rejected and the form reloads the latest limits", async
     page.getByText(/another change was recorded after this page read/i),
   ).toBeVisible();
   await expect(
-    page.getByText("Version 2: Inference: 1 · Tests: 2"),
+    page.getByText("Version 2: Inference: 1 on Ollama · Tests: 2"),
   ).toBeVisible();
   await expect(page.getByLabel("Inference requests")).toHaveValue("1");
   await expect(page.getByLabel("Test jobs")).toHaveValue("2");
@@ -347,7 +432,7 @@ test("an unconfirmed change is retried with the same request ID", async ({
   );
   // Retry says which change it resends.
   const resends =
-    "Set limits to Inference: 1 · Tests: 2, against version 1 (Check limits)";
+    "Set limits to Inference: 1 on Ollama · Tests: 2, against version 1 (Check limits)";
   await expect(page.getByText(resends)).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Retry" }),
