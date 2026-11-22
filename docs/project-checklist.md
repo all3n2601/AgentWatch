@@ -268,13 +268,16 @@ These can be completed before adding an agent.
   all completed, none rerun. GPU vLLM (`resource-sampling-overhead-v2`, DCGM + GPM probes):
   `within_budget`, attempts +2.63% [+1.42%, +3.52%] and +0.68% [−0.95%, +3.58%]. GPU Ollama
   (`resource-sampling-overhead-v1`): `inconclusive`, attempt 1 `within_budget` +1.40%
-  [−0.29%, +2.84%], attempt 2 `inconclusive` (−0.72%, baseline CV 0.716 from two
-  uninstrumented requests of 1.2–1.4 s; cause not identified). Identical replies in both
+  [−0.29%, +2.84%], attempt 2 `inconclusive` (−0.72%, baseline CV 0.716, driven by two
+  uninstrumented requests of 1.2–1.4 s; cause not identified, and they ran under the
+  deviation below). Identical replies in both
   conditions (43 tokens Ollama, 22 vLLM). Attempts `ollama-attempt-{1,2}` and
   `vllm-attempt-{1,2}`, both verdict reports and the settings notes were shared as
   `a07-gpu-evidence-20261120.zip` (not in the repository).
-  Display apps shared the laptop GPU. Open: CPU container attempts (Akshayaa), O01's budget
-  decision, other hosts, and live delivery under sustained sampling.
+  **Protocol deviation:** display apps shared the measured GPU in all four attempts (WSL2
+  laptop; the protocol requires nothing else on it during an attempt), so both GPU verdicts
+  carry this limitation and are not clean-condition results. Open: CPU container attempts
+  (Akshayaa), O01's budget decision, other hosts, and live delivery under sustained sampling.
 - [ ] Repeat experiments across more workload sizes and host loads; establish false-positive rates.
 - [ ] Verify task timeout/cancellation cleans up worker and child processes under failure.
 
