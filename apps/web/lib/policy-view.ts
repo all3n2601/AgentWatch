@@ -1,6 +1,8 @@
 import type { PolicyFailure, PolicyResult } from "./policy-api";
 import {
+  INFERENCE_SERVICES,
   MAX_POLICY_LIMIT,
+  type InferenceService,
   type PolicyControls,
   type PolicyLimitsView,
   type RunPolicyView,
@@ -9,18 +11,64 @@ import {
 // Display text for the concurrency policy. A failed or pending read must never read as
 // "No limits": only a policy the service returned can say that.
 
-export function limitsText(limits: PolicyLimitsView) {
+const SERVICE_LABELS: Record<InferenceService, string> = {
+  ollama: "Ollama",
+  vllm: "vLLM",
+};
+
+/** A model server's display name; an ID this page does not know is shown as it is. */
+export function serviceLabel(serviceId: string) {
+  return (SERVICE_LABELS as Record<string, string>)[serviceId] ?? serviceId;
+}
+
+/** The service options a `set` can name, in display order. */
+export const INFERENCE_SERVICE_OPTIONS = INFERENCE_SERVICES.map((value) => ({
+  value,
+  label: SERVICE_LABELS[value],
+}));
+
+type WithServices = {
+  controlled_services?: Record<string, { service_id: string }>;
+};
+
+/** The model server a version's inference limit names, as the service recorded it. */
+export function inferenceServiceId(policy: WithServices) {
+  return policy.controlled_services?.inference_requests?.service_id;
+}
+
+/** The recorded service when it is one a `set` can name; `null` for any other ID. */
+export function knownInferenceService(
+  policy: WithServices,
+): InferenceService | null {
+  const id = inferenceServiceId(policy);
+  return INFERENCE_SERVICES.find((service) => service === id) ?? null;
+}
+
+/**
+ * Limits as text. An inference limit names the model server it applies to, because a runner
+ * sending model requests to another server does not apply it.
+ */
+export function limitsText(
+  limits: PolicyLimitsView,
+  inferenceService?: string,
+) {
   const { inference_requests: inference, test_jobs: tests } = limits;
   if (inference === undefined && tests === undefined) return "No limits";
-  return `Inference: ${inference ?? "no limit"} · Tests: ${tests ?? "no limit"}`;
+  const on =
+    inference !== undefined && inferenceService
+      ? ` on ${serviceLabel(inferenceService)}`
+      : "";
+  return `Inference: ${inference ?? "no limit"}${on} · Tests: ${tests ?? "no limit"}`;
 }
 
 /** Limits of a returned version; only the synthesized version 0 is the baseline. */
-export function versionLimitsText(policy: {
-  version: number;
-  limits: PolicyLimitsView;
-}) {
-  const text = limitsText(policy.limits);
+export function versionLimitsText(
+  policy: {
+    version: number;
+    limits: PolicyLimitsView;
+  } & WithServices,
+) {
+  const text = limitsText(policy.limits, inferenceServiceId(policy));
   return policy.version === 0 ? `${text} (baseline)` : text;
 }
 
@@ -32,7 +80,9 @@ function failureText(failure: PolicyFailure) {
 
 /** The active policy, or why it is not known; `null` while loading. */
 export function policyStatusText(
-  result: PolicyResult<{ version: number; limits: PolicyLimitsView }> | null,
+  result: PolicyResult<
+    { version: number; limits: PolicyLimitsView } & WithServices
+  > | null,
 ) {
   if (result === null) return "Loading policy…";
   if (!result.ok) return failureText(result);
@@ -70,10 +120,11 @@ export function changeText(change: {
   expected_version: number;
   limits?: PolicyLimitsView;
   restored_from?: number;
+  inference_service?: InferenceService;
 }) {
   const what =
     change.action === "set"
-      ? `Set limits to ${limitsText(change.limits ?? {})}`
+      ? `Set limits to ${limitsText(change.limits ?? {}, change.inference_service)}`
       : change.action === "disable"
         ? "Disable all limits"
         : `Restore the limits of version ${change.restored_from ?? "unknown"}`;
@@ -99,8 +150,31 @@ export type LimitChange = {
   proposed: string;
 };
 
-/** Controls whose limit differs between the active version and a proposed one. */
+/**
+ * Controls whose limit differs between the active version and a proposed one, then the
+ * inference service when both are given and differ.
+ */
 export function limitChanges(
+  active: PolicyLimitsView,
+  proposed: PolicyLimitsView,
+  services: { active?: string; proposed?: string } = {},
+): LimitChange[] {
+  const service =
+    services.active !== undefined &&
+    services.proposed !== undefined &&
+    services.active !== services.proposed
+      ? [
+          {
+            control: "Inference service",
+            active: serviceLabel(services.active),
+            proposed: serviceLabel(services.proposed),
+          },
+        ]
+      : [];
+  return [...limitDifferences(active, proposed), ...service];
+}
+
+function limitDifferences(
   active: PolicyLimitsView,
   proposed: PolicyLimitsView,
 ): LimitChange[] {
