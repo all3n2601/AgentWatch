@@ -109,6 +109,15 @@ Checks beyond the shapes:
   `task_passed` as a boolean whenever it recorded an outcome and omits it for a run that never
   started, so a present `null`, string or number is malformed evidence and rejects the batch.
   The link must stay inside the experiment directory, with no symlinks.
+- **Applied policy.** The record's `policy` names what the experiment set; the linked run's
+  own admission evidence shows what the runner enforced. Each control's final state in
+  `admission.process.controls` (its `limit` when `enforced`, otherwise no limit), and the
+  `limit_at_arrival` of every request in `admissions`, must equal the slot's planned limits.
+  This holds for the baseline (no limit on any control) as well as for candidates. A run whose
+  `admission.status` is `not_configured` applied no limits. A policy version whose inference
+  limit names another model server than the runner uses, or one the runner had not yet read,
+  therefore rejects the batch instead of being measured as a candidate it never was. Evidence with no admission state cannot show its
+  limits and is rejected too.
 
 **Rejections.** A record that cannot be used is kept in the report, with the SHA-256 of the
 bytes that were parsed and one code. The codes:
@@ -117,7 +126,8 @@ bytes that were parsed and one code. The codes:
 - `model_mismatch`, `hardware_mismatch`, `power_mismatch`, `state_mismatch`;
 - `injection_mismatch`, `arrival_mismatch`, `order_mismatch`;
 - `task_mismatch` (not every frozen task exactly once), `task_identity_mismatch`,
-  `provenance_missing` (a started task links no agent evidence);
+  `provenance_missing` (a started task links no agent evidence), `policy_not_applied` (a
+  linked run did not enforce exactly the slot's limits, or records no admission state);
 - `duplicate_identity`: a shared batch ID or run ID; neither copy can be trusted, so all are rejected.
 
 ## Comparison record (`opt-comparison-v1`)
