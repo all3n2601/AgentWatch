@@ -17,6 +17,11 @@ given twice is refused. A completed attempt needs the declared 30 pairs. Failed 
 attempts saved without per-repetition walls are kept as `not_evaluated`, and a group in which
 nothing could be evaluated is `not_evaluated` too.
 
+The agent's `admission-overhead` measurements (`admission-overhead-v1`) are judged by the same
+rule against the contract's admission overhead budget (`max_median_admission_overhead`):
+`admission_off` takes the uninstrumented side of each pair and `admission_on` the instrumented
+one, so the report's "uninstrumented"/"instrumented" fields mean "without"/"with admission".
+
 Exit codes: 0 when the report was written, whatever the verdict (it is in the report and the
 printed summary); 1 when an attempt file, the host label or the contract is invalid, in which
 case nothing is written.
@@ -24,6 +29,7 @@ case nothing is written.
 
 import argparse
 import hashlib
+import json
 import math
 import re
 import statistics
@@ -57,7 +63,9 @@ CONDITIONS = {
     "agent-overhead-v1": ("uninstrumented", "instrumented"),
     "resource-sampling-overhead-v1": ("unsampled", "sampled"),
     "resource-sampling-overhead-v2": ("unsampled", "sampled"),
+    "admission-overhead-v1": ("admission_off", "admission_on"),
 }
+ADMISSION_PROTOCOL = "admission-overhead-v1"
 STATUSES = ("completed", "failed", "cancelled")
 WITHIN, OVER, INCONCLUSIVE, NOT_EVALUATED = (
     "within_budget",
@@ -159,6 +167,39 @@ def _settings(document: dict, version: str) -> dict:
     metrics = _probe_metrics(document)
     if metrics is not None:
         settings["probe_metrics"] = metrics
+    if version == ADMISSION_PROTOCOL:
+        settings |= _admission_settings(document)
+    return settings
+
+
+def _admission_settings(document: dict) -> dict:
+    """What an admission measurement ran under: the policy's limits, the service they name,
+    whether the inference limit was enforced, and the watcher's poll interval. Attempts that
+    differ in any of these measure different admission paths, so they never share a group."""
+    settings: dict = {}
+    if "policy_poll_seconds" in document:
+        settings["policy_poll_seconds"] = _setting_value(
+            document["policy_poll_seconds"], "policy_poll_seconds"
+        )
+    policy = document.get("policy")
+    if policy is None:
+        return settings  # the measurement failed before reading the policy
+    if not isinstance(policy, dict):
+        raise AttemptError("policy must be an object")
+    limits = policy.get("limits")
+    if not isinstance(limits, dict) or not all(
+        isinstance(value, int) and not isinstance(value, bool) for value in limits.values()
+    ):
+        raise AttemptError("policy.limits must map controls to integer limits")
+    enforced = policy.get("enforced")
+    if not isinstance(enforced, bool):
+        raise AttemptError("policy.enforced must be true or false")
+    settings["admission_limits"] = json.dumps(limits, sort_keys=True, separators=(",", ":"))
+    if policy.get("inference_service") is not None:
+        settings["admission_inference_service"] = _setting_value(
+            policy["inference_service"], "policy.inference_service"
+        )
+    settings["admission_inference_enforced"] = "enforced" if enforced else "not_enforced"
     return settings
 
 
@@ -203,6 +244,13 @@ def read_attempt(path: Path, number: int = 1) -> Attempt:
     )
 
 
+def budget_for(protocol: str, contract: OptimizationContract) -> float:
+    """The contract's budget for what a measurement protocol adds to the workload."""
+    if protocol == ADMISSION_PROTOCOL:
+        return contract.max_median_admission_overhead
+    return contract.max_median_instrumentation_overhead
+
+
 def _judge(
     attempt: Attempt, contract: OptimizationContract, seed: int
 ) -> tuple[str, str, float | None, tuple[float, float] | None, float | None]:
@@ -218,14 +266,12 @@ def _judge(
     interval = bootstrap(
         pairs, relative_increase, contract.bootstrap_resamples, contract.interval_level, seed
     )
-    budget = contract.max_median_instrumentation_overhead
+    budget = budget_for(attempt.settings["protocol"], contract)
     if len(pairs) < MIN_PAIRS:
         reason = f"{len(pairs)} pairs, fewer than the protocol's {MIN_PAIRS}"
         return INCONCLUSIVE, reason, increase, interval, cv
     if cv > contract.max_baseline_cv:
-        reason = (
-            f"Uninstrumented coefficient of variation {cv:.3f} exceeds {contract.max_baseline_cv}"
-        )
+        reason = f"Baseline coefficient of variation {cv:.3f} exceeds {contract.max_baseline_cv}"
         return INCONCLUSIVE, reason, increase, interval, cv
     if interval[1] <= budget:
         return WITHIN, f"Interval upper bound at most {budget}", increase, interval, cv
@@ -299,7 +345,13 @@ def evaluate(
     for settings, members in _grouped(attempts, host_label):
         entries = [attempt_entry(attempt, contract, seed) for attempt in members]
         groups.append(
-            {"settings": settings, "attempts": entries, "verdict": combined_verdict(entries)}
+            {
+                "settings": settings,
+                # The budget this group was judged against, chosen by its protocol.
+                "budget": budget_for(settings["protocol"], contract),
+                "attempts": entries,
+                "verdict": combined_verdict(entries),
+            }
         )
     return {
         "protocol": PROTOCOL,
@@ -311,6 +363,7 @@ def evaluate(
         },
         "budget": {
             "max_median_instrumentation_overhead": contract.max_median_instrumentation_overhead,
+            "max_median_admission_overhead": contract.max_median_admission_overhead,
             "max_baseline_cv": contract.max_baseline_cv,
             "min_completed_attempts": MIN_COMPLETED_ATTEMPTS,
             "min_pairs": MIN_PAIRS,

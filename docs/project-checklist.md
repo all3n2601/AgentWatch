@@ -1344,6 +1344,15 @@ from M3 through M6 and do not renumber the implementation milestones above.
   agent policy tests against PostgreSQL (WSL 410 passed, Windows attribution modules 119
   passed), web lint, typecheck, unit tests, production build and Playwright
   `concurrency-controls` and `run-policy` specs (21 passed). No hardware run; O06 stays open.
+  2026-11-22 admission overhead measurement (branch `feature/admission-overhead`,
+  [admission overhead](admission-overhead.md)): `make agent-admission-overhead` alternates the
+  runner's first model request without and with admission (a policy watcher and an inference
+  permit under the active policy, limits unchanged and re-read at the end), protocol
+  `admission-overhead-v1`. `overhead-verdict` judges it against the contract's
+  `max_median_admission_overhead`, which `OptimizationContract` now loads. Verified with test
+  doubles only: `services/agent/tests/test_admission_overhead.py`,
+  `tests/contract/test_admission_overhead_attempts.py` (the verdict reads a saved measurement)
+  and `pipelines/data/tests/test_overhead_verdict.py`. No hardware measurement yet.
   2026-11-22 gate evaluation (branch `feature/optimization-gates`,
   [optimization gates](optimization-gates.md)): `make optimization-gates` recomputes the
   comparison and judges every contract gate per condition and candidate from the contract's
