@@ -189,10 +189,34 @@ def write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, indent=2))
 
 
+def admission_evidence(limits: dict[str, int]) -> dict:
+    """A run's `admission` and `admissions` evidence, in the runner's shape, under `limits`.
+
+    The process's final control state enforces exactly `limits`, and each limited control made
+    one request that arrived under its limit.
+    """
+    controls = {
+        control: {
+            "limit": limits.get(control),
+            "enforced": control in limits,
+            "not_enforced_reason": None if control in limits else f"Sets no {control} limit",
+        }
+        for control in ("inference_requests", "test_jobs")
+    }
+    return {
+        "admission": {"status": "configured", "scope": "run", "process": {"controls": controls}},
+        "admissions": [
+            {"control": control, "limit_at_arrival": limit, "outcome": "admitted"}
+            for control, limit in sorted(limits.items())
+        ],
+    }
+
+
 def write_agent_evidence(root: Path, manifest: Manifest, record: dict) -> None:
     """Agent run evidence agreeing with each linked task, unless a test already wrote its own.
 
-    Only the keys the batch reader verifies, in the shape `services/agent` writes them.
+    Only the keys the batch reader verifies, in the shape `services/agent` writes them. The
+    admission state applies the record's policy limits.
     """
     hashes = {task.task_id: task for task in manifest.tasks}
     for task in record["tasks"]:
@@ -207,6 +231,9 @@ def write_agent_evidence(root: Path, manifest: Manifest, record: dict) -> None:
             "task": {"task_id": frozen.task_id, "content_sha256": frozen.content_sha256},
             "configuration_digest": frozen.configuration_digest,
         }
+        policy = record.get("policy")
+        limits = policy.get("limits") if isinstance(policy, dict) else None
+        evidence |= admission_evidence(limits if isinstance(limits, dict) else {})
         if task.get("acceptance") in ("passed", "failed"):
             evidence["task_passed"] = task["acceptance"] == "passed"
         write_json(path, evidence)

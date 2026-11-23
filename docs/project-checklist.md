@@ -1237,6 +1237,13 @@ from M3 through M6 and do not renumber the implementation milestones above.
   as malformed (reviews on PR #58). Verified on synthetic experiments only: 156 cases in
   `pipelines/data/tests/test_optimization_{manifest,batches,comparison}.py`. Open until O06
   records a real experiment in this format.
+  2026-11-21 (branch `fix/optimization-policy-enforcement`, review finding on PR #100): a batch
+  record's `policy` showed only what the experiment set, so a candidate run whose inference
+  limit named another model server, and so was never enforced, was accepted as that
+  candidate. Batches are now also rejected as `policy_not_applied` unless each linked run's own
+  admission evidence (final control state and every request's `limit_at_arrival`) shows exactly
+  the slot's limits, for baseline and candidates alike. Synthetic experiments only: 169 cases
+  in the same three test files.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
   Implemented 2026-11-11 on branch `feature/optimization-controls-compare`, rebuilt on the glass
   workspace (not yet pushed or reviewed; supersedes the unmerged `feature/optimization-view`).
