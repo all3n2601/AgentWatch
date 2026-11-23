@@ -1,6 +1,6 @@
 """Run several agent tasks at once in one runner process, under one admission controller.
 
-A batch is the unit the optimization contract compares (opt-contract-v1): tasks submitted
+A batch is the unit the optimization contract compares (opt-contract-v2): tasks submitted
 together to one runner. Each task is an ordinary live run with its own evidence; they share
 this process's clock domain and admission controller, so the concurrency policy's limits
 apply across them. Limits still count this process only (ADR 0010).
