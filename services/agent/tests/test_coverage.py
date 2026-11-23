@@ -8,6 +8,7 @@ from agent_test_doubles import SOLVE_MEAN, FakeGpu, ScriptedModel
 from agentwatch_agent.config import RunLimits
 from agentwatch_agent.coverage import CoverageError, coverage_report
 from agentwatch_agent.runner import AgentRunner
+from agentwatch_agent.sampling_limits import LIMITS, MET, NOT_EVALUATED, NOT_MET
 from agentwatch_sdk.live import ResourceSample, StepEvent
 
 RUN_ID = uuid4()
@@ -522,8 +523,14 @@ def test_report_covers_a_test_double_runner_run(mean_task, server, tmp_path):
     report = coverage_report(outcome.evidence_path.parent)
     assert report["method"] == "coverage-v5"
     assert report["run_id"] == str(outcome.run_id)
-    # Thread timing is not deterministic, so only the verdict's presence is checked here.
-    assert report["sampling_limits"]["verdict"] in ("met", "not_met")
+    # Thread timing is not deterministic, so the run's length, and with it the number of
+    # sampling gaps, varies by machine. Fewer gaps than the declared minimum is `not_evaluated`
+    # by design (an unsampled resource is `not_met` regardless); otherwise the run is judged.
+    limits = report["sampling_limits"]
+    if limits["unsampled_resources"] or limits["measured_gaps"] >= LIMITS["min_measured_gaps"]:
+        assert limits["verdict"] in (MET, NOT_MET)
+    else:
+        assert limits["verdict"] == NOT_EVALUATED
     assert report["short_steps"]["executed"] == len(
         [entry for entry in report["steps"] if entry["window"] is not None]
     )
