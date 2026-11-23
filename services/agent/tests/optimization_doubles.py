@@ -104,7 +104,7 @@ def make_host(server, policy, *, observe=None, injector=None, run_timeout=60.0) 
         make_runner=runner,
         make_injector=make_injector,
         observe_identity=observe or (lambda: copy.deepcopy(DECLARED)),
-        wait_until_idle=lambda: None,
+        wait_until_idle=lambda _cancel: None,
         run_timeout_seconds=run_timeout,
         policy_poll_seconds=0.05,
         drain_seconds=5.0,

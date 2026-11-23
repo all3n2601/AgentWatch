@@ -56,9 +56,10 @@ derives the schedule, never evaluates gates, and never tunes anything between ba
    limits are set on the model server this runner calls (`inference_service`, ADR 0015). From
    here the batch is attempted and always gets a record. A policy that cannot be applied gives
    a `not_started` record.
-4. Start the condition's injectors (after the declared ramp), then submit each frozen task at
-   its preregistered offset in one runner process: one clock, one admission controller and a
-   policy watcher for the batch.
+4. Start the condition's injectors (after the declared ramp), write the attempt marker
+   `runs/<NNN>/attempt.json` (the record's head, start time and clock), then submit each frozen
+   task at its preregistered offset in one runner process: one clock, one admission controller
+   and a policy watcher for the batch.
 5. Stop the injectors, confirm their cleanup, and write `batches/<NNN>.json`. Run evidence
    stays in `runs/<NNN>/<NN>-<task>/`, and every step is appended to `runner-log.jsonl`.
 
@@ -67,7 +68,7 @@ derives the schedule, never evaluates gates, and never tunes anything between ba
 | `policy.version` | The version read back before the batch |
 | `model`, `hardware`, `power`, `state` | Measured before the batch: the served model (vLLM: its revision-pinned name; Ollama: its listed digest), `/proc` CPU model and memory, NVML GPU, Windows power line status and active power plan, the task fixture index |
 | `tasks[].submitted_tick_ns` | The batch clock's tick when the runner hands the task to its run |
-| `tasks[].finished_tick_ns` | The root step's finish tick in the run's journal; `null` when not journaled |
+| `tasks[].finished_tick_ns` | The root step's finish tick among the run's own journal records (its `run_id`); `null` when not journaled |
 | `tasks[].state` | The run's state; a run deadline is `timed_out`; `_locally_undelivered` is dropped (delivery is judged per batch, below) |
 | `tasks[].acceptance` | The run evidence's `task_passed`; `null` when absent |
 | `tasks[].admission_waits` | Each control's longest admission wait in the run; `null` when none was recorded |
@@ -79,17 +80,26 @@ derives the schedule, never evaluates gates, and never tunes anything between ba
 A batch is `completed` only when nothing below happened. It is `aborted` when it was cancelled,
 an injector did not apply sustained load or its cleanup was not confirmed, the policy changed
 while it ran, a candidate's limit was not enforced, or a run's live delivery was incomplete. It
-is `failed` when a run raised a runner error or never started. Task failures are outcomes of a
-completed batch, recorded as they happened.
+is `failed` when a run raised a runner error or never started, or when the batch itself raised
+an error after submission or its record could not be built; such a record reports each task from
+the evidence its run left (`cancelled` when the run left none) and records no ticks. Task
+failures are outcomes of a completed batch, recorded as they happened.
 
 ## Stop, resume and restore
 
 - Any batch that is not `completed` stops the experiment, so a broken host or service does not
-  consume the schedule. `Ctrl+C` cancels the current batch's runs (or its injector ramp); that
+  consume the schedule. `Ctrl+C` during a batch cancels its runs (or its injector ramp); that
   batch is recorded as `aborted` (or `not_started` if no task was submitted) and the
-  experiment stops.
+  experiment stops. `Ctrl+C` while waiting for the next batch (the idle wait and pacing wake on
+  it) stops before that slot's policy is applied: no record is written and the slot stays
+  runnable. A cancel after the policy is applied but before submission gives `not_started`.
 - Records are never overwritten. Running again resumes at the first unrecorded slot; an
   attempted slot is never rerun to replace its result, and its pair stays unpaired.
+- A process that stops mid-batch (sleep, WSL shutdown, a kill) leaves `runs/<NNN>/` without
+  `batches/<NNN>.json`. The next run does not rerun that slot into the same directories: with
+  the attempt marker it writes a `failed` record from the marker and the evidence the runs
+  left (its `finished_at` is when the interruption was found), and without one, a
+  `not_started` record. Either stops the experiment.
 - On every exit the policy is restored to the baseline (no limits) and read back. The command
   exits non-zero, and the log says so, if that restore failed; check Controls.
 
@@ -139,5 +149,14 @@ before the evaluation is preregistered. It is not evaluation evidence and was ne
   cannot run an experiment yet.
 - Supported injectors: `prefill-flood-openai-chat-v1` (kind `inference`) and
   `cpu-spin-processes-v1` (kind `cpu`). Others are refused before the first batch.
-- The model's identity is what the server reports, not a hash of the weights it loaded.
+- The model's identity is what the server reports, not a hash of the weights it loaded. For
+  vLLM the digest is the `@revision` suffix of the served name, set by the operator.
+- `hardware.host_id` is the operator's label and `power.profile` is the Windows power plan's
+  name; both are free text that ends up in every shared record, so neither should name a
+  person or a machine. No host name, user name, MAC address or serial number is collected.
+- `tasks[].cold` comes from the schedule (warm-up batches), not from a measurement. That holds
+  for vLLM, which keeps its weights loaded. Ollama can unload the model between batches (its
+  `keep_alive` default is 5 minutes, and the pre-batch wait is only a pause there), so a pair
+  task could hit a cold load and still count as warm. Run Ollama experiments with a
+  `keep_alive` longer than the experiment, or treat their warm latencies with that caveat.
 - Gates are not evaluated here; the comparison record says `not_evaluated`.

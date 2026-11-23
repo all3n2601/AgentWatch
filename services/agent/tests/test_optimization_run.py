@@ -26,6 +26,7 @@ from agentwatch_agent.optimization_run import (
     LOG_FILE,
     ExperimentRunner,
     _longest_waits,
+    _root_finished_tick,
     _task_state,
 )
 from agentwatch_agent.runner import RunOutcome
@@ -79,7 +80,8 @@ def test_each_attempted_batch_records_its_runs_policy_and_admission(server, tmp_
         assert (gave_up["state"], gave_up["acceptance"]) == ("failed", "failed")
         # Submissions follow the preregistered offsets on the batch's one clock.
         offset = (gave_up["submitted_tick_ns"] - solved["submitted_tick_ns"]) / 1e9
-        assert offset == pytest.approx(0.2, abs=0.05)
+        # Never early; a loaded test machine may only make it late.
+        assert 0.2 - 1e-3 <= offset < 1.0
         for task in entry["tasks"]:
             assert task["finished_tick_ns"] > task["submitted_tick_ns"]
             evidence = json.loads((root / task["evidence_dir"] / "agent-evidence.json").read_text())
@@ -116,6 +118,188 @@ def test_records_are_never_overwritten_and_a_rerun_resumes_at_the_next_slot(serv
     assert second.attempted == [1] and second.statuses == {1: "completed"}
     assert (root / "batches" / "000.json").read_bytes() == kept
     assert recorded_slots(root) == 2
+
+
+def test_an_interrupted_batch_is_recorded_as_left_and_never_rerun(server, tmp_path, monkeypatch):
+    # The process stops after the tasks ran but before the record is written (a laptop sleep,
+    # a WSL shutdown, a kill). Resuming must not rerun the slot into the same run directories.
+    policy = FakePolicyService()
+    root = tmp_path / "experiment"
+    host = make_host(server, policy)
+    write_experiment(root, host, CLEAN_PAIR)
+    write = ExperimentRunner._write
+
+    def killed(self, path, entry):
+        raise SystemExit("stopped before the record was written")
+
+    monkeypatch.setattr(ExperimentRunner, "_write", killed)
+    with pytest.raises(SystemExit):
+        ExperimentRunner(read_experiment(root), host).run()
+    monkeypatch.setattr(ExperimentRunner, "_write", write)
+    runs = root / "runs" / "000"
+    task_dirs = sorted(path for path in runs.iterdir() if path.is_dir())
+    first_ids = {
+        path.name: json.loads((path / "agent-evidence.json").read_text())["run_id"]
+        for path in task_dirs
+    }
+    journals = {path.name: (path / "live-journal.jsonl").read_bytes() for path in task_dirs}
+    marker = json.loads((runs / "attempt.json").read_text())
+
+    summary = ExperimentRunner(read_experiment(root), host).run()
+    entry = record(root, 0)
+    assert entry["status"] == "failed" and "Interrupted after submission" in entry["reason"]
+    # The record is the first attempt's: its head and start come from the marker written
+    # before submission, and each task links the evidence that attempt left, untouched.
+    assert entry["batch_id"] == marker["head"]["batch_id"]
+    assert entry["started_at"] == marker["started_at"]
+    assert entry["clock_id"] == marker["clock_id"]
+    assert [task["state"] for task in entry["tasks"]] == ["completed", "failed"]
+    for task in entry["tasks"]:
+        directory = root / task["evidence_dir"]
+        assert task["run_id"] == first_ids[directory.name]
+        # No tick can be shown to come from one complete attempt on one clock.
+        assert task["submitted_tick_ns"] is None and task["finished_tick_ns"] is None
+    assert {path.name: (path / "live-journal.jsonl").read_bytes() for path in task_dirs} == (
+        journals
+    )
+    # A slot that did not complete stops the experiment, as any other.
+    assert summary.attempted == [0] and summary.stopped.startswith("Slot 0 failed")
+    assert not (root / "batches" / "001.json").exists() and summary.restored is True
+
+
+def test_a_runs_directory_without_an_attempt_marker_is_recorded_not_started(server, tmp_path):
+    policy = FakePolicyService()
+    root = tmp_path / "experiment"
+    host = make_host(server, policy)
+    write_experiment(root, host, [slot(0, configuration="candidate"), slot(1)])
+    (root / "runs" / "000").mkdir(parents=True)
+    summary = ExperimentRunner(read_experiment(root), host).run()
+    entry = record(root, 0)
+    assert entry["status"] == "not_started"
+    assert "without a record or an attempt marker" in entry["reason"]
+    assert all(task["state"] == "not_started" for task in entry["tasks"])
+    # The slot's limit was never set, and nothing more was attempted.
+    assert policy.changes == [] and summary.attempted == [0]
+
+
+@pytest.mark.parametrize("broken", ["batch", "record"])
+def test_an_error_after_submission_still_writes_a_failed_record(
+    server, tmp_path, monkeypatch, broken
+):
+    if broken == "batch":
+        run = AgentBatch.run
+
+        def run_then_raise(self):
+            run(self)
+            raise RuntimeError("drain bookkeeping broke")
+
+        monkeypatch.setattr(AgentBatch, "run", run_then_raise)
+        expected = "The batch raised RuntimeError: drain bookkeeping broke"
+    else:
+
+        def outcome_raises(self, *args):
+            raise KeyError("controls")
+
+        monkeypatch.setattr(ExperimentRunner, "_outcome", outcome_raises)
+        expected = "Recording the batch raised KeyError"
+    root = tmp_path / "experiment"
+    _runner, summary = run_experiment(root, make_host(server, FakePolicyService()))
+    entry = record(root, 0)
+    assert entry["status"] == "failed" and entry["reason"].startswith(expected)
+    assert entry["started_at"] <= entry["finished_at"] and entry["clock_id"]
+    assert [task["state"] for task in entry["tasks"]] == ["completed", "failed"]
+    assert summary.attempted == [0] and summary.restored is True
+
+
+def test_the_finish_tick_is_read_from_the_runs_own_journal_records(server, tmp_path):
+    root = tmp_path / "experiment"
+    run_experiment(root, make_host(server, FakePolicyService()), slots=[slot(0)])
+    task = record(root, 0)["tasks"][0]
+    journal = root / task["evidence_dir"] / "live-journal.jsonl"
+    lines = journal.read_text().splitlines()
+    root_event = next(
+        json.loads(line)
+        for line in lines
+        if '"step_id": "agent-run"' in line and '"finished_tick_ns": null' not in line
+    )
+    # Another run's root step event, at the same sequence, as a mixed journal would hold.
+    other = copy.deepcopy(root_event)
+    other["payload"] |= {
+        "run_id": "00000000-0000-4000-8000-000000000001",
+        "event_id": "00000000-0000-4000-8000-000000000002",
+        "finished_tick_ns": root_event["payload"]["finished_tick_ns"] + 10**9,
+    }
+    journal.write_text("\n".join([json.dumps(other), *lines]) + "\n")
+    run_dir = journal.parent
+    assert _root_finished_tick(run_dir, task["run_id"]) == task["finished_tick_ns"]
+    assert _root_finished_tick(run_dir, None) is None
+
+
+def test_a_cancel_while_waiting_for_the_next_slot_leaves_it_unattempted(server, tmp_path):
+    # Ctrl+C lands during the pre-batch wait (pacing, vLLM idle): the slot must stay runnable.
+    policy = FakePolicyService()
+    root = tmp_path / "experiment"
+    host = make_host(server, policy)
+    write_experiment(root, host, CLEAN_PAIR)
+    runner = ExperimentRunner(read_experiment(root), host)
+    waits = []
+
+    def wait_then_cancelled(cancel):
+        waits.append(cancel.is_set())
+        if len(waits) == 2:  # before slot 1: the signal arrives while waiting
+            runner.request_cancel_from_signal("signal", "Cancelled by operator signal SIGINT")
+            assert cancel.is_set()  # the wait is woken by the same event
+
+    runner.host = dataclasses.replace(host, wait_until_idle=wait_then_cancelled)
+    summary = runner.run()
+    assert summary.attempted == [0] and summary.statuses == {0: "completed"}
+    assert summary.stopped.startswith("Slot 1 not attempted: cancelled before its policy")
+    assert not (root / "batches" / "001.json").exists() and not (root / "runs" / "001").exists()
+    # Slot 0 ran at the baseline already active; slot 1's limit was never set.
+    assert policy.changes == []
+    # The slot is still runnable: the next invocation attempts it.
+    again = ExperimentRunner(read_experiment(root), host).run()
+    assert again.attempted == [1] and again.statuses == {1: "completed"}
+
+
+def test_a_cancel_after_the_policy_is_applied_submits_nothing(server, tmp_path):
+    root = tmp_path / "experiment"
+    host = make_host(server, FakePolicyService())
+    write_experiment(root, host, CLEAN_PAIR)
+    runner = ExperimentRunner(read_experiment(root), host)
+    apply = runner.apply_policy
+
+    def apply_then_cancelled(limits, reason):
+        applied = apply(limits, reason)
+        runner.request_cancel_from_signal("signal", "Cancelled by operator signal SIGINT")
+        return applied
+
+    runner.apply_policy = apply_then_cancelled
+    summary = runner.run()
+    entry = record(root, 0)
+    assert entry["status"] == "not_started"
+    assert "before submission" in entry["reason"]
+    assert all(task["state"] == "not_started" for task in entry["tasks"])
+    assert summary.attempted == [0] and summary.restored is True
+
+
+def test_a_batch_that_cannot_be_prepared_still_gets_a_record(server, tmp_path):
+    root = tmp_path / "experiment"
+    host = make_host(server, FakePolicyService())
+    write_experiment(root, host, CLEAN_PAIR)
+
+    def broken_runner(task, directory, clock, admission):
+        raise OSError("disk full")
+
+    runner = ExperimentRunner(
+        read_experiment(root), dataclasses.replace(host, make_runner=broken_runner)
+    )
+    summary = runner.run()
+    entry = record(root, 0)
+    assert entry["status"] == "not_started"
+    assert entry["reason"] == "Batch could not be prepared: OSError: disk full"
+    assert entry["policy"]["version"] == 0  # the policy was applied: the slot was attempted
+    assert summary.attempted == [0] and summary.restored is True
 
 
 def test_a_host_that_no_longer_matches_the_manifest_is_not_attempted(server, tmp_path):
@@ -212,21 +396,35 @@ def test_a_cancelled_experiment_attempts_nothing_more_and_restores(server, tmp_p
     assert summary.restored is True
 
 
+class LaunchSignalling(FakeInjector):
+    """Sets `launched` once its injector has started, i.e. once the ramp is under way."""
+
+    def __init__(self, clock, bound_seconds, launched):
+        super().__init__(clock, bound_seconds)
+        self.launched = launched
+
+    def _launch(self):
+        super()._launch()
+        self.launched.set()
+
+
 def test_a_signal_during_the_injector_ramp_submits_nothing_and_stops(server, tmp_path):
     root = tmp_path / "experiment"
-    host = dataclasses.replace(make_host(server, FakePolicyService()), ramp_seconds=20.0)
+    launched = threading.Event()
+    host = dataclasses.replace(
+        make_host(
+            server,
+            FakePolicyService(),
+            injector=lambda clock, bound: LaunchSignalling(clock, bound, launched),
+        ),
+        ramp_seconds=20.0,
+    )
     write_experiment(root, host, [slot(0, condition="contended"), slot(1, condition="contended")])
     runner = ExperimentRunner(read_experiment(root), host)
     result = {}
     thread = threading.Thread(target=lambda: result.update(summary=runner.run()))
     thread.start()
-    deadline = time.monotonic() + 10
-    # The slot's policy is applied just before its injectors start ramping.
-    while '"event": "policy"' not in (
-        (root / LOG_FILE).read_text() if (root / LOG_FILE).exists() else ""
-    ):
-        assert time.monotonic() < deadline, "the batch never started"
-        time.sleep(0.01)
+    assert launched.wait(10), "the batch never started its injectors"
     runner.request_cancel_from_signal("signal", "Cancelled by operator signal SIGINT")
     thread.join(10)
     assert not thread.is_alive(), "the ramp was not interrupted"

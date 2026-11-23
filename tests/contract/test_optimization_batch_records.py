@@ -73,3 +73,25 @@ def test_the_runners_records_pass_the_checker(tmp_path, first_condition):
     assert first["pairs"]["complete"] == 1
     # One task solves, the other gives up: both outcomes reach the comparison as recorded.
     assert first["attempts"]["candidate"]["tasks_by_state"] == {"completed": 1, "failed": 1}
+
+
+def test_an_interrupted_batchs_record_passes_the_checker(tmp_path, monkeypatch):
+    # The process stops after the first slot's tasks ran but before its record was written;
+    # the resumed runner records that attempt as `failed` from what it left.
+    root = tmp_path / "experiment"
+    host = make_host(FakeLiveServer(), FakePolicyService())
+    experiment(root, host, "clean")
+    write = ExperimentRunner._write
+
+    def killed(self, path, entry):
+        raise SystemExit("stopped before the record was written")
+
+    monkeypatch.setattr(ExperimentRunner, "_write", killed)
+    with pytest.raises(SystemExit):
+        ExperimentRunner(read_experiment(root), host).run()
+    monkeypatch.setattr(ExperimentRunner, "_write", write)
+    summary = ExperimentRunner(read_experiment(root), host).run()
+    assert summary.statuses == {0: "failed"}
+
+    (batch,) = compare(root, CONTRACT)["batches"]
+    assert batch["accepted"], batch

@@ -5,6 +5,7 @@ real model server, injectors and task fixtures. Each reading is measured, never 
 """
 
 import json
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -87,17 +88,26 @@ def task_fixture_state() -> dict:
     }
 
 
+def _pause(cancel: threading.Event, seconds: float) -> bool:
+    """Wait `seconds`, or less if `cancel` is set; True when cancelled."""
+    return cancel.wait(seconds)
+
+
 def vllm_idle_waiter(
     metrics_url: str,
     *,
     timeout_seconds: float = DEFAULT_IDLE_TIMEOUT_SECONDS,
     pacing_seconds: float = DEFAULT_PACING_SECONDS,
-    sleep: Callable[[float], None] = time.sleep,
+    pause: Callable[[threading.Event, float], bool] = _pause,
     monotonic: Callable[[], float] = time.monotonic,
-) -> Callable[[], None]:
-    """Wait until vLLM has nothing running or waiting, then a fixed pause, before a batch."""
+) -> Callable[[threading.Event], None]:
+    """Wait until vLLM has nothing running or waiting, then a fixed pause, before a batch.
 
-    def wait() -> None:
+    Returns early once `cancel` is set, so an operator's Ctrl+C between batches is honoured
+    before the next slot is attempted (the runner checks it on return).
+    """
+
+    def wait(cancel: threading.Event) -> None:
         deadline = monotonic() + timeout_seconds
         while True:
             try:
@@ -111,8 +121,9 @@ def vllm_idle_waiter(
                     f"vLLM still had {state.running} running and {state.waiting} waiting "
                     f"after {timeout_seconds:g} s"
                 )
-            sleep(IDLE_POLL_SECONDS)
-        sleep(pacing_seconds)
+            if pause(cancel, IDLE_POLL_SECONDS):
+                return
+        pause(cancel, pacing_seconds)
 
     return wait
 
@@ -144,10 +155,15 @@ def plan_document(
 
 
 def pacing_waiter(
-    pacing_seconds: float, sleep: Callable[[float], None] = time.sleep
-) -> Callable[[], None]:
-    """A fixed pause before each batch, for model servers without a queue to read (Ollama)."""
-    return lambda: sleep(pacing_seconds)
+    pacing_seconds: float, pause: Callable[[threading.Event, float], bool] = _pause
+) -> Callable[[threading.Event], None]:
+    """A fixed pause before each batch, for model servers without a queue to read (Ollama);
+    it ends early once `cancel` is set."""
+
+    def wait(cancel: threading.Event) -> None:
+        pause(cancel, pacing_seconds)
+
+    return wait
 
 
 def identity_observer(

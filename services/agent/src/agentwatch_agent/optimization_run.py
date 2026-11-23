@@ -20,9 +20,13 @@ For each batch, after waiting for the model server to be idle:
    waits and run evidence.
 
 Records are never overwritten: a later invocation resumes at the first unrecorded slot, so no
-attempted batch is rerun to replace its result. Any batch that does not complete stops the
-experiment, so a broken host or service does not consume the schedule. On every exit the
-policy is restored to the baseline (no limits) and read back.
+attempted batch is rerun to replace its result. A batch writes an attempt marker into its runs
+directory just before its first submission; a slot whose runs directory exists without a record
+was interrupted, and is recorded from what it left (`failed` with the marker, `not_started`
+without one) instead of being run again. An error after submission also gives a `failed`
+record. Any batch that does not complete stops the experiment, so a broken host or service
+does not consume the schedule. On every exit the policy is restored to the baseline (no
+limits) and read back.
 """
 
 import json
@@ -68,6 +72,8 @@ from agentwatch_agent.tasks import Task, load_task
 RUNNER_METHOD = "opt-batch-runner-v1"
 BATCH_FORMAT = "opt-batch-v1"
 RUNS_DIR = "runs"
+# Written into a batch's runs directory just before its first submission.
+ATTEMPT_FILE = "attempt.json"
 LOG_FILE = "runner-log.jsonl"
 POLICY_OPERATOR = "opt-batch-runner"
 # The runner's one wording for a run deadline (AgentRunner._run_limit_reason).
@@ -81,8 +87,20 @@ INJECTOR_BOUND_MARGIN_SECONDS = 32.0
 DEFAULT_RAMP_SECONDS = 2.0
 
 
-class HostChanged(RuntimeError):
+class NotAttempted(RuntimeError):
+    """The experiment stops before a slot is attempted: no record, and the slot stays runnable."""
+
+
+class HostChanged(NotAttempted):
     """The host no longer matches the manifest, or could not be read; nothing was attempted."""
+
+
+class CancelledBeforeAttempt(NotAttempted):
+    """A cancel arrived while waiting for the slot, before its policy was applied."""
+
+
+class CancelledBeforeSubmission(RuntimeError):
+    """A cancel arrived after the slot's policy was applied but before any task was submitted."""
 
 
 class PolicyApplyError(RuntimeError):
@@ -108,7 +126,8 @@ class Host:
     make_injector: Callable[[dict, MonotonicClock, float], BoundedInjector]
     # The manifest's model, hardware, power and state blocks, as measured now.
     observe_identity: Callable[[], dict]
-    wait_until_idle: Callable[[], None]
+    # Waits for the model server to be quiet before a batch; returns early once the event is set.
+    wait_until_idle: Callable[[threading.Event], None]
     run_timeout_seconds: float
     policy_poll_seconds: float = 1.0
     drain_seconds: float = 30.0
@@ -266,7 +285,7 @@ class ExperimentRunner:
                     break
                 try:
                     record = self.run_slot(slot)
-                except HostChanged as error:
+                except NotAttempted as error:
                     summary.stopped = f"Slot {slot.index} not attempted: {error}"
                     break
                 summary.attempted.append(slot.index)
@@ -284,8 +303,11 @@ class ExperimentRunner:
         if path.exists():
             raise ExperimentError(f"{path.name} already exists; records are never overwritten")
         try:
-            self.host.wait_until_idle()
+            self.host.wait_until_idle(self._cancel)
+            self._raise_if_cancelled()
             identity = self.host.observe_identity()
+        except CancelledBeforeAttempt:
+            raise
         except Exception as error:
             raise HostChanged(f"host state unreadable: {type(error).__name__}: {error}") from error
         differing = [
@@ -296,7 +318,15 @@ class ExperimentRunner:
                 f"{', '.join(differing)} differ from the manifest: "
                 + "; ".join(f"{key} is {identity[key]}" for key in differing)
             )
+        # The last point at which a cancel leaves the slot unattempted and runnable later.
+        self._raise_if_cancelled()
         record = self._record_head(slot, identity)
+        directory = self._runs_dir(slot)
+        if directory.exists():
+            # An earlier attempt stopped after it began but before its record was written (a
+            # sleep, a WSL shutdown, a killed process). Rerunning it would replace its evidence
+            # and mix two attempts in one journal, so it is recorded as it was left instead.
+            return self._write(path, self._interrupted(slot, directory, record))
         try:
             policy = self.apply_policy(
                 slot.limits,
@@ -305,7 +335,95 @@ class ExperimentRunner:
         except Exception as error:  # noqa: BLE001 - the batch is attempted and recorded
             return self._write(path, record | self._not_started(f"Policy not applied: {error}"))
         record["policy"]["version"] = policy.version
-        return self._write(path, record | self._execute(slot, policy))
+        return self._write(path, record | self._execute(slot, policy, record))
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancel_reason is not None:
+            raise CancelledBeforeAttempt(
+                f"cancelled before its policy was applied: {self._cancel_reason}"
+            )
+
+    def _runs_dir(self, slot: Slot) -> Path:
+        return self.experiment.root / RUNS_DIR / f"{slot.index:03d}"
+
+    def _interrupted(self, slot: Slot, directory: Path, head: dict) -> dict:
+        """The record of an attempt that stopped before writing one, from what it left.
+
+        Its head comes from the attempt marker written before anything was submitted, so the
+        identity and policy are the ones measured then. Without a marker nothing was submitted,
+        and the head is the one measured now.
+        """
+        try:
+            marker = json.loads((directory / ATTEMPT_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            marker = None
+        if not isinstance(marker, dict) or not isinstance(marker.get("head"), dict):
+            return head | self._not_started(
+                f"An earlier attempt left {RUNS_DIR}/{directory.name}/ without a record or an "
+                "attempt marker, so it stopped before submitting anything; it is not rerun"
+            )
+        return marker["head"] | self._failed_after_submission(
+            slot,
+            directory,
+            started_at=marker.get("started_at"),
+            clock_id=marker.get("clock_id"),
+            reason=(
+                "Interrupted after submission, before its record was written; the attempt is "
+                f"not rerun and its evidence is kept in {RUNS_DIR}/{directory.name}/. "
+                "finished_at is when the interruption was found"
+            ),
+        )
+
+    def _failed_after_submission(
+        self,
+        slot: Slot,
+        directory: Path,
+        *,
+        started_at: str | None,
+        clock_id: str | None,
+        reason: str,
+    ) -> dict:
+        """A `failed` record for a submitted batch whose outcome could not be read normally.
+
+        Each task is reported from the evidence its run left: a run that wrote its evidence
+        finished, with that state; one that did not was cut short and is `cancelled`. No tick
+        is recorded, since none can be shown to come from a complete, single attempt.
+        """
+        tasks = []
+        for position, frozen in enumerate(self.experiment.tasks, 1):
+            run_dir = directory / f"{position:02d}-{frozen.name}"
+            evidence = _evidence(run_dir)
+            passed = evidence.get("task_passed")
+            status = evidence.get("status")
+            tasks.append(
+                {
+                    "task_id": frozen.task_id,
+                    "run_id": evidence.get("run_id") if evidence else None,
+                    "state": status
+                    if status in ("completed", "failed", "cancelled")
+                    else ("failed" if evidence else "cancelled"),
+                    "acceptance": {True: "passed", False: "failed"}.get(passed)
+                    if isinstance(passed, bool)
+                    else None,
+                    "cold": slot.kind == "warmup",
+                    "submitted_tick_ns": None,
+                    "finished_tick_ns": None,
+                    "admission_waits": _longest_waits(evidence),
+                    "evidence_dir": run_dir.relative_to(self.experiment.root).as_posix()
+                    if evidence.get("run_id")
+                    else None,
+                }
+            )
+        return {
+            "status": "failed",
+            "reason": reason[:1000],
+            "started_at": started_at or _now(),
+            "finished_at": _now(),
+            "clock_id": clock_id,
+            "injection": {"active": None, "cleanup_confirmed": None, "injectors": None},
+            "admission": {"starved_admissions": None, "leaked_permits": None},
+            "tasks": tasks,
+        }
 
     def _record_head(self, slot: Slot, identity: dict) -> dict:
         return {
@@ -342,8 +460,18 @@ class ExperimentRunner:
             ],
         }
 
-    def _execute(self, slot: Slot, policy: PolicyVersion) -> dict:
-        directory = self.experiment.root / RUNS_DIR / f"{slot.index:03d}"
+    def _execute(self, slot: Slot, policy: PolicyVersion, head: dict) -> dict:
+        try:
+            prepared = self._prepare(slot)
+        except Exception as error:  # noqa: BLE001 - the policy is applied: the slot is attempted
+            return self._not_started(
+                f"Batch could not be prepared: {type(error).__name__}: {error}"
+            )
+        return self._submit(slot, policy, head, *prepared)
+
+    def _prepare(self, slot: Slot) -> tuple:
+        """The batch's clock, controller, runners and injectors; nothing is started yet."""
+        directory = self._runs_dir(slot)
         clock = MonotonicClock()
         controller, watcher, admission = self._admission()
         runners = [
@@ -374,16 +502,32 @@ class ExperimentRunner:
             if planned
             else None
         )
+        return directory, clock, controller, watcher, batch, injection
+
+    def _submit(self, slot, policy, head, directory, clock, controller, watcher, batch, injection):
         problems: list[str] = []
         submitted = False
+        batch_error: str | None = None
         started_at = _now()
+        # Set before the cancel check below, so a signal from here on reaches the batch.
         self._batch = batch
         try:
+            if self._cancel_reason is not None:
+                raise CancelledBeforeSubmission(self._cancel_reason)
             with ExitStack() as stack:
                 stack.enter_context(watcher)
                 stack.enter_context(injection if injection is not None else nullcontext())
+                # Written before the first submission, so an attempt that stops before its
+                # record is written is found, and recorded rather than rerun (run_slot).
+                directory.mkdir(parents=True, exist_ok=True)
+                write_json_atomic(
+                    directory / ATTEMPT_FILE,
+                    {"head": head, "started_at": started_at, "clock_id": clock.clock_id},
+                )
                 submitted = True
                 batch.run()
+        except CancelledBeforeSubmission as error:
+            problems.append(f"Cancelled after its policy was applied, before submission: {error}")
         except RunNotStarted as error:
             problems.append(f"Batch not started ({error.stage}): {error}")
         except InjectionCancelled as error:
@@ -392,18 +536,48 @@ class ExperimentRunner:
             problems.append(f"Injector cleanup not confirmed: {error}")
         except InjectorError as error:
             problems.append(f"Injector did not start: {error}")
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - every attempted batch gets a record
             # Starting an injector can fail with any error (a process that will not spawn); the
-            # set has stopped the ones it started. After submission, errors are the batch's own.
+            # set has stopped the ones it started. After submission, errors are the batch's own
+            # and make it `failed`, recorded with the evidence its runs left.
             if submitted:
-                raise
-            problems.append(f"Injector did not start: {type(error).__name__}: {error}")
+                batch_error = f"The batch raised {type(error).__name__}: {error}"
+            else:
+                problems.append(f"Injector did not start: {type(error).__name__}: {error}")
         finally:
             self._batch = None
         finished_at = _now()
+        if batch_error is not None:
+            return self._failed_after_submission(
+                slot, directory, started_at=started_at, clock_id=clock.clock_id, reason=batch_error
+            )
         ran = submitted and any(run.submitted_tick_ns is not None for run in batch.runs)
         if not ran:
             return self._not_started("; ".join(problems) or "No task was submitted")
+        try:
+            return self._outcome(
+                slot,
+                policy,
+                batch,
+                controller,
+                injection,
+                problems,
+                directory,
+                (clock, started_at, finished_at),
+            )
+        except Exception as error:  # noqa: BLE001 - a submitted batch always gets a record
+            return self._failed_after_submission(
+                slot,
+                directory,
+                started_at=started_at,
+                clock_id=clock.clock_id,
+                reason=f"Recording the batch raised {type(error).__name__}: {error}",
+            )
+
+    def _outcome(self, slot, policy, batch, controller, injection, problems, directory, timing):
+        """The record of a submitted batch, read from its runs, controller and injectors."""
+        clock, started_at, finished_at = timing
+        planned = self.experiment.injectors[slot.condition]
         tasks = [
             self._task(run, frozen, slot)
             for run, frozen in zip(batch.runs, self.experiment.tasks, strict=True)
@@ -479,10 +653,12 @@ class ExperimentRunner:
         state = _task_state(run)
         started = state != "not_started"
         passed = evidence.get("task_passed")
+        run_id = evidence.get("run_id") or (
+            str(run.outcome.run_id) if run.outcome is not None else None
+        )
         return {
             "task_id": frozen.task_id,
-            "run_id": evidence.get("run_id")
-            or (str(run.outcome.run_id) if run.outcome is not None else None),
+            "run_id": run_id,
             "state": state,
             "acceptance": {True: "passed", False: "failed"}.get(passed)
             if isinstance(passed, bool)
@@ -490,7 +666,7 @@ class ExperimentRunner:
             # Warm-up batches exist to absorb cold starts; pairs run on a warm server.
             "cold": slot.kind == "warmup",
             "submitted_tick_ns": run.submitted_tick_ns,
-            "finished_tick_ns": _root_finished_tick(run_dir) if started else None,
+            "finished_tick_ns": _root_finished_tick(run_dir, run_id) if started else None,
             "admission_waits": _longest_waits(evidence),
             "evidence_dir": (
                 run_dir.relative_to(self.experiment.root).as_posix()
@@ -531,8 +707,12 @@ def _task_state(run: BatchRun) -> str:
     return state if state in ("completed", "failed", "cancelled") else "failed"
 
 
-def _root_finished_tick(run_dir: Path) -> int | None:
-    """The root step's finish tick from the run's journal; None when it was not journaled."""
+def _root_finished_tick(run_dir: Path, run_id: str | None) -> int | None:
+    """The root step's finish tick from this run's own journal records; None when it was not
+    journaled. Records of any other run in the file are ignored: their ticks come from
+    another clock."""
+    if run_id is None:
+        return None
     try:
         _registration, records, _unusable = read_journal(run_dir / JOURNAL_FILE)
     except (OSError, CoverageError):
@@ -540,7 +720,9 @@ def _root_finished_tick(run_dir: Path) -> int | None:
     events = [
         record
         for record in records
-        if record.get("record_type") == "step_event" and record.get("step_id") == ROOT_STEP
+        if record.get("record_type") == "step_event"
+        and record.get("step_id") == ROOT_STEP
+        and record.get("run_id") == run_id
     ]
     if not events:
         return None
