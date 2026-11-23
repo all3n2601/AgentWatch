@@ -246,6 +246,12 @@ These can be completed before adding an agent.
   about half of the model-call windows held fewer than two CPU readings.
   2026-11-16 (A07): coverage limits declared before measurement in
   [the instrumentation overhead protocol](instrumentation-overhead-protocol.md); not yet evaluated.
+  2026-11-20 (A07, Benoy, RTX 5070 Laptop/WSL2 only): coverage `met` in all four
+  `sampling-overhead` attempts (GPU Ollama and GPU vLLM, two each): 30–60 measured gaps,
+  interval median 0.2502–0.2503 s, max at most 0.2519 s, no missed or late rounds. Every gap
+  comes from 0.28–0.37 s requests. With `--gpm-file`, each sampler's first GPM window is a
+  baseline, so GPM was measured in 27–28 of 60 samples; DCGM profiling fields were unavailable
+  throughout (WSL2). Open: CPU container (Akshayaa) and full-run coverage on other hosts.
 - [ ] Compare a genuinely CPU-starved task with a busy worker queue and a naturally long clean task.
 - [ ] Verify boundaries under clock changes and specify monotonic timing for duration calculations.
 - [ ] Measure profiler and sampler overhead against uninstrumented execution.
@@ -258,6 +264,34 @@ These can be completed before adding an agent.
   runner CPU +4.2 to +5.3 ms per repetition; sampler thread 1.0–2.4% of a core in runs.
   2026-11-16 (A07): decision rule (5% budget, paired bootstrap, two attempts per host) declared
   in [the instrumentation overhead protocol](instrumentation-overhead-protocol.md); not yet evaluated.
+  2026-11-20 (A07, Benoy, RTX 5070 Laptop/WSL2, host label `benoy-rtx5070-wsl2`): four attempts,
+  all completed, none rerun. GPU vLLM (`resource-sampling-overhead-v2`, DCGM + GPM probes):
+  `within_budget`, attempts +2.63% [+1.42%, +3.52%] and +0.68% [−0.95%, +3.58%]. GPU Ollama
+  (`resource-sampling-overhead-v1`): `inconclusive`, attempt 1 `within_budget` +1.40%
+  [−0.29%, +2.84%], attempt 2 `inconclusive` (−0.72%, baseline CV 0.716, driven by two
+  uninstrumented requests of 1.2–1.4 s; cause not identified, and they ran under the
+  deviation below). Identical replies in both
+  conditions (43 tokens Ollama, 22 vLLM). Attempts `ollama-attempt-{1,2}` and
+  `vllm-attempt-{1,2}`, both verdict reports and the settings notes were shared as
+  `a07-gpu-evidence-20261120.zip` (not in the repository). SHA-256 of the files the figures
+  come from, so a copy can be checked against this entry:
+  - `a07-gpu-evidence-20261120.zip`: `908b373de8fc1e12d4bb5983edd33bbcb738d564d498a2fffad058a43a2e4c2e`
+  - `attempts/ollama-attempt-1/…-10a110/sampling-overhead.json`: `433dc201fea08d6a824b2ba3ff5179cacbb201e856b3e99ba11b69b5216f4514`
+  - `attempts/ollama-attempt-2/…-1793a4/sampling-overhead.json`: `25c570552e61f8aebbe58d64f2aba42588b61e6f8ee69bf5857cf3ee209ba676`
+  - `attempts/vllm-attempt-1/…-02d037/sampling-overhead.json`: `8ba67f61b6bb4902d34c0cd22003dfdd77bfa0a704f3241596652ca5a9c54691`
+  - `attempts/vllm-attempt-2/…-e9c332/sampling-overhead.json`: `5b30175cff710ecb434a1b4a4340104c883220c8c89257aa77e2f3bdcb933b4d`
+  - `verdicts/ollama-gpu/overhead-verdict.json`: `19fdff69a2b6e070986fe097b81a13aa50602f9f3c8b6a28936b600bb9facbfc`
+  - `verdicts/vllm-gpu/overhead-verdict.json`: `2897e46b2975630c9d00d55a3a78ee35004b84e4c63680aa2bde0b7c8a4fc046`
+  - `attempts/redaction.json`: `60f751fa8dc14c9402d32445d6dfd42594d5aa8d0c81d6b932984d9a468a345f`
+
+  The host label names a person; later runs use a neutral label (the O06 pilot used
+  `rtx5070-laptop-wsl2`). The verdicts were judged under `opt-contract-v1`; once
+  `opt-contract-v2` is in force they must be re-judged from these attempt files before the
+  optimization gates can use them.
+  **Protocol deviation:** display apps shared the measured GPU in all four attempts (WSL2
+  laptop; the protocol requires nothing else on it during an attempt), so both GPU verdicts
+  carry this limitation and are not clean-condition results. Open: CPU container attempts
+  (Akshayaa), O01's budget decision, other hosts, and live delivery under sustained sampling.
 - [ ] Repeat experiments across more workload sizes and host loads; establish false-positive rates.
 - [ ] Verify task timeout/cancellation cleans up worker and child processes under failure.
 
@@ -1144,6 +1178,14 @@ Retraining reproduces evaluation, promotion updates the served version, and roll
   rules over the 104 local `data/evidence` run folders: 0 replacements (2026-11-19). Not run
   on GPU-host evidence yet. Secrets
   management, retention and access control remain open.
+  2026-11-20 (A07, Benoy): run on GPU-host evidence. The A06 Ollama-GPU capacity sweep
+  `cfg-default-20261111T211237Z-2d75ea` (566 files) had 350 absolute `output_dir` host paths,
+  all partly replaced: the path contains a space, so each keeps the tail
+  `Watch/AgentWatch/.data/...` (the documented limitation; no user or host name remains). The
+  M2 vLLM/DCGM and GPM folders (72 and 58 files) had no host identifiers in JSON; their 216
+  replacements were vLLM in-container library paths. Host paths remain in those folders'
+  scripts and logs, which `redact` does not copy. The four A07 attempt folders: 0
+  replacements; all copies reviewed by hand. Open: handle paths containing spaces.
 - [ ] Document threat boundaries, backups, restoration, deployment, and incident procedures.
 - [ ] Set cloud budgets and measure workload, instrumentation, and serving costs.
 - [ ] Reconcile the unused Go control plane/CLI and placeholder SDK/Protobuf contracts with the
@@ -1167,6 +1209,16 @@ from M3 through M6 and do not renumber the implementation milestones above.
 - [ ] O01 — Rohit: accept policy/evaluation contracts and numerical gates after C01/A04/M01.
   Proposed as `opt-contract-v1` (2026-10-26): [the optimization contract](optimization-contract.md)
   and `pipelines/model/optimization-contract.toml`. Open until all three teams accept it.
+  2026-11-20 (Benoy, branch `docs/optimization-contract-v2`): proposed `opt-contract-v2` replaces
+  v1's placeholder minimum of 2 frozen evaluation tasks with 4. Every batch runs every frozen
+  task, so 4 tasks over the minimum 5 pairs give the 20 completed tasks per configuration; the
+  agent's six tasks (PR #85) leave two for development. No other value changed and v1 was never
+  used by an evaluation. The O04 synthetic fixtures now freeze four tasks over 5 pairs.
+  Review follow-up 2026-11-22: "used once" means once per experiment; a later experiment (a
+  second host, or after a failed or inconclusive evaluation) may freeze the same tasks and must
+  say so. Page wording only; the TOML's parsed values and hash are unchanged.
+  Verified in WSL Ubuntu: `pipelines/data/tests` and `tests/contract` 1,306 passed; Ruff clean.
+  Still proposed: acceptance needs every team's row in the contract page's acceptance table.
 - [ ] O02 — Allen: validated versioned manual controls and audit history after O01/B01/B02.
   Implemented 2026-11-03 on branch `feature/concurrency-policy` (not yet merged):
   [versioned manual concurrency policy](concurrency-policy.md), migration
@@ -1187,8 +1239,8 @@ from M3 through M6 and do not renumber the implementation milestones above.
   for validation. Playwright covers cross-origin and oversized requests and malformed form input.
   Run links
   record the version *active while the run was open*, not enforcement. Still open: enforcement
-  (O03), the finished controls UI (O05), real-hardware evaluation (O06) and `opt-contract-v1`
-  acceptance (O01).
+  (O03), the finished controls UI (O05), real-hardware evaluation (O06) and the optimization
+  contract's acceptance (O01; now `opt-contract-v2`).
 - [ ] O03 — Akshayaa: bounded runner admission and cleanup after O02/A02/A03.
   Implemented 2026-11-09 on branch `feature/runner-concurrency-limits` (not yet merged),
   [ADR 0010](adr/0010-runner-process-admission-limits.md): `run` and the new `batch` command read
@@ -1243,6 +1295,13 @@ from M3 through M6 and do not renumber the implementation milestones above.
   as malformed (reviews on PR #58). Verified on synthetic experiments only: 156 cases in
   `pipelines/data/tests/test_optimization_{manifest,batches,comparison}.py`. Open until O06
   records a real experiment in this format.
+  2026-11-21 (branch `fix/optimization-policy-enforcement`, review finding on PR #100): a batch
+  record's `policy` showed only what the experiment set, so a candidate run whose inference
+  limit named another model server, and so was never enforced, was accepted as that
+  candidate. Batches are now also rejected as `policy_not_applied` unless each linked run's own
+  admission evidence (final control state and every request's `limit_at_arrival`) shows exactly
+  the slot's limits, for baseline and candidates alike. Synthetic experiments only: 169 cases
+  in the same three test files.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
   Implemented 2026-11-11 on branch `feature/optimization-controls-compare`, rebuilt on the glass
   workspace (not yet pushed or reviewed; supersedes the unmerged `feature/optimization-view`).
@@ -1301,6 +1360,15 @@ from M3 through M6 and do not renumber the implementation milestones above.
   agent policy tests against PostgreSQL (WSL 410 passed, Windows attribution modules 119
   passed), web lint, typecheck, unit tests, production build and Playwright
   `concurrency-controls` and `run-policy` specs (21 passed). No hardware run; O06 stays open.
+  2026-11-22 admission overhead measurement (branch `feature/admission-overhead`,
+  [admission overhead](admission-overhead.md)): `make agent-admission-overhead` alternates the
+  runner's first model request without and with admission (a policy watcher and an inference
+  permit under the active policy, limits unchanged and re-read at the end), protocol
+  `admission-overhead-v1`. `overhead-verdict` judges it against the contract's
+  `max_median_admission_overhead`, which `OptimizationContract` now loads. Verified with test
+  doubles only: `services/agent/tests/test_admission_overhead.py`,
+  `tests/contract/test_admission_overhead_attempts.py` (the verdict reads a saved measurement)
+  and `pipelines/data/tests/test_overhead_verdict.py`. No hardware measurement yet.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.

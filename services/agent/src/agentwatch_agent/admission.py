@@ -78,7 +78,7 @@ class AdmissionRefused(Exception):
 
 @dataclass(frozen=True)
 class QueueBounds:
-    """One control's queue bounds, declared before a run (opt-contract-v1).
+    """One control's queue bounds, declared before a run (opt-contract-v2).
 
     `max_queue_length` counts requests waiting, not those admitted; 0 means a request that
     cannot be admitted at once is refused instead of queued.

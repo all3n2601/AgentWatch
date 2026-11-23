@@ -13,7 +13,9 @@ must run in schedule order without overlapping, so a pair's two batches ran back
 
 Every task that started links its agent run evidence, whose run ID, task content hash and
 configuration digest must match the manifest, and whose verification outcome must agree with
-the recorded acceptance: a task's identity is never taken from its ID alone. Missing measurements stay null: an admission statistic the
+the recorded acceptance: a task's identity is never taken from its ID alone. That evidence must
+also show the runner enforced exactly the slot's limits, since the record's policy says only
+what the experiment set. Missing measurements stay null: an admission statistic the
 runner could not observe is unavailable, not zero.
 """
 
@@ -73,6 +75,7 @@ REJECTION_CODES = (
     "state_mismatch",
     "task_mismatch",
     "task_identity_mismatch",
+    "policy_not_applied",
     "provenance_missing",
     "inconsistent_status",
     "injection_mismatch",
@@ -193,6 +196,16 @@ def optional_bool(value, name: str) -> bool | None:
     return value
 
 
+def optional_limit(value, name: str) -> int | None:
+    if value is None:
+        return None
+    need(
+        not isinstance(value, bool) and isinstance(value, int) and value >= 1,
+        f"{name} must be a positive integer or null",
+    )
+    return value
+
+
 def optional_text(value, name: str) -> str | None:
     if value is None:
         return None
@@ -300,9 +313,15 @@ def read_task(value, index: int, controls: tuple[str, ...]) -> tuple[TaskResult,
 
 
 def check_task_evidence(
-    root: Path, evidence_dir: str, task: TaskResult, manifest: Manifest
+    root: Path,
+    evidence_dir: str,
+    task: TaskResult,
+    manifest: Manifest,
+    planned: dict[str, int],
+    controls: tuple[str, ...],
 ) -> None:
-    """The linked agent run is this task's run, of the frozen task revision and configuration."""
+    """The linked agent run is this task's run, of the frozen task revision and configuration,
+    and it ran under the slot's `planned` limits."""
     try:
         directory = confined_path(root, evidence_dir, ManifestError)
         evidence = parse_json(
@@ -346,10 +365,103 @@ def check_task_evidence(
             f"{task.task_id}: acceptance {task.acceptance!r} but the run's task_passed is "
             f"{passed!r}",
         )
+    check_applied_policy(evidence, task.task_id, planned, controls)
+
+
+def limit_text(limit: int | None) -> str:
+    return "no limit" if limit is None else f"limit {limit}"
+
+
+# A not-enforced reason quoted in a rejection; the runner's reasons are short fixed sentences.
+MAX_QUOTED_REASON = 200
+
+
+def applied_limits(
+    admission: dict, task_id: str, controls: tuple[str, ...]
+) -> tuple[dict[str, int], dict[str, str]]:
+    """The limits the run's admission controller enforced at the end of the run, and the
+    runner's reason for each control it did not limit."""
+    status = admission["status"]
+    if status == "not_configured":
+        return {}, {}
+    need(
+        status == "configured",
+        f"{task_id}: admission.status must be 'configured' or 'not_configured'",
+    )
+    process = admission.get("process")
+    need(
+        isinstance(process, dict) and isinstance(process.get("controls"), dict),
+        f"{task_id}: admission.process.controls must be an object",
+    )
+    limits, reasons = {}, {}
+    for control in controls:
+        name = f"{task_id}: admission.process.controls.{control}"
+        state = process["controls"].get(control)
+        need(
+            isinstance(state, dict) and isinstance(state.get("enforced"), bool),
+            f"{name}.enforced must be true or false",
+        )
+        limit = optional_limit(state.get("limit"), f"{name}.limit")
+        if state["enforced"]:
+            need(limit is not None, f"{name} is enforced without a limit")
+            limits[control] = limit
+        elif isinstance(state.get("not_enforced_reason"), str):
+            reasons[control] = state["not_enforced_reason"][:MAX_QUOTED_REASON]
+    return limits, reasons
+
+
+def check_applied_policy(
+    evidence: dict, task_id: str, planned: dict[str, int], controls: tuple[str, ...]
+) -> None:
+    """The run's own admission evidence shows exactly the slot's limits in force.
+
+    The batch record names the policy the experiment set, but only the runner knows what it
+    enforced: a version naming another model server, or one the runner had not yet read, leaves
+    a planned limit unapplied. So each control's final state, and the limit in force when each
+    of the run's requests arrived, must equal the plan, for the baseline (no limits) as well as
+    for a candidate. A run without admission applied no limits.
+    """
+    admission = evidence.get("admission")
+    if not isinstance(admission, dict) or "status" not in admission:
+        raise BatchRejected(
+            "policy_not_applied",
+            f"{task_id}: linked evidence records no admission state, so the limits it ran "
+            "under are unknown",
+        )
+    limits, reasons = applied_limits(admission, task_id, controls)
+    differing = [
+        f"{control}: planned {limit_text(planned.get(control))}, applied "
+        f"{limit_text(limits.get(control))}"
+        + (f" ({reasons[control]})" if control in reasons else "")
+        for control in controls
+        if limits.get(control) != planned.get(control)
+    ]
+    if differing:
+        raise BatchRejected("policy_not_applied", f"{task_id}: {'; '.join(differing)}")
+    requests = evidence.get("admissions", [])
+    need(isinstance(requests, list), f"{task_id}: admissions must be a list")
+    for position, request in enumerate(requests):
+        name = f"{task_id}: admissions[{position}]"
+        need(
+            isinstance(request, dict) and request.get("control") in controls,
+            f"{name}.control must be one of {list(controls)}",
+        )
+        control = request["control"]
+        arrived = optional_limit(request.get("limit_at_arrival"), f"{name}.limit_at_arrival")
+        if arrived != planned.get(control):
+            raise BatchRejected(
+                "policy_not_applied",
+                f"{task_id}: an {control} request arrived under {limit_text(arrived)}; the "
+                f"slot's policy sets {limit_text(planned.get(control))}",
+            )
 
 
 def read_tasks(
-    entry: dict, root: Path, manifest: Manifest, controls: tuple[str, ...]
+    entry: dict,
+    root: Path,
+    manifest: Manifest,
+    controls: tuple[str, ...],
+    planned: dict[str, int],
 ) -> tuple[TaskResult, ...]:
     raw = entry["tasks"]
     need(isinstance(raw, list) and len(raw) > 0, "tasks must be a non-empty list")
@@ -369,7 +481,7 @@ def read_tasks(
                     "configuration",
                 )
             continue
-        check_task_evidence(root, evidence_dir, task, manifest)
+        check_task_evidence(root, evidence_dir, task, manifest, planned, controls)
     return tuple(sorted((task for task, _ in parsed), key=lambda task: task.task_id))
 
 
@@ -430,7 +542,10 @@ def check_slot(entry: dict, slot: ScheduledBatch | None) -> ScheduledBatch:
     return slot
 
 
-def check_policy(entry: dict, slot: ScheduledBatch, contract: OptimizationContract) -> int | None:
+def check_policy(
+    entry: dict, slot: ScheduledBatch, contract: OptimizationContract
+) -> tuple[int | None, dict[str, int]]:
+    """The recorded policy version, and the slot policy's limits the record names."""
     policy = fields(entry["policy"], "policy", {"sha256", "limits", "version"})
     try:
         limits = policy_limits(policy["limits"], "policy.limits", contract)
@@ -441,7 +556,7 @@ def check_policy(entry: dict, slot: ScheduledBatch, contract: OptimizationContra
         raise BatchRejected("policy_mismatch", "policy.sha256 does not identify policy.limits")
     if policy["sha256"] != slot.policy_sha256:
         raise BatchRejected("policy_mismatch", f"slot {slot.index} schedules another policy")
-    return version
+    return version, limits
 
 
 def check_arrivals(tasks: tuple[TaskResult, ...], manifest: Manifest) -> None:
@@ -567,7 +682,7 @@ def parse_batch(
     need(not isinstance(index, bool) and isinstance(index, int), "index must be an integer")
     need(file == f"{index:03d}.json", f"index {index} must be stored as {index:03d}.json")
     slot = check_slot(entry, slots.get(index))
-    version = check_policy(entry, slot, contract)
+    version, planned = check_policy(entry, slot, contract)
     optional_text(entry["reason"], "reason")
     optional_text(entry["clock_id"], "clock_id")
     started = optional_timestamp(entry["started_at"], "started_at")
@@ -584,7 +699,7 @@ def parse_batch(
     admission = fields(entry["admission"], "admission", {"starved_admissions", "leaked_permits"})
     active = optional_bool(injection["active"], "injection.active")
     cleanup = optional_bool(injection["cleanup_confirmed"], "injection.cleanup_confirmed")
-    tasks = read_tasks(entry, root, manifest, contract.controls)
+    tasks = read_tasks(entry, root, manifest, contract.controls, planned)
     check_status(entry, tasks, started, finished)
     applied = read_applied_injectors(injection["injectors"])
     check_injection(entry["status"], slot, (active, cleanup, applied), manifest, contract)
