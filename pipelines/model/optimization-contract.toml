@@ -29,7 +29,8 @@ unlimited_encoding = "absent"
 # from the first submission to the last terminal task.
 unit = "batch"
 # Development tasks choose settings; frozen evaluation tasks are disjoint and used once per
-# experiment (docs/optimization-contract.md says what a later experiment may reuse).
+# experiment; only a replication with unchanged candidates may reuse them
+# (docs/optimization-contract.md).
 require_disjoint_evaluation_tasks = true
 # Every batch runs every frozen evaluation task, so 4 tasks over the minimum 5 pairs give the
 # 20 completed tasks per configuration below. The agent's six tasks leave two for development.

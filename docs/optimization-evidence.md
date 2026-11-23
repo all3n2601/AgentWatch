@@ -168,7 +168,8 @@ the step dataset, the replay labels or `step-features-v1`.
 - An evaluation manifest needs at least four frozen tasks that share no name with its
   development tasks. The agent has six, so two remain for development.
 - "Frozen evaluation tasks are used once per experiment" is not enforced: no registry of
-  used evaluation tasks exists yet, so a later experiment that reuses them must say so itself.
+  used evaluation tasks or manifest field for earlier use exists yet. Reuse is allowed only to
+  replicate with unchanged candidates, and such an experiment must say so itself.
 - Hardware, model and power identity, and the applied injector set, are declared by the
   producer. O04 compares them with the manifest but cannot measure them. Task content and
   configuration are verified against each run's agent evidence.

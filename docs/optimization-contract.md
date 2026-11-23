@@ -45,7 +45,7 @@ seed, queue bounds and the frozen evaluation tasks. Anything not preregistered i
 | Pairs | One baseline and one candidate batch on the same tasks, inputs, hardware and power state, back to back, order randomized with a recorded seed | Plan, metric chosen here |
 | Repetitions | At least 5 pairs and 20 completed tasks per configuration | Plan |
 | Warm-up and cold requests | Declared warm-up; cold requests reported separately and excluded from warm comparisons | Plan |
-| Tasks | Settings chosen on development tasks; frozen evaluation tasks are disjoint and used once per experiment: never to choose settings, and an evaluation is not rerun to replace its result. A later preregistered experiment (another host, or a new experiment after a failed or inconclusive one) may freeze the same tasks, and its report says they were evaluated before | Plan, metric chosen here |
+| Tasks | Settings chosen on development tasks; frozen evaluation tasks are disjoint and used once per experiment: never to choose settings, and an evaluation is not rerun to replace its result. A later preregistered experiment may freeze the same tasks only to replicate one with unchanged candidates (on another host, for example), and its report says they were evaluated before. Candidates chosen or changed after a failed or inconclusive evaluation need new frozen tasks, so held-out tasks never select settings | Plan, metric chosen here |
 | Minimum frozen evaluation tasks | 4: every batch runs every frozen task, so 4 tasks over the minimum 5 pairs give the 20 completed tasks per configuration; the agent's six tasks leave two for development | Plan, metric chosen here |
 
 ## Gates
@@ -120,14 +120,17 @@ and the agent's existing stability gate, so a threshold edit cannot drift silent
 | Version | Change |
 |---|---|
 | `opt-contract-v1` (2026-10-26) | First proposal; never used by an evaluation, so it has no reports. Its file is in git history |
-| `opt-contract-v2` (2026-11-20) | Minimum frozen evaluation tasks 2 → 4, replacing v1's placeholder now that the agent has six tasks. No other value changed. The page also states that frozen tasks are used once per experiment |
+| `opt-contract-v2` (2026-11-20) | Minimum frozen evaluation tasks 2 → 4, replacing v1's placeholder now that the agent has six tasks. No other value changed. The page also states that frozen tasks are used once per experiment, and that only a replication with unchanged candidates may reuse them |
 
 ## Known limitations
 
 - The agent has six tasks, so an evaluation that freezes four keeps two for development.
   Adding tasks would let a later version freeze more.
-- "Used once" is per experiment, so a second host or a new experiment after an inconclusive
-  or failed one reuses the same four frozen tasks. Their results are not independent of the
-  earlier evaluation's, and the later report must say so; only new tasks would avoid that.
+- "Used once" is per experiment, so a replication with unchanged candidates (a second host)
+  reuses the same four frozen tasks. Its results are not independent of the earlier
+  evaluation's, and its report must say so. New candidates after a failed or inconclusive
+  evaluation need new frozen tasks; with six tasks in all, more tasks must be written first.
+- Earlier use is not recorded in the manifest (no field or registry exists), so the rule is
+  enforced by review and by the report's statement, not by the manifest check.
 - Only one GPU laptop is confirmed; its results apply to that model, GPU and WSL setup.
 - Per-process enforcement does not limit concurrency across several runners.

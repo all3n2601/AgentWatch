@@ -191,14 +191,21 @@ def test_evaluation_tasks_are_frozen_and_disjoint_from_development_tasks():
     assert parse_manifest(development, CONTRACT).purpose == "development"
 
 
-def test_an_evaluation_needs_the_contract_minimum_of_tasks():
+@pytest.mark.parametrize("count", [1, 3, 4])
+def test_an_evaluation_needs_the_contract_minimum_of_tasks(count):
     document = manifest_document(
         CONTRACT, repetitions={"pairs": 20, "warmup_batches": 0, "seed": 1}
     )
-    document["workload"]["tasks"] = document["workload"]["tasks"][:1]
-    document["workload"]["arrivals"]["offsets"] = document["workload"]["arrivals"]["offsets"][:1]
-    with pytest.raises(ManifestError, match="at least 4 frozen tasks"):
-        parse_manifest(document, CONTRACT)
+    assert len(document["workload"]["tasks"]) >= 4
+    document["workload"]["tasks"] = document["workload"]["tasks"][:count]
+    offsets = document["workload"]["arrivals"]["offsets"][:count]
+    document["workload"]["arrivals"]["offsets"] = offsets
+    if count < CONTRACT.min_evaluation_tasks:
+        with pytest.raises(ManifestError, match="at least 4 frozen tasks"):
+            parse_manifest(document, CONTRACT)
+    else:
+        # The boundary itself: exactly the contract's minimum is accepted.
+        assert len(parse_manifest(document, CONTRACT).tasks) == count
 
 
 def test_arrivals_schedule_every_task_once_from_zero():
