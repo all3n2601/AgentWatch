@@ -19,16 +19,25 @@ running, since admission reads its policy) sends the runner's first model reques
 2. 30 `admission_off` and 30 `admission_on` requests, alternating, so drift affects both.
    - `admission_off`: the request alone, as a `--no-policy` run sends it.
    - `admission_on`: a policy watcher polling the policy service and an inference permit
-     acquired before and released after the request, under the active policy. The watcher
-     starts before the timer and stops after it, as a run starts it once.
+     acquired before and released after the request, under the active policy. In a run the
+     watcher has been polling since the run began, so a request starts at an arbitrary point
+     of the poll cycle. To reproduce that, each `admission_on` request starts its own watcher,
+     waits an untimed, uniformly random phase of one poll interval (from a recorded seed,
+     `poll_phase_seed`), then starts the timer; the watcher stops after the timer. Each
+     measurement records `poll_phase_seconds` and `polls_during_request`, and the report counts
+     `requests_overlapping_a_poll`.
 3. The active policy is read once before the first request and once after the last. A
    version change at any point fails the measurement: limits must stay unchanged.
 
 No resource sampling or live delivery runs in either condition. The report,
 `.data/admission-overhead/<task>-<UTC time>-<id>/admission-overhead.json`, keeps the per-request wall
 times and server durations, the policy version and limits, whether the limit was enforced, every
-admission record, and each watcher's summary. A failed or interrupted measurement is saved with
-its status and error.
+admission record, each watcher's summary and the poll interval. A failed or interrupted
+measurement is saved with its status and error.
+
+For O06, measure with the policy the experiment's candidates use set on this runner's model
+server (for example `inference_requests` 1 on vLLM): with sequential requests the limit is
+enforced but never binds, so the permit path a limited run takes is the one timed.
 
 ## Verdict
 
@@ -41,7 +50,10 @@ HOST_LABEL=<label>` judges the attempts with the
 - a paired bootstrap interval compared with the budget.
 
 The budget here is the contract's `max_median_admission_overhead`, not the instrumentation
-budget. In the report, `admission_off` fills the "uninstrumented" side of each pair and
+budget; each verdict group records the budget it was judged against (`budget`). Attempts are
+grouped by their admission settings too: the policy's limits, the service they name, whether
+the inference limit was enforced, and the poll interval. Attempts under different settings
+measure different admission paths, so they never form one verdict. In the report, `admission_off` fills the "uninstrumented" side of each pair and
 `admission_on` the "instrumented" side. The optimization gates read that verdict for the
 experiment's model.
 
@@ -49,5 +61,10 @@ experiment's model.
 
 - Requests are sequential, so a permit never waits: this measures the cost of admission, not
   queueing under contention, which is what the optimization experiment compares.
-- Each `admission_on` request runs its own watcher, so polling starts with the request.
+- Polling cost is sampled, as in a run: a request includes a poll only when one falls inside
+  it. With requests shorter than the poll interval (the A07 GPU requests took 0.28–0.37 s
+  against the default 1 s poll), most `admission_on` requests include none;
+  `requests_overlapping_a_poll` shows how many did.
+- The verdict report's top-level `protocol` names the shared acceptance rule
+  (`instrumentation-overhead-acceptance-v1`); which budget applied is per group.
 - One task, one model and one host per attempt; the verdict describes that setup only.

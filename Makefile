@@ -83,7 +83,7 @@ compare-optimization: ## Validate an optimization experiment's batches and write
 	$(if $(EXPERIMENT),,$(error Set EXPERIMENT to an optimization experiment directory))
 	$(DATA).optimization_comparison compare "$(EXPERIMENT)" --contract $(OPTIMIZATION_CONTRACT)
 
-overhead-verdict: ## Judge one host's saved overhead/sampling-overhead attempts against the instrumentation overhead budget (ATTEMPTS="a.json b.json" HOST_LABEL=name; paths with spaces: run the module directly)
+overhead-verdict: ## Judge one host's saved overhead, sampling-overhead or admission-overhead attempts against the contract's instrumentation or admission overhead budget (ATTEMPTS="a.json b.json" HOST_LABEL=name; paths with spaces: run the module directly)
 	$(if $(ATTEMPTS),,$(error Set ATTEMPTS to overhead.json or sampling-overhead.json files))
 	$(if $(HOST_LABEL),,$(error Set HOST_LABEL to a short name for the host the attempts were measured on))
 	$(DATA).overhead_verdict $(ATTEMPTS) --contract $(OPTIMIZATION_CONTRACT) --host-label "$(HOST_LABEL)"

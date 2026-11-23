@@ -8,8 +8,13 @@ sends it. Warm-up requests are discarded so the model is loaded, then `admission
 - `admission_off` sends the request alone, as a run with `--no-policy` does.
 - `admission_on` adds what a run that reads the policy adds around a model request: a policy
   watcher polling the policy service, and a permit acquired from the admission controller
-  before the request and released after it. The watcher is started before the timer and
-  stopped after it, as a run starts it once, so only its polling during the request counts.
+  before the request and released after it. In a run the watcher has been polling since the
+  run began, so a request starts at an arbitrary point of the poll cycle and overlaps a poll
+  with a probability of about its duration over the poll interval. To reproduce that, each
+  `admission_on` request starts its own watcher, waits an untimed, uniformly random phase of
+  one poll interval (seeded and recorded), and only then starts the timer; the watcher stops
+  after the timer. Each measurement records its phase and the polls that ran while it was
+  timed.
 
 The active policy is read once, before the first request, and applied to the controller; the
 limits stay unchanged for the whole measurement (the contract's admission overhead gate is
@@ -25,6 +30,7 @@ interrupted measurement still returns everything measured, with its status and e
 import hashlib
 import json
 import platform
+import random
 import threading
 import time
 from collections.abc import Callable
@@ -59,7 +65,8 @@ PROTOCOL = {
     "order": "alternating admission_off/admission_on after warm-up",
     "admission_on": (
         "a policy watcher polling the policy service, and an inference permit acquired before "
-        "and released after the request, under the active policy, limits unchanged"
+        "and released after the request, under the active policy, limits unchanged; the timed "
+        "request starts at a seeded, uniformly random phase of the watcher's poll cycle"
     ),
     "statistics": "median and p90 of runner wall and server durations; admission waits",
     "threshold": None,
@@ -86,10 +93,15 @@ def measure_admission_overhead(
     policy_poll_seconds: float = DEFAULT_POLICY_POLL_SECONDS,
     settings: AdmissionSettings | None = None,
     retry: RetryPolicy | None = None,
+    phase_seed: int | None = None,
+    pause: Callable[[float], None] = time.sleep,
 ) -> dict:
     """Run the protocol; `source` is the policy service a run would read."""
     if repetitions < 1 or warmup < 0:
         raise ValueError("repetitions must be positive and warmup nonnegative")
+    if phase_seed is None:
+        phase_seed = random.SystemRandom().randrange(2**32)
+    phases = random.Random(phase_seed)
     payload = first_request(task, model)
     controller = AdmissionController(
         settings or AdmissionSettings(), inference_service_id=inference_service_id
@@ -139,8 +151,15 @@ def measure_admission_overhead(
             finally:
                 permit.release()
 
+        phase = phases.uniform(0, policy_poll_seconds)
         with watcher:
+            # Untimed: the request then starts where a run's request would, at an arbitrary
+            # point of the watcher's poll cycle (its first poll comes one interval after start).
+            pause(phase)
+            polls_before = watcher.polls
             measurement = timed("admission_on", index, admitted)
+            polls_during = watcher.polls - polls_before
+        measurement |= {"poll_phase_seconds": phase, "polls_during_request": polls_during}
         watchers.append(watcher.summary())
         if watcher.error is not None:
             raise watcher.error
@@ -174,6 +193,8 @@ def measure_admission_overhead(
     except Exception as failure:  # noqa: BLE001
         status, error = "failed", f"{type(failure).__name__}: {failure}"[:500]
     return _report(task, model, payload, controller, policy, warmups, measurements) | {
+        "policy_poll_seconds": policy_poll_seconds,
+        "poll_phase_seed": phase_seed,
         "admissions": admissions,
         "policy_watchers": watchers,
         "status": status,
@@ -200,11 +221,17 @@ def _report(task, model, payload, controller, policy, warmups, measurements) -> 
             if rows
             else None
         )
+    if conditions["admission_on"]:
+        conditions["admission_on"]["requests_overlapping_a_poll"] = sum(
+            1 for m in by_condition["admission_on"] if m.get("polls_during_request")
+        )
     walls = {
         c: conditions[c]["wall_seconds"]["median"] if conditions[c] else None for c in CONDITIONS
     }
     difference = None if None in walls.values() else walls["admission_on"] - walls["admission_off"]
     summary = controller.summary()
+    # A policy without an inference entry fails `apply`; the report must still be written.
+    named = policy.controlled_services.get(CONTROL) if policy is not None else None
     return {
         "protocol": PROTOCOL,
         "recorded_at": datetime.now(UTC).isoformat(),
@@ -218,7 +245,7 @@ def _report(task, model, payload, controller, policy, warmups, measurements) -> 
         else {
             "version": policy.version,
             "limits": policy.limits.model_dump(exclude_none=True),
-            "inference_service": policy.controlled_services[CONTROL].service_id,
+            "inference_service": named.service_id if named is not None else None,
             "enforced": summary["controls"][CONTROL]["enforced"],
             "not_enforced_reason": summary["controls"][CONTROL]["not_enforced_reason"],
         },
@@ -237,7 +264,16 @@ def _report(task, model, payload, controller, policy, warmups, measurements) -> 
                 "Sequential requests never wait for a permit: queueing under contention is the "
                 "experiment's subject, not this measurement's"
             ),
-            "Each admission_on request runs its own watcher, so polling starts with the request",
+            (
+                "Polling cost is sampled: a request overlaps a poll only when one falls inside "
+                "it, so with requests shorter than the poll interval most admission_on requests "
+                "include no poll; polls_during_request shows how many did"
+            ),
             "Temperature 0 does not guarantee identical replies; compare eval counts",
+            (
+                "Each pair runs admission_off before admission_on (ABAB, not randomized), as in "
+                "the A07 overhead protocols; drift within a pair favours neither by design but "
+                "is not randomized away"
+            ),
         ],
     }

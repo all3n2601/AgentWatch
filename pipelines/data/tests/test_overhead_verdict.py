@@ -443,3 +443,83 @@ def test_admission_conditions_must_alternate_off_then_on(tmp_path):
     document["measurements"][0]["condition"] = "admission_on"
     with pytest.raises(AttemptError, match="alternate admission_off, admission_on"):
         read_attempt(write(tmp_path / "a" / "admission-overhead.json", document))
+
+
+def admission_attempt(limits, enforced, poll_seconds=1.0, service="vllm") -> dict:
+    return attempt_document(
+        STABLE,
+        STABLE,
+        "admission-overhead-v1",
+        policy={
+            "version": 3,
+            "limits": limits,
+            "inference_service": service,
+            "enforced": enforced,
+            "not_enforced_reason": None if enforced else "no limit",
+        },
+        policy_poll_seconds=poll_seconds,
+    )
+
+
+def test_admission_attempts_under_different_admission_settings_are_never_combined(tmp_path):
+    # One enforced limit polled every second, one unlimited baseline polled every 5 s, and one
+    # matching the first: only the first and third measure the same admission path.
+    documents = [
+        admission_attempt({"inference_requests": 2}, True),
+        admission_attempt({}, False, poll_seconds=5.0),
+        admission_attempt({"inference_requests": 2}, True),
+    ]
+    paths = [write(tmp_path / f"a{n}" / "admission.json", doc) for n, doc in enumerate(documents)]
+    groups = evaluate(paths, CONTRACT, HOST)["groups"]
+    assert sorted(len(group["attempts"]) for group in groups) == [1, 2]
+    enforced = next(group for group in groups if len(group["attempts"]) == 2)
+    assert {
+        key: enforced["settings"][key]
+        for key in enforced["settings"]
+        if "admission" in key or "poll" in key
+    } == {
+        "admission_limits": '{"inference_requests":2}',
+        "admission_inference_service": "vllm",
+        "admission_inference_enforced": "enforced",
+        "policy_poll_seconds": 1.0,
+    }
+    # Each group says which budget it was judged against.
+    assert {group["budget"] for group in groups} == {CONTRACT.max_median_admission_overhead}
+
+
+def test_each_group_records_its_protocols_budget(tmp_path):
+    paths = [
+        write(
+            tmp_path / "s" / "sampling.json",
+            attempt_document(STABLE, STABLE, "resource-sampling-overhead-v1"),
+        ),
+        write(tmp_path / "a" / "admission.json", admission_attempt({}, False)),
+    ]
+    budgets = {
+        group["settings"]["protocol"]: group["budget"]
+        for group in evaluate(paths, CONTRACT, HOST)["groups"]
+    }
+    assert budgets == {
+        "resource-sampling-overhead-v1": CONTRACT.max_median_instrumentation_overhead,
+        "admission-overhead-v1": CONTRACT.max_median_admission_overhead,
+    }
+
+
+@pytest.mark.parametrize(
+    ("policy", "message"),
+    [
+        ("vllm", "policy must be an object"),
+        (
+            {"limits": {"inference_requests": "2"}, "inference_service": "vllm", "enforced": True},
+            "integer limits",
+        ),
+        (
+            {"limits": {}, "inference_service": "vllm", "enforced": None},
+            "enforced must be true or false",
+        ),
+    ],
+)
+def test_malformed_admission_settings_are_rejected(tmp_path, policy, message):
+    document = admission_attempt({}, False) | {"policy": policy}
+    with pytest.raises(AttemptError, match=message):
+        read_attempt(write(tmp_path / "a" / "admission.json", document))

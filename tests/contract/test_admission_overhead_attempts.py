@@ -33,5 +33,10 @@ def test_a_saved_measurement_reads_as_paired_admission_attempt(tmp_path):
     assert attempt.status == "completed" and len(attempt.pairs) == 4
     assert attempt.unpaired_repetitions == 0
     assert attempt.settings["protocol"] == "admission-overhead-v1"
-    for field in ("task_id", "model", "request_sha256", "runner_version"):
+    for field in ("task_id", "model", "request_sha256", "runner_version", "policy_poll_seconds"):
         assert attempt.settings[field] == report[field]
+    # The admission settings the measurement ran under are part of the group key.
+    assert attempt.settings["admission_inference_service"] == report["policy"]["inference_service"]
+    assert attempt.settings["admission_inference_enforced"] == (
+        "enforced" if report["policy"]["enforced"] else "not_enforced"
+    )

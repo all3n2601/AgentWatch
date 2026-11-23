@@ -29,6 +29,7 @@ case nothing is written.
 
 import argparse
 import hashlib
+import json
 import math
 import re
 import statistics
@@ -166,6 +167,39 @@ def _settings(document: dict, version: str) -> dict:
     metrics = _probe_metrics(document)
     if metrics is not None:
         settings["probe_metrics"] = metrics
+    if version == ADMISSION_PROTOCOL:
+        settings |= _admission_settings(document)
+    return settings
+
+
+def _admission_settings(document: dict) -> dict:
+    """What an admission measurement ran under: the policy's limits, the service they name,
+    whether the inference limit was enforced, and the watcher's poll interval. Attempts that
+    differ in any of these measure different admission paths, so they never share a group."""
+    settings: dict = {}
+    if "policy_poll_seconds" in document:
+        settings["policy_poll_seconds"] = _setting_value(
+            document["policy_poll_seconds"], "policy_poll_seconds"
+        )
+    policy = document.get("policy")
+    if policy is None:
+        return settings  # the measurement failed before reading the policy
+    if not isinstance(policy, dict):
+        raise AttemptError("policy must be an object")
+    limits = policy.get("limits")
+    if not isinstance(limits, dict) or not all(
+        isinstance(value, int) and not isinstance(value, bool) for value in limits.values()
+    ):
+        raise AttemptError("policy.limits must map controls to integer limits")
+    enforced = policy.get("enforced")
+    if not isinstance(enforced, bool):
+        raise AttemptError("policy.enforced must be true or false")
+    settings["admission_limits"] = json.dumps(limits, sort_keys=True, separators=(",", ":"))
+    if policy.get("inference_service") is not None:
+        settings["admission_inference_service"] = _setting_value(
+            policy["inference_service"], "policy.inference_service"
+        )
+    settings["admission_inference_enforced"] = "enforced" if enforced else "not_enforced"
     return settings
 
 
@@ -311,7 +345,13 @@ def evaluate(
     for settings, members in _grouped(attempts, host_label):
         entries = [attempt_entry(attempt, contract, seed) for attempt in members]
         groups.append(
-            {"settings": settings, "attempts": entries, "verdict": combined_verdict(entries)}
+            {
+                "settings": settings,
+                # The budget this group was judged against, chosen by its protocol.
+                "budget": budget_for(settings["protocol"], contract),
+                "attempts": entries,
+                "verdict": combined_verdict(entries),
+            }
         )
     return {
         "protocol": PROTOCOL,

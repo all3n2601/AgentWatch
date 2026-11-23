@@ -38,6 +38,9 @@ def measure(source, model=None, **overrides):
         "warmup": 2,
         "policy_poll_seconds": 0.01,
         "retry": NO_RETRY,
+        "phase_seed": 5,
+        # No untimed phase wait by default; the phase test below uses a real one.
+        "pause": lambda _seconds: None,
     } | overrides
     return measure_admission_overhead(TASK, "test-model", model.chat, source, **settings), model
 
@@ -99,13 +102,8 @@ def test_a_policy_change_fails_the_measurement_and_keeps_what_was_measured():
 
 
 def test_a_change_the_watcher_sees_fails_at_once():
-    class SlowModel(CountingModel):
-        def chat(self, payload):
-            threading.Event().wait(0.05)  # long enough for a watcher poll
-            return super().chat(payload)
-
     report, _model = measure(
-        ChangingSource(change_on_read=2), SlowModel(), policy_poll_seconds=0.005
+        ChangingSource(change_on_read=2), SlowModel(0.05), policy_poll_seconds=0.005
     )
     assert report["status"] == "failed" and "PolicyChanged" in report["error"]
     assert len(report["measurements"]) < 6
@@ -117,3 +115,69 @@ def test_an_unreadable_policy_sends_no_request():
     report, model = measure(source)
     assert report["status"] == "failed" and "URLError" in report["error"]
     assert model.requests == 0 and report["policy"] is None and report["measurements"] == []
+
+
+class SlowModel(CountingModel):
+    """Each request takes `seconds`, so watcher polls can fall inside it."""
+
+    def __init__(self, seconds):
+        super().__init__()
+        self.seconds = seconds
+
+    def chat(self, payload):
+        threading.Event().wait(self.seconds)
+        return super().chat(payload)
+
+
+def test_each_admitted_request_starts_at_a_recorded_random_phase_of_the_poll_cycle():
+    waited = []
+    report, _model = measure(
+        FakePolicySource(policy_version(1, inference=2)),
+        policy_poll_seconds=0.5,
+        phase_seed=11,
+        pause=waited.append,
+    )
+    admitted = [m for m in report["measurements"] if m["condition"] == "admission_on"]
+    phases = [m["poll_phase_seconds"] for m in admitted]
+    # The untimed wait before each timed request is its recorded phase, within one interval.
+    assert waited == phases and all(0 <= phase < 0.5 for phase in phases)
+    assert len(set(phases)) == 3
+    assert report["poll_phase_seed"] == 11 and report["policy_poll_seconds"] == 0.5
+    again, _model = measure(
+        FakePolicySource(policy_version(1, inference=2)),
+        policy_poll_seconds=0.5,
+        phase_seed=11,
+    )
+    replayed = [m["poll_phase_seconds"] for m in again["measurements"] if "poll_phase_seconds" in m]
+    assert replayed == phases  # the seed reproduces the phases
+    assert all("poll_phase_seconds" not in m for m in report["measurements"][0::2])
+
+
+def test_polls_that_fall_inside_a_timed_request_are_counted():
+    # Requests of 0.05 s against a 0.01 s poll: every admitted request overlaps a poll.
+    report, _model = measure(
+        FakePolicySource(policy_version(1, inference=2)),
+        SlowModel(0.05),
+        pause=threading.Event().wait,
+    )
+    admitted = [m for m in report["measurements"] if m["condition"] == "admission_on"]
+    assert all(m["polls_during_request"] >= 1 for m in admitted)
+    assert report["conditions"]["admission_on"]["requests_overlapping_a_poll"] == 3
+
+
+def test_a_policy_without_an_inference_entry_is_saved_as_failed():
+    # `apply` refuses it; the report must still be built, never raise on the missing entry.
+    complete = policy_version(1, inference=2)
+    partial = complete.model_copy(
+        update={
+            "controlled_services": {
+                control: service
+                for control, service in complete.controlled_services.items()
+                if control != "inference_requests"
+            }
+        }
+    )
+    report, model = measure(FakePolicySource(partial))
+    assert report["status"] == "failed" and report["error"]
+    assert report["policy"]["inference_service"] is None
+    assert model.requests == 0
