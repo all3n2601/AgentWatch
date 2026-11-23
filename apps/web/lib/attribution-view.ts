@@ -136,7 +136,8 @@ export type MalformedRow = {
 export type AttributionRow = ValidRow | MalformedRow;
 
 const COMPARISON_DISPLAY: Record<Comparison, { label: string; tone: Tone }> = {
-  agree: { label: "Same resource", tone: "info" },
+  // "Agree" rather than "same resource": both may say `none`, which names no resource.
+  agree: { label: "Agree", tone: "info" },
   differ: { label: "Rules and model differ", tone: "warning" },
   model_abstained: { label: "Model uncertain", tone: "caution" },
   no_model_output: { label: "Rules only", tone: "info" },
@@ -158,6 +159,10 @@ const TIMING_NAMES = [
   "cpu_seconds",
 ] as const;
 const SCORED_STATES: ModelState[] = ["ready_not_promoted", "ready_promoted"];
+/** `QUEUE_FRACTION_TOLERANCE` in packages/features: absolute, as for timing breakdowns. */
+const QUEUE_FRACTION_TOLERANCE = 1e-6;
+/** Statuses without a same-domain sampler stream, so coverage cannot be judged. */
+const UNSAMPLED_STATUSES: TelemetryStatus[] = ["missing", "empty", "unaligned"];
 
 function topClass(probabilities: Record<string, number>) {
   let best: [string, number] | null = null;
@@ -270,6 +275,56 @@ function featureContradictions(
     (features.cgroup_throttled_usec_delta !== null)
   )
     reasons.push("cgroup availability contradicts its value.");
+  reasons.push(...telemetryContradictions(telemetry));
+  const expectedFraction = expectedQueueFraction(
+    features.queue_seconds,
+    features.duration_seconds,
+  );
+  const fraction = features.queue_fraction;
+  if (
+    (expectedFraction === null) !== (fraction === null) ||
+    (expectedFraction !== null &&
+      fraction !== null &&
+      Math.abs(fraction - expectedFraction) > QUEUE_FRACTION_TOLERANCE)
+  )
+    reasons.push("queue_fraction is not queue_seconds / duration_seconds.");
+  return reasons;
+}
+
+/**
+ * The share of the step spent queued, as `step-features-v1` defines it: null when either
+ * timing is missing or the duration is zero.
+ */
+function expectedQueueFraction(
+  queueSeconds: number | null,
+  durationSeconds: number | null,
+): number | null {
+  return queueSeconds !== null &&
+    durationSeconds !== null &&
+    durationSeconds !== 0
+    ? queueSeconds / durationSeconds
+    : null;
+}
+
+/** `Telemetry.consistent` in packages/features/src/agentwatch_features/live.py. */
+function telemetryContradictions(telemetry: FeatureRow["telemetry"]): string[] {
+  const reasons: string[] = [];
+  if ((telemetry.status === "present") !== telemetry.sample_count > 0)
+    reasons.push(
+      "Telemetry status contradicts its sample count: only present telemetry has samples.",
+    );
+  if (
+    UNSAMPLED_STATUSES.includes(telemetry.status) &&
+    telemetry.coverage !== null
+  )
+    reasons.push(
+      `Telemetry ${telemetry.status} has a coverage value, which needs a sampler stream.`,
+    );
+  if (
+    telemetry.sample_count < 2 &&
+    telemetry.observed_interval_seconds !== null
+  )
+    reasons.push("An observed sampling interval needs at least two samples.");
   return reasons;
 }
 

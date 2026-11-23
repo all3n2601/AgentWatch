@@ -166,3 +166,12 @@ test("a failed read keeps rows; not found stops polling; a re-read resumes at it
   );
   assert.equal(nextAttributionDelayMs(gone, true, 0), null);
 });
+
+test("an empty page with a continuation cursor is invalid and backs off instead of draining", () => {
+  const feed = read(initialAttributionFeed(RUN_ID), 0, page([], 5)).feed;
+  assert.equal(feed.connection.status, "retrying");
+  assert.equal(feed.draining, false);
+  assert.equal(feed.cursor, 0);
+  const delay = nextAttributionDelayMs(feed, true, 0);
+  assert.ok(delay !== null && delay >= 1_000, `delay ${delay}`);
+});

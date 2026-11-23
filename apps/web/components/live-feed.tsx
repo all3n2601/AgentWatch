@@ -67,6 +67,7 @@ import {
 import {
   LIVE_POLL_INTERVAL_MS,
   runClosed,
+  seconds,
   type FeedConnection,
   type LateCheck,
   type RunFeed,
@@ -86,8 +87,6 @@ const seriesColors: Record<string, string> = {
   "gpu.nvml.power.usage_watts.v1": "var(--series-amber)",
 };
 const CPU_SERIES_COLOR = "var(--aw-brand-strong)";
-
-const seconds = (ms: number) => `${Math.max(1, Math.round(ms / 1000))} s`;
 
 const RUN_STATE_TONES: Record<string, Tone> = {
   queued: "info",

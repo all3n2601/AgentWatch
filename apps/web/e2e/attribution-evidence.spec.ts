@@ -445,15 +445,13 @@ test("comparisons are counted per serving key, and earlier-key rows keep their o
     "Current serving configuration · 5 steps",
   );
   await expect(groups.first()).toContainText(
-    "2 compared: 1 name the same resource, 1 differ. 1 model uncertain, 1 rules only, 1 unrecognised verdict.",
+    "2 compared: 1 agree, 1 differ. 1 model uncertain, 1 rules only, 1 unrecognised verdict.",
   );
   await expect(groups.nth(1)).toContainText(
     `Earlier serving key ${EARLIER_KEY.slice(0, 12)} · 2 steps`,
   );
   await expect(groups.nth(1)).toContainText("training training-v1+synthetic");
-  await expect(groups.nth(1)).toContainText(
-    "2 compared: 1 name the same resource, 1 differ.",
-  );
+  await expect(groups.nth(1)).toContainText("2 compared: 1 agree, 1 differ.");
   await expect(
     page.getByText("counts are kept per key and never combined"),
   ).toBeVisible();
@@ -471,11 +469,18 @@ test("comparisons are counted per serving key, and earlier-key rows keep their o
     "training-v1+synthetic",
   );
   await expect(evidenceRow(page, "Serving key")).toContainText("Earlier");
+  // A superseded key's rows are not audited again, so no flag is not "unchanged".
+  const notAudited = evidence(page).getByText(
+    "means not audited, not unchanged",
+  );
+  await expect(notAudited).toBeVisible();
   await selectStep(page, "new-agree");
   await expect(evidenceValue(page, "Model training")).toHaveText(
     "training-v2+synthetic",
   );
   await expect(evidenceRow(page, "Serving key")).toContainText("Current");
+  await expect(evidenceRow(page, "Comparison")).toContainText("Agree");
+  await expect(notAudited).toHaveCount(0);
 });
 
 test("every page is drained before the rows are shown", async ({
@@ -514,7 +519,7 @@ test("an unknown run's attributions are not found, and no attributed steps is no
     ]),
   );
   await openAttribution(page, missing);
-  await expect(page.getByText("No attributions for this run")).toBeVisible();
+  await expect(page.getByText("Run not found", { exact: true })).toBeVisible();
   await expect(table(page)).toHaveCount(0);
 
   const empty = newRunId();

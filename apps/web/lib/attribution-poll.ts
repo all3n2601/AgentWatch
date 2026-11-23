@@ -111,6 +111,18 @@ export function applyAttributionPage(
       },
       random,
     );
+  // A continuation cursor on an empty page would be followed at once, forever; treat it as a
+  // contract failure so it backs off like any other.
+  if (page.attributions.length === 0 && page.next_cursor !== null)
+    return applyAttributionFailure(
+      feed,
+      {
+        kind: "invalid_response",
+        message:
+          "The live API returned an empty attributions page with a continuation cursor.",
+      },
+      random,
+    );
   const draining = page.next_cursor !== null;
   if (feed.reread) {
     const items = appendAfter(feed.reread.items, page.attributions);
@@ -179,6 +191,11 @@ export function nextAttributionDelayMs(
       return 0;
     case "connected": {
       if (feed.draining) return 0;
+      // Deliberate trade-off: re-reads continue after the run has closed and settled. The
+      // worker sets `evidence_changed` in the audit pass after the close, and the API does not
+      // say when that audit has run (`evidence_audited` is not exposed), so the client cannot
+      // know when a re-read can no longer change anything. The re-read is slow and runs only
+      // while the Attribution tab is open.
       const sinceFull =
         feed.fullReadStartedMs === null
           ? Infinity

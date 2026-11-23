@@ -23,6 +23,8 @@ import {
 } from "@/components/widgets/state-views";
 import { useAttributionFeed } from "@/components/use-attribution-feed";
 import type { AttributionFeed } from "@/lib/attribution-poll";
+import type { FeatureRow } from "@/lib/attribution-schema";
+import { seconds } from "@/lib/live-poll";
 import {
   classLabel,
   comparisonDisplay,
@@ -53,7 +55,6 @@ import { cn } from "@/lib/utils";
 const NO_CAUSE =
   "A verdict names the resource a step likely waited on; it does not establish a cause.";
 
-const seconds = (value: number) => `${Math.round(value / 1000)} s`;
 const shortKey = (key: string) => key.slice(0, 12);
 
 function FeedStatus({ feed }: { feed: AttributionFeed }) {
@@ -131,10 +132,9 @@ function GroupSummary({ group }: { group: ComparisonGroup }) {
         </span>
       </p>
       <p className="text-ink-muted">
-        {compared} compared: {counts.agree} name the same resource,{" "}
-        {counts.differ} differ. {counts.model_abstained} model uncertain,{" "}
-        {counts.no_model_output} rules only, {counts.verdict_unrecognised}{" "}
-        unrecognised verdict
+        {compared} compared: {counts.agree} agree, {counts.differ} differ.{" "}
+        {counts.model_abstained} model uncertain, {counts.no_model_output} rules
+        only, {counts.verdict_unrecognised} unrecognised verdict
         {group.evidenceChanged > 0 &&
           `, ${group.evidenceChanged} with changed evidence`}
         .
@@ -406,247 +406,271 @@ function ModelOutput({ row }: { row: ValidRow }) {
   );
 }
 
-function ValidEvidence({ row }: { row: ValidRow }) {
-  const { features, telemetry, timings } = row.feature;
-  const comparison = comparisonDisplay(row.comparison);
+function MixedEvidenceNotice({ row }: { row: ValidRow }) {
+  return (
+    <InsetCard role="status" className="space-y-1 border border-warning-line">
+      <p className="text-sm font-semibold text-ink">Mixed evidence</p>
+      {row.comparison === "differ" && row.model.predicted_class !== null && (
+        <p className="text-sm text-ink-muted">
+          The rules name {rulesVerdictLabel(row.rules.verdict)} and the model
+          names {classLabel(row.model.predicted_class)} for the same feature
+          row.
+        </p>
+      )}
+      {row.evidenceChanged && (
+        <p className="text-sm text-ink-muted">
+          Evidence changed: a later audit computed a different feature row for
+          this step. The verdicts below were made from the original row.
+        </p>
+      )}
+    </InsetCard>
+  );
+}
+
+function VerdictsSection({ row }: { row: ValidRow }) {
   const note = rulesCoverageNote(row.rules.version);
   return (
-    <div className="space-y-3">
-      {hasMixedEvidence(row) && (
-        <InsetCard
-          role="status"
-          className="space-y-1 border border-warning-line"
+    <Section title="Verdicts">
+      <KeyValueList
+        dense
+        items={[
+          {
+            id: "rules",
+            label: `Rules (${row.rules.version})`,
+            value: rulesVerdictLabel(row.rules.verdict),
+          },
+          {
+            id: "model",
+            label: "Model",
+            value:
+              row.model.outcome === "predicted" &&
+              row.model.predicted_class !== null
+                ? classLabel(row.model.predicted_class)
+                : outcomeLabel(row.model.outcome),
+          },
+          {
+            id: "comparison",
+            label: "Comparison",
+            value: "",
+            status: comparisonDisplay(row.comparison),
+          },
+        ]}
+      />
+      {note && <p className="text-sm text-ink-muted">{note}</p>}
+    </Section>
+  );
+}
+
+function ModelOutputSection({ row }: { row: ValidRow }) {
+  return (
+    <Section title="Model output">
+      <ModelOutput row={row} />
+      <KeyValueList
+        dense
+        items={[
+          {
+            id: "excess",
+            label: "Excess latency",
+            value: (
+              <Measurement
+                value={percentReading(row.model.excess_fraction_estimate)}
+                unit="percent"
+                state="estimated"
+                showState
+              />
+            ),
+          },
+        ]}
+      />
+      <p className="text-sm text-ink-muted">
+        The model’s estimated share of the step’s duration spent as excess
+        waiting: an estimate, not a measured queue delay.
+      </p>
+    </Section>
+  );
+}
+
+function TimingsSection({ timings }: { timings: FeatureRow["timings"] }) {
+  return (
+    <Section title="Measured timings">
+      <KeyValueList
+        dense
+        items={[
+          {
+            id: "queue",
+            label: "Queue",
+            value: <SecondsValue value={timings.queue_seconds} />,
+          },
+          {
+            id: "execution",
+            label: "Execution wall time",
+            value: <SecondsValue value={timings.execution_seconds} />,
+          },
+          {
+            id: "duration",
+            label: "Submission to finish",
+            value: <SecondsValue value={timings.duration_seconds} />,
+          },
+          {
+            id: "cpu",
+            label: "Process CPU time",
+            value: <SecondsValue value={timings.cpu_seconds} />,
+          },
+        ]}
+      />
+    </Section>
+  );
+}
+
+function TelemetrySection({ feature }: { feature: FeatureRow }) {
+  const { features, telemetry } = feature;
+  return (
+    <Section title="Telemetry coverage">
+      <KeyValueList
+        dense
+        items={[
+          {
+            id: "status",
+            label: "Telemetry",
+            value: telemetryLabel(telemetry.status),
+          },
+          {
+            id: "samples",
+            label: "Samples in the step window",
+            value: <Measurement value={telemetry.sample_count} unit="count" />,
+          },
+          {
+            id: "coverage",
+            label: "Coverage",
+            value: (
+              <Measurement
+                value={percentReading(telemetry.coverage)}
+                unit="percent"
+                showState
+              />
+            ),
+          },
+          {
+            id: "pressure",
+            label: "Max CPU pressure (some avg10)",
+            value: (
+              <Measurement
+                value={features.cpu_pressure_max_avg10}
+                unit="percent"
+                showState
+              />
+            ),
+          },
+          {
+            id: "throttled",
+            label: "cgroup throttled time",
+            value: (
+              <Measurement
+                value={
+                  features.cgroup_throttled_usec_delta === null
+                    ? null
+                    : features.cgroup_throttled_usec_delta / 1000
+                }
+                unit="ms"
+                showState
+              />
+            ),
+          },
+        ]}
+      />
+    </Section>
+  );
+}
+
+function MissingInputsSection({ missingInputs }: { missingInputs: string[] }) {
+  return (
+    <Section title="Inputs the model saw as missing">
+      {missingInputs.length > 0 ? (
+        <ul
+          aria-label="Missing model inputs"
+          className="flex flex-wrap gap-1.5"
         >
-          <p className="text-sm font-semibold text-ink">Mixed evidence</p>
-          {row.comparison === "differ" &&
-            row.model.predicted_class !== null && (
-              <p className="text-sm text-ink-muted">
-                The rules name {rulesVerdictLabel(row.rules.verdict)} and the
-                model names {classLabel(row.model.predicted_class)} for the same
-                feature row.
-              </p>
-            )}
-          {row.evidenceChanged && (
-            <p className="text-sm text-ink-muted">
-              Evidence changed: a later audit computed a different feature row
-              for this step. The verdicts below were made from the original row.
-            </p>
-          )}
-        </InsetCard>
+          {missingInputs.map((name) => (
+            <li
+              key={name}
+              className="glass-raised rounded-full px-2.5 py-0.5 font-mono text-xs"
+            >
+              {name}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-ink-muted">None.</p>
       )}
-      <Section title="Verdicts">
-        <KeyValueList
-          dense
-          items={[
-            {
-              id: "rules",
-              label: `Rules (${row.rules.version})`,
-              value: rulesVerdictLabel(row.rules.verdict),
-            },
-            {
-              id: "model",
-              label: "Model",
-              value:
-                row.model.outcome === "predicted" &&
-                row.model.predicted_class !== null
-                  ? classLabel(row.model.predicted_class)
-                  : outcomeLabel(row.model.outcome),
-            },
-            {
-              id: "comparison",
-              label: "Comparison",
-              value: "",
-              status: comparison,
-            },
-          ]}
-        />
-        {note && <p className="text-sm text-ink-muted">{note}</p>}
-      </Section>
-      <Section title="Model output">
-        <ModelOutput row={row} />
-        <KeyValueList
-          dense
-          items={[
-            {
-              id: "excess",
-              label: "Excess latency",
-              value: (
-                <Measurement
-                  value={percentReading(row.model.excess_fraction_estimate)}
-                  unit="percent"
-                  state="estimated"
-                  showState
-                />
-              ),
-            },
-          ]}
-        />
+      <p className="text-sm text-ink-muted">
+        Missing readings are passed to the model as missing, never as 0.
+      </p>
+    </Section>
+  );
+}
+
+const mono = (text: string) => (
+  <span className="font-mono break-all">{text}</span>
+);
+
+function VersionsSection({ row }: { row: ValidRow }) {
+  return (
+    <Section title="Versions">
+      <KeyValueList
+        dense
+        items={[
+          { id: "rules", label: "Rules", value: mono(row.rules.version) },
+          {
+            id: "training",
+            label: "Model training",
+            value: mono(row.model.training_version ?? "None loaded"),
+          },
+          {
+            id: "calibration",
+            label: "Calibration",
+            value: mono(row.model.calibration_version ?? "None loaded"),
+          },
+          {
+            id: "features",
+            label: "Features",
+            value: mono(row.featureVersion),
+          },
+          {
+            id: "key",
+            label: "Serving key",
+            value: mono(shortKey(row.servingKey)),
+            status: row.current
+              ? { label: "Current", tone: "info" }
+              : { label: "Earlier", tone: "warning" },
+          },
+        ]}
+      />
+      {row.model.not_promoted === true && (
+        <StatusBadge label="Not promoted" tone="warning" />
+      )}
+      {/* The close audit covers rows of the current serving key only (docs/live-ingestion.md). */}
+      {!row.current && !row.evidenceChanged && (
         <p className="text-sm text-ink-muted">
-          The model’s estimated share of the step’s duration spent as excess
-          waiting: an estimate, not a measured queue delay.
+          Written under an earlier serving key, whose rows are not audited
+          again: no “Evidence changed” flag here means not audited, not
+          unchanged.
         </p>
-      </Section>
-      <Section title="Measured timings">
-        <KeyValueList
-          dense
-          items={[
-            {
-              id: "queue",
-              label: "Queue",
-              value: <SecondsValue value={timings.queue_seconds} />,
-            },
-            {
-              id: "execution",
-              label: "Execution wall time",
-              value: <SecondsValue value={timings.execution_seconds} />,
-            },
-            {
-              id: "duration",
-              label: "Submission to finish",
-              value: <SecondsValue value={timings.duration_seconds} />,
-            },
-            {
-              id: "cpu",
-              label: "Process CPU time",
-              value: <SecondsValue value={timings.cpu_seconds} />,
-            },
-          ]}
-        />
-      </Section>
-      <Section title="Telemetry coverage">
-        <KeyValueList
-          dense
-          items={[
-            {
-              id: "status",
-              label: "Telemetry",
-              value: telemetryLabel(telemetry.status),
-            },
-            {
-              id: "samples",
-              label: "Samples in the step window",
-              value: (
-                <Measurement value={telemetry.sample_count} unit="count" />
-              ),
-            },
-            {
-              id: "coverage",
-              label: "Coverage",
-              value: (
-                <Measurement
-                  value={percentReading(telemetry.coverage)}
-                  unit="percent"
-                  showState
-                />
-              ),
-            },
-            {
-              id: "pressure",
-              label: "Max CPU pressure (some avg10)",
-              value: (
-                <Measurement
-                  value={features.cpu_pressure_max_avg10}
-                  unit="percent"
-                  showState
-                />
-              ),
-            },
-            {
-              id: "throttled",
-              label: "cgroup throttled time",
-              value: (
-                <Measurement
-                  value={
-                    features.cgroup_throttled_usec_delta === null
-                      ? null
-                      : features.cgroup_throttled_usec_delta / 1000
-                  }
-                  unit="ms"
-                  showState
-                />
-              ),
-            },
-          ]}
-        />
-      </Section>
-      <Section title="Inputs the model saw as missing">
-        {row.missingInputs.length > 0 ? (
-          <ul
-            aria-label="Missing model inputs"
-            className="flex flex-wrap gap-1.5"
-          >
-            {row.missingInputs.map((name) => (
-              <li
-                key={name}
-                className="glass-raised rounded-full px-2.5 py-0.5 font-mono text-xs"
-              >
-                {name}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-ink-muted">None.</p>
-        )}
-        <p className="text-sm text-ink-muted">
-          Missing readings are passed to the model as missing, never as 0.
-        </p>
-      </Section>
-      <Section title="Versions">
-        <KeyValueList
-          dense
-          items={[
-            {
-              id: "rules",
-              label: "Rules",
-              value: (
-                <span className="font-mono break-all">{row.rules.version}</span>
-              ),
-            },
-            {
-              id: "training",
-              label: "Model training",
-              value: (
-                <span className="font-mono break-all">
-                  {row.model.training_version ?? "None loaded"}
-                </span>
-              ),
-            },
-            {
-              id: "calibration",
-              label: "Calibration",
-              value: (
-                <span className="font-mono break-all">
-                  {row.model.calibration_version ?? "None loaded"}
-                </span>
-              ),
-            },
-            {
-              id: "features",
-              label: "Features",
-              value: (
-                <span className="font-mono break-all">
-                  {row.featureVersion}
-                </span>
-              ),
-            },
-            {
-              id: "key",
-              label: "Serving key",
-              value: (
-                <span className="font-mono break-all">
-                  {shortKey(row.servingKey)}
-                </span>
-              ),
-              status: row.current
-                ? { label: "Current", tone: "info" }
-                : { label: "Earlier", tone: "warning" },
-            },
-          ]}
-        />
-        {row.model.not_promoted === true && (
-          <StatusBadge label="Not promoted" tone="warning" />
-        )}
-      </Section>
+      )}
+    </Section>
+  );
+}
+
+/** A valid row's evidence column; each section reads only the part of the row it shows. */
+function ValidEvidence({ row }: { row: ValidRow }) {
+  return (
+    <div className="space-y-3">
+      {hasMixedEvidence(row) && <MixedEvidenceNotice row={row} />}
+      <VerdictsSection row={row} />
+      <ModelOutputSection row={row} />
+      <TimingsSection timings={row.feature.timings} />
+      <TelemetrySection feature={row.feature} />
+      <MissingInputsSection missingInputs={row.missingInputs} />
+      <VersionsSection row={row} />
     </div>
   );
 }
@@ -686,7 +710,7 @@ function Body({
   if (connection.status === "stopped" && connection.kind === "not_found")
     return (
       <ErrorState
-        title="No attributions for this run"
+        title="Run not found"
         detail="The live API has no run with this UUID; no other run is shown."
       />
     );

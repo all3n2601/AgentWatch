@@ -3,6 +3,7 @@ import test from "node:test";
 import { attributionPageSchema } from "../lib/attribution-schema";
 import {
   attributionRow,
+  comparisonDisplay,
   comparisonGroups,
   hasMixedEvidence,
   probabilityEntries,
@@ -343,4 +344,165 @@ test("probabilities are listed most probable first", () => {
     ["inference", "none", "retrieval", "cpu_sandbox"],
   );
   assert.deepEqual(probabilityEntries(null), []);
+});
+
+/** A feature row edited after it was built, to break one invariant at a time. */
+function editedFeature(
+  edit: (row: {
+    telemetry: Record<string, unknown>;
+    features: Record<string, unknown>;
+  }) => void,
+) {
+  const feature = featureRow(RUN_ID, "step-1") as unknown as {
+    telemetry: Record<string, unknown>;
+    features: Record<string, unknown>;
+  };
+  edit(feature);
+  return attributionItem(
+    1,
+    attributionRecord(RUN_ID, "step-1", {
+      feature: feature as unknown as Record<string, unknown>,
+    }),
+  );
+}
+
+test("present telemetry must have samples, and only present telemetry has them", () => {
+  const presentWithout = editedFeature(({ telemetry, features }) => {
+    telemetry.sample_count = 0;
+    features.telemetry_sample_count = 0;
+    telemetry.observed_interval_seconds = null;
+  });
+  assert.match(malformed(presentWithout).reasons.join(" "), /sample count/);
+
+  const emptyWith = featureRow(RUN_ID, "step-1", {
+    status: "empty",
+    coverage: null,
+  });
+  assert.match(
+    malformed(
+      attributionItem(
+        1,
+        attributionRecord(RUN_ID, "step-1", { feature: emptyWith }),
+      ),
+    ).reasons.join(" "),
+    /sample count/,
+  );
+});
+
+test("coverage must be null for missing, empty and unaligned telemetry", () => {
+  for (const status of ["missing", "empty", "unaligned"]) {
+    const feature = featureRow(RUN_ID, "step-1", {
+      status,
+      sampleCount: 0,
+      coverage: 0,
+      pressure: null,
+      throttledUsec: null,
+    });
+    const result = malformed(
+      attributionItem(1, attributionRecord(RUN_ID, "step-1", { feature })),
+    );
+    assert.match(result.reasons.join(" "), /coverage value/, status);
+  }
+  // no_overlap has a sampler stream, so its coverage may be a measured 0.
+  const noOverlap = featureRow(RUN_ID, "step-1", {
+    status: "no_overlap",
+    sampleCount: 0,
+    coverage: 0,
+    pressure: null,
+    throttledUsec: null,
+  });
+  valid(
+    attributionItem(
+      1,
+      attributionRecord(RUN_ID, "step-1", { feature: noOverlap }),
+    ),
+  );
+});
+
+test("an observed sampling interval needs at least two samples", () => {
+  const one = featureRow(RUN_ID, "step-1", { sampleCount: 1 });
+  (one.telemetry as Record<string, unknown>).observed_interval_seconds = 0.25;
+  assert.match(
+    malformed(
+      attributionItem(1, attributionRecord(RUN_ID, "step-1", { feature: one })),
+    ).reasons.join(" "),
+    /at least two samples/,
+  );
+  valid(
+    attributionItem(
+      1,
+      attributionRecord(RUN_ID, "step-1", {
+        feature: featureRow(RUN_ID, "step-1", { sampleCount: 2 }),
+      }),
+    ),
+  );
+});
+
+test("queue_fraction must equal queue_seconds / duration_seconds within 1e-6", () => {
+  const off = editedFeature(({ features }) => {
+    features.queue_fraction = (features.queue_fraction as number) + 1e-5;
+  });
+  assert.match(malformed(off).reasons.join(" "), /queue_fraction/);
+
+  const close = editedFeature(({ features }) => {
+    features.queue_fraction = (features.queue_fraction as number) + 1e-7;
+  });
+  valid(close);
+
+  const missingFraction = editedFeature(({ features }) => {
+    features.queue_fraction = null;
+  });
+  assert.match(malformed(missingFraction).reasons.join(" "), /queue_fraction/);
+});
+
+test("queue_fraction is null when a timing is missing or the duration is zero", () => {
+  const cases = [
+    {
+      queue_seconds: null,
+      execution_seconds: 1,
+      duration_seconds: 1,
+      cpu_seconds: 1,
+    },
+    {
+      queue_seconds: 0.5,
+      execution_seconds: 1,
+      duration_seconds: null,
+      cpu_seconds: 1,
+    },
+    {
+      queue_seconds: 0,
+      execution_seconds: 0,
+      duration_seconds: 0,
+      cpu_seconds: 0,
+    },
+  ];
+  for (const timings of cases) {
+    const feature = featureRow(RUN_ID, "step-1", { timings });
+    // The fixture derives a null fraction for each case, as the worker does.
+    valid(attributionItem(1, attributionRecord(RUN_ID, "step-1", { feature })));
+    (feature.features as Record<string, unknown>).queue_fraction = 0;
+    assert.match(
+      malformed(
+        attributionItem(1, attributionRecord(RUN_ID, "step-1", { feature })),
+      ).reasons.join(" "),
+      /queue_fraction/,
+      JSON.stringify(timings),
+    );
+  }
+});
+
+test("rules and model both saying none is agreement, labelled Agree", () => {
+  const result = valid(
+    withModel(
+      scored({
+        none: 0.9,
+        cpu_sandbox: 0.04,
+        inference: 0.03,
+        retrieval: 0.03,
+      }),
+    ),
+  );
+  assert.equal(result.rules.verdict, "none");
+  assert.equal(result.comparison, "agree");
+  assert.equal(comparisonDisplay("agree").label, "Agree");
 });
