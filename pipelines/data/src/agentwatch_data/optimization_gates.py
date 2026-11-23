@@ -184,9 +184,23 @@ def improvement_gates(effects: dict, limits: Thresholds) -> list[dict]:
             bounds,
             "excludes 0",
         )
+    elif high < 0:
+        # Excluding zero means excluding it on the side of improvement: an interval wholly
+        # below zero is a confident slowdown, not uncertainty about a gain.
+        uncertainty = gate(
+            "improvement_uncertainty",
+            FAIL,
+            "the interval lies below zero: the candidate was slower",
+            bounds,
+            "excludes 0",
+        )
     else:
         uncertainty = gate(
-            "improvement_uncertainty", PASS, "the interval excludes zero", bounds, "excludes 0"
+            "improvement_uncertainty",
+            PASS,
+            "the interval lies above zero",
+            bounds,
+            "excludes 0",
         )
     return [improvement, uncertainty]
 
@@ -265,8 +279,11 @@ def starvation_gate(candidate: dict, limits: Thresholds) -> dict:
 # --- Baseline stability -------------------------------------------------------------------
 
 
-def root_step_seconds(root: Path, evidence_dir: str) -> float | None:
-    """The root step's total duration from the run's journal; None when not journaled whole."""
+def root_step_seconds(root: Path, evidence_dir: str, run_id: str | None) -> float | None:
+    """The root step's total duration from the run's own journal records (its `run_id`); None
+    when not journaled whole. Another run's records in the file are never used."""
+    if run_id is None:
+        return None
     try:
         path = confined_path(root, evidence_dir, GateInputError) / JOURNAL_FILE
         text = read_bounded_text(path, MAX_JOURNAL_BYTES, GateInputError)
@@ -278,12 +295,15 @@ def root_step_seconds(root: Path, evidence_dir: str) -> float | None:
             entry = parse_json(line)
         except ValueError:
             continue  # an unusable line; the step's other events still count
-        payload = entry.get("payload") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict):
+            continue  # valid JSON but not a journal entry
+        payload = entry.get("payload")
         if (
             entry.get("kind") != "record"
             or not isinstance(payload, dict)
             or payload.get("record_type") != "step_event"
             or payload.get("step_id") != ROOT_STEP
+            or payload.get("run_id") != run_id
             or not isinstance(payload.get("sequence"), int)
         ):
             continue
@@ -309,7 +329,7 @@ def baseline_stability(root: Path, item: dict, files: dict[str, str], limits: Th
         for task in record["tasks"]:
             if task["state"] != "completed" or task["cold"]:
                 continue
-            seconds = root_step_seconds(root, task["evidence_dir"])
+            seconds = root_step_seconds(root, task["evidence_dir"], task.get("run_id"))
             if seconds is None:
                 missing += 1
             else:
@@ -346,40 +366,102 @@ def read_record(root: Path, file: str) -> dict:
 
 
 def overhead_gate(
-    name: str, verdict: dict | None, model: str, threshold: float, *, admission: bool
+    name: str,
+    verdict: dict | None,
+    model: str,
+    host_id: str,
+    threshold: float,
+    *,
+    admission: bool,
+    contract_sha256: str,
 ) -> dict:
-    """An overhead verdict's group for this experiment's model, when a verdict was given.
+    """An overhead verdict's group for this experiment's model and host, when one was given.
 
-    Admission groups (`admission-overhead-v1`) judge the admission gate and every other
-    protocol the instrumentation gate, so one verdict file can never stand in for the other.
+    Overhead depends on the host, so only a group measured on the manifest's host
+    (`hardware.host_id`, the verdict's `host_label`) counts. Admission groups
+    (`admission-overhead-v1`) judge the admission gate and every other protocol the
+    instrumentation gate, so one verdict file can never stand in for the other. A verdict
+    judged under another contract, or against a budget other than this gate's threshold, is
+    not used either. The gate records the verdict file's hash, its contract and the matched
+    group's settings, task and budget.
     """
     if verdict is None:
         return gate(name, NOT_EVALUATED, "no overhead verdict was given", None, threshold)
+    declared = verdict.get("contract") if isinstance(verdict.get("contract"), dict) else {}
+    # Verdict reports name their contract by the first 8 digits of its hash.
+    verdict_contract = declared.get("sha256")
+    source = {
+        "verdict_sha256": canonical_sha256(verdict),
+        "contract_sha256": verdict_contract,
+        "settings": None,
+    }
+    if (
+        not isinstance(verdict_contract, str)
+        or not verdict_contract
+        or not (contract_sha256.startswith(verdict_contract))
+    ):
+        return gate(
+            name,
+            NOT_EVALUATED,
+            f"the verdict was judged under contract {verdict_contract!r}, not this one "
+            f"({contract_sha256[:8]})",
+            None,
+            threshold,
+        ) | {"source": source}
     groups = [
         group
         for group in verdict.get("groups") or []
-        if group.get("settings", {}).get("model") == model
-        and (group.get("settings", {}).get("protocol") == ADMISSION_PROTOCOL) == admission
+        if isinstance(group, dict)
+        and isinstance(group.get("settings"), dict)
+        and group["settings"].get("model") == model
+        and group["settings"].get("host_label") == host_id
+        and (group["settings"].get("protocol") == ADMISSION_PROTOCOL) == admission
     ]
     if len(groups) != 1:
         return gate(
             name,
             NOT_EVALUATED,
-            f"the verdict has {len(groups)} matching groups for model {model}, not one",
+            f"the verdict has {len(groups)} matching groups for model {model} on host "
+            f"{host_id}, not one",
             None,
             threshold,
-        )
-    status = OVERHEAD_VERDICTS.get(groups[0].get("verdict"))
+        ) | {"source": source}
+    (group,) = groups
+    budget = verdict_budget(verdict, group, admission=admission)
+    source |= {
+        "settings": group["settings"],
+        "task_id": group["settings"].get("task_id"),
+        "budget": budget,
+    }
+    if budget != threshold:
+        return gate(
+            name,
+            NOT_EVALUATED,
+            f"the verdict was judged against a budget of {budget!r}, not this gate's {threshold}",
+            None,
+            threshold,
+        ) | {"source": source}
+    status = OVERHEAD_VERDICTS.get(group.get("verdict"))
     if status is None:
-        raise GateInputError(f"Unknown overhead verdict {groups[0].get('verdict')!r}")
-    protocol = groups[0]["settings"].get("protocol")
+        raise GateInputError(f"Unknown overhead verdict {group.get('verdict')!r}")
+    protocol = group["settings"].get("protocol")
     return gate(
         name,
         status,
-        f"{protocol} verdict {groups[0]['verdict']} for {model}",
-        groups[0]["verdict"],
+        f"{protocol} verdict {group['verdict']} for {model} on {host_id}",
+        group["verdict"],
         threshold,
-    )
+    ) | {"source": source}
+
+
+def verdict_budget(verdict: dict, group: dict, *, admission: bool):
+    """The budget a verdict group was judged against: its own `budget` when it records one,
+    otherwise the report's budget for that kind of overhead."""
+    if "budget" in group:
+        return group["budget"]
+    budgets = verdict.get("budget") if isinstance(verdict.get("budget"), dict) else {}
+    key = "max_median_admission_overhead" if admission else "max_median_instrumentation_overhead"
+    return budgets.get(key)
 
 
 # --- Outcomes -----------------------------------------------------------------------------
@@ -507,6 +589,7 @@ def evaluate(
     manifest = read_manifest(root / MANIFEST_FILE, contract)
     comparison = compare(root, contract)
     model = manifest.model["name"]
+    host_id = manifest.hardware["host_id"]
     files = {
         batch["batch_id"]: batch["file"] for batch in comparison["batches"] if batch["accepted"]
     }
@@ -515,15 +598,19 @@ def evaluate(
             "admission_overhead",
             read_verdict(admission_verdict),
             model,
+            host_id,
             limits.max_median_admission_overhead,
             admission=True,
+            contract_sha256=contract.sha256,
         ),
         overhead_gate(
             "instrumentation_overhead",
             read_verdict(overhead_verdict),
             model,
+            host_id,
             limits.max_median_instrumentation_overhead,
             admission=False,
+            contract_sha256=contract.sha256,
         ),
     ]
     candidates = []

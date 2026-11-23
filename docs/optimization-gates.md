@@ -23,15 +23,15 @@ Each gate is `pass`, `fail`, `inconclusive` (the evidence cannot decide it) or
 | Gate | Conditions | Rule |
 |---|---|---|
 | `improvement` | Contended | Median batch time reduction at least `min_median_batch_time_reduction` |
-| `improvement_uncertainty` | Contended | The paired bootstrap interval excludes zero; otherwise inconclusive |
+| `improvement_uncertainty` | Contended | The paired bootstrap interval lies above zero (excludes it on the side of improvement). An interval that includes zero is inconclusive; one wholly below zero, a confident slowdown, fails |
 | `throughput` | Both | Candidate/baseline completed tasks per second at least `min_throughput_ratio` |
 | `tail_latency` | Both | Candidate/baseline p95 warm task latency at most `max_p95_task_latency_ratio` |
 | `starvation_and_leaks` | Both | No starved admission or leaked permit in candidate batches, and no wait above the declared maximum; unobserved counts are inconclusive |
 | `failures_and_timeouts` | Both | No new failure or timeout, counted over every pair with two accepted records |
 | `quality` | Both | No task passing at baseline fails with the candidate; unknown acceptance is inconclusive |
-| `baseline_stability` | Both | For each frozen task, the coefficient of variation of its root step's total duration over the baseline batches of complete pairs (completed, warm tasks, from each run's journal) is at most `max_baseline_root_step_cv`. A missing journal or a task with fewer than two durations is inconclusive |
-| `admission_overhead` | Experiment | The [admission overhead](admission-overhead.md) verdict's `admission-overhead-v1` group for this experiment's model: `within_budget` passes, `over_budget` fails, otherwise inconclusive; not evaluated without a verdict or with no single matching group |
-| `instrumentation_overhead` | Experiment | The same, from the A07 overhead verdict's group of any other protocol for this model. A verdict file given for the wrong gate has no matching group, so it is never used |
+| `baseline_stability` | Both | For each frozen task, the coefficient of variation of its root step's total duration over the baseline batches of complete pairs (completed, warm tasks, from each run's own records in its journal, by `run_id`) is at most `max_baseline_root_step_cv`. A missing journal or a task with fewer than two durations is inconclusive |
+| `admission_overhead` | Experiment | The [admission overhead](admission-overhead.md) verdict's `admission-overhead-v1` group for this experiment's model, measured on the manifest's host (`host_label` equal to `hardware.host_id`): `within_budget` passes, `over_budget` fails, otherwise inconclusive; not evaluated without a verdict or with no single matching group |
+| `instrumentation_overhead` | Experiment | The same, from the A07 overhead verdict's group of any other protocol for this model and host. A verdict file given for the wrong gate, or measured on another host, has no matching group, so it is never used. A verdict judged under another contract (its `contract.sha256`), or against a budget other than this gate's threshold (the group's `budget`, else the report's), is `not_evaluated` too. Each overhead gate records `source`: the verdict file's canonical SHA-256, its contract, and the matched group's settings, task and budget |
 
 ## Candidate outcome and promotion
 
@@ -56,8 +56,8 @@ that one passes by luck.
 - Synthetic experiments only (`pipelines/data/tests/test_optimization_gates.py`).
 - Without an admission overhead verdict (`make agent-admission-overhead`, then
   `make overhead-verdict`), no candidate can reach `pass`.
-- Both overhead gates trust the verdict files they are given; they match a group by protocol
-  and model only, not by host or sampling settings.
+- Both overhead gates trust the verdict files they are given; they match a group by protocol,
+  model and host, not by sampling or admission settings.
 - Root step durations are read from each run's journal (`live-journal.jsonl`, the root step
   `agent-run`), a format the data pipeline declares separately from the agent.
 - A pass describes the declared workload, model and host only, not a general causal

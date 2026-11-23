@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import pytest
+from agentwatch_data.extract import canonical_sha256
 from agentwatch_data.optimization_gates import (
     FAIL,
     INCONCLUSIVE,
@@ -17,22 +18,27 @@ from agentwatch_data.optimization_gates import (
     GateInputError,
     candidate_outcome,
     evaluate,
+    improvement_gates,
     load_thresholds,
     main,
     promotion,
+    root_step_seconds,
 )
 from agentwatch_data.optimization_manifest import CANDIDATE
 from optimization_fixtures import (
     CONTRACT_PATH,
+    HARDWARE,
     MODEL,
     SECOND_NS,
     TASKS,
     contract,
     default_timing,
+    manifest_document,
     write_experiment,
 )
 
 CONTRACT = contract()
+HOST = HARDWARE["host_id"]
 
 
 def journal(root: Path, record: dict, seconds) -> None:
@@ -45,6 +51,7 @@ def journal(root: Path, record: dict, seconds) -> None:
             "kind": "record",
             "payload": {
                 "record_type": "step_event",
+                "run_id": task["run_id"],
                 "step_id": "agent-run",
                 "sequence": 3,
                 "submitted_tick_ns": 0,
@@ -182,21 +189,60 @@ def test_missing_evidence_keeps_the_baseline(tmp_path):
     assert any("scheduled batches have no record" in reason for reason in entry["reasons"])
 
 
+LIMITS = load_thresholds(CONTRACT_PATH, CONTRACT)
+
+
+def verdict_document(*groups, contract_sha256=None, budget=None) -> dict:
+    """An overhead verdict report as `overhead_verdict` writes it, judged under this contract."""
+    return {
+        "contract": {"sha256": (contract_sha256 or CONTRACT.sha256)[:8]},
+        "budget": budget
+        or {
+            "max_median_instrumentation_overhead": LIMITS.max_median_instrumentation_overhead,
+            "max_median_admission_overhead": LIMITS.max_median_admission_overhead,
+        },
+        "groups": list(groups),
+    }
+
+
 def overhead_verdict(tmp_path, *groups):
     path = tmp_path / "overhead-verdict.json"
-    path.write_text(json.dumps({"groups": list(groups)}))
+    path.write_text(json.dumps(verdict_document(*groups)))
     return path
 
 
 @pytest.mark.parametrize(
     ("groups", "status"),
     [
-        ([{"settings": {"model": MODEL["name"]}, "verdict": "within_budget"}], PASS),
-        ([{"settings": {"model": MODEL["name"]}, "verdict": "over_budget"}], FAIL),
-        ([{"settings": {"model": MODEL["name"]}, "verdict": "inconclusive"}], INCONCLUSIVE),
-        ([{"settings": {"model": "another-model"}, "verdict": "within_budget"}], NOT_EVALUATED),
         (
-            [{"settings": {"model": MODEL["name"]}, "verdict": "within_budget"}] * 2,
+            [
+                {
+                    "settings": {"model": MODEL["name"], "host_label": HOST},
+                    "verdict": "within_budget",
+                }
+            ],
+            PASS,
+        ),
+        (
+            [{"settings": {"model": MODEL["name"], "host_label": HOST}, "verdict": "over_budget"}],
+            FAIL,
+        ),
+        (
+            [{"settings": {"model": MODEL["name"], "host_label": HOST}, "verdict": "inconclusive"}],
+            INCONCLUSIVE,
+        ),
+        (
+            [
+                {
+                    "settings": {"model": "another-model", "host_label": HOST},
+                    "verdict": "within_budget",
+                }
+            ],
+            NOT_EVALUATED,
+        ),
+        (
+            [{"settings": {"model": MODEL["name"], "host_label": HOST}, "verdict": "within_budget"}]
+            * 2,
             NOT_EVALUATED,
         ),
     ],
@@ -210,7 +256,9 @@ def test_the_overhead_verdict_for_this_model_is_the_instrumentation_gate(tmp_pat
 
 def test_an_unknown_overhead_verdict_is_refused(tmp_path):
     experiment(tmp_path / "experiment")
-    verdict = overhead_verdict(tmp_path, {"settings": {"model": MODEL["name"]}, "verdict": "ok"})
+    verdict = overhead_verdict(
+        tmp_path, {"settings": {"model": MODEL["name"], "host_label": HOST}, "verdict": "ok"}
+    )
     with pytest.raises(GateInputError, match="Unknown overhead verdict"):
         evaluate(tmp_path / "experiment", CONTRACT_PATH, verdict)
 
@@ -284,17 +332,21 @@ def test_the_command_writes_the_report_and_refuses_a_bad_manifest(tmp_path, caps
 
 
 ADMISSION = {
-    "settings": {"protocol": "admission-overhead-v1", "model": MODEL["name"]},
+    "settings": {"protocol": "admission-overhead-v1", "model": MODEL["name"], "host_label": HOST},
     "verdict": "within_budget",
 }
 INSTRUMENTATION = {
-    "settings": {"protocol": "resource-sampling-overhead-v2", "model": MODEL["name"]},
+    "settings": {
+        "protocol": "resource-sampling-overhead-v2",
+        "model": MODEL["name"],
+        "host_label": HOST,
+    },
     "verdict": "within_budget",
 }
 
 
-def write_verdict(path, *groups):
-    path.write_text(json.dumps({"groups": list(groups)}))
+def write_verdict(path, *groups, **changes):
+    path.write_text(json.dumps(verdict_document(*groups, **changes)))
     return path
 
 
@@ -339,3 +391,218 @@ def test_an_over_budget_admission_verdict_fails_the_candidate(tmp_path):
     )
     entry, _gates = by_condition(report)
     assert entry["outcome"] == FAIL and "experiment: admission_overhead" in entry["reasons"]
+
+
+def test_a_verdict_measured_on_another_host_is_not_used(tmp_path):
+    # Overhead depends on the host: a CPU-container measurement of the same model name must
+    # not stand in for the experiment's GPU host.
+    experiment(tmp_path / "experiment")
+    elsewhere = {"host_label": "some-other-host"}
+    report = evaluate(
+        tmp_path / "experiment",
+        CONTRACT_PATH,
+        overhead_verdict=write_verdict(
+            tmp_path / "a07.json",
+            INSTRUMENTATION | {"settings": INSTRUMENTATION["settings"] | elsewhere},
+        ),
+        admission_verdict=write_verdict(
+            tmp_path / "admission.json",
+            ADMISSION | {"settings": ADMISSION["settings"] | elsewhere},
+        ),
+    )
+    shared = {item["gate"]: item for item in report["experiment_gates"]}
+    for name in ("admission_overhead", "instrumentation_overhead"):
+        assert shared[name]["status"] == NOT_EVALUATED
+        assert (
+            f"0 matching groups for model {MODEL['name']} on host {HOST}"
+            in (shared[name]["reason"])
+        )
+        assert shared[name]["source"]["settings"] is None
+    entry, _gates = by_condition(report)
+    assert entry["outcome"] != PASS
+
+
+def test_each_overhead_gate_records_the_verdict_and_group_it_used(tmp_path):
+    experiment(tmp_path / "experiment")
+    admission = write_verdict(tmp_path / "admission.json", ADMISSION)
+    report = evaluate(tmp_path / "experiment", CONTRACT_PATH, admission_verdict=admission)
+    shared = {item["gate"]: item for item in report["experiment_gates"]}
+    source = shared["admission_overhead"]["source"]
+    assert source["settings"] == ADMISSION["settings"]
+    assert source["verdict_sha256"] == canonical_sha256(json.loads(admission.read_text()))
+    assert "source" not in shared["instrumentation_overhead"]  # no verdict was given
+
+
+def test_root_step_duration_comes_from_the_tasks_own_run(tmp_path):
+    # A journal holding a second attempt's root step, at a higher sequence, as an interrupted
+    # and rerun batch could leave it: only the recorded run's own event counts.
+    path = tmp_path / "run" / "live-journal.jsonl"
+    path.parent.mkdir()
+    own, other = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+    events = [
+        {"run_id": own, "sequence": 3, "finished_tick_ns": 9 * SECOND_NS},
+        {"run_id": other, "sequence": 4, "finished_tick_ns": 30 * SECOND_NS},
+    ]
+    path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "kind": "record",
+                    "payload": {
+                        "record_type": "step_event",
+                        "step_id": "agent-run",
+                        "submitted_tick_ns": 0,
+                        **event,
+                    },
+                }
+            )
+            for event in events
+        )
+        + "\n"
+    )
+    assert root_step_seconds(tmp_path, "run", own) == 9.0
+    assert root_step_seconds(tmp_path, "run", None) is None
+
+
+def test_an_interval_below_zero_fails_the_uncertainty_gate():
+    limits = load_thresholds(CONTRACT_PATH, CONTRACT)
+    slower = {
+        "median_batch_time_reduction": -0.5,
+        "median_batch_time_reduction_interval": {"low": -0.6, "high": -0.4},
+    }
+    improvement, uncertainty = improvement_gates(slower, limits)
+    assert (improvement["status"], uncertainty["status"]) == (FAIL, FAIL)
+    assert "below zero" in uncertainty["reason"]
+    faster = {
+        "median_batch_time_reduction": 0.3,
+        "median_batch_time_reduction_interval": {"low": 0.2, "high": 0.4},
+    }
+    assert improvement_gates(faster, limits)[1]["status"] == PASS
+
+
+def test_a_verdict_judged_under_another_contract_is_not_used(tmp_path):
+    experiment(tmp_path / "experiment")
+    stale = write_verdict(tmp_path / "admission.json", ADMISSION, contract_sha256="0" * 64)
+    report = evaluate(tmp_path / "experiment", CONTRACT_PATH, admission_verdict=stale)
+    shared = {item["gate"]: item for item in report["experiment_gates"]}
+    assert shared["admission_overhead"]["status"] == NOT_EVALUATED
+    assert "judged under contract '00000000'" in shared["admission_overhead"]["reason"]
+
+
+@pytest.mark.parametrize("budget_in", ["group", "report"])
+def test_a_verdict_judged_against_another_budget_is_not_used(tmp_path, budget_in):
+    experiment(tmp_path / "experiment")
+    if budget_in == "group":
+        path = write_verdict(tmp_path / "admission.json", ADMISSION | {"budget": 0.2})
+    else:
+        looser = {"max_median_admission_overhead": 0.2, "max_median_instrumentation_overhead": 0.2}
+        path = write_verdict(tmp_path / "admission.json", ADMISSION, budget=looser)
+    report = evaluate(tmp_path / "experiment", CONTRACT_PATH, admission_verdict=path)
+    shared = {item["gate"]: item for item in report["experiment_gates"]}
+    assert shared["admission_overhead"]["status"] == NOT_EVALUATED
+    assert "budget of 0.2" in shared["admission_overhead"]["reason"]
+    assert shared["admission_overhead"]["source"]["budget"] == 0.2
+
+
+def test_the_overhead_gate_records_the_task_and_budget_it_used(tmp_path):
+    experiment(tmp_path / "experiment")
+    group = ADMISSION | {"settings": ADMISSION["settings"] | {"task_id": "fix-mean-empty-r1"}}
+    path = write_verdict(tmp_path / "admission.json", group)
+    report = evaluate(tmp_path / "experiment", CONTRACT_PATH, admission_verdict=path)
+    source = {item["gate"]: item for item in report["experiment_gates"]}["admission_overhead"][
+        "source"
+    ]
+    assert source["task_id"] == "fix-mean-empty-r1"
+    assert source["budget"] == LIMITS.max_median_admission_overhead
+    assert source["contract_sha256"] == CONTRACT.sha256[:8]
+
+
+def test_a_journal_line_that_is_not_an_object_is_skipped(tmp_path):
+    run_id = "11111111-1111-4111-8111-111111111111"
+    path = tmp_path / "run" / "live-journal.jsonl"
+    path.parent.mkdir()
+    event = {
+        "kind": "record",
+        "payload": {
+            "record_type": "step_event",
+            "step_id": "agent-run",
+            "run_id": run_id,
+            "sequence": 3,
+            "submitted_tick_ns": 0,
+            "finished_tick_ns": 4 * SECOND_NS,
+        },
+    }
+    path.write_text("[1, 2]\n" + json.dumps(event) + "\n")
+    assert root_step_seconds(tmp_path, "run", run_id) == 4.0
+
+
+def test_a_slower_clean_candidate_fails_throughput_and_tail_latency(tmp_path):
+    def timing(slot, task_id):
+        submitted, finished = default_timing(slot, task_id)
+        if slot.configuration == CANDIDATE and slot.condition == "clean":
+            finished += 3 * SECOND_NS  # 13 s against 10 s
+        return submitted, finished
+
+    experiment(tmp_path, timing=timing)
+    entry, gates = by_condition(evaluate(tmp_path, CONTRACT_PATH), "clean")
+    assert gates["throughput"]["status"] == FAIL
+    assert gates["tail_latency"]["status"] == FAIL
+    assert entry["outcome"] == FAIL
+    assert {"clean: throughput", "clean: tail_latency"} <= set(entry["reasons"])
+
+
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [("starved_admissions", "waited past its bound"), ("leaked_permits", "held after its batch")],
+)
+def test_starvation_or_a_leaked_permit_fails_the_candidate(tmp_path, field, reason):
+    def change(slot, record):
+        if slot.configuration == CANDIDATE and slot.condition == "clean" and slot.pair_index == 0:
+            record["admission"][field] = 1
+        return record
+
+    experiment(tmp_path, change=change)
+    entry, gates = by_condition(evaluate(tmp_path, CONTRACT_PATH), "clean")
+    assert gates["starvation_and_leaks"]["status"] == FAIL
+    assert reason in gates["starvation_and_leaks"]["reason"]
+    assert entry["outcome"] == FAIL
+
+
+def test_a_new_timeout_fails_the_guardrail(tmp_path):
+    def change(slot, record):
+        if slot.configuration == CANDIDATE and slot.condition == "clean" and slot.pair_index == 0:
+            record["tasks"][0].update(state="timed_out", acceptance=None)
+        return record
+
+    experiment(tmp_path, change=change)
+    entry, gates = by_condition(evaluate(tmp_path, CONTRACT_PATH), "clean")
+    assert gates["failures_and_timeouts"]["status"] == FAIL
+    assert gates["failures_and_timeouts"]["observed"]["new_timeouts"] == 1
+    assert entry["outcome"] == FAIL
+
+
+def test_unknown_acceptance_leaves_quality_inconclusive(tmp_path):
+    def change(slot, record):
+        if slot.configuration == CANDIDATE and slot.condition == "clean" and slot.pair_index == 0:
+            record["tasks"][0]["acceptance"] = None
+        return record
+
+    experiment(tmp_path, change=change)
+    _entry, gates = by_condition(evaluate(tmp_path, CONTRACT_PATH), "clean")
+    assert gates["quality"]["status"] == INCONCLUSIVE
+    assert "no recorded acceptance" in gates["quality"]["reason"]
+
+
+def test_a_development_experiment_is_never_gated_to_a_pass(tmp_path):
+    document = manifest_document(CONTRACT, purpose="development")
+    del document["workload"]["development_tasks"]
+    write_experiment(
+        tmp_path,
+        CONTRACT,
+        document,
+        change=lambda slot, record: journal(tmp_path, record, lambda t, i: 9.0) or record,
+    )
+    report = evaluate(tmp_path, CONTRACT_PATH)
+    entry, _gates = by_condition(report)
+    assert report["purpose"] == "development" and entry["outcome"] == INCONCLUSIVE
+    assert any("never gated" in reason for reason in entry["reasons"])
