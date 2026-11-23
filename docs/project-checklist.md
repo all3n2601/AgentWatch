@@ -1193,6 +1193,16 @@ from M3 through M6 and do not renumber the implementation milestones above.
 - [ ] O01 — Rohit: accept policy/evaluation contracts and numerical gates after C01/A04/M01.
   Proposed as `opt-contract-v1` (2026-10-26): [the optimization contract](optimization-contract.md)
   and `pipelines/model/optimization-contract.toml`. Open until all three teams accept it.
+  2026-11-20 (Benoy, branch `docs/optimization-contract-v2`): proposed `opt-contract-v2` replaces
+  v1's placeholder minimum of 2 frozen evaluation tasks with 4. Every batch runs every frozen
+  task, so 4 tasks over the minimum 5 pairs give the 20 completed tasks per configuration; the
+  agent's six tasks (PR #85) leave two for development. No other value changed and v1 was never
+  used by an evaluation. The O04 synthetic fixtures now freeze four tasks over 5 pairs.
+  Review follow-up 2026-11-22: "used once" means once per experiment; a later experiment (a
+  second host, or after a failed or inconclusive evaluation) may freeze the same tasks and must
+  say so. Page wording only; the TOML's parsed values and hash are unchanged.
+  Verified in WSL Ubuntu: `pipelines/data/tests` and `tests/contract` 1,306 passed; Ruff clean.
+  Still proposed: acceptance needs every team's row in the contract page's acceptance table.
 - [ ] O02 — Allen: validated versioned manual controls and audit history after O01/B01/B02.
   Implemented 2026-11-03 on branch `feature/concurrency-policy` (not yet merged):
   [versioned manual concurrency policy](concurrency-policy.md), migration
@@ -1213,8 +1223,8 @@ from M3 through M6 and do not renumber the implementation milestones above.
   for validation. Playwright covers cross-origin and oversized requests and malformed form input.
   Run links
   record the version *active while the run was open*, not enforcement. Still open: enforcement
-  (O03), the finished controls UI (O05), real-hardware evaluation (O06) and `opt-contract-v1`
-  acceptance (O01).
+  (O03), the finished controls UI (O05), real-hardware evaluation (O06) and the optimization
+  contract's acceptance (O01; now `opt-contract-v2`).
 - [ ] O03 — Akshayaa: bounded runner admission and cleanup after O02/A02/A03.
   Implemented 2026-11-09 on branch `feature/runner-concurrency-limits` (not yet merged),
   [ADR 0010](adr/0010-runner-process-admission-limits.md): `run` and the new `batch` command read
@@ -1269,6 +1279,13 @@ from M3 through M6 and do not renumber the implementation milestones above.
   as malformed (reviews on PR #58). Verified on synthetic experiments only: 156 cases in
   `pipelines/data/tests/test_optimization_{manifest,batches,comparison}.py`. Open until O06
   records a real experiment in this format.
+  2026-11-21 (branch `fix/optimization-policy-enforcement`, review finding on PR #100): a batch
+  record's `policy` showed only what the experiment set, so a candidate run whose inference
+  limit named another model server, and so was never enforced, was accepted as that
+  candidate. Batches are now also rejected as `policy_not_applied` unless each linked run's own
+  admission evidence (final control state and every request's `limit_at_arrival`) shows exactly
+  the slot's limits, for baseline and candidates alike. Synthetic experiments only: 169 cases
+  in the same three test files.
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
   Implemented 2026-11-11 on branch `feature/optimization-controls-compare`, rebuilt on the glass
   workspace (not yet pushed or reviewed; supersedes the unmerged `feature/optimization-view`).
