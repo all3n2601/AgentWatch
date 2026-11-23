@@ -16,6 +16,8 @@ import {
   nextRunPolicyReadMs,
   RUN_POLICY_REFRESH_MS,
   formFromLimits,
+  inferenceServiceId,
+  knownInferenceService,
   limitChanges,
   limitsFromForm,
   limitsText,
@@ -24,7 +26,10 @@ import {
   runPolicyText,
   versionLimitsText,
 } from "../lib/policy-view";
-import { policyControlsSchema } from "../lib/policy-api-schema";
+import {
+  policyChangeSchema,
+  policyControlsSchema,
+} from "../lib/policy-api-schema";
 import { fakeFetch, RUN_ID } from "./live-fixtures";
 
 const API_ROOT = "http://worker.test";
@@ -304,6 +309,105 @@ test("limit changes list only the controls that differ", () => {
     { control: "Inference requests", active: "no limit", proposed: "1" },
     { control: "Test jobs", active: "2", proposed: "no limit" },
   ]);
+});
+
+test("an inference limit names the model server it applies to", () => {
+  assert.equal(
+    limitsText({ inference_requests: 1, test_jobs: 4 }, "vllm"),
+    "Inference: 1 on vLLM · Tests: 4",
+  );
+  // No inference limit: the service limits nothing, so it is not named.
+  assert.equal(
+    limitsText({ test_jobs: 2 }, "vllm"),
+    "Inference: no limit · Tests: 2",
+  );
+  // An ID this page does not know is shown as recorded, never replaced by a default.
+  assert.equal(
+    limitsText({ inference_requests: 2 }, "sglang"),
+    "Inference: 2 on sglang · Tests: no limit",
+  );
+  const vllm = {
+    version: 5,
+    limits: { inference_requests: 1 },
+    controlled_services: {
+      ...controlledServices,
+      inference_requests: { service_id: "vllm", resource_class: "inference" },
+    },
+  };
+  assert.equal(
+    versionLimitsText(vllm),
+    "Inference: 1 on vLLM · Tests: no limit",
+  );
+  assert.equal(
+    policyStatusText({ ok: true, data: vllm }),
+    "Version 5: Inference: 1 on vLLM · Tests: no limit",
+  );
+  assert.equal(inferenceServiceId(vllm), "vllm");
+  assert.equal(knownInferenceService(vllm), "vllm");
+  assert.equal(
+    knownInferenceService({
+      controlled_services: {
+        inference_requests: { service_id: "sglang" },
+      },
+    }),
+    null,
+  );
+  assert.equal(knownInferenceService({}), null);
+});
+
+test("a service change is listed beside the limits that change", () => {
+  assert.deepEqual(
+    limitChanges(
+      { inference_requests: 1 },
+      { inference_requests: 1 },
+      { active: "ollama", proposed: "vllm" },
+    ),
+    [{ control: "Inference service", active: "Ollama", proposed: "vLLM" }],
+  );
+  assert.deepEqual(
+    limitChanges(
+      { inference_requests: 1 },
+      { inference_requests: 1 },
+      { active: "vllm", proposed: "vllm" },
+    ),
+    [],
+  );
+  // Without a proposed service (one this page cannot set), only limits are compared.
+  assert.deepEqual(
+    limitChanges({ test_jobs: 1 }, { test_jobs: 1 }, { active: "sglang" }),
+    [],
+  );
+  assert.equal(
+    changeText({
+      action: "set",
+      expected_version: 2,
+      limits: { inference_requests: 1 },
+      inference_service: "vllm",
+    }),
+    "Set limits to Inference: 1 on vLLM · Tests: no limit, against version 2",
+  );
+});
+
+test("change requests accept only known inference services", () => {
+  const base = {
+    request_id: RUN_ID,
+    expected_version: 0,
+    action: "set",
+    limits: { inference_requests: 1 },
+    operator: "alice",
+    reason: "limit vLLM",
+  };
+  assert.ok(
+    policyChangeSchema.safeParse({ ...base, inference_service: "vllm" })
+      .success,
+  );
+  assert.ok(policyChangeSchema.safeParse(base).success);
+  for (const bad of ["openai", "", null, 1])
+    assert.equal(
+      policyChangeSchema.safeParse({ ...base, inference_service: bad }).success,
+      false,
+      String(bad),
+    );
 });
 
 test("conflicts are told apart by the service's detail text", () => {

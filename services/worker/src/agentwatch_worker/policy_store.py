@@ -4,6 +4,7 @@ Version 0 is a synthesized baseline (no limits) and is never stored. Stored vers
 never updated or deleted; disable and restore append new versions.
 """
 
+import copy
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -64,6 +65,18 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
     # Absent keys mean "no limit"; never render them as null limits.
     rendered["limits"] = version.limits.model_dump(exclude_none=True)
     return rendered
+
+
+def controlled_services(target: str, inference_service: str) -> dict[str, Any]:
+    """The target's controlled services, with the inference limit naming `inference_service`."""
+    services = copy.deepcopy(target_definition(target)["controlled_services"])
+    services["inference_requests"]["service_id"] = inference_service
+    return services
+
+
+def inference_service_of(version: dict[str, Any]) -> str:
+    """The model server a stored or synthesized version's inference limit names."""
+    return version["controlled_services"]["inference_requests"]["service_id"]
 
 
 def runner_resources(target: str) -> Jsonb:
@@ -150,30 +163,38 @@ class PolicyStore:
                 if not existing.pop("identical"):
                     raise ConflictError("Policy request reused with a different body")
                 return {"created": False, "policy": present(existing)}
-            current = self.current(conn, target)["version"]
+            active = self.current(conn, target)
+            current = active["version"]
             if change.expected_version != current:
                 raise ConflictError(
                     f"Policy changed: expected version {change.expected_version}, "
                     f"active version is {current}"
                 )
+            # The inference limit names one model server. A set may choose it and otherwise
+            # keeps the active one; disable keeps it; restore takes the restored version's,
+            # so the restored limits apply to the service they were set for.
+            inference_service = inference_service_of(active)
             if change.action == "set":
                 if change.limits is None:
                     raise ValueError("A set change requires limits")
                 limits = change.limits.model_dump(exclude_none=True)
+                inference_service = change.inference_service or inference_service
             elif change.action == "disable":
                 limits = {}
             elif change.action == "restore":
                 if change.restored_from is None:
                     raise ValueError("A restore change requires restored_from")
-                if change.restored_from == 0:
-                    limits = {}
-                else:
-                    source = self.stored_version(conn, target, change.restored_from)
-                    if source is None:
-                        raise InvalidRestoreError(
-                            f"Policy version {change.restored_from} does not exist"
-                        )
-                    limits = source["limits"]
+                source = (
+                    baseline(target)
+                    if change.restored_from == 0
+                    else self.stored_version(conn, target, change.restored_from)
+                )
+                if source is None:
+                    raise InvalidRestoreError(
+                        f"Policy version {change.restored_from} does not exist"
+                    )
+                limits = source["limits"]
+                inference_service = inference_service_of(source)
             else:
                 raise ValueError(f"Unsupported policy action {change.action}")
             version = current + 1
@@ -192,7 +213,7 @@ class PolicyStore:
                     change.reason,
                     change.request_id,
                     Jsonb(request),
-                    Jsonb(definition["controlled_services"]),
+                    Jsonb(controlled_services(target, inference_service)),
                     definition["enforcement_scope"],
                 ),
             ).fetchone()

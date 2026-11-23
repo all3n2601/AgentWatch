@@ -79,7 +79,7 @@ a separate requirement. Unknown or unsupported readings stay distinct from measu
 ## Acceptance and experiment gates
 
 O01 must accept and freeze a versioned contract before any optimization evaluation. That
-contract is [the optimization contract](optimization-contract.md) (`opt-contract-v1`); it is
+contract is [the optimization contract](optimization-contract.md) (`opt-contract-v2`); it is
 authoritative once accepted. The following numerical gates are proposals, not measured
 performance or accepted team policy:
 

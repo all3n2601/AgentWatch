@@ -1151,6 +1151,16 @@ from M3 through M6 and do not renumber the implementation milestones above.
 - [ ] O01 — Rohit: accept policy/evaluation contracts and numerical gates after C01/A04/M01.
   Proposed as `opt-contract-v1` (2026-10-26): [the optimization contract](optimization-contract.md)
   and `pipelines/model/optimization-contract.toml`. Open until all three teams accept it.
+  2026-11-20 (Benoy, branch `docs/optimization-contract-v2`): proposed `opt-contract-v2` replaces
+  v1's placeholder minimum of 2 frozen evaluation tasks with 4. Every batch runs every frozen
+  task, so 4 tasks over the minimum 5 pairs give the 20 completed tasks per configuration; the
+  agent's six tasks (PR #85) leave two for development. No other value changed and v1 was never
+  used by an evaluation. The O04 synthetic fixtures now freeze four tasks over 5 pairs.
+  Review follow-up 2026-11-22: "used once" means once per experiment; a later experiment (a
+  second host, or after a failed or inconclusive evaluation) may freeze the same tasks and must
+  say so. Page wording only; the TOML's parsed values and hash are unchanged.
+  Verified in WSL Ubuntu: `pipelines/data/tests` and `tests/contract` 1,306 passed; Ruff clean.
+  Still proposed: acceptance needs every team's row in the contract page's acceptance table.
 - [ ] O02 — Allen: validated versioned manual controls and audit history after O01/B01/B02.
   Implemented 2026-11-03 on branch `feature/concurrency-policy` (not yet merged):
   [versioned manual concurrency policy](concurrency-policy.md), migration
@@ -1171,8 +1181,8 @@ from M3 through M6 and do not renumber the implementation milestones above.
   for validation. Playwright covers cross-origin and oversized requests and malformed form input.
   Run links
   record the version *active while the run was open*, not enforcement. Still open: enforcement
-  (O03), the finished controls UI (O05), real-hardware evaluation (O06) and `opt-contract-v1`
-  acceptance (O01).
+  (O03), the finished controls UI (O05), real-hardware evaluation (O06) and the optimization
+  contract's acceptance (O01; now `opt-contract-v2`).
 - [ ] O03 — Akshayaa: bounded runner admission and cleanup after O02/A02/A03.
   Implemented 2026-11-09 on branch `feature/runner-concurrency-limits` (not yet merged),
   [ADR 0010](adr/0010-runner-process-admission-limits.md): `run` and the new `batch` command read
@@ -1282,6 +1292,16 @@ from M3 through M6 and do not renumber the implementation milestones above.
   resends and Read again keeps focus. Verified locally: web lint, typecheck, 261 unit tests,
   production build and 55 Playwright tests passed. Not yet pushed or re-reviewed.
 - [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
+  2026-11-21 prerequisite (branch `feature/vllm-inference-admission`,
+  [ADR 0015](adr/0015-policy-versions-name-their-inference-service.md)): a policy `set` may
+  name the inference service (`ollama` or `vllm`), stored in that version's
+  `controlled_services`; omitted keeps the active one, disable keeps it and restore takes the
+  restored version's. Runners on the named server apply the limit, so vLLM runs can now be
+  limited; the runner itself is unchanged. API, both SDKs and the Controls page (service choice,
+  "Inference: 1 on vLLM") updated. Verified locally with synthetic policies: worker suite and
+  agent policy tests against PostgreSQL (WSL 410 passed, Windows attribution modules 119
+  passed), web lint, typecheck, unit tests, production build and Playwright
+  `concurrency-controls` and `run-policy` specs (21 passed). No hardware run; O06 stays open.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.

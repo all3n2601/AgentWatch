@@ -118,6 +118,38 @@ def test_change_accepts_each_valid_action_shape(record):
     assert PolicyChange.model_validate(record).action == record["action"]
 
 
+@pytest.mark.parametrize("service", ["ollama", "vllm"])
+def test_set_may_name_the_inference_service(service):
+    parsed = PolicyChange.model_validate(change(inference_service=service))
+    assert parsed.inference_service == service
+    assert parsed.model_dump(mode="json")["inference_service"] == service
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        change(inference_service="openai"),
+        change(inference_service=""),
+        change(inference_service=1),
+        change(action="disable", limits=..., inference_service="vllm"),
+        change(action="restore", limits=..., restored_from=1, inference_service="vllm"),
+    ],
+)
+def test_inference_service_is_a_known_server_and_only_for_set(record):
+    with pytest.raises(ValidationError):
+        PolicyChange.model_validate(record)
+
+
+@pytest.mark.parametrize("record", [change(), change(inference_service=None)])
+def test_an_omitted_inference_service_is_not_serialized(record):
+    # Requests stored before the field existed must keep their body, so retries still match;
+    # an explicit null means the same as omitting the key.
+    parsed = PolicyChange.model_validate(record)
+    assert parsed.inference_service is None
+    assert "inference_service" not in parsed.model_dump(mode="json")
+    assert "inference_service" not in json.loads(parsed.model_dump_json())
+
+
 @pytest.mark.parametrize("field,value", [("operator", " "), ("reason", "")])
 def test_operator_and_reason_reject_blank(field, value):
     with pytest.raises(ValidationError):
