@@ -66,6 +66,7 @@ from agentwatch_agent.admission import (
     QueueBounds,
     RunnerAdmission,
 )
+from agentwatch_agent.admission_overhead import measure_admission_overhead
 from agentwatch_agent.batch import MAX_BATCH_RUNS, AgentBatch, BatchRun
 from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.config import (
@@ -563,6 +564,23 @@ def parser() -> argparse.ArgumentParser:
     add_model_arguments(sampling)
     add_gpu_device_arguments(sampling)
     sampling.add_argument("--output-dir", type=Path, default=Path(".data/sampling-overhead"))
+
+    admission = commands.add_parser(
+        "admission-overhead",
+        help="Measure what policy admission adds to a real model request, limits unchanged",
+    )
+    admission.add_argument("--task", default="fix-mean-empty")
+    add_model_arguments(admission)
+    admission.add_argument(
+        "--api-url", type=http_url, default=os.environ.get("AGENTWATCH_API_URL", DEFAULT_API_URL)
+    )
+    admission.add_argument(
+        "--policy-poll",
+        type=positive_seconds,
+        default=DEFAULT_POLICY_POLL_SECONDS,
+        help="Seconds between policy reads while an admitted request runs, as in a run",
+    )
+    admission.add_argument("--output-dir", type=Path, default=Path(".data/admission-overhead"))
 
     coverage = commands.add_parser(
         "coverage", help="Report how a recorded run's resource samples cover its steps"
@@ -1642,6 +1660,39 @@ def sampling_overhead_command(args: argparse.Namespace) -> int:
     return EXIT_PASSED
 
 
+def admission_overhead_command(args: argparse.Namespace) -> int:
+    try:
+        task = load_task(args.task)
+    except TaskDefinitionError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    output_dir = default_output_dir(args.output_dir, task)
+    model = build_model(args)
+    report = measure_admission_overhead(
+        task,
+        model.name,
+        model.chat,
+        LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS),
+        inference_service_id=model.service_id,
+        policy_poll_seconds=args.policy_poll,
+    )
+    path = output_dir / "admission-overhead.json"
+    write_json_atomic(path, report)
+    if report["status"] != "completed":
+        print(
+            f"error: measurement {report['status']}: {report['error']}; kept: {path}",
+            file=sys.stderr,
+        )
+        return EXIT_FAILED
+    conditions = report["conditions"]
+    print(
+        f"Request median {conditions['admission_off']['wall_seconds']['median']:.4f} s without "
+        f"admission, {conditions['admission_on']['wall_seconds']['median']:.4f} s with "
+        f"({report['median_wall_difference_fraction']:+.1%}); evidence: {path}"
+    )
+    return EXIT_PASSED
+
+
 def coverage_command(args: argparse.Namespace) -> int:
     try:
         report = coverage_report(args.run_dir)
@@ -1693,6 +1744,8 @@ def main(argv: list[str] | None = None) -> int:
         return overhead_command(args)
     if args.command == "sampling-overhead":
         return sampling_overhead_command(args)
+    if args.command == "admission-overhead":
+        return admission_overhead_command(args)
     if args.command == "coverage":
         return coverage_command(args)
     if args.command == "redact":
