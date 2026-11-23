@@ -1,7 +1,7 @@
 """Synthetic optimization experiments for tests. Never recorded evidence.
 
 Writes `manifest.json` and `batches/<index>.json` in the O04 formats, checked against the real
-opt-contract-v1 file, so the manifest and batch readers are tested against the contract they
+opt-contract-v2 file, so the manifest and batch readers are tested against the contract they
 enforce. Task hashes, hardware and timings are invented.
 """
 
@@ -28,7 +28,12 @@ CONTRACT_PATH = ROOT / "pipelines/model/optimization-contract.toml"
 TASKS = (
     ("fix-mean-empty-r1", "1" * 64, "2" * 64),
     ("fix-window-count-r1", "3" * 64, "4" * 64),
+    ("fix-slug-case-r1", "7" * 64, "8" * 64),
+    ("fix-config-precedence-r1", "9" * 64, "a" * 64),
 )
+# Preregistered submission offsets in seconds. TASKS[0] arrives first and TASKS[1] last, and
+# TASKS[1] finishes last, so a batch's time is its last finish.
+ARRIVAL_SECONDS = {TASKS[0][0]: 0, TASKS[1][0]: 1.5, TASKS[2][0]: 0.5, TASKS[3][0]: 1.0}
 HARDWARE = {
     "host_id": "synthetic-laptop-01",
     "cpu_model": "Synthetic CPU 8C",
@@ -71,8 +76,8 @@ def manifest_document(contract: OptimizationContract, **changes) -> dict:
                 "method": "fixed_offsets_v1",
                 "tolerance_seconds": 0.25,
                 "offsets": [
-                    {"task_id": TASKS[0][0], "offset_seconds": 0},
-                    {"task_id": TASKS[1][0], "offset_seconds": 1.5},
+                    {"task_id": task_id, "offset_seconds": ARRIVAL_SECONDS[task_id]}
+                    for task_id, _, _ in TASKS
                 ],
             },
         },
@@ -98,7 +103,8 @@ def manifest_document(contract: OptimizationContract, **changes) -> dict:
             "inference_requests": {"max_length": 8, "max_wait_seconds": 120},
             "test_jobs": {"max_length": 4, "max_wait_seconds": 60},
         },
-        "repetitions": {"pairs": 10, "warmup_batches": 1, "seed": 20261105},
+        # 5 pairs of 4 tasks: exactly the contract's minimum pairs and completed tasks.
+        "repetitions": {"pairs": 5, "warmup_batches": 1, "seed": 20261105},
     }
     document.update(changes)
     return document
@@ -108,7 +114,7 @@ def default_timing(slot: ScheduledBatch, task_id: str) -> tuple[int, int]:
     """(submitted, finished) ticks: the last task finishes when the batch does."""
     faster = slot.configuration == CANDIDATE and slot.condition == "contended"
     batch_ns = (8 if faster else 10) * SECOND_NS
-    submitted = 0 if task_id == TASKS[0][0] else int(1.5 * SECOND_NS)
+    submitted = int(ARRIVAL_SECONDS[task_id] * SECOND_NS)
     finished = batch_ns if task_id == TASKS[1][0] else batch_ns - SECOND_NS
     return submitted, finished
 

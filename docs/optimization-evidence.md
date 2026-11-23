@@ -2,7 +2,7 @@
 
 Status: O04, implemented 2026-11-05 in `pipelines/data` and verified on synthetic experiments
 only. No optimization experiment has been recorded yet: runner admission limits (O03) and the
-hardware evaluation that produces batches (O06) do not exist, and `opt-contract-v1` is still
+hardware evaluation that produces batches (O06) do not exist, and `opt-contract-v2` is still
 proposed. Nothing here is an optimization result.
 
 O04 fixes the evidence format for comparing the baseline concurrency policy with candidate
@@ -45,7 +45,7 @@ into a DVC-versioned store is a separate follow-up.
 
 Every key is required unless noted; unknown keys are rejected.
 
-| Key | Content | Checked against `opt-contract-v1` |
+| Key | Content | Checked against `opt-contract-v2` |
 |---|---|---|
 | `format`, `experiment_id`, `created_at` | `opt-experiment-manifest-v1`, a UUID, an RFC 3339 timestamp with zone | |
 | `contract` | `{version, sha256}`: the full hash of the contract the experiment was designed for | Must equal the current contract; a stale or edited contract is refused |
@@ -63,7 +63,7 @@ Every key is required unless noted; unknown keys are rejected.
 | `repetitions` | `{pairs, warmup_batches, seed}`; at most 1,000 pairs and 100 warm-ups | `pairs ≥ min_paired_batches`, and `pairs × tasks ≥ min_completed_tasks_per_configuration` |
 
 Factorial experiments, which change both controls at once, are outside this format. The
-contract reports them as not evaluated in v1.
+contract reports them as not evaluated in this version.
 
 **Policy hash.** A policy is identified by
 `canonical_sha256({target: "coding-agent", limits, enforcement_scope})`. Two stored O02 policy
@@ -165,10 +165,11 @@ the step dataset, the replay labels or `step-features-v1`.
 ## Known limitations
 
 - Synthetic experiments only. The real producer (O06) and admission statistics (O03) don't exist yet.
-- The agent has two fixed tasks. An evaluation manifest needs at least two frozen tasks that
-  share no name with its development tasks, so a valid evaluation needs more tasks first.
-- "Frozen evaluation tasks are used once" is not enforced across experiments: no registry of
-  used evaluation tasks exists yet.
+- An evaluation manifest needs at least four frozen tasks that share no name with its
+  development tasks. The agent has six, so two remain for development.
+- "Frozen evaluation tasks are used once per experiment" is not enforced: no registry of
+  used evaluation tasks or manifest field for earlier use exists yet. Reuse is allowed only to
+  replicate with unchanged candidates, and such an experiment must say so itself.
 - Hardware, model and power identity, and the applied injector set, are declared by the
   producer. O04 compares them with the manifest but cannot measure them. Task content and
   configuration are verified against each run's agent evidence.

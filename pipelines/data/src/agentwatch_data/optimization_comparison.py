@@ -12,11 +12,11 @@ a measured batch time; every other pair is reported as unpaired with its reason,
 record, accepted or rejected, is listed. Failures and timeouts are counted over every pair
 whose two records were accepted, so a candidate that aborts its batch is not hidden by
 leaving the comparison. Rejected, missing or unpaired evidence makes a comparison
-insufficient, as opt-contract-v1's no-action conditions require.
+insufficient, as opt-contract-v2's no-action conditions require.
 
 Effects are observed paired differences on the declared workload and hardware, with a seeded
 percentile bootstrap interval. They are not gate outcomes: the hardware evaluation (O06)
-applies opt-contract-v1's gates, so `gates` is always `not_evaluated` here, and nothing in a
+applies opt-contract-v2's gates, so `gates` is always `not_evaluated` here, and nothing in a
 record establishes a general causal improvement.
 """
 
@@ -67,7 +67,7 @@ P95 = 0.95
 GATES_NOT_EVALUATED = {
     "status": "not_evaluated",
     "reason": (
-        "O04 records observed paired effects only; opt-contract-v1 gates are applied by the "
+        "O04 records observed paired effects only; opt-contract-v2 gates are applied by the "
         "hardware evaluation (O06) once the contract is accepted"
     ),
 }
