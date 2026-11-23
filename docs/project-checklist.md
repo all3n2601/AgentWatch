@@ -273,7 +273,21 @@ These can be completed before adding an agent.
   deviation below). Identical replies in both
   conditions (43 tokens Ollama, 22 vLLM). Attempts `ollama-attempt-{1,2}` and
   `vllm-attempt-{1,2}`, both verdict reports and the settings notes were shared as
-  `a07-gpu-evidence-20261120.zip` (not in the repository).
+  `a07-gpu-evidence-20261120.zip` (not in the repository). SHA-256 of the files the figures
+  come from, so a copy can be checked against this entry:
+  - `a07-gpu-evidence-20261120.zip`: `908b373de8fc1e12d4bb5983edd33bbcb738d564d498a2fffad058a43a2e4c2e`
+  - `attempts/ollama-attempt-1/…-10a110/sampling-overhead.json`: `433dc201fea08d6a824b2ba3ff5179cacbb201e856b3e99ba11b69b5216f4514`
+  - `attempts/ollama-attempt-2/…-1793a4/sampling-overhead.json`: `25c570552e61f8aebbe58d64f2aba42588b61e6f8ee69bf5857cf3ee209ba676`
+  - `attempts/vllm-attempt-1/…-02d037/sampling-overhead.json`: `8ba67f61b6bb4902d34c0cd22003dfdd77bfa0a704f3241596652ca5a9c54691`
+  - `attempts/vllm-attempt-2/…-e9c332/sampling-overhead.json`: `5b30175cff710ecb434a1b4a4340104c883220c8c89257aa77e2f3bdcb933b4d`
+  - `verdicts/ollama-gpu/overhead-verdict.json`: `19fdff69a2b6e070986fe097b81a13aa50602f9f3c8b6a28936b600bb9facbfc`
+  - `verdicts/vllm-gpu/overhead-verdict.json`: `2897e46b2975630c9d00d55a3a78ee35004b84e4c63680aa2bde0b7c8a4fc046`
+  - `attempts/redaction.json`: `60f751fa8dc14c9402d32445d6dfd42594d5aa8d0c81d6b932984d9a468a345f`
+
+  The host label names a person; later runs use a neutral label (the O06 pilot used
+  `rtx5070-laptop-wsl2`). The verdicts were judged under `opt-contract-v1`; once
+  `opt-contract-v2` is in force they must be re-judged from these attempt files before the
+  optimization gates can use them.
   **Protocol deviation:** display apps shared the measured GPU in all four attempts (WSL2
   laptop; the protocol requires nothing else on it during an attempt), so both GPU verdicts
   carry this limitation and are not clean-condition results. Open: CPU container attempts
@@ -1150,7 +1164,7 @@ Retraining reproduces evaluation, promotion updates the served version, and roll
   management, retention and access control remain open.
   2026-11-20 (A07, Benoy): run on GPU-host evidence. The A06 Ollama-GPU capacity sweep
   `cfg-default-20261111T211237Z-2d75ea` (566 files) had 350 absolute `output_dir` host paths,
-  all replaced, but the path contains a space, so each keeps the tail
+  all partly replaced: the path contains a space, so each keeps the tail
   `Watch/AgentWatch/.data/...` (the documented limitation; no user or host name remains). The
   M2 vLLM/DCGM and GPM folders (72 and 58 files) had no host identifiers in JSON; their 216
   replacements were vLLM in-container library paths. Host paths remain in those folders'
