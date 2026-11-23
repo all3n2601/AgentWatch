@@ -1,4 +1,4 @@
-"""Preregistration manifests for optimization experiments (O04), checked against opt-contract-v1.
+"""Preregistration manifests for optimization experiments (O04), checked against opt-contract-v2.
 
 An optimization experiment compares the baseline concurrency policy with preregistered
 candidate limits in paired batches (docs/optimization-contract.md). Its manifest is written
@@ -29,7 +29,7 @@ from agentwatch_data.extract import TIMESTAMP, canonical_sha256, parse_json
 from agentwatch_data.files import read_bounded_text
 
 MANIFEST_FORMAT = "opt-experiment-manifest-v1"
-CONTRACT_VERSION = "opt-contract-v1"
+CONTRACT_VERSION = "opt-contract-v2"
 CONTRACT_STATUSES = ("proposed", "accepted")
 POLICY_TARGET = "coding-agent"  # the only target O02 serves
 PURPOSES = ("development", "evaluation")
@@ -76,7 +76,7 @@ class ManifestError(ValueError):
 
 @dataclass(frozen=True)
 class OptimizationContract:
-    """The opt-contract-v1 values a manifest and its comparison depend on."""
+    """The opt-contract-v2 values a manifest and its comparison depend on."""
 
     version: str
     status: str
@@ -173,7 +173,7 @@ def contract_section(parsed: dict, name: str) -> dict:
 
 
 def load_optimization_contract(path: Path) -> OptimizationContract:
-    """Read opt-contract-v1 and identify it by the SHA-256 of its parsed canonical JSON."""
+    """Read opt-contract-v2 and identify it by the SHA-256 of its parsed canonical JSON."""
     try:
         parsed = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
@@ -363,7 +363,7 @@ def read_policies(value, contract: OptimizationContract) -> tuple[Policy, tuple[
     baseline_entry = require_object(policies["baseline"], "policies.baseline", {"limits"})
     baseline_limits = policy_limits(baseline_entry["limits"], "policies.baseline.limits", contract)
     if baseline_limits:
-        # opt-contract-v1: the baseline is the runner without admission limits.
+        # opt-contract-v2: the baseline is the runner without admission limits.
         raise ManifestError("policies.baseline.limits must be empty (no limit on any control)")
     baseline = Policy(BASELINE, {}, policy_sha256({}, contract))
     candidates = []

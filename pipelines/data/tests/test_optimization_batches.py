@@ -8,6 +8,7 @@ from agentwatch_data.optimization_batches import read_batches
 from agentwatch_data.optimization_manifest import CANDIDATE, ManifestError, parse_manifest, schedule
 from optimization_fixtures import (
     TASKS,
+    admission_evidence,
     contract,
     first_slot,
     manifest_document,
@@ -122,13 +123,14 @@ def test_every_frozen_task_runs_exactly_once_per_batch(tmp_path):
     assert rejected_codes(rejections) == {"002.json": "task_mismatch"}
 
 
-def agent_evidence(run_id, task_id, content, digest, task_passed=True) -> dict:
+def agent_evidence(run_id, task_id, content, digest, task_passed=True, limits=None) -> dict:
+    """A linked run's evidence; its admission state applies `limits` (none by default)."""
     return {
         "run_id": run_id,
         "task": {"task_id": task_id, "content_sha256": content},
         "configuration_digest": digest,
         "task_passed": task_passed,
-    }
+    } | admission_evidence(limits or {})
 
 
 def test_linked_agent_evidence_must_be_the_frozen_tasks_run(tmp_path):
@@ -140,7 +142,9 @@ def test_linked_agent_evidence_must_be_the_frozen_tasks_run(tmp_path):
         content_seen = "9" * 64 if record["index"] == 4 else content
         write_json(
             tmp_path / "runs" / str(record["index"]) / "agent-evidence.json",
-            agent_evidence(task["run_id"], task_id, content_seen, digest),
+            agent_evidence(
+                task["run_id"], task_id, content_seen, digest, limits=record["policy"]["limits"]
+            ),
         )
         return record
 
@@ -564,7 +568,10 @@ def test_linked_evidence_must_agree_with_the_record(tmp_path, evidence, detail):
         task = record["tasks"][0]
         write_json(
             tmp_path / task["evidence_dir"] / "agent-evidence.json",
-            agent_evidence(task["run_id"], task_id, content, digest) | evidence,
+            agent_evidence(
+                task["run_id"], task_id, content, digest, limits=record["policy"]["limits"]
+            )
+            | evidence,
         )
 
     manifest = write_experiment(tmp_path, CONTRACT, change=only_changing(5, link))
@@ -599,3 +606,137 @@ def test_malformed_task_passed_rejects_the_batch(tmp_path, acceptance, task_pass
     _, rejections = read(tmp_path, manifest)
     assert rejected_codes(rejections) == {"005.json": "malformed"}
     assert "task_passed must be true or false when present" in rejections[0].detail
+
+
+# --- The policy the runs actually applied -------------------------------------------------------
+
+
+def relink(tmp_path, record, edit, task_index=0) -> None:
+    """Rewrite one task's linked evidence, starting from evidence that applies the slot policy."""
+    task = record["tasks"][task_index]
+    task_id, content, digest = next(item for item in TASKS if item[0] == task["task_id"])
+    evidence = agent_evidence(
+        task["run_id"], task_id, content, digest, limits=record["policy"]["limits"]
+    )
+    edit(evidence)
+    write_json(tmp_path / task["evidence_dir"] / "agent-evidence.json", evidence)
+
+
+def experiment_editing_evidence(tmp_path, slot_of, edit):
+    """An experiment whose first `slot_of(manifest)` batch has one task's evidence edited."""
+    manifest = parse_manifest(manifest_document(CONTRACT), CONTRACT)
+    target = slot_of(manifest)
+    manifest = write_experiment(
+        tmp_path,
+        CONTRACT,
+        change=only_changing(target.index, lambda record: relink(tmp_path, record, edit)),
+    )
+    return manifest, f"{target.index:03d}.json"
+
+
+def unenforced_on_another_service(evidence):
+    # A version naming Ollama, read by a runner that sends model requests to vLLM.
+    state = evidence["admission"]["process"]["controls"]["inference_requests"]
+    state.update(
+        limit=None,
+        enforced=False,
+        not_enforced_reason="Policy controls service 'ollama'; this runner sends this work to "
+        "'vllm'",
+    )
+    for record in evidence["admissions"]:
+        record["limit_at_arrival"] = None
+
+
+def test_a_candidate_whose_limit_the_runner_did_not_enforce_is_rejected(tmp_path):
+    manifest, file = experiment_editing_evidence(
+        tmp_path, lambda m: first_slot(m, "contended", CANDIDATE), unenforced_on_another_service
+    )
+    records, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {file: "policy_not_applied"}
+    detail = rejections[0].detail
+    assert "inference_requests: planned limit 1, applied no limit" in detail
+    assert "this runner sends this work to 'vllm'" in detail
+    assert file not in {record.file for record in records}
+
+
+def test_a_baseline_run_under_a_limit_is_rejected(tmp_path):
+    def limited(evidence):
+        evidence.update(admission_evidence({"test_jobs": 2}))
+
+    manifest, file = experiment_editing_evidence(
+        tmp_path, lambda m: first_slot(m, "clean"), limited
+    )
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {file: "policy_not_applied"}
+    assert "test_jobs: planned no limit, applied limit 2" in rejections[0].detail
+
+
+def test_a_request_admitted_under_another_limit_is_rejected(tmp_path):
+    # The final state applies the slot policy, but an earlier request arrived before it did,
+    # for example while the runner still held the previous version.
+    def earlier_request(evidence):
+        evidence["admissions"].insert(
+            0, {"control": "inference_requests", "limit_at_arrival": None, "outcome": "admitted"}
+        )
+
+    manifest, file = experiment_editing_evidence(
+        tmp_path, lambda m: first_slot(m, "contended", CANDIDATE), earlier_request
+    )
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {file: "policy_not_applied"}
+    assert "an inference_requests request arrived under no limit" in rejections[0].detail
+
+
+def not_configured(evidence):
+    evidence["admission"] = {"status": "not_configured", "reason": "no policy consulted"}
+    evidence["admissions"] = []
+
+
+def test_a_run_without_admission_applies_no_limits(tmp_path):
+    # Acceptable for the baseline, which is the runner without limits; never for a candidate.
+    manifest, _ = experiment_editing_evidence(
+        tmp_path, lambda m: first_slot(m, "clean"), not_configured
+    )
+    assert read(tmp_path, manifest)[1] == []
+    candidate_root = tmp_path / "candidate"
+    manifest, file = experiment_editing_evidence(
+        candidate_root, lambda m: first_slot(m, "clean", CANDIDATE), not_configured
+    )
+    _, rejections = read(candidate_root, manifest)
+    assert rejected_codes(rejections) == {file: "policy_not_applied"}
+
+
+def test_evidence_without_admission_state_cannot_show_its_policy(tmp_path):
+    manifest, file = experiment_editing_evidence(
+        tmp_path, lambda m: first_slot(m, "clean"), lambda evidence: evidence.pop("admission")
+    )
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {file: "policy_not_applied"}
+    assert "records no admission state" in rejections[0].detail
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda evidence: evidence["admission"].update(status="paused"),
+        lambda evidence: evidence["admission"].pop("process"),
+        lambda evidence: evidence["admission"]["process"]["controls"].pop("test_jobs"),
+        lambda evidence: evidence["admission"]["process"]["controls"]["test_jobs"].update(
+            enforced="false"
+        ),
+        lambda evidence: evidence["admission"]["process"]["controls"]["inference_requests"].update(
+            limit=0
+        ),
+        lambda evidence: evidence.update(admissions={}),
+        lambda evidence: evidence["admissions"].append({"control": "gpu", "limit_at_arrival": 1}),
+        lambda evidence: evidence["admissions"].append(
+            {"control": "test_jobs", "limit_at_arrival": True}
+        ),
+    ],
+)
+def test_malformed_admission_evidence_rejects_the_batch(tmp_path, edit):
+    manifest, file = experiment_editing_evidence(
+        tmp_path, lambda m: first_slot(m, "contended", CANDIDATE), edit
+    )
+    _, rejections = read(tmp_path, manifest)
+    assert rejected_codes(rejections) == {file: "malformed"}
