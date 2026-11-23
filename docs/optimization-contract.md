@@ -1,6 +1,6 @@
 # AgentWatch optimization contract
 
-Status: proposed `opt-contract-v1`, pending acceptance by all three teams. Thresholds live in
+Status: proposed `opt-contract-v2`, pending acceptance by all three teams. Thresholds live in
 `pipelines/model/optimization-contract.toml`. O02 stores and serves versioned manual policy
 ([concurrency policy](concurrency-policy.md)), and agent runner processes enforce it for their own
 work ([ADR 0010](adr/0010-runner-process-admission-limits.md), O03). No optimization has been
@@ -41,12 +41,12 @@ seed, queue bounds and the frozen evaluation tasks. Anything not preregistered i
 | Unit | A batch: tasks submitted together to one runner; batch time runs from first submission to last terminal task | Plan, metric chosen here |
 | Conditions | Clean, and contended with a preregistered injector set and intensity | Plan |
 | Candidate limits | 1, 2 and 4, against the baseline; a candidate above measured capacity is not run | Plan |
-| Controls changed per candidate | One; factorial runs that change both are reported as not evaluated in v1 | Plan, metric chosen here |
+| Controls changed per candidate | One; factorial runs that change both are reported as not evaluated in this version | Plan, metric chosen here |
 | Pairs | One baseline and one candidate batch on the same tasks, inputs, hardware and power state, back to back, order randomized with a recorded seed | Plan, metric chosen here |
 | Repetitions | At least 5 pairs and 20 completed tasks per configuration | Plan |
 | Warm-up and cold requests | Declared warm-up; cold requests reported separately and excluded from warm comparisons | Plan |
-| Tasks | Settings chosen on development tasks; frozen evaluation tasks are disjoint and used once | Plan |
-| Minimum frozen evaluation tasks | 2, a placeholder that must be revisited before first use: with the agent's two fixed tasks, disjoint development and evaluation tasks cannot both exist yet | Proposed |
+| Tasks | Settings chosen on development tasks; frozen evaluation tasks are disjoint and used once per experiment: never to choose settings, and an evaluation is not rerun to replace its result. A later preregistered experiment may freeze the same tasks only to replicate one with unchanged candidates (on another host, for example), and its report says they were evaluated before. Candidates chosen or changed after a failed or inconclusive evaluation need new frozen tasks, so held-out tasks never select settings | Plan, metric chosen here |
+| Minimum frozen evaluation tasks | 4: every batch runs every frozen task, so 4 tasks over the minimum 5 pairs give the 20 completed tasks per configuration; the agent's six tasks leave two for development | Plan, metric chosen here |
 
 ## Gates
 
@@ -117,9 +117,20 @@ canonical JSON. Earlier versions and their reports are kept.
 that its thresholds match this page's table rows, the optimization plan, the evaluation contract
 and the agent's existing stability gate, so a threshold edit cannot drift silently.
 
+| Version | Change |
+|---|---|
+| `opt-contract-v1` (2026-10-26) | First proposal; never used by an evaluation, so it has no reports. Its file is in git history |
+| `opt-contract-v2` (2026-11-20) | Minimum frozen evaluation tasks 2 → 4, replacing v1's placeholder now that the agent has six tasks. No other value changed. The page also states that frozen tasks are used once per experiment, and that only a replication with unchanged candidates may reuse them |
+
 ## Known limitations
 
-- The agent currently has two fixed tasks, so development and frozen evaluation tasks cannot
-  yet be disjoint; until more tasks exist, the gates are not evaluated.
+- The agent has six tasks, so an evaluation that freezes four keeps two for development.
+  Adding tasks would let a later version freeze more.
+- "Used once" is per experiment, so a replication with unchanged candidates (a second host)
+  reuses the same four frozen tasks. Its results are not independent of the earlier
+  evaluation's, and its report must say so. New candidates after a failed or inconclusive
+  evaluation need new frozen tasks; with six tasks in all, more tasks must be written first.
+- Earlier use is not recorded in the manifest (no field or registry exists), so the rule is
+  enforced by review and by the report's statement, not by the manifest check.
 - Only one GPU laptop is confirmed; its results apply to that model, GPU and WSL setup.
 - Per-process enforcement does not limit concurrency across several runners.

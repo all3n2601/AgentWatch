@@ -5,7 +5,7 @@ and a run's policy history at `/v1/live/runs/{UUID}/policy`. [Policy OpenAPI](..
 and [live OpenAPI](../api/openapi/live.json) define the shapes. Python models/client methods live
 in `agentwatch_sdk` (`policy.py`, `LiveClient.get_policy`, `list_policy_versions`, `change_policy`,
 `get_run_policy`); TypeScript types are exported by `@agentwatch/sdk`. The semantics come from the
-[optimization contract](optimization-contract.md), which is still *proposed* (`opt-contract-v1`);
+[optimization contract](optimization-contract.md), which is still *proposed* (`opt-contract-v2`);
 O02 implements its policy rules without claiming acceptance.
 
 **O02 stores and serves policy; the service enforces nothing.** Agent runner processes enforce it
