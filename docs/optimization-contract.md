@@ -60,7 +60,7 @@ seed, queue bounds and the frozen evaluation tasks. Anything not preregistered i
 | Quality | No frozen task whose acceptance tests pass at baseline fails with the candidate | Clean and contended | Plan, metric chosen here |
 | Starvation and leaks | No admission waits longer than the declared maximum; no permit still held after its batch ends | Clean and contended | Plan, metric chosen here |
 | Admission overhead | Median wall-time increase at most 5% with unchanged limits, measured separately from instrumentation | Clean | Plan |
-| Instrumentation overhead | Median wall-time increase at most 5%, shared with [the evaluation contract](evaluation-contract.md) | Clean | Proposed |
+| Instrumentation overhead | Median wall-time increase at most 5%, shared with [the evaluation contract](evaluation-contract.md) | Clean | Proposed, then checked on hardware ([below](#overhead-evidence)) |
 | Baseline stability (`max_baseline_root_step_cv`) | Coefficient of variation of the root step's total duration across baseline batches at most 15%, the existing gate in `services/agent`; otherwise every comparison on that baseline is inconclusive | Clean and contended | Plan |
 
 With 5 pairs, the bootstrap interval excludes zero only when every pair shows a reduction, so at
@@ -70,6 +70,32 @@ multiplicity correction is applied across candidates in v1 (see below). Reports 
 for median batch time, median and p95 task latency, throughput, admission wait, service queue
 when observable, failures, timeouts and variability. Passing does not establish a general
 causal improvement beyond the declared workload and hardware.
+
+### Overhead evidence
+
+The 5% instrumentation budget was proposed without data and has since been checked on one host,
+an RTX 5070 laptop under WSL2 (A07, [project checklist](project-checklist.md)): GPU vLLM
+`within_budget` and GPU Ollama `inconclusive` (baseline variability). CPU-container attempts
+are still open, so the value rests on one host and one shared GPU. The O06 admission-overhead
+measurement on the same host was `within_budget` against the 5% admission budget.
+
+**Shared gate.** The instrumentation budget is the same value as the evaluation contract's
+`max_median_wall_time_increase`, and the contract test requires the two to be equal. Accepting
+this contract does not accept the evaluation contract, which has its own acceptance; changing
+either value needs a new version of both contracts, so they cannot diverge.
+
+**Recorded deviations.** An overhead verdict whose only recorded protocol deviation is
+operating-system display processes sharing the measured GPU, on a host where they cannot be
+removed, may support a promotion only when the evaluation ran on the same host under the same
+condition; the report lists it as a limitation. A verdict with any other deviation, such as
+another workload on the measured GPU, never supports a promotion. This rule was fixed before any
+evaluation result existed.
+
+**One value, two uses.** `max_baseline_root_step_cv` (15%) gates the root step's duration
+across baseline batches here, and the [instrumentation overhead
+protocol](instrumentation-overhead-protocol.md) borrows the same value for per-repetition
+uninstrumented wall time. Accepting this contract fixes both uses together, so a later change
+to the value moves both.
 
 ## Outcomes and no-action conditions
 
