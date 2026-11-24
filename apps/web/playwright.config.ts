@@ -1,10 +1,13 @@
-import os from "node:os";
-import path from "node:path";
 import { defineConfig, devices } from "@playwright/test";
+import { AUDIT_VIEWPORTS } from "./e2e/viewports";
 import { FIXTURE_API_PORT, WEB_PORT } from "./e2e/fixture-control";
+import { E2E_DATA_DIR } from "./e2e/local-data";
 
 // Browser tests of the live view against a scripted live API (e2e/fixture-api.ts). They run
 // the production build, so run `pnpm build` first; CI builds before this step.
+
+/** Layout and accessibility specs run at every audit viewport; the rest at desktop only. */
+const VIEWPORT_SPECS = /(responsive|a11y)\.spec\.ts$/;
 
 const fixtureApiUrl = `http://127.0.0.1:${FIXTURE_API_PORT}`;
 const webUrl = `http://127.0.0.1:${WEB_PORT}`;
@@ -20,7 +23,24 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
   use: { baseURL: webUrl, trace: "retain-on-failure" },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "chromium",
+      testIgnore: VIEWPORT_SPECS,
+      use: { ...devices["Desktop Chrome"] },
+    },
+    ...AUDIT_VIEWPORTS.map(({ name, viewport, mobile, deviceScaleFactor }) => ({
+      name,
+      testMatch: VIEWPORT_SPECS,
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport,
+        deviceScaleFactor: deviceScaleFactor ?? 1,
+        isMobile: mobile,
+        hasTouch: mobile,
+      },
+    })),
+  ],
   webServer: [
     {
       command: "node --import tsx e2e/fixture-api.ts",
@@ -34,10 +54,7 @@ export default defineConfig({
       env: {
         AGENTWATCH_API_URL: fixtureApiUrl,
         // No local artifacts or GPU probes: the page must show only fixture API data.
-        AGENTWATCH_DATA_DIR: path.join(
-          os.tmpdir(),
-          "agentwatch-e2e-no-local-data",
-        ),
+        AGENTWATCH_DATA_DIR: E2E_DATA_DIR,
       },
     },
   ],

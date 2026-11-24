@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
 import { Bot, type LucideIcon } from "lucide-react";
 import { AgentRun } from "@/components/agent-run";
 import { LiveRunNotice, liveRunTabs } from "@/components/live-feed";
@@ -121,25 +122,24 @@ function LiveTabs({ runId }: { runId: string }) {
 export function RunTabs({
   view,
   model,
-  initialTab,
   insightsEnabled,
 }: {
   view: RunView;
   model: RunDetailModel;
-  initialTab?: string;
   insightsEnabled: boolean;
 }) {
   const tabs = tabsFor(view);
-  const [tab, setTabState] = useState<RunDetailTab>(
-    tabs.find(([id]) => id === initialTab)?.[0] ?? "diagnosis",
-  );
+  // The address is the only record of the open tab, so a reload, a link and back/forward
+  // all show the tab the URL names; an unknown or unsupported tab opens Diagnosis.
+  const requested = useSearchParams().get("tab");
+  const tab = tabs.find(([id]) => id === requested)?.[0] ?? "diagnosis";
   function setTab(next: string) {
     const match = tabs.find(([id]) => id === next);
     if (!match) return;
-    setTabState(match[0]);
-    // Keep the tab in the address so a link opens the same view without a server round trip.
     const url = new URL(window.location.href);
     url.searchParams.set("tab", match[0]);
+    // A null state lets Next update useSearchParams (and so `tab`) without a server
+    // round trip; passing history.state would mark the call as Next's own and skip that.
     window.history.replaceState(null, "", url);
   }
 

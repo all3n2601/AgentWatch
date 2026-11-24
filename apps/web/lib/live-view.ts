@@ -64,3 +64,31 @@ export type LiveRunView = {
   otherRunRecords: number;
   lastObservedAt: string | null;
 };
+
+/** Step ids named in the "not on the chart" note before the rest are only counted. */
+export const NOT_CHARTED_SHOWN = 20;
+
+/**
+ * Lookups the live timeline needs for every row, built once per snapshot so a run with
+ * thousands of steps is not searched again for each row on every poll.
+ */
+export function liveTimelineSteps<S extends Pick<LiveStep, "stepId" | "state">>(
+  steps: readonly S[],
+  chartedIds: readonly string[],
+) {
+  const byId = new Map(steps.map((step) => [step.stepId, step]));
+  const charted = new Set(chartedIds);
+  const notCharted = steps.filter((step) => !charted.has(step.stepId));
+  const fallback =
+    steps.find((step) => step.state === "running") ?? steps.at(-1);
+  return {
+    stateById: new Map(steps.map((step) => [step.stepId, step.state])),
+    /** The chosen step, or while there is none, the running step, then the last. */
+    select: (stepId: string | null): S | undefined =>
+      (stepId === null ? undefined : byId.get(stepId)) ?? fallback,
+    notCharted: {
+      shown: notCharted.slice(0, NOT_CHARTED_SHOWN).map((step) => step.stepId),
+      more: Math.max(0, notCharted.length - NOT_CHARTED_SHOWN),
+    },
+  };
+}

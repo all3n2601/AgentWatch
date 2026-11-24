@@ -334,6 +334,118 @@ export function parseRunsQuery(
     : { query, liveBefore: null, liveBeforeError: "Invalid live run cursor." };
 }
 
+/**
+ * What the viewer chose on the Runs page, kept in the URL so a refresh, a shared link or
+ * the older/newest live-run links reopen the same filters, page, preview and comparison.
+ * `page` is zero-based here and one-based in the URL.
+ */
+export type RunsSelection = {
+  filters: RunsPageFilters;
+  page: number;
+  previewKey: string | null;
+  compareKeys: string[];
+};
+
+/** The URL parameters a selection occupies; `liveBefore` and `view` belong to others. */
+const SELECTION_PARAMS = [
+  "q",
+  "source",
+  "state",
+  "kind",
+  "resource",
+  "page",
+  "preview",
+  "compare",
+] as const;
+type SelectionParam = (typeof SELECTION_PARAMS)[number];
+
+const SOURCES = ["all", "live", "saved"] as const;
+const GROUPS = ["all", "in_progress", "done", "needs_attention"] as const;
+/** Kind and resource names are short identifiers; anything else is not ours. */
+const FILTER_VALUE = /^[\w.:-]{1,64}$/;
+/** A row key: the store, then the run id (live and saved ids may coincide). */
+const ROW_KEY = /^(live|saved):[\w.-]{1,128}$/;
+/** Far above any loaded history; bounds what a hand-edited URL can ask for. */
+const MAX_PAGE = 100_000;
+
+const oneOf = <T extends string>(options: readonly T[], value?: string) =>
+  options.find((option) => option === value);
+
+/** The selection named in the URL; each invalid value falls back to its default. */
+export function parseRunsSelection(
+  params: Record<string, string | string[] | undefined>,
+): RunsSelection {
+  const kind = first(params.kind);
+  const resource = first(params.resource);
+  const page = Number(first(params.page));
+  const preview = first(params.preview);
+  const compare = (first(params.compare) ?? "")
+    .split(",")
+    .filter((key) => ROW_KEY.test(key));
+  return {
+    filters: {
+      query: (first(params.q) ?? "").slice(0, MAX_QUERY_LENGTH),
+      source: oneOf(SOURCES, first(params.source)) ?? "all",
+      group: oneOf(GROUPS, first(params.state)) ?? "all",
+      kind: kind && FILTER_VALUE.test(kind) ? kind : "all",
+      resource: resource && FILTER_VALUE.test(resource) ? resource : "all",
+    },
+    page:
+      Number.isSafeInteger(page) && page >= 1 && page <= MAX_PAGE
+        ? page - 1
+        : 0,
+    previewKey: preview && ROW_KEY.test(preview) ? preview : null,
+    compareKeys: [...new Set(compare)].slice(0, 2),
+  };
+}
+
+/** The URL parameters for a selection, leaving out every default value. */
+export function runsSelectionQuery(
+  selection: RunsSelection,
+): Partial<Record<SelectionParam, string>> {
+  const { filters, page, previewKey, compareKeys } = selection;
+  const query: Partial<Record<SelectionParam, string>> = {};
+  if (filters.query.trim()) query.q = filters.query;
+  if (filters.source !== "all") query.source = filters.source;
+  if (filters.group !== "all") query.state = filters.group;
+  if (filters.kind !== "all") query.kind = filters.kind;
+  if (filters.resource !== "all") query.resource = filters.resource;
+  if (page > 0) query.page = String(page + 1);
+  if (previewKey) query.preview = previewKey;
+  if (compareKeys.length > 0) query.compare = compareKeys.join(",");
+  return query;
+}
+
+/**
+ * Replaces the selection's parameters on `url` with those in `query` (as built by
+ * `runsSelectionQuery`), keeping every other parameter.
+ */
+export function writeRunsQuery(url: URL, query: URLSearchParams) {
+  for (const param of SELECTION_PARAMS) {
+    url.searchParams.delete(param);
+    const value = query.get(param);
+    if (value !== null) url.searchParams.set(param, value);
+  }
+}
+
+/**
+ * Drops a kind or resource filter that no loaded run offers (a stale link), so the menus
+ * never show a value they cannot list.
+ */
+export function keepOfferedFilters(
+  filters: RunsPageFilters,
+  options: ReturnType<typeof filterOptions>,
+): RunsPageFilters {
+  const resourceOffered =
+    options.resources.includes(filters.resource) ||
+    (filters.resource === UNATTRIBUTED && options.unattributed);
+  return {
+    ...filters,
+    kind: options.kinds.includes(filters.kind) ? filters.kind : "all",
+    resource: resourceOffered ? filters.resource : "all",
+  };
+}
+
 /** Tabs of the Runs page, kept in `?view=`; the first is the default. */
 export const RUNS_VIEWS = ["all", "compare"] as const;
 export type RunsView = (typeof RUNS_VIEWS)[number];

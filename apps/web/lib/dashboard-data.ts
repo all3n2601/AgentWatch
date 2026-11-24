@@ -73,5 +73,9 @@ export function aggregate(runs: Experiment[]) {
         : null,
   };
 }
+/**
+ * A saved run's evidence file. History runs are read by UUID; a local artifact names the
+ * run the page showed, so the route refuses it if the files have since been rewritten.
+ */
 export const evidenceUrl = (run: Experiment, file = "results.json") =>
-  `/api/experiments/${run.kind}/artifact?file=${file}${run.persisted ? `&run_id=${run.run_id}` : ""}`;
+  `/api/experiments/${run.kind}/artifact?file=${file}&${run.persisted ? "run_id" : "local_run_id"}=${encodeURIComponent(run.run_id)}`;

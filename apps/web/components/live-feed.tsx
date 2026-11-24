@@ -2,6 +2,7 @@
 import { routes } from "@/lib/routes";
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   Activity,
   CircleAlert,
@@ -55,6 +56,7 @@ import {
 } from "@/components/widgets/signal-chart";
 import { formatSignal } from "@/lib/signal-format";
 import { duration } from "@/lib/dashboard-data";
+import { formatQuantity } from "@/lib/measurement-format";
 import { isLiveRunId } from "@/lib/live-api";
 import {
   liveRunSummaries,
@@ -72,7 +74,7 @@ import {
   type RunListFeed,
 } from "@/lib/live-poll";
 import { wallSecondsInto, wallTimeline } from "@/lib/run-timeline";
-import type { StepState } from "@/lib/live-view";
+import { liveTimelineSteps, type StepState } from "@/lib/live-view";
 import type { Tone } from "@/lib/tone";
 import { cn } from "@/lib/utils";
 
@@ -308,14 +310,23 @@ export function LiveTimelineView({ run }: { run: LiveFeedRun }) {
   const timeline = useMemo(() => wallTimeline(run.wallSteps), [run.wallSteps]);
   const steps = run.view.steps;
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected =
-    steps.find((step) => step.stepId === selectedId) ??
-    steps.find((step) => step.state === "running") ??
-    steps.at(-1);
-  const charted = new Set(timeline?.rows.map((row) => row.step.stepId));
-  const notStarted = steps.filter((step) => !charted.has(step.stepId));
-  const stateOf = (stepId: string) =>
-    steps.find((step) => step.stepId === stepId)?.state ?? null;
+  const lookup = useMemo(
+    () =>
+      liveTimelineSteps(
+        steps,
+        timeline?.rows.map((row) => row.step.stepId) ?? [],
+      ),
+    [steps, timeline],
+  );
+  const selected = lookup.select(selectedId);
+  const chartRows = useMemo(
+    () =>
+      timeline?.rows.map((row) =>
+        stepRow(row, lookup.stateById.get(row.step.stepId) ?? null),
+      ) ?? [],
+    [timeline, lookup],
+  );
+  const { notCharted } = lookup;
 
   return (
     <div className={cn(TAB_GRID, WIDE_MAIN, "fit:h-full")}>
@@ -338,9 +349,7 @@ export function LiveTimelineView({ run }: { run: LiveFeedRun }) {
         <div className={PANEL_SCROLL}>
           {timeline ? (
             <TimelineChart
-              rows={timeline.rows.map((row) =>
-                stepRow(row, stateOf(row.step.stepId)),
-              )}
+              rows={chartRows}
               ticks={timeline.ticks}
               label="Step timeline"
               selectedId={selected?.stepId}
@@ -352,10 +361,12 @@ export function LiveTimelineView({ run }: { run: LiveFeedRun }) {
               detail="Steps appear here once the producer reports them running."
             />
           )}
-          {notStarted.length > 0 && (
+          {notCharted.shown.length > 0 && (
             <p className="mt-3 px-3 text-sm text-ink-muted [overflow-wrap:anywhere]">
               Not on the chart (no running event yet):{" "}
-              {notStarted.map((step) => step.stepId).join(", ")}
+              {notCharted.shown.join(", ")}
+              {notCharted.more > 0 &&
+                ` and ${formatQuantity(notCharted.more, "count")} more`}
             </p>
           )}
         </div>
@@ -810,12 +821,19 @@ function RunList({
 
 function SelectedRun({ runId }: { runId: string }) {
   const live = useLiveRun(runId);
+  // TabbedView records the tab in `?tab=` but reads it only from this prop, so a reload or
+  // back/forward reopens the tab the address names.
+  const requestedTab = useSearchParams().get("tab") ?? undefined;
   const tabs = liveRunTabs(live);
   const state = live.run?.run?.state ?? null;
   return (
     <TabbedView
+      // Until the run has data only Status exists; remount once the tabs arrive so the
+      // requested tab can open.
+      key={tabs ? "tabs" : "waiting"}
       label="Live run views"
       param="tab"
+      initialTab={requestedTab}
       header={
         <div className="flex flex-wrap items-center gap-2">
           <CopyChip value={runId} label="run ID" />

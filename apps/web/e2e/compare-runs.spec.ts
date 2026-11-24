@@ -1,9 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
+  registerRun,
   registerSavedRun,
   resetFixtureApi,
   takeSavedHistoryDown,
 } from "./fixture-control";
+import { fixtureRun, newRunId, snapshot } from "./live-runs";
 import { newSavedRunId, savedRun } from "./saved-runs";
 
 // The Compare page shows exactly the saved runs named by UUID in the URL, never substitutes
@@ -310,4 +312,63 @@ test("unavailable history is reported, not shown as an empty comparison", async 
   await page.goto(`/compare?run=${candidate}&baseline=${baseline}`);
   await expect(page.getByText(/could not be loaded/).first()).toBeVisible();
   await expect(page.getByText(/Total step time/)).toHaveCount(0);
+});
+
+test("the Runs selection keeps at most two saved runs and can be cleared", async ({
+  page,
+  request,
+}) => {
+  const { baseline, candidate, newest } = await pair(request);
+  const live = newRunId();
+  await registerRun(request, fixtureRun(live, [snapshot(live, {})]));
+  await page.goto("/runs");
+  const box = (id: string) =>
+    page.getByRole("checkbox", { name: new RegExp(id.slice(0, 8)) });
+  // Live runs have no saved timings, so they offer no comparison tick.
+  await expect(
+    page.getByRole("button", { name: `(run ${live})` }),
+  ).toBeVisible();
+  await expect(box(live)).toHaveCount(0);
+
+  await box(baseline).check();
+  await box(candidate).check();
+  await expect(box(newest)).toBeDisabled();
+  const selectionTab = page.getByRole("tab", { name: /Compare selection/ });
+  await expect(selectionTab).toContainText("2 of 2");
+
+  await page.getByRole("button", { name: "Clear selection" }).first().click();
+  await expect(box(baseline)).not.toBeChecked();
+  await expect(box(newest)).toBeEnabled();
+  await expect(selectionTab).toContainText("0 of 2");
+  await expect(page).not.toHaveURL(/compare=/);
+});
+
+test("a run page's Compare button opens Compare with that run as the candidate", async ({
+  page,
+  request,
+}) => {
+  const { candidate } = await pair(request);
+  await page.goto(`/runs/${candidate}`);
+  await page
+    .getByRole("main")
+    .getByRole("link", { name: "Compare", exact: true })
+    .click();
+  await expect(page).toHaveURL(new RegExp(`/compare\\?run=${candidate}$`));
+  await expect(runId(page, "Candidate", candidate)).toBeVisible();
+});
+
+test("swapping exchanges the baseline and candidate in the address", async ({
+  page,
+  request,
+}) => {
+  const { baseline, candidate } = await pair(request);
+  await page.goto(`/compare?run=${candidate}&baseline=${baseline}`);
+  await page
+    .getByRole("button", { name: "Swap baseline and candidate" })
+    .click();
+  await expect(page).toHaveURL(
+    new RegExp(`/compare\\?run=${baseline}&baseline=${candidate}`),
+  );
+  await expect(runId(page, "Candidate", baseline)).toBeVisible();
+  await expect(runId(page, "Baseline", candidate)).toBeVisible();
 });

@@ -45,8 +45,20 @@ const withQuery = (path: string, query: Record<string, string | undefined>) => {
 export const routes = {
   section: (section: Section): Route => SECTION_PATHS[section],
   overview: (model?: string) => withQuery("/", { model }),
-  runs: (query: { q?: string; liveBefore?: string } = {}) =>
-    withQuery("/runs", query),
+  /** The Runs page; besides `liveBefore`, keys are the selection (lib/runs-page.ts). */
+  runs: (
+    query: {
+      q?: string;
+      liveBefore?: string;
+      source?: string;
+      state?: string;
+      kind?: string;
+      resource?: string;
+      page?: string;
+      preview?: string;
+      compare?: string;
+    } = {},
+  ) => withQuery("/runs", query),
   run: (runId: string, tab?: RunTab) =>
     withQuery(`/runs/${encodeURIComponent(runId)}`, { tab }),
   compare: (run?: string, baseline?: string) =>

@@ -4,6 +4,28 @@ import path from "node:path";
 import { z } from "zod";
 import { experimentSchema, type DashboardData } from "./experiment-schema";
 
+/** Run ids are UUIDs in both run history and the worker's local artifacts. */
+export const isRunId = (value: string) => z.uuid().safeParse(value).success;
+
+/**
+ * The run id in a kind's local `results.json`, or null when it cannot be read. The demo
+ * writes spans and samples beside it in one run, so this identifies all three files.
+ */
+export async function localArtifactRunId(kind: string): Promise<string | null> {
+  try {
+    const content = await readFile(
+      path.join(dataDirectory(), `${kind}-demo`, "results.json"),
+      "utf8",
+    );
+    const parsed = z
+      .object({ run_id: z.string() })
+      .safeParse(JSON.parse(content));
+    return parsed.success ? parsed.data.run_id : null;
+  } catch {
+    return null;
+  }
+}
+
 export function dataDirectory() {
   return (
     process.env.AGENTWATCH_DATA_DIR ||
@@ -88,7 +110,7 @@ export async function loadRequestedRuns(
     [...new Set(ids.filter((id): id is string => !!id))].map(async (id) => {
       if (data.experiments.some((run) => run.run_id === id)) return;
       try {
-        if (!z.uuid().safeParse(id).success) throw new Error("Invalid run ID");
+        if (!isRunId(id)) throw new Error("Invalid run ID");
         const response = await fetch(`${apiUrl()}/v1/runs/${id}`, {
           cache: "no-store",
           signal: AbortSignal.timeout(3000),
