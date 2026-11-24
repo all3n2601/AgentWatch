@@ -285,9 +285,16 @@ These can be completed before adding an agent.
   - `attempts/redaction.json`: `60f751fa8dc14c9402d32445d6dfd42594d5aa8d0c81d6b932984d9a468a345f`
 
   The host label names a person; later runs use a neutral label (the O06 pilot used
-  `rtx5070-laptop-wsl2`). The verdicts were judged under `opt-contract-v1`; once
-  `opt-contract-v2` is in force they must be re-judged from these attempt files before the
-  optimization gates can use them.
+  `rtx5070-laptop-wsl2`). The verdicts were judged under `opt-contract-v1`.
+  2026-11-23 re-judged under `opt-contract-v2` (`8e9bba65`, main `71bf0c7`) from the four attempt
+  files above, unchanged (hashes re-checked), with `overhead-verdict` and host label
+  `rtx5070-laptop-wsl2`, the label O06 manifests use, so the optimization gates can match it.
+  No new measurement. Verdicts unchanged: GPU vLLM `within_budget`, GPU Ollama `inconclusive`,
+  with every figure identical. Only the contract stamp, the host label and the per-group
+  `budget` (0.05, as in v1) differ, plus one reason now reads "Baseline coefficient of
+  variation". The new reports are not in the repository; SHA-256:
+  - `ollama-gpu/overhead-verdict.json`: `d694049117c88ef5b997a461c6d024d9c71e4907855b27a9ded211e34d7e60d7`
+  - `vllm-gpu/overhead-verdict.json`: `8d1b8a93d44abd049287590436329871d8a73f9c2d3bc40dda08fc9317b937be`
   **Protocol deviation:** display apps shared the measured GPU in all four attempts (WSL2
   laptop; the protocol requires nothing else on it during an attempt), so both GPU verdicts
   carry this limitation and are not clean-condition results. Open: CPU container attempts
@@ -1376,6 +1383,70 @@ from M3 through M6 and do not renumber the implementation milestones above.
   doubles only: `services/agent/tests/test_admission_overhead.py`,
   `tests/contract/test_admission_overhead_attempts.py` (the verdict reads a saved measurement)
   and `pipelines/data/tests/test_overhead_verdict.py`. No hardware measurement yet.
+  2026-11-24 GPU measurement (Benoy, RTX 5070 Laptop/WSL2, host label `rtx5070-laptop-wsl2`):
+  `within_budget` under `opt-contract-v2` (`8e9bba65`). vLLM `Qwen/Qwen3-1.7B@70d244cc86cc`
+  (`max_num_seqs` 2, `gpu_memory_utilization` 0.6), task `fix-mean-empty`, the candidates'
+  policy set (`inference_requests` 1 on vLLM, enforced, policy version 14 for both attempts),
+  1 s poll. Two attempts of 3 warm-ups and 30 pairs, 22 tokens and one reply digest in every
+  request:
+  - attempt 1: median −1.54% [−2.66%, −0.20%], baseline CV 0.027, 6 of 30 requests overlapped a
+    poll;
+  - attempt 2: median −1.58% [−4.88%, +1.19%], baseline CV 0.034, 11 of 30 overlapped a poll.
+
+  Admission cannot make a request faster; the negative medians are most likely the recorded
+  ABAB order (`admission_off` always runs first), so this shows no measurable overhead, not a
+  speed-up. The policy was restored to no limits afterwards (version 15).
+  Two earlier attempts the same session were lost unsaved: the command wrote its report into a
+  directory nothing had created (`FileNotFoundError`). Their results were never seen; the
+  measurement was repeated after the fix in this PR (commit `4f2b761`, which changes only that
+  directory creation), and the lost attempts' remaining files are kept with the evidence.
+  Display apps (browsers) stayed open on the measured GPU, as in A07. Reports are not in the
+  repository; SHA-256:
+  - `attempt-1/…-0117df/admission-overhead.json`: `3e638f3bd5dd9bceb98407fdbe825360cd10a2880e6ec748c79a82081839fada`
+  - `attempt-2/…-59606a/admission-overhead.json`: `7606f7e6e47a9a935430994d0139322444b1df4cec4b07b9b43da3257e566614`
+  - `verdict/overhead-verdict.json`: `bc8fc5c595c9abd3fd04ba6de5c6c3e601188337c072708b4a18ac7c16b53536`
+  2026-11-22 batch runner (branch `test/optimization-evaluation`,
+  [running an optimization experiment](optimization-run.md)): `make optimization-plan` prints
+  the manifest blocks this host preregisters (task configuration digests, queue bounds, and the
+  measured model, hardware, power and fixture state); `make optimization-run` derives the
+  schedule and runs its slots in order, applying and reading back each batch's policy,
+  submitting tasks at the preregistered offsets in one runner process, running the contended
+  condition's injectors and writing one `opt-batch-v1` record per attempted batch. Records are
+  never overwritten, any batch that does not complete stops the experiment, and the baseline is
+  restored and read back on every exit. A host that no longer matches the manifest stops before
+  the batch is attempted. `AgentRunner.configuration_digest()` gives the digest before a run.
+  Verified at that point with test doubles only: `services/agent/tests/test_optimization_run.py`,
+  `test_host_identity.py`, and `tests/contract/test_optimization_batch_records.py`, whose
+  records the O04 checker accepts for both conditions (it found that a pre-run digest omitted
+  the task's tools). The hardware pilot below came later; gate evaluation is a separate PR.
+  2026-11-22 development pilot on the GPU laptop (runner `fde030f`, vLLM `max_num_seqs` 2,
+  [results](optimization-run.md#development-pilot-2026-11-22)): two development manifests
+  (`fix-mean-empty-r1`, `fix-median-even-r1`; candidates `inference-1`, `tests-1`; prefill flood
+  at concurrency 2), each stopped after 7 records; 14 batches completed with every run passing,
+  policies enforced and restored, no starvation or leaks. Contended baseline batches took
+  14.8–15.0 s and `inference-1` batches 22.3–22.4 s; clean batches 7.2–7.5 s for every
+  configuration. Development evidence only, never compared. It also showed that
+  `optimization-run` takes queue bounds from the manifest only, so the run's documented flags
+  were corrected. The evaluation keeps this design and waits for contract acceptance.
+  2026-11-22 review fix: a batch interrupted after submission (sleep, WSL shutdown, kill) is
+  no longer rerun into the same run directories on resume. An attempt marker written before
+  submission lets the next run record it as `failed` from what it left, an error after
+  submission also gives a `failed` record, and finish ticks come only from the run's own
+  journal records. A Ctrl+C during the pre-batch wait now leaves the next slot unattempted
+  and runnable (the waits wake on the cancel), and a batch that cannot be prepared after its
+  policy is applied gets a `not_started` record. Regression tests in `test_optimization_run.py`,
+  `test_optimization_host.py` (waits, model identities, injectors, command refusals) and the
+  O04 contract test.
+  2026-11-22 gate evaluation (branch `feature/optimization-gates`,
+  [optimization gates](optimization-gates.md)): `make optimization-gates` recomputes the
+  comparison and judges every contract gate per condition and candidate from the contract's
+  `[gates]` table (same file, checked by hash), including baseline stability from each
+  baseline run's root step and the A07 overhead verdict for the experiment's model. Zero-tolerance
+  failures decide a candidate on any sample; otherwise insufficient evidence or an unstable
+  baseline is inconclusive. Nothing is promoted while the contract is proposed. Admission
+  overhead comes from an `admission-overhead-v1` verdict (`ADMISSION_VERDICT`); without one it
+  is not evaluated and no candidate can pass. Verified on synthetic experiments only:
+  `pipelines/data/tests/test_optimization_gates.py`.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.
