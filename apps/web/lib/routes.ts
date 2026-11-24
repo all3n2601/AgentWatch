@@ -1,4 +1,5 @@
 import type { Route } from "next";
+import type { SelectionParam } from "./runs-page";
 
 /**
  * Every page URL the app links to, in one place. Literal paths are checked by
@@ -36,6 +37,11 @@ export const SECTION_PATHS = {
 
 export type Section = keyof typeof SECTION_PATHS;
 
+/** Query parameters of the Runs page link; typed from the selection so they cannot drift. */
+export type RunsQueryParams = Partial<Record<SelectionParam, string>> & {
+  liveBefore?: string;
+};
+
 const withQuery = (path: string, query: Record<string, string | undefined>) => {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query))
@@ -47,8 +53,8 @@ const withQuery = (path: string, query: Record<string, string | undefined>) => {
 export const routes = {
   section: (section: Section): Route => SECTION_PATHS[section],
   overview: (model?: string) => withQuery("/", { model }),
-  runs: (query: { q?: string; liveBefore?: string } = {}) =>
-    withQuery("/runs", query),
+  /** The Runs page: its selection parameters (lib/runs-page.ts) and live-run cursor. */
+  runs: (query: RunsQueryParams = {}) => withQuery("/runs", query),
   run: (runId: string, tab?: RunTab) =>
     withQuery(`/runs/${encodeURIComponent(runId)}`, { tab }),
   compare: (run?: string, baseline?: string) =>

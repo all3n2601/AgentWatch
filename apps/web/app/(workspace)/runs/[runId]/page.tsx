@@ -15,16 +15,16 @@ export async function generateMetadata({
   return { title: `Run ${runId.slice(0, 8)}` };
 }
 
-/** One run's page, whichever store holds it. An unknown UUID is a 404; no other run is shown. */
+/**
+ * One run's page, whichever store holds it. An unknown UUID is a 404; no other run is shown.
+ * The open tab (`?tab=`) is read by the tabs themselves.
+ */
 export default async function RunRoute({
   params,
-  searchParams,
 }: {
   params: Promise<{ runId: string }>;
-  searchParams: Promise<{ tab?: string }>;
 }) {
   const { runId } = await params;
-  const { tab } = await searchParams;
   const loaded = await loadRunView(runId);
   if (!loaded) notFound();
   return (
@@ -32,7 +32,6 @@ export default async function RunRoute({
       key={runId}
       view={loaded.view}
       data={loaded.data}
-      initialTab={tab}
       insightsEnabled={insightConfig(process.env) !== null}
     />
   );

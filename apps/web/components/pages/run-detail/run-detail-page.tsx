@@ -18,12 +18,10 @@ function sourceLabel(view: RunView, data: DashboardData): string {
 export function RunDetailPage({
   view,
   data,
-  initialTab,
   insightsEnabled,
 }: {
   view: RunView;
   data: DashboardData;
-  initialTab?: string;
   /** Whether the server has an AI endpoint configured (summary and assistant). */
   insightsEnabled: boolean;
 }) {
@@ -61,12 +59,7 @@ export function RunDetailPage({
             className="fit:shrink-0"
           />
         )}
-        <RunTabs
-          view={view}
-          model={model}
-          initialTab={initialTab}
-          insightsEnabled={insightsEnabled}
-        />
+        <RunTabs view={view} model={model} insightsEnabled={insightsEnabled} />
       </div>
     </WorkspacePage>
   );

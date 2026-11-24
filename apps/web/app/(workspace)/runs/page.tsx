@@ -6,7 +6,11 @@ import {
   RunsPageFrame,
 } from "@/components/pages/runs/runs-page";
 import { insightConfig } from "@/lib/insights";
-import { parseRunsQuery, parseRunsView } from "@/lib/runs-page";
+import {
+  parseRunsQuery,
+  parseRunsSelection,
+  parseRunsView,
+} from "@/lib/runs-page";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
@@ -29,7 +33,11 @@ export default async function Page({
         key={`${query.liveBefore ?? "newest"}:${query.query}`}
         fallback={<RunsLoading />}
       >
-        <RunsData query={query} initialView={parseRunsView(params)} />
+        <RunsData
+          query={query}
+          initialSelection={parseRunsSelection(params)}
+          initialView={parseRunsView(params)}
+        />
       </Suspense>
     </RunsPageFrame>
   );

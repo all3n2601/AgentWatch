@@ -7,11 +7,15 @@ import {
   DEFAULT_FILTERS,
   filterOptions,
   filterRows,
+  filterMenu,
   liveRow,
   mergeOlderSaved,
   parseOlderSaved,
   parseRunsQuery,
+  parseRunsSelection,
   parseRunsView,
+  runsSelectionQuery,
+  writeRunsQuery,
   savedRow,
   summarizeRows,
   toggleCompare,
@@ -327,4 +331,139 @@ test("older saved pages are validated and merged without duplicates", () => {
       ["saved:a", "saved:b"],
     );
   }
+});
+
+const SAVED_KEY = "saved:127d9be5-079e-4122-96fb-d5995bf71752";
+const LIVE_KEY = "live:0b9e1f52-5c1d-4a4e-9d55-4c0f6a0f3a11";
+
+test("the selection is read from the URL and invalid values fall back to the defaults", () => {
+  assert.deepEqual(parseRunsSelection({}), {
+    filters: DEFAULT_FILTERS,
+    page: 0,
+    previewKey: null,
+    compareKeys: [],
+  });
+  assert.deepEqual(
+    parseRunsSelection({
+      q: "fix",
+      source: "saved",
+      state: "needs_attention",
+      kind: "coding",
+      resource: UNATTRIBUTED,
+      page: "3",
+      preview: SAVED_KEY,
+      compare: `${SAVED_KEY},${LIVE_KEY}`,
+    }),
+    {
+      filters: {
+        query: "fix",
+        source: "saved",
+        group: "needs_attention",
+        kind: "coding",
+        resource: UNATTRIBUTED,
+      },
+      page: 2,
+      previewKey: SAVED_KEY,
+      compareKeys: [SAVED_KEY, LIVE_KEY],
+    },
+  );
+  const bad = parseRunsSelection({
+    source: "both",
+    state: "Done",
+    kind: "<script>",
+    resource: "x".repeat(65),
+    page: "0",
+    preview: "saved:a b",
+    compare: `${SAVED_KEY},${SAVED_KEY},bogus,${LIVE_KEY},live:third`,
+  });
+  assert.deepEqual(bad.filters, DEFAULT_FILTERS);
+  assert.equal(bad.previewKey, null);
+  assert.equal(bad.page, 0);
+  // Duplicates and malformed keys are dropped; at most two runs are kept.
+  assert.deepEqual(bad.compareKeys, [SAVED_KEY, LIVE_KEY]);
+  for (const page of ["-1", "1.5", "abc", "100001"])
+    assert.equal(parseRunsSelection({ page }).page, 0);
+});
+
+test("only non-default selection values are written, and they read back unchanged", () => {
+  assert.deepEqual(
+    runsSelectionQuery({
+      filters: DEFAULT_FILTERS,
+      page: 0,
+      previewKey: null,
+      compareKeys: [],
+    }),
+    {},
+  );
+  const selection = {
+    filters: {
+      query: "fix window",
+      source: "live" as const,
+      group: "done" as const,
+      kind: "coding",
+      resource: "cpu_sandbox",
+    },
+    page: 4,
+    previewKey: LIVE_KEY,
+    compareKeys: [SAVED_KEY, LIVE_KEY],
+  };
+  const query = runsSelectionQuery(selection);
+  assert.deepEqual(query, {
+    q: "fix window",
+    source: "live",
+    state: "done",
+    kind: "coding",
+    resource: "cpu_sandbox",
+    page: "5",
+    preview: LIVE_KEY,
+    compare: `${SAVED_KEY},${LIVE_KEY}`,
+  });
+  assert.deepEqual(parseRunsSelection(query), selection);
+});
+
+test("writing the selection keeps unrelated parameters and clears defaults", () => {
+  const url = new URL(
+    "http://local/runs?view=compare&liveBefore=40&source=saved&page=3&q=old",
+  );
+  const selection = {
+    filters: { ...DEFAULT_FILTERS, kind: "cpu" },
+    page: 0,
+    previewKey: null,
+    compareKeys: [],
+  };
+  writeRunsQuery(url, new URLSearchParams(runsSelectionQuery(selection)));
+  assert.equal(url.search, "?view=compare&liveBefore=40&kind=cpu");
+});
+
+test("a filter value no loaded run offers stays in the menu, marked as not loaded", () => {
+  // A shared link may name a kind that only older, not yet loaded, history has.
+  assert.deepEqual(filterMenu(["coding"], "cpu"), [
+    { value: "coding", loaded: true },
+    { value: "cpu", loaded: false },
+  ]);
+  assert.deepEqual(filterMenu(["coding", "cpu"], "cpu"), [
+    { value: "coding", loaded: true },
+    { value: "cpu", loaded: true },
+  ]);
+  assert.deepEqual(filterMenu(["coding"], "all"), [
+    { value: "coding", loaded: true },
+  ]);
+  assert.deepEqual(filterMenu([], UNATTRIBUTED), [
+    { value: UNATTRIBUTED, loaded: false },
+  ]);
+});
+
+test("evidence links name the run, whether it is in history or a local artifact", () => {
+  const id = "127d9be5-079e-4122-96fb-d5995bf71752";
+  const saved = savedRow(experiment(id, 1_000)).evidence;
+  assert.equal(
+    saved?.evidenceHref,
+    `/api/experiments/coding/artifact?file=results.json&run_id=${id}`,
+  );
+  // A local artifact is bound to the run the page showed, never "whatever is on disk now".
+  const local = savedRow(experiment(id, 1_000, { persisted: false })).evidence;
+  assert.equal(
+    local?.evidenceHref,
+    `/api/experiments/coding/artifact?file=results.json&local_run_id=${id}`,
+  );
 });
