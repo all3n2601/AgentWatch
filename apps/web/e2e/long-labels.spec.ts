@@ -53,11 +53,11 @@ async function seedLongLabels(request: Parameters<typeof registerRun>[0]) {
     [baseline, 1],
     [candidate, 2],
   ] as const) {
-    const saved = savedRun(id, { sequence, model: LONG_MODEL });
-    saved.result.experiment = {
-      ...(saved.result.experiment as Record<string, unknown>),
+    const saved = savedRun(id, {
+      sequence,
+      model: LONG_MODEL,
       workload: LONG_WORKLOAD,
-    };
+    });
     await registerSavedRun(request, saved);
   }
   return { live, baseline, candidate };
