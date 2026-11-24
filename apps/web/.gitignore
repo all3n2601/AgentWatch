@@ -1,3 +1,5 @@
 # Playwright output
 test-results/
 playwright-report/
+# F04 browser evidence (screenshots, INDEX.md, HTML report)
+f04-evidence/

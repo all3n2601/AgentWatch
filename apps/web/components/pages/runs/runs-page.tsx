@@ -6,7 +6,12 @@ import { PageHeader } from "@/components/shell/page-header";
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { Skeleton } from "@/components/widgets/state-views";
 import { formatQuantity } from "@/lib/measurement-format";
-import type { RunsPageData, RunsQuery, RunsView } from "@/lib/runs-page";
+import type {
+  RunsPageData,
+  RunsQuery,
+  RunsSelection,
+  RunsView,
+} from "@/lib/runs-page";
 import { loadRunsPage } from "@/lib/runs-page-load";
 import { RunsBrowser } from "./runs-browser";
 
@@ -58,16 +63,18 @@ export function RunsPageFrame({
 /** Reads both run stores, then hands serializable rows to the client browser. */
 export async function RunsData({
   query,
+  initialSelection,
   initialView,
 }: {
   query: RunsQuery;
+  initialSelection: RunsSelection;
   initialView: RunsView;
 }) {
   const data = await loadRunsPage(query);
   return (
     <RunsBrowser
       data={data}
-      initialQuery={query.query}
+      initialSelection={initialSelection}
       initialView={initialView}
       header={<PageHeader title={TITLE} scope={scopeLine(data)} />}
     />

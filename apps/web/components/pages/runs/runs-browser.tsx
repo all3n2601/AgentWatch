@@ -31,17 +31,22 @@ import {
   byNewestRow,
   DEFAULT_FILTERS,
   filterOptions,
+  filterMenu,
   filterRows,
   MAX_QUERY_LENGTH,
   mergeOlderSaved,
   parseOlderSaved,
   RUNS_PAGE_SIZE,
+  runsSelectionQuery,
   summarizeRows,
   toggleCompare,
   UNATTRIBUTED,
+  type FilterMenuValue,
   type RunsPageData,
   type RunsPageFilters,
+  type RunsSelection,
   type RunsView,
+  writeRunsQuery,
 } from "@/lib/runs-page";
 import type { RunSource, StateGroup } from "@/lib/unified-runs";
 import {
@@ -74,6 +79,12 @@ const STATE_OPTIONS: { value: StateGroup | "all"; label: string }[] = [
   { value: "needs_attention", label: "Needs attention" },
 ];
 
+/** A kind or resource menu entry; a value no loaded run has yet says so. */
+function menuOption({ value, loaded }: FilterMenuValue) {
+  const label = value === UNATTRIBUTED ? "None attributed" : displayName(value);
+  return { value, label: loaded ? label : `${label} (not in loaded runs)` };
+}
+
 function isSource(value: string): value is RunSource | "all" {
   return SOURCE_OPTIONS.some((option) => option.value === value);
 }
@@ -81,44 +92,62 @@ function isGroup(value: string): value is StateGroup | "all" {
   return STATE_OPTIONS.some((option) => option.value === value);
 }
 
-/** Keeps `?q=` in the address bar so a refresh or shared link keeps the search. */
-function replaceQueryParam(query: string) {
-  const url = new URL(window.location.href);
-  if (query.trim()) url.searchParams.set("q", query);
-  else url.searchParams.delete("q");
-  window.history.replaceState(window.history.state, "", url);
+/**
+ * Mirrors the selection into the address bar so a refresh or a shared link reopens it.
+ * `replaceState` adds no history entry; other parameters (`view`, `liveBefore`) are kept.
+ */
+function useSelectionInUrl(selection: RunsSelection) {
+  const search = new URLSearchParams(runsSelectionQuery(selection)).toString();
+  React.useEffect(() => {
+    const url = new URL(window.location.href);
+    writeRunsQuery(url, new URLSearchParams(search));
+    if (url.href !== window.location.href)
+      window.history.replaceState(window.history.state, "", url);
+  }, [search]);
 }
 
 /**
  * The Runs page body: the header, filters and summary above two tabs, the run
  * list with a preview of the selected run, and the runs ticked for
- * comparison. Filters apply to the runs loaded so far. On `fit` screens the
- * page does not scroll; the list and the preview scroll inside their panels.
+ * comparison. Filters apply to the runs loaded so far. The filters, page,
+ * previewed run and ticked runs live in the URL (see `RunsSelection`); values
+ * that no longer match a loaded run fall back to the defaults. On `fit` screens
+ * the page does not scroll; the list and the preview scroll inside their panels.
  */
 export function RunsBrowser({
   data,
-  initialQuery,
+  initialSelection,
   initialView,
   header,
 }: {
   data: RunsPageData;
-  initialQuery: string;
+  /** The selection parsed from the URL on the server. */
+  initialSelection: RunsSelection;
   initialView: RunsView;
   /** Server-rendered page title and scope line. */
   header: React.ReactNode;
 }) {
-  const [filters, setFilters] = React.useState<RunsPageFilters>({
-    ...DEFAULT_FILTERS,
-    query: initialQuery,
-  });
-  const [page, setPage] = React.useState(0);
+  // Rows loaded with the page, to drop ticked runs the URL names that are not loaded.
+  const initialRows = () => [
+    ...data.saved.rows,
+    ...(data.live.status === "ready" ? data.live.rows : []),
+  ];
+  const [filters, setFilters] = React.useState<RunsPageFilters>(
+    initialSelection.filters,
+  );
+  const [page, setPage] = React.useState(initialSelection.page);
   const [saved, setSaved] = React.useState(data.saved.rows);
   const [savedCursor, setSavedCursor] = React.useState(data.saved.nextCursor);
   const [older, setOlder] = React.useState<OlderSavedState>({
     status: "idle",
   });
-  const [previewKey, setPreviewKey] = React.useState<string | null>(null);
-  const [compareKeys, setCompareKeys] = React.useState<string[]>([]);
+  const [previewKey, setPreviewKey] = React.useState(
+    initialSelection.previewKey,
+  );
+  const [compareKeys, setCompareKeys] = React.useState<string[]>(() => {
+    const loaded = new Set(initialRows().map((row) => row.key));
+    return initialSelection.compareKeys.filter((key) => loaded.has(key));
+  });
   const olderRequest = React.useRef<AbortController | null>(null);
   const previewHeading = React.useRef<HTMLHeadingElement>(null);
   const previewId = React.useId();
@@ -144,12 +173,20 @@ export function RunsBrowser({
     current * RUNS_PAGE_SIZE,
     (current + 1) * RUNS_PAGE_SIZE,
   );
-  // A filtered-out selection falls back to the first visible run.
+  // The preview shows only a run on the visible page; otherwise the first one there.
   const previewRow =
-    filtered.find((row) => row.key === previewKey) ?? visible[0];
+    visible.find((row) => row.key === previewKey) ?? visible[0];
   const compareRows = compareKeys.flatMap(
     (key) => rows.find((row) => row.key === key) ?? [],
   );
+
+  const selection: RunsSelection = {
+    filters,
+    page: current,
+    previewKey: previewRow && previewRow.key === previewKey ? previewKey : null,
+    compareKeys,
+  };
+  useSelectionInUrl(selection);
 
   const update = (next: Partial<RunsPageFilters>) => {
     setFilters((old) => ({ ...old, ...next }));
@@ -213,10 +250,12 @@ export function RunsBrowser({
   }
 
   const liveUnavailable = data.live.status === "unavailable";
+  // Another live page holds other rows, so it opens on its first list page.
+  const otherLivePage = runsSelectionQuery({ ...selection, page: 0 });
   const liveNext =
     data.live.status === "ready" && data.live.nextCursor !== null
       ? routes.runs({
-          q: filters.query.trim() || undefined,
+          ...otherLivePage,
           liveBefore: String(data.live.nextCursor),
         })
       : null;
@@ -242,10 +281,7 @@ export function RunsBrowser({
           type="search"
           value={filters.query}
           maxLength={MAX_QUERY_LENGTH}
-          onChange={(event) => {
-            update({ query: event.target.value });
-            replaceQueryParam(event.target.value);
-          }}
+          onChange={(event) => update({ query: event.target.value })}
           placeholder="Search ID, task, workload or model…"
           className="glass-raised h-12 w-full rounded-2xl pr-4 pl-12 text-[15px] text-ink outline-none placeholder:text-ink-subtle focus-visible:ring-[3px] focus-visible:ring-brand/40"
         />
@@ -276,10 +312,7 @@ export function RunsBrowser({
         onValueChange={(kind) => update({ kind })}
         options={[
           { value: "all", label: "All kinds" },
-          ...options.kinds.map((kind) => ({
-            value: kind,
-            label: displayName(kind),
-          })),
+          ...filterMenu(options.kinds, filters.kind).map(menuOption),
         ]}
         className="w-full min-w-0 md:w-auto md:min-w-44 md:flex-none"
       />
@@ -291,13 +324,13 @@ export function RunsBrowser({
         onValueChange={(resource) => update({ resource })}
         options={[
           { value: "all", label: "Any resource" },
-          ...options.resources.map((resource) => ({
-            value: resource,
-            label: displayName(resource),
-          })),
-          ...(options.unattributed
-            ? [{ value: UNATTRIBUTED, label: "None attributed" }]
-            : []),
+          ...filterMenu(
+            [
+              ...options.resources,
+              ...(options.unattributed ? [UNATTRIBUTED] : []),
+            ],
+            filters.resource,
+          ).map(menuOption),
         ]}
         className="w-full min-w-0 md:w-auto md:min-w-44 md:flex-none"
       />
@@ -351,10 +384,7 @@ export function RunsBrowser({
               <Button
                 variant="glass"
                 size="pill"
-                onClick={() => {
-                  update(DEFAULT_FILTERS);
-                  replaceQueryParam("");
-                }}
+                onClick={() => update(DEFAULT_FILTERS)}
               >
                 Clear filters
               </Button>
@@ -394,11 +424,7 @@ export function RunsBrowser({
         <div className="flex flex-wrap items-center gap-2">
           {data.liveBefore !== null && (
             <Button asChild variant="glass" size="pill">
-              <Link
-                href={routes.runs({ q: filters.query.trim() || undefined })}
-              >
-                Newest live runs
-              </Link>
+              <Link href={routes.runs(otherLivePage)}>Newest live runs</Link>
             </Button>
           )}
           {liveNext && (

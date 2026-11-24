@@ -590,3 +590,33 @@ test.describe("checking a completed run for late evidence", () => {
     await expect(page.getByText("Final step totals")).toBeVisible();
   });
 });
+
+test("steps not yet on the timeline are named up to a bound and the rest are counted", async ({
+  page,
+  request,
+}) => {
+  const runId = newRunId();
+  const { running } = runningTool(runId);
+  const waiting = Array.from({ length: 60 }, (_, index) =>
+    stepEvent(`queued-${String(index).padStart(2, "0")}`, 0, "queued", {
+      runId,
+    }),
+  );
+  await registerRun(
+    request,
+    fixtureRun(runId, [
+      // The snapshot reports 60 steps whose events this view has not received, so they
+      // have no wall-clock position on the chart.
+      snapshot(runId, {
+        steps: [running, ...waiting],
+        records: [running],
+      }),
+    ]),
+  );
+  await page.goto(`/live?liveRun=${runId}&tab=timeline`);
+  const note = page.getByText(/Not on the chart \(no running event yet\)/);
+  await expect(note).toContainText("queued-00");
+  await expect(note).toContainText("queued-19");
+  await expect(note).not.toContainText("queued-20");
+  await expect(note).toContainText("and 40 more");
+});
