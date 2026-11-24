@@ -77,19 +77,25 @@ The 5% instrumentation budget was proposed without data and has since been check
 an RTX 5070 laptop under WSL2 (A07, [project checklist](project-checklist.md)): GPU vLLM
 `within_budget` and GPU Ollama `inconclusive` (baseline variability). CPU-container attempts
 are still open, so the value rests on one host and one shared GPU. The O06 admission-overhead
-measurement on the same host was `within_budget` against the 5% admission budget.
+measurement on the same host was `within_budget` against the 5% admission budget. Browsers
+were open during all of these attempts, so under the rule below none of them can support a
+promotion; they stay on record, and the verdicts an evaluation uses are re-measured.
 
 **Shared gate.** The instrumentation budget is the same value as the evaluation contract's
 `max_median_wall_time_increase`, and the contract test requires the two to be equal. Accepting
 this contract does not accept the evaluation contract, which has its own acceptance; changing
 either value needs a new version of both contracts, so they cannot diverge.
 
-**Recorded deviations.** An overhead verdict whose only recorded protocol deviation is
-operating-system display processes sharing the measured GPU, on a host where they cannot be
-removed, may support a promotion only when the evaluation ran on the same host under the same
-condition; the report lists it as a limitation. A verdict with any other deviation, such as
-another workload on the measured GPU, never supports a promotion. This rule was fixed before any
-evaluation result existed.
+**Recorded deviations.** On a host whose display shares the measured GPU, some processes hold
+GPU contexts without running GPU work and cannot be closed: the operating system's display
+processes, and the one terminal or editor the operator runs the measurement from. An overhead
+verdict whose only recorded protocol deviation is those processes may support a promotion only
+when the evaluation ran on the same host under the same condition; the report lists it as a
+limitation. A verdict with any other deviation, such as an open browser, video, a game or another
+workload on the measured GPU, never supports a promotion. This rule was fixed before any
+evaluation result existed. The gates cannot see deviations, so whoever runs the evaluation
+applies this rule by hand, and the evaluation report names every overhead verdict admitted under
+it.
 
 **One value, two uses.** `max_baseline_root_step_cv` (15%) gates the root step's duration
 across baseline batches here, and the [instrumentation overhead
