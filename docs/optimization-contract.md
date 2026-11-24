@@ -102,6 +102,8 @@ pull request; once all three have, one commit fills every row below and sets `st
 any row lacks a name and an ISO date, or if a row is filled while it is still `proposed`.
 Repository merge still requires owner approval as usual.
 
+Acceptance of `opt-contract-v2` was requested on 2026-11-24 in #109.
+
 | Team | Members | Accepted by | Date |
 |---|---|---|---|
 | Agent & experiments | Benoy, Akshayaa | | |

@@ -1210,6 +1210,8 @@ from M3 through M6 and do not renumber the implementation milestones above.
   say so. Page wording only; the TOML's parsed values and hash are unchanged.
   Verified in WSL Ubuntu: `pipelines/data/tests` and `tests/contract` 1,306 passed; Ruff clean.
   Still proposed: acceptance needs every team's row in the contract page's acceptance table.
+  2026-11-24 (Benoy): acceptance of `opt-contract-v2` requested in #109; each team accepts on
+  that pull request, then one commit fills the table and sets `status` to `accepted`.
 - [ ] O02 — Allen: validated versioned manual controls and audit history after O01/B01/B02.
   Implemented 2026-11-03 on branch `feature/concurrency-policy` (not yet merged):
   [versioned manual concurrency policy](concurrency-policy.md), migration
