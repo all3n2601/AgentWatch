@@ -285,9 +285,16 @@ These can be completed before adding an agent.
   - `attempts/redaction.json`: `60f751fa8dc14c9402d32445d6dfd42594d5aa8d0c81d6b932984d9a468a345f`
 
   The host label names a person; later runs use a neutral label (the O06 pilot used
-  `rtx5070-laptop-wsl2`). The verdicts were judged under `opt-contract-v1`; once
-  `opt-contract-v2` is in force they must be re-judged from these attempt files before the
-  optimization gates can use them.
+  `rtx5070-laptop-wsl2`). The verdicts were judged under `opt-contract-v1`.
+  2026-11-23 re-judged under `opt-contract-v2` (`8e9bba65`, main `71bf0c7`) from the four attempt
+  files above, unchanged (hashes re-checked), with `overhead-verdict` and host label
+  `rtx5070-laptop-wsl2`, the label O06 manifests use, so the optimization gates can match it.
+  No new measurement. Verdicts unchanged: GPU vLLM `within_budget`, GPU Ollama `inconclusive`,
+  with every figure identical. Only the contract stamp, the host label and the per-group
+  `budget` (0.05, as in v1) differ, plus one reason now reads "Baseline coefficient of
+  variation". The new reports are not in the repository; SHA-256:
+  - `ollama-gpu/overhead-verdict.json`: `d694049117c88ef5b997a461c6d024d9c71e4907855b27a9ded211e34d7e60d7`
+  - `vllm-gpu/overhead-verdict.json`: `8d1b8a93d44abd049287590436329871d8a73f9c2d3bc40dda08fc9317b937be`
   **Protocol deviation:** display apps shared the measured GPU in all four attempts (WSL2
   laptop; the protocol requires nothing else on it during an attempt), so both GPU verdicts
   carry this limitation and are not clean-condition results. Open: CPU container attempts
