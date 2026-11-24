@@ -205,13 +205,63 @@ These can be completed before adding an agent.
 ### Dashboard and contract coverage
 
 - [ ] Automated browser tests for overview → selected run → step evidence → export.
+  F04, November 23, 2026 (branch `test/frontend-audit`, phase 1 of 2, local and not yet in review):
+  `apps/web/e2e/run-evidence.spec.ts` follows a selected saved run to its Evidence tab and checks
+  that every download and export link names that UUID; a live run's export downloads only that
+  run; an unknown UUID is a 404 showing no other run. Fixed: the artifact route accepted any 36
+  characters of `[0-9a-f-]` as a run id and now requires a UUID (400 otherwise); a local-file
+  fallback download now names the run the page showed and is refused (409) if the local files
+  have since been rewritten for another run. Open: downloading saved artifacts end to end (the
+  e2e fixture API does not serve `/v1/runs/{id}/artifacts/*` yet), the overview step, and the
+  Attribution tab, which follow PR #106.
 - [ ] Automated comparison tests, including different workload settings and removed selections.
+  F04, November 23, 2026 (branch `test/frontend-audit`, phase 1 of 2, local and not yet in review):
+  `apps/web/e2e/compare-runs.spec.ts` adds the Runs comparison selection (at most two saved runs,
+  no tick for live runs, Clear selection), a run page's Compare button opening Compare with that
+  run as candidate, and Swap. Ticked runs that no longer name a loaded run are dropped from a
+  reloaded or shared address (`apps/web/e2e/runs-filters.spec.ts`).
 - [ ] Automated refresh, reconnect, empty-history, invalid-history, and local-fallback tests.
+  F04, November 23, 2026 (branch `test/frontend-audit`, phase 1 of 2, local and not yet in review):
+  a reload keeps the Runs filters, page, preview and ticked runs, and the open tab on `/live`
+  and on a run page; back/forward now restore a run page's tab (it reopened Diagnosis while the
+  address named another tab), and a reload of `/live?tab=` now opens that tab
+  (`apps/web/e2e/run-evidence.spec.ts`, `runs-filters.spec.ts`). The local-file fallback is
+  checked as above. Open, after PR #106: reconnect on the run page, hidden-tab pause, offline and
+  recovery, which need the fixture API's read log.
 - [ ] Confirm empty database instructions work with the recording command and ingestion API active.
 - [ ] Sorting, combined filters, zero matches, older history pages, and long run/step labels.
+  F04, November 23, 2026 (branch `test/frontend-audit`, phase 1 of 2, local and not yet in review):
+  `apps/web/e2e/runs-filters.spec.ts` covers combined filters with the match count, search and
+  Clear filters, zero matches, paging, loading older saved runs and its failure, the older/newest
+  live-run links, and malformed addresses falling back to the defaults. Fixed: only `?q=` was kept
+  in the address, so a reload or the live-run links lost the other filters, the page, the preview
+  and the ticked runs; and the preview could show a run that was not on the visible page
+  (`apps/web/tests/runs-page.test.ts` covers parsing and writing the address). Open: long labels.
 - [ ] Keyboard navigation, focus restoration, screen-reader labels, and color contrast audit.
+  F04, November 23, 2026 (branch `test/frontend-audit`, phase 1 of 2, local and not yet in review):
+  `apps/web/e2e/keyboard.spec.ts` checks a visible focus indicator at every stop on Runs, a run's
+  Evidence tab, `/live`, Compare and Controls; the skip link; run tabs with arrow keys; a filter
+  chosen and dismissed with Escape, focus returning to it; preview, ticks and Compare; a live run
+  chosen and exported. `apps/web/e2e/a11y.spec.ts` runs axe-core (`@axe-core/playwright`, WCAG
+  2.x A/AA) on 16 page states at seven viewports and fails on serious or critical findings.
+  Found, not fixed (shared shell and UI components): at 1280 px and wider focus reaches the
+  assistant rail before the page content, kept as a declared known failure; the shared CopyChip's
+  visible text is not in its accessible name for one-word values such as checksums, kept as one
+  node-scoped axe exception. Manual screen-reader checks have not been done.
 - [ ] Tooltip/detail readability on small screens and charts under reduced-motion preferences.
+  F04, November 23, 2026 (branch `test/frontend-audit`, phase 1 of 2, local and not yet in review):
+  `apps/web/e2e/responsive.spec.ts` finds no page-level horizontal overflow, no unlabelled
+  sideways-scrolling content, and navigation plus each page's main actions reachable on 16 page
+  states at 360, 390, 768, 1280×720, 1280×800 and 1440 px and 200% zoom (640×400 CSS px);
+  touch targets under 44 px are reported, not failed. Tooltip readability and reduced motion
+  were not checked.
 - [ ] Large-run performance, rendering limits, and table/waterfall virtualization if needed.
+  F04, November 23, 2026 (branch `test/frontend-audit`, phase 1 of 2, local and not yet in review):
+  the live timeline searched every step once per row on every 2 s poll and named every step
+  not yet charted in one sentence; it now indexes steps once per snapshot and names at most 20,
+  counting the rest (`apps/web/tests/live-view.test.ts`, `apps/web/e2e/live-feed.spec.ts`). Open,
+  after PR #106: large-run fixtures (thousands of steps and samples) with budgets declared before
+  the first measurement.
 - [ ] Cross-browser checks beyond the in-app browser used so far.
 - [ ] Full repository checks, including Go and shared packages, on the final integrated branch.
 - [ ] Observe a successful remote CI run; configuration alone does not establish this.
