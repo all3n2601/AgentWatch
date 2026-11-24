@@ -9,6 +9,22 @@ export const WEB_PORT = 3199;
 const CONTROL_URL = `http://127.0.0.1:${FIXTURE_API_PORT}/__control`;
 
 const savedRecord = z.looseObject({ sequence: z.number().int() });
+/** A scripted attributions response (B03): a page whose rows the fixture pages by cursor. */
+const attributionStateSchema = z.union([
+  z.object({
+    page: z.looseObject({
+      run_id: z.uuid(),
+      model: z.looseObject({}),
+      attributions: z.array(z.looseObject({ sequence: z.number().int() })),
+    }),
+  }),
+  z.object({
+    status: z.number().int().min(400).max(599),
+    body: z.unknown().optional(),
+  }),
+]);
+export type AttributionState = z.infer<typeof attributionStateSchema>;
+
 export const fixtureRunSchema = z.object({
   summary: z.looseObject({ run_id: z.uuid(), sequence: z.number().int() }),
   /** Served in order; a test advances to the next state explicitly. */
@@ -27,6 +43,11 @@ export const fixtureRunSchema = z.object({
       ]),
     )
     .min(1),
+  /**
+   * Attributions states, advanced separately from the run's states. Without them the
+   * attributions route answers 503, so a test never sees rows it did not script.
+   */
+  attributions: z.array(attributionStateSchema).min(1).optional(),
 });
 export type FixtureRun = z.infer<typeof fixtureRunSchema>;
 
@@ -91,4 +112,27 @@ export async function registerSavedRun(
 export async function takeSavedHistoryDown(request: APIRequestContext) {
   const response = await request.post(`${CONTROL_URL}/saved-history-down`);
   if (!response.ok()) throw new Error("Taking saved history down failed");
+}
+
+/** Moves a run's attributions to their next scripted state; the last state then repeats. */
+export async function advanceAttributions(
+  request: APIRequestContext,
+  runId: string,
+) {
+  const response = await request.post(
+    `${CONTROL_URL}/runs/${runId}/advance-attributions`,
+  );
+  if (!response.ok())
+    throw new Error(`Advancing attributions of ${runId} failed`);
+}
+
+/** The `after` cursor of every answered attributions read of a run, in order. */
+export async function attributionReads(
+  request: APIRequestContext,
+  runId: string,
+): Promise<number[]> {
+  const response = await request.get(
+    `${CONTROL_URL}/runs/${runId}/attribution-reads`,
+  );
+  return z.array(z.number()).parse(await response.json());
 }

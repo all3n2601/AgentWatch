@@ -35,6 +35,7 @@ function tabsFor(view: RunView): [RunDetailTab, string][] {
       ["timeline", "Timeline"],
       ["resources", "Resources"],
       ["evidence", "Evidence"],
+      ["attribution", "Attribution"],
     ];
   return [
     ["diagnosis", "Diagnosis"],
@@ -101,8 +102,10 @@ function WrappedTab({
 }
 
 /**
- * A live run's Status, Timeline, Resources and Evidence tabs. One poll of the live API feeds
- * all four; until the run has data each tab shows the same notice.
+ * A live run's Status, Timeline, Resources, Evidence and Attribution tabs. One poll of the
+ * live API feeds the first four; Attribution reads its own route. Inactive tab panels are
+ * unmounted, so Attribution polls only while open. Until the run has data each tab shows the
+ * same notice.
  */
 function LiveTabs({ runId }: { runId: string }) {
   const live = useLiveRun(runId);
@@ -110,7 +113,9 @@ function LiveTabs({ runId }: { runId: string }) {
   const notice = <LiveRunNotice live={live} />;
   return (
     <>
-      {(["status", "timeline", "resources", "evidence"] as const).map((id) => (
+      {(
+        ["status", "timeline", "resources", "evidence", "attribution"] as const
+      ).map((id) => (
         <TabsContent key={id} value={id} className={TAB_PANEL}>
           {tabs ? tabs[id] : notice}
         </TabsContent>

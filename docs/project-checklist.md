@@ -1178,6 +1178,29 @@ frozen evaluation sets without tuning against them.
   2026-11-12: what the dashboard must show (model identity and promotion state, abstention as
   its own state, missing telemetry beside the prediction, the excess fraction as an estimate)
   is in the [serving contract](model-serving-contract.md); no UI change yet.
+  2026-11-22 (F03, PR #106, branch `feature/verdict-evidence`, open, not merged): live runs gain an
+  Attribution tab on `/live` and on a live run's page, read by UUID from
+  `GET /v1/live/runs/{UUID}/attributions` through `/api/live/runs/[runId]/attributions`. Each
+  terminal step shows the rules verdict beside the model outcome; measured queue, execution and
+  CPU time; the excess fraction as an estimate; calibrated confidence and threshold; abstention
+  as "Uncertain", never `none`; telemetry status, coverage and missing inputs; and rules,
+  training, calibration and feature versions with the not-promoted label. Mixed evidence is
+  rules and model naming different resources, or `evidence_changed`; comparisons are counted per
+  serving key and feature version, never across keys. Contradictory or invalid rows show as
+  malformed while the others render. The tab polls only while open: every 2 s while the run is
+  open, plus a re-read from `after=0` every 30 s. Verified with synthetic fixtures only:
+  `apps/web/tests/attribution-{view,poll}.test.ts` and `live-api.test.ts` (286 web unit tests
+  passed), and `apps/web/e2e/attribution-evidence.spec.ts` (missing versus zero, uncertainty,
+  mixed evidence, compatible comparisons, draining, not found versus empty, no page overflow at
+  390, 720, 768 and 1440 px; full Playwright suite 72 passed). Open: checking against a running
+  worker with a real model pair, and saved runs, which have no attribution endpoint.
+  2026-11-23 (PR #106 review fixes, same branch, not merged): rows are also malformed when
+  they break the remaining `step-features-v1` invariants (present telemetry if and only if it
+  has samples, no coverage for missing, empty or unaligned telemetry, an observed interval only
+  with two or more samples, and `queue_fraction` equal to queue over duration within 1e-6, null
+  without both timings or with a zero duration); an empty page with a continuation cursor is an
+  invalid response that backs off; earlier-serving-key rows note that a missing flag means not
+  audited. 293 web unit tests and the full Playwright suite (72) passed after merging `main`.
 
 **Exit test:** Report accuracy/macro F1, regression MAE, clean-run false positives, and calibration.
 Validate missing features and model load failures. Measure time from step completion to visible
@@ -1410,6 +1433,28 @@ from M3 through M6 and do not renumber the implementation milestones above.
   doubles only: `services/agent/tests/test_admission_overhead.py`,
   `tests/contract/test_admission_overhead_attempts.py` (the verdict reads a saved measurement)
   and `pipelines/data/tests/test_overhead_verdict.py`. No hardware measurement yet.
+  2026-11-24 GPU measurement (Benoy, RTX 5070 Laptop/WSL2, host label `rtx5070-laptop-wsl2`):
+  `within_budget` under `opt-contract-v2` (`8e9bba65`). vLLM `Qwen/Qwen3-1.7B@70d244cc86cc`
+  (`max_num_seqs` 2, `gpu_memory_utilization` 0.6), task `fix-mean-empty`, the candidates'
+  policy set (`inference_requests` 1 on vLLM, enforced, policy version 14 for both attempts),
+  1 s poll. Two attempts of 3 warm-ups and 30 pairs, 22 tokens and one reply digest in every
+  request:
+  - attempt 1: median −1.54% [−2.66%, −0.20%], baseline CV 0.027, 6 of 30 requests overlapped a
+    poll;
+  - attempt 2: median −1.58% [−4.88%, +1.19%], baseline CV 0.034, 11 of 30 overlapped a poll.
+
+  Admission cannot make a request faster; the negative medians are most likely the recorded
+  ABAB order (`admission_off` always runs first), so this shows no measurable overhead, not a
+  speed-up. The policy was restored to no limits afterwards (version 15).
+  Two earlier attempts the same session were lost unsaved: the command wrote its report into a
+  directory nothing had created (`FileNotFoundError`). Their results were never seen; the
+  measurement was repeated after the fix in this PR (commit `4f2b761`, which changes only that
+  directory creation), and the lost attempts' remaining files are kept with the evidence.
+  Display apps (browsers) stayed open on the measured GPU, as in A07. Reports are not in the
+  repository; SHA-256:
+  - `attempt-1/…-0117df/admission-overhead.json`: `3e638f3bd5dd9bceb98407fdbe825360cd10a2880e6ec748c79a82081839fada`
+  - `attempt-2/…-59606a/admission-overhead.json`: `7606f7e6e47a9a935430994d0139322444b1df4cec4b07b9b43da3257e566614`
+  - `verdict/overhead-verdict.json`: `bc8fc5c595c9abd3fd04ba6de5c6c3e601188337c072708b4a18ac7c16b53536`
   2026-11-22 batch runner (branch `test/optimization-evaluation`,
   [running an optimization experiment](optimization-run.md)): `make optimization-plan` prints
   the manifest blocks this host preregisters (task configuration digests, queue bounds, and the

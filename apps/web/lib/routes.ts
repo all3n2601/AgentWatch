@@ -17,6 +17,8 @@ export const RUN_TABS = [
   "evidence",
   // A live run's connection, state and totals; saved runs have no such tab.
   "status",
+  // A live run's served step attributions (B03); saved runs have none.
+  "attribution",
 ] as const;
 export type RunTab = (typeof RUN_TABS)[number];
 

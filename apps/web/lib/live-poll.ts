@@ -20,6 +20,10 @@ export const RETRY_MAX_DELAY_MS = 30_000;
 /** Retries are spread by up to ±20% so reconnecting viewers do not poll in step. */
 export const RETRY_JITTER_FRACTION = 0.2;
 
+/** A delay in whole seconds, at least 1, so a sub-second retry never reads as "0 s". */
+export const seconds = (ms: number) =>
+  `${Math.max(1, Math.round(ms / 1000))} s`;
+
 export type FeedConnection =
   | { status: "connecting" }
   | { status: "connected" }
