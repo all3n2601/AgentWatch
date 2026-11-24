@@ -1,5 +1,9 @@
 import { z } from "zod";
 import {
+  attributionPageSchema,
+  type AttributionPageData,
+} from "./attribution-schema";
+import {
   MAX_LIVE_CURSOR,
   runPageSchema,
   runSnapshotSchema,
@@ -14,6 +18,8 @@ import {
 export const LIVE_API_TIMEOUT_MS = 8_000;
 export const LIVE_RUN_LIST_LIMIT = 50;
 export const LIVE_RECORD_PAGE_LIMIT = 256;
+/** B03's largest attribution page; fewer requests to drain a run of up to 1,000 steps. */
+export const ATTRIBUTION_PAGE_LIMIT = 256;
 
 export type LiveApiFailure = {
   kind: "not_found" | "invalid_request" | "unavailable" | "invalid_response";
@@ -41,6 +47,15 @@ const snapshotQuerySchema = z.object({
     .default(LIVE_RECORD_PAGE_LIMIT),
 });
 const listQuerySchema = z.object({ before: cursor.positive().optional() });
+const attributionQuerySchema = z.object({
+  after: cursor.default(0),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(ATTRIBUTION_PAGE_LIMIT)
+    .default(ATTRIBUTION_PAGE_LIMIT),
+});
 
 const present = (params: URLSearchParams, names: string[]) =>
   Object.fromEntries(
@@ -52,6 +67,9 @@ const present = (params: URLSearchParams, names: string[]) =>
 
 export function parseSnapshotQuery(params: URLSearchParams) {
   return snapshotQuerySchema.safeParse(present(params, ["after", "limit"]));
+}
+export function parseAttributionQuery(params: URLSearchParams) {
+  return attributionQuerySchema.safeParse(present(params, ["after", "limit"]));
 }
 export function parseListQuery(params: URLSearchParams) {
   return listQuerySchema.safeParse(present(params, ["before"]));
@@ -169,6 +187,25 @@ export function createLiveApi(
       return get(
         `/${encodeURIComponent(runId)}?${query}`,
         runSnapshotSchema,
+        signal,
+      );
+    },
+    /** One page of the run's stored step attributions after `after` (B03), oldest first. */
+    attributions(
+      runId: string,
+      after = 0,
+      {
+        limit = ATTRIBUTION_PAGE_LIMIT,
+        signal,
+      }: { limit?: number; signal?: AbortSignal } = {},
+    ): Promise<LiveApiResult<AttributionPageData>> {
+      const query = new URLSearchParams({
+        after: String(after),
+        limit: String(limit),
+      });
+      return get(
+        `/${encodeURIComponent(runId)}/attributions?${query}`,
+        attributionPageSchema,
         signal,
       );
     },
