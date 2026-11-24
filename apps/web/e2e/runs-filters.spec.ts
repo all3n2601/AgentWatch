@@ -162,7 +162,7 @@ test("a stale or malformed address falls back to the defaults", async ({
   const saved = await savedRuns(request, 3);
   const unknown = newSavedRunId();
   await page.goto(
-    `/runs?source=both&state=Done&kind=gpu&resource=x%20y&page=99&preview=saved:${unknown}&compare=saved:${unknown},bogus`,
+    `/runs?source=both&state=Done&kind=%3Cscript%3E&resource=x%20y&page=99&preview=saved:${unknown}&compare=saved:${unknown},bogus`,
   );
   await expect(filter(page, "Source")).toContainText("All sources");
   await expect(filter(page, "State")).toContainText("Any state");
@@ -229,4 +229,29 @@ test("older saved runs load on request and a failed load keeps the shown runs", 
   await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
   await expect(matchCount(page)).toHaveText(matches(100));
   await expect(runRowButton(page, saved[0])).toBeVisible();
+});
+
+test("a filter that only older history matches is kept until those runs load", async ({
+  page,
+  request,
+}) => {
+  // The one CPU run is the oldest, beyond the first history page of 100.
+  const cpu = newSavedRunId();
+  await registerSavedRun(request, {
+    ...savedRun(cpu, { sequence: 1 }),
+    kind: "cpu",
+  });
+  for (let sequence = 2; sequence <= 101; sequence += 1)
+    await registerSavedRun(request, savedRun(newSavedRunId(), { sequence }));
+
+  await page.goto("/runs?kind=cpu");
+  await expect(filter(page, "Kind")).toContainText("(not in loaded runs)");
+  await expect(page.getByText("No runs match these filters")).toBeVisible();
+  await expect(page).toHaveURL(/kind=cpu/);
+
+  await page.getByRole("button", { name: "Load older saved runs" }).click();
+  await expect(matchCount(page)).toHaveText(matches(1));
+  await expect(runRowButton(page, cpu)).toBeVisible();
+  await expect(filter(page, "Kind")).not.toContainText("not in loaded runs");
+  await expect(page).toHaveURL(/kind=cpu/);
 });

@@ -357,7 +357,7 @@ const SELECTION_PARAMS = [
   "preview",
   "compare",
 ] as const;
-type SelectionParam = (typeof SELECTION_PARAMS)[number];
+export type SelectionParam = (typeof SELECTION_PARAMS)[number];
 
 const SOURCES = ["all", "live", "saved"] as const;
 const GROUPS = ["all", "in_progress", "done", "needs_attention"] as const;
@@ -428,22 +428,22 @@ export function writeRunsQuery(url: URL, query: URLSearchParams) {
   }
 }
 
+export type FilterMenuValue = { value: string; loaded: boolean };
+
 /**
- * Drops a kind or resource filter that no loaded run offers (a stale link), so the menus
- * never show a value they cannot list.
+ * A kind or resource menu: the values the loaded runs offer, plus the active value when
+ * none of them does. A shared link may name a value found only in older history that is
+ * not loaded yet, so the filter is kept (matching nothing until those runs load) and
+ * labelled, never cleared silently.
  */
-export function keepOfferedFilters(
-  filters: RunsPageFilters,
-  options: ReturnType<typeof filterOptions>,
-): RunsPageFilters {
-  const resourceOffered =
-    options.resources.includes(filters.resource) ||
-    (filters.resource === UNATTRIBUTED && options.unattributed);
-  return {
-    ...filters,
-    kind: options.kinds.includes(filters.kind) ? filters.kind : "all",
-    resource: resourceOffered ? filters.resource : "all",
-  };
+export function filterMenu(
+  offered: readonly string[],
+  active: string,
+): FilterMenuValue[] {
+  const values = offered.map((value) => ({ value, loaded: true }));
+  return active === "all" || offered.includes(active)
+    ? values
+    : [...values, { value: active, loaded: false }];
 }
 
 /** Tabs of the Runs page, kept in `?view=`; the first is the default. */

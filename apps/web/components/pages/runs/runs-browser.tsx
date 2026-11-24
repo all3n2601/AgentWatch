@@ -31,8 +31,8 @@ import {
   byNewestRow,
   DEFAULT_FILTERS,
   filterOptions,
+  filterMenu,
   filterRows,
-  keepOfferedFilters,
   MAX_QUERY_LENGTH,
   mergeOlderSaved,
   parseOlderSaved,
@@ -41,6 +41,7 @@ import {
   summarizeRows,
   toggleCompare,
   UNATTRIBUTED,
+  type FilterMenuValue,
   type RunsPageData,
   type RunsPageFilters,
   type RunsSelection,
@@ -77,6 +78,12 @@ const STATE_OPTIONS: { value: StateGroup | "all"; label: string }[] = [
   { value: "done", label: "Done" },
   { value: "needs_attention", label: "Needs attention" },
 ];
+
+/** A kind or resource menu entry; a value no loaded run has yet says so. */
+function menuOption({ value, loaded }: FilterMenuValue) {
+  const label = value === UNATTRIBUTED ? "None attributed" : displayName(value);
+  return { value, label: loaded ? label : `${label} (not in loaded runs)` };
+}
 
 function isSource(value: string): value is RunSource | "all" {
   return SOURCE_OPTIONS.some((option) => option.value === value);
@@ -120,13 +127,13 @@ export function RunsBrowser({
   /** Server-rendered page title and scope line. */
   header: React.ReactNode;
 }) {
-  // Rows loaded with the page, to drop URL values that name no loaded run.
+  // Rows loaded with the page, to drop ticked runs the URL names that are not loaded.
   const initialRows = () => [
     ...data.saved.rows,
     ...(data.live.status === "ready" ? data.live.rows : []),
   ];
-  const [filters, setFilters] = React.useState<RunsPageFilters>(() =>
-    keepOfferedFilters(initialSelection.filters, filterOptions(initialRows())),
+  const [filters, setFilters] = React.useState<RunsPageFilters>(
+    initialSelection.filters,
   );
   const [page, setPage] = React.useState(initialSelection.page);
   const [saved, setSaved] = React.useState(data.saved.rows);
@@ -305,10 +312,7 @@ export function RunsBrowser({
         onValueChange={(kind) => update({ kind })}
         options={[
           { value: "all", label: "All kinds" },
-          ...options.kinds.map((kind) => ({
-            value: kind,
-            label: displayName(kind),
-          })),
+          ...filterMenu(options.kinds, filters.kind).map(menuOption),
         ]}
         className="w-full min-w-0 md:w-auto md:min-w-44 md:flex-none"
       />
@@ -320,13 +324,13 @@ export function RunsBrowser({
         onValueChange={(resource) => update({ resource })}
         options={[
           { value: "all", label: "Any resource" },
-          ...options.resources.map((resource) => ({
-            value: resource,
-            label: displayName(resource),
-          })),
-          ...(options.unattributed
-            ? [{ value: UNATTRIBUTED, label: "None attributed" }]
-            : []),
+          ...filterMenu(
+            [
+              ...options.resources,
+              ...(options.unattributed ? [UNATTRIBUTED] : []),
+            ],
+            filters.resource,
+          ).map(menuOption),
         ]}
         className="w-full min-w-0 md:w-auto md:min-w-44 md:flex-none"
       />

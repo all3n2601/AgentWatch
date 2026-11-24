@@ -1,5 +1,5 @@
 import "server-only";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { experimentSchema, type DashboardData } from "./experiment-schema";
@@ -7,22 +7,55 @@ import { experimentSchema, type DashboardData } from "./experiment-schema";
 /** Run ids are UUIDs in both run history and the worker's local artifacts. */
 export const isRunId = (value: string) => z.uuid().safeParse(value).success;
 
-/**
- * The run id in a kind's local `results.json`, or null when it cannot be read. The demo
- * writes spans and samples beside it in one run, so this identifies all three files.
- */
-export async function localArtifactRunId(kind: string): Promise<string | null> {
+/** Why a local evidence file was not served for the run a page showed. */
+export type LocalArtifactRead =
+  | { status: "ok"; content: string }
+  /** The kind has no local artifact, or the file is missing or unreadable. */
+  | { status: "unavailable" }
+  /** results.json now records another run. */
+  | { status: "other-run" }
+  /** The file is newer than results.json: a newer run is writing it and has not finished. */
+  | { status: "unfinished" };
+
+const resultsRunId = (content: string) => {
   try {
-    const content = await readFile(
-      path.join(dataDirectory(), `${kind}-demo`, "results.json"),
-      "utf8",
-    );
     const parsed = z
       .object({ run_id: z.string() })
       .safeParse(JSON.parse(content));
     return parsed.success ? parsed.data.run_id : null;
   } catch {
     return null;
+  }
+};
+
+/**
+ * Reads one local evidence file of `kind` only if it still belongs to `runId`. The worker
+ * demo (services/worker/src/agentwatch_worker/demo.py) writes spans.jsonl and samples.jsonl
+ * during a run and results.json last, so a file belongs to the run in results.json only
+ * while it is no newer than results.json. The checks run after the file is read, so a file
+ * rewritten between the check and the read is refused too.
+ */
+export async function readLocalArtifact(
+  kind: string,
+  file: string,
+  runId: string,
+): Promise<LocalArtifactRead> {
+  const directory = path.join(dataDirectory(), `${kind}-demo`);
+  try {
+    const content = await readFile(path.join(directory, file), "utf8");
+    const [fileStat, resultsStat, results] = await Promise.all([
+      stat(path.join(directory, file)),
+      stat(path.join(directory, "results.json")),
+      readFile(path.join(directory, "results.json"), "utf8"),
+    ]);
+    if (fileStat.mtimeMs > resultsStat.mtimeMs) return { status: "unfinished" };
+    const recorded = resultsRunId(results);
+    if (recorded === null) return { status: "unavailable" };
+    return recorded === runId
+      ? { status: "ok", content }
+      : { status: "other-run" };
+  } catch {
+    return { status: "unavailable" };
   }
 }
 

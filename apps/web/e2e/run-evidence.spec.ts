@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { seedWorkspace, servePolicy } from "./audit";
@@ -11,18 +11,30 @@ import { newSavedRunId, savedRun } from "./saved-runs";
 
 const LOCAL_CODING = path.join(E2E_DATA_DIR, "coding-demo");
 
-/** Writes a local coding artifact for `runId`, as the worker demo does. */
-async function writeLocalArtifact(runId: string) {
+/** Fixed file times, so "newer" never depends on how fast the test writes. */
+const EARLIER = new Date("2026-11-01T12:00:00Z");
+const LATER = new Date("2026-11-01T12:05:00Z");
+
+/** One local evidence file, tagged with the run that wrote it, at a fixed modification time. */
+async function writeLocalFile(file: string, runId: string, at: Date) {
   await mkdir(LOCAL_CODING, { recursive: true });
-  const { result } = savedRun(runId, { sequence: 1 });
-  await writeFile(
-    path.join(LOCAL_CODING, "results.json"),
-    JSON.stringify(result),
-  );
-  await writeFile(
-    path.join(LOCAL_CODING, "spans.jsonl"),
-    '{"name": "synthetic browser-test span"}\n',
-  );
+  const target = path.join(LOCAL_CODING, file);
+  const content =
+    file === "results.json"
+      ? JSON.stringify(savedRun(runId, { sequence: 1 }).result)
+      : `{"synthetic browser-test record": true, "agentwatch.run_id": "${runId}"}\n`;
+  await writeFile(target, content);
+  await utimes(target, at, at);
+}
+
+/**
+ * A finished local coding artifact for `runId`. The worker demo writes spans.jsonl and
+ * samples.jsonl during the run and results.json last, so results.json is the newest file.
+ */
+async function writeLocalArtifact(runId: string) {
+  await writeLocalFile("spans.jsonl", runId, EARLIER);
+  await writeLocalFile("samples.jsonl", runId, EARLIER);
+  await writeLocalFile("results.json", runId, LATER);
 }
 
 test.beforeEach(async ({ page, request }) => {
@@ -180,3 +192,28 @@ test("the live view reopens the tab in its address after a reload and back", asy
   await expect(page).toHaveURL(/tab=timeline/);
   await expect(timeline).toHaveAttribute("aria-selected", "true");
 });
+
+for (const file of ["spans.jsonl", "samples.jsonl"])
+  test(`a local ${file} newer than results.json is refused as unfinished evidence`, async ({
+    request,
+  }) => {
+    // Run A finished; a rerun (run B) has rewritten this file but not results.json yet.
+    const runA = newSavedRunId();
+    await writeLocalArtifact(runA);
+    const href = `/api/experiments/coding/artifact?file=${file}&local_run_id=${runA}`;
+    expect((await request.get(href)).status()).toBe(200);
+
+    const later = new Date(LATER.getTime() + 60_000);
+    await writeLocalFile(file, newSavedRunId(), later);
+    const refused = await request.get(href);
+    expect(refused.status()).toBe(409);
+    expect((await refused.json()).error).toMatch(/newer run/);
+    // results.json itself still belongs to run A and is served.
+    expect(
+      (
+        await request.get(
+          `/api/experiments/coding/artifact?file=results.json&local_run_id=${runA}`,
+        )
+      ).status(),
+    ).toBe(200);
+  });

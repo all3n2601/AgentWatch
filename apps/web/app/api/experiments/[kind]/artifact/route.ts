@@ -4,14 +4,18 @@ import {
   apiUrl,
   dataDirectory,
   isRunId,
-  localArtifactRunId,
+  readLocalArtifact,
 } from "@/lib/experiments";
 export const dynamic = "force-dynamic";
 
+const contentType = (file: string) =>
+  file.endsWith("jsonl") ? "application/x-ndjson" : "application/json";
+
 /**
  * Downloads one evidence file. `run_id` reads that run from run history. `local_run_id`
- * reads the local artifact only if it still holds that run, so a file rewritten after the
- * page loaded is refused rather than served as the run the page showed. Without either,
+ * reads the local artifact only while it still holds that run (see `readLocalArtifact`):
+ * a file rewritten after the page loaded, or still being rewritten by a newer run, is
+ * refused (409) rather than served as the run the page showed. Without either parameter
  * the kind's local artifact is served as before; the UI always names a run.
  */
 export async function GET(
@@ -60,17 +64,26 @@ export async function GET(
   if (localRunId !== null) {
     if (!isRunId(localRunId))
       return Response.json({ error: "Invalid run ID" }, { status: 400 });
-    const recorded = await localArtifactRunId(kind);
-    if (recorded === null)
+    const local = await readLocalArtifact(kind, file, localRunId);
+    if (local.status === "unavailable")
       return Response.json({ error: "Artifact unavailable" }, { status: 404 });
-    if (recorded !== localRunId)
+    if (local.status !== "ok")
       return Response.json(
         {
           error:
-            "The local artifact files now hold a different run. Reload the page to see it.",
+            local.status === "other-run"
+              ? "The local artifact files now hold a different run. Reload the page to see it."
+              : "A newer run is rewriting the local artifact files. Reload the page once it finishes.",
         },
         { status: 409 },
       );
+    return new Response(local.content, {
+      headers: {
+        "Content-Type": contentType(file),
+        "Content-Disposition": `attachment; filename="agentwatch-${localRunId}-${file}"`,
+        "Cache-Control": "no-store",
+      },
+    });
   }
   try {
     const content = await readFile(
@@ -79,10 +92,8 @@ export async function GET(
     );
     return new Response(content, {
       headers: {
-        "Content-Type": file.endsWith("jsonl")
-          ? "application/x-ndjson"
-          : "application/json",
-        "Content-Disposition": `attachment; filename="agentwatch-${localRunId ?? kind}-${file}"`,
+        "Content-Type": contentType(file),
+        "Content-Disposition": `attachment; filename="agentwatch-${kind}-${file}"`,
         "Cache-Control": "no-store",
       },
     });

@@ -7,7 +7,7 @@ import {
   DEFAULT_FILTERS,
   filterOptions,
   filterRows,
-  keepOfferedFilters,
+  filterMenu,
   liveRow,
   mergeOlderSaved,
   parseOlderSaved,
@@ -435,33 +435,22 @@ test("writing the selection keeps unrelated parameters and clears defaults", () 
   assert.equal(url.search, "?view=compare&liveBefore=40&kind=cpu");
 });
 
-test("kind and resource filters no loaded run offers fall back to all", () => {
-  const options = {
-    kinds: ["coding"],
-    resources: ["cpu_sandbox"],
-    unattributed: false,
-  };
-  const kept = {
-    ...DEFAULT_FILTERS,
-    kind: "coding",
-    resource: "cpu_sandbox",
-    source: "saved" as const,
-  };
-  assert.deepEqual(keepOfferedFilters(kept, options), kept);
-  assert.deepEqual(
-    keepOfferedFilters(
-      { ...kept, kind: "cpu", resource: UNATTRIBUTED },
-      options,
-    ),
-    { ...kept, kind: "all", resource: "all" },
-  );
-  assert.equal(
-    keepOfferedFilters(
-      { ...kept, resource: UNATTRIBUTED },
-      { ...options, unattributed: true },
-    ).resource,
-    UNATTRIBUTED,
-  );
+test("a filter value no loaded run offers stays in the menu, marked as not loaded", () => {
+  // A shared link may name a kind that only older, not yet loaded, history has.
+  assert.deepEqual(filterMenu(["coding"], "cpu"), [
+    { value: "coding", loaded: true },
+    { value: "cpu", loaded: false },
+  ]);
+  assert.deepEqual(filterMenu(["coding", "cpu"], "cpu"), [
+    { value: "coding", loaded: true },
+    { value: "cpu", loaded: true },
+  ]);
+  assert.deepEqual(filterMenu(["coding"], "all"), [
+    { value: "coding", loaded: true },
+  ]);
+  assert.deepEqual(filterMenu([], UNATTRIBUTED), [
+    { value: UNATTRIBUTED, loaded: false },
+  ]);
 });
 
 test("evidence links name the run, whether it is in history or a local artifact", () => {
