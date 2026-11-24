@@ -72,6 +72,7 @@ from agentwatch_agent.clock import MonotonicClock
 from agentwatch_agent.config import (
     DEFAULT_CHAT_OPTIONS,
     DEFAULT_MODEL,
+    DEFAULT_SAMPLING_INTERVAL_SECONDS,
     MODEL_BACKENDS,
     RunLimits,
     validate_sample_budget,
@@ -91,7 +92,20 @@ from agentwatch_agent.experiment import (
     ReplayExperiment,
     build_injectors,
 )
+from agentwatch_agent.host_identity import host_label
 from agentwatch_agent.model import ChatModel, OllamaChatModel, VllmChatModel
+from agentwatch_agent.optimization_experiment import ExperimentError, read_experiment
+from agentwatch_agent.optimization_host import (
+    DEFAULT_PACING_SECONDS,
+    identity_observer,
+    injector_factory,
+    ollama_model_identity,
+    pacing_waiter,
+    plan_document,
+    vllm_idle_waiter,
+    vllm_model_identity,
+)
+from agentwatch_agent.optimization_run import ExperimentRunner, Host
 from agentwatch_agent.overhead import OverheadFailed, measure_overhead
 from agentwatch_agent.redacted_copy import RedactionError, write_redacted_copy
 from agentwatch_agent.replay import (
@@ -389,6 +403,8 @@ def parser() -> argparse.ArgumentParser:
         help="Time limit of each run in seconds",
     )
     add_admission_arguments(batch)
+
+    add_optimization_parsers(commands)
 
     commands.add_parser("tasks", help="List runnable tasks and their identities")
 
@@ -720,6 +736,178 @@ def batch_command(args: argparse.Namespace) -> int:
             signal.signal(sig, handler)
     print(f"Batch {batch.batch_id}: {batch.path}")
     return batch_exit(runs, args.api_url)
+
+
+def add_optimization_arguments(command: argparse.ArgumentParser) -> None:
+    """What determines an optimization runner's configuration digest, plus the host label."""
+    add_model_arguments(command)
+    add_server_evidence_arguments(command)
+    command.add_argument(
+        "--host-id",
+        required=True,
+        type=host_label,
+        help="Neutral label for this machine, e.g. rtx5070-laptop-wsl2 (no user or host names)",
+    )
+    command.add_argument(
+        "--run-timeout",
+        type=positive_seconds,
+        default=RunLimits().run_timeout_seconds,
+        help="Time limit of each run in seconds",
+    )
+    command.add_argument(
+        "--sampling-interval",
+        type=positive_seconds,
+        default=DEFAULT_SAMPLING_INTERVAL_SECONDS,
+        help="Seconds between resource samples; part of every run's configuration digest",
+    )
+
+
+def add_optimization_parsers(commands) -> None:
+    plan = commands.add_parser(
+        "optimization-plan",
+        help="Print the manifest blocks (task digests, queue bounds, host identity) to preregister",
+    )
+    plan.add_argument("--task", action="append", required=True, help="Frozen task; repeatable")
+    add_optimization_arguments(plan)
+    add_admission_arguments(plan)
+
+    run = commands.add_parser(
+        "optimization-run",
+        help="Run a preregistered optimization experiment's batches and write their records",
+    )
+    run.add_argument("experiment", type=Path, help="Directory with manifest.json and schedule.json")
+    add_optimization_arguments(run)
+    run.add_argument(
+        "--api-url", type=http_url, default=os.environ.get("AGENTWATCH_API_URL", DEFAULT_API_URL)
+    )
+    run.add_argument(
+        "--policy-poll",
+        type=positive_seconds,
+        default=DEFAULT_POLICY_POLL_SECONDS,
+        help="Seconds between reads of the active policy during a batch",
+    )
+    run.add_argument(
+        "--pacing",
+        type=nonnegative_seconds,
+        default=DEFAULT_PACING_SECONDS,
+        help="Pause in seconds after the model server is idle, before each batch",
+    )
+
+
+def optimization_host(args: argparse.Namespace, policy: LiveClient) -> Host:
+    """The live host for an optimization runner, from the command's arguments."""
+    model = build_model(args)
+    pacing = getattr(args, "pacing", 0.0)
+    if args.model_backend == "vllm":
+        loopback_url(model.endpoint)  # injectors only ever target local capacity
+        wait = vllm_idle_waiter(args.vllm_url.rstrip("/") + "/metrics", pacing_seconds=pacing)
+
+        def model_identity() -> dict:
+            return vllm_model_identity(args.vllm_url, model.name)
+    else:
+        wait = pacing_waiter(pacing)
+
+        def model_identity() -> dict:
+            return ollama_model_identity(args.ollama_url, model.name)
+
+    limits = RunLimits(run_timeout_seconds=args.run_timeout)
+
+    def make_runner(
+        task: Task, directory: Path, clock: MonotonicClock, admission: RunnerAdmission
+    ) -> AgentRunner:
+        # One model client per run, so no request state is shared between threads.
+        return AgentRunner(
+            task=task,
+            model=build_model(args),
+            transport=policy,
+            output_dir=directory,
+            limits=limits,
+            clock=clock,
+            open_gpu=NvmlDevice.open,
+            admission=admission,
+            sampling_interval_seconds=args.sampling_interval,
+            **server_evidence(args),
+        )
+
+    return Host(
+        policy=policy,
+        inference_service_id=model.service_id,
+        make_runner=make_runner,
+        make_injector=injector_factory(endpoint=model.endpoint, served_model_name=model.name),
+        observe_identity=identity_observer(
+            model=model_identity, host_label=args.host_id, open_gpu=NvmlDevice.open
+        ),
+        wait_until_idle=wait,
+        run_timeout_seconds=args.run_timeout,
+        policy_poll_seconds=getattr(args, "policy_poll", DEFAULT_POLICY_POLL_SECONDS),
+    )
+
+
+def optimization_plan_command(args: argparse.Namespace) -> int:
+    """Print what this host and configuration would preregister; nothing runs."""
+    if args.no_policy:
+        print("error: an optimization experiment always reads the policy", file=sys.stderr)
+        return EXIT_USAGE
+    bounds = {
+        "inference_requests": QueueBounds(args.inference_max_queue, args.inference_max_wait),
+        "test_jobs": QueueBounds(args.test_max_queue, args.test_max_wait),
+    }
+    try:
+        tasks = [load_task(name) for name in args.task]
+        # No policy is read: the digest depends on the declared bounds, not the active version.
+        host = optimization_host(args, LiveClient(DEFAULT_API_URL))
+        controller = AdmissionController(
+            AdmissionSettings(**bounds), inference_service_id=host.inference_service_id
+        )
+        admission = RunnerAdmission(controller, host.policy)
+        clock = MonotonicClock()
+        runners = [
+            host.make_runner(task, Path(".data/optimization-plan"), clock, admission)
+            for task in tasks
+        ]
+        document = plan_document(tasks, runners, host.observe_identity(), bounds)
+    except Exception as error:  # noqa: BLE001 - a plan this host cannot measure is refused
+        print(f"error: {type(error).__name__}: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    print(json.dumps(document, indent=2, sort_keys=True))
+    return EXIT_PASSED
+
+
+def optimization_run_command(args: argparse.Namespace) -> int:
+    transport = LiveClient(args.api_url, timeout_seconds=LIVE_TIMEOUT_SECONDS)
+    try:
+        experiment = read_experiment(args.experiment)
+        runner = ExperimentRunner(experiment, optimization_host(args, transport))
+        runner.preflight()
+    except (ExperimentError, TaskDefinitionError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+
+    def handle_signal(number: int, _frame: FrameType | None) -> None:
+        name = signal.Signals(number).name
+        runner.request_cancel_from_signal("signal", f"Cancelled by operator signal {name}")
+
+    previous = {sig: signal.signal(sig, handle_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        summary = runner.run()
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    print(
+        json.dumps(
+            {
+                "attempted": summary.attempted,
+                "statuses": summary.statuses,
+                "stopped": summary.stopped,
+                "baseline_restored": summary.restored,
+            },
+            indent=2,
+        )
+    )
+    if summary.restored is not True:
+        print("error: the baseline policy was not restored; check Controls", file=sys.stderr)
+        return EXIT_FAILED
+    return EXIT_FAILED if summary.stopped else EXIT_PASSED
 
 
 def batch_exit(runs: list[BatchRun], api_url: str) -> int:
@@ -1539,6 +1727,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_command(args)
     if args.command == "batch":
         return batch_command(args)
+    if args.command == "optimization-plan":
+        return optimization_plan_command(args)
+    if args.command == "optimization-run":
+        return optimization_run_command(args)
     if args.command == "tasks":
         return tasks_command()
     if args.command == "experiment":
