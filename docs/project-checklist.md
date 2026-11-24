@@ -1353,6 +1353,38 @@ from M3 through M6 and do not renumber the implementation milestones above.
   doubles only: `services/agent/tests/test_admission_overhead.py`,
   `tests/contract/test_admission_overhead_attempts.py` (the verdict reads a saved measurement)
   and `pipelines/data/tests/test_overhead_verdict.py`. No hardware measurement yet.
+  2026-11-22 batch runner (branch `test/optimization-evaluation`,
+  [running an optimization experiment](optimization-run.md)): `make optimization-plan` prints
+  the manifest blocks this host preregisters (task configuration digests, queue bounds, and the
+  measured model, hardware, power and fixture state); `make optimization-run` derives the
+  schedule and runs its slots in order, applying and reading back each batch's policy,
+  submitting tasks at the preregistered offsets in one runner process, running the contended
+  condition's injectors and writing one `opt-batch-v1` record per attempted batch. Records are
+  never overwritten, any batch that does not complete stops the experiment, and the baseline is
+  restored and read back on every exit. A host that no longer matches the manifest stops before
+  the batch is attempted. `AgentRunner.configuration_digest()` gives the digest before a run.
+  Verified at that point with test doubles only: `services/agent/tests/test_optimization_run.py`,
+  `test_host_identity.py`, and `tests/contract/test_optimization_batch_records.py`, whose
+  records the O04 checker accepts for both conditions (it found that a pre-run digest omitted
+  the task's tools). The hardware pilot below came later; gate evaluation is a separate PR.
+  2026-11-22 development pilot on the GPU laptop (runner `fde030f`, vLLM `max_num_seqs` 2,
+  [results](optimization-run.md#development-pilot-2026-11-22)): two development manifests
+  (`fix-mean-empty-r1`, `fix-median-even-r1`; candidates `inference-1`, `tests-1`; prefill flood
+  at concurrency 2), each stopped after 7 records; 14 batches completed with every run passing,
+  policies enforced and restored, no starvation or leaks. Contended baseline batches took
+  14.8–15.0 s and `inference-1` batches 22.3–22.4 s; clean batches 7.2–7.5 s for every
+  configuration. Development evidence only, never compared. It also showed that
+  `optimization-run` takes queue bounds from the manifest only, so the run's documented flags
+  were corrected. The evaluation keeps this design and waits for contract acceptance.
+  2026-11-22 review fix: a batch interrupted after submission (sleep, WSL shutdown, kill) is
+  no longer rerun into the same run directories on resume. An attempt marker written before
+  submission lets the next run record it as `failed` from what it left, an error after
+  submission also gives a `failed` record, and finish ticks come only from the run's own
+  journal records. A Ctrl+C during the pre-batch wait now leaves the next slot unattempted
+  and runnable (the waits wake on the cancel), and a batch that cannot be prepared after its
+  policy is applied gets a `not_started` record. Regression tests in `test_optimization_run.py`,
+  `test_optimization_host.py` (waits, model identities, injectors, command refusals) and the
+  O04 contract test.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.

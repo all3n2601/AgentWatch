@@ -14,7 +14,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -90,7 +90,13 @@ from agentwatch_agent.session import (
 )
 from agentwatch_agent.steps import Step, StepRecorder, new_trace_id
 from agentwatch_agent.tasks import Task
-from agentwatch_agent.tools import ToolDispatcher, ToolFailed, ToolRejected, tool_message
+from agentwatch_agent.tools import (
+    ToolDispatcher,
+    ToolFailed,
+    ToolRejected,
+    tool_definitions,
+    tool_message,
+)
 from agentwatch_agent.vllm import traceparent
 from agentwatch_agent.vllm_traces import collect_request_timings
 from agentwatch_agent.workspace import Workspace
@@ -583,6 +589,18 @@ class AgentRunner:
                 steps.cancel(step, reason or "Run cancelled")
             else:
                 steps.fail(step, reason or "Run failed")
+
+    def configuration_digest(self) -> str:
+        """The digest this runner's evidence will record, known before it runs; experiment
+        manifests preregister it.
+
+        Setup offers the tools of the task's workspace, a copy of its fixture files; before
+        setup, the same definitions come from the fixture files themselves.
+        """
+        configuration = self._configuration()
+        if not self._tools:
+            configuration = replace(configuration, tools=tool_definitions(self.task))
+        return configuration.digest()
 
     def _configuration(self) -> RunConfiguration:
         return RunConfiguration(
