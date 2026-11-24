@@ -302,6 +302,24 @@ def test_sampling_overhead_reads_one_dcgm_identity_for_every_request(tmp_path, m
     assert first[1].resource.resource_id == second[1].resource.resource_id
 
 
+def test_admission_overhead_saves_its_report_in_a_new_directory(tmp_path, monkeypatch):
+    # Regression: the command wrote into a directory nothing had created, so a finished GPU
+    # measurement was lost with FileNotFoundError.
+    base = tmp_path / "not-yet-created"
+    created_before_measuring = []
+
+    def fake_measure(task, model, chat, client, *, inference_service_id, policy_poll_seconds):
+        created_before_measuring.extend(path.is_dir() for path in base.iterdir())
+        return {"status": "failed", "error": "not measured in this test"}
+
+    monkeypatch.setattr(cli, "measure_admission_overhead", fake_measure)
+    argv = ["admission-overhead", "--model-backend", "vllm", "--output-dir", str(base)]
+    assert cli.main(argv) == cli.EXIT_FAILED
+    assert created_before_measuring == [True]
+    (report,) = base.glob("*/admission-overhead.json")
+    assert json.loads(report.read_text())["status"] == "failed"
+
+
 @pytest.mark.parametrize("value", ["vLLM", "olama", ""])
 def test_a_mistyped_backend_in_the_environment_is_refused(monkeypatch, value):
     # argparse checks `choices` only on the command line; the default must be checked too.

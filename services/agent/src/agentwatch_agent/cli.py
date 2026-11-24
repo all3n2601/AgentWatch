@@ -1667,6 +1667,9 @@ def admission_overhead_command(args: argparse.Namespace) -> int:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_USAGE
     output_dir = default_output_dir(args.output_dir, task)
+    # Unlike sampling-overhead's, this measurement writes nothing itself, so the report's
+    # directory is made here, before any request: a measurement must never end unsaved.
+    output_dir.mkdir(parents=True, exist_ok=True)
     model = build_model(args)
     report = measure_admission_overhead(
         task,

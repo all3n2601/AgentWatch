@@ -1360,6 +1360,28 @@ from M3 through M6 and do not renumber the implementation milestones above.
   doubles only: `services/agent/tests/test_admission_overhead.py`,
   `tests/contract/test_admission_overhead_attempts.py` (the verdict reads a saved measurement)
   and `pipelines/data/tests/test_overhead_verdict.py`. No hardware measurement yet.
+  2026-11-24 GPU measurement (Benoy, RTX 5070 Laptop/WSL2, host label `rtx5070-laptop-wsl2`):
+  `within_budget` under `opt-contract-v2` (`8e9bba65`). vLLM `Qwen/Qwen3-1.7B@70d244cc86cc`
+  (`max_num_seqs` 2, `gpu_memory_utilization` 0.6), task `fix-mean-empty`, the candidates'
+  policy set (`inference_requests` 1 on vLLM, enforced, policy version 14 for both attempts),
+  1 s poll. Two attempts of 3 warm-ups and 30 pairs, 22 tokens and one reply digest in every
+  request:
+  - attempt 1: median −1.54% [−2.66%, −0.20%], baseline CV 0.027, 6 of 30 requests overlapped a
+    poll;
+  - attempt 2: median −1.58% [−4.88%, +1.19%], baseline CV 0.034, 11 of 30 overlapped a poll.
+
+  Admission cannot make a request faster; the negative medians are most likely the recorded
+  ABAB order (`admission_off` always runs first), so this shows no measurable overhead, not a
+  speed-up. The policy was restored to no limits afterwards (version 15).
+  Two earlier attempts the same session were lost unsaved: the command wrote its report into a
+  directory nothing had created (`FileNotFoundError`). Their results were never seen; the
+  measurement was repeated after the fix in this PR (commit `4f2b761`, which changes only that
+  directory creation), and the lost attempts' remaining files are kept with the evidence.
+  Display apps (browsers) stayed open on the measured GPU, as in A07. Reports are not in the
+  repository; SHA-256:
+  - `attempt-1/…-0117df/admission-overhead.json`: `3e638f3bd5dd9bceb98407fdbe825360cd10a2880e6ec748c79a82081839fada`
+  - `attempt-2/…-59606a/admission-overhead.json`: `7606f7e6e47a9a935430994d0139322444b1df4cec4b07b9b43da3257e566614`
+  - `verdict/overhead-verdict.json`: `bc8fc5c595c9abd3fd04ba6de5c6c3e601188337c072708b4a18ac7c16b53536`
   2026-11-22 batch runner (branch `test/optimization-evaluation`,
   [running an optimization experiment](optimization-run.md)): `make optimization-plan` prints
   the manifest blocks this host preregisters (task configuration digests, queue bounds, and the
