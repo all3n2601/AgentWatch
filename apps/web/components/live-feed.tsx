@@ -76,7 +76,11 @@ import {
   type RunListFeed,
 } from "@/lib/live-poll";
 import { wallSecondsInto, wallTimeline } from "@/lib/run-timeline";
-import { liveTimelineSteps, type StepState } from "@/lib/live-view";
+import {
+  liveTimelineSteps,
+  openStepLabel,
+  type StepState,
+} from "@/lib/live-view";
 import type { Tone } from "@/lib/tone";
 import { cn } from "@/lib/utils";
 
@@ -297,7 +301,9 @@ function stepRow(
     failed: state === "failed" || state === "cancelled",
     value:
       row.wallSeconds === null ? (
-        <span className="font-normal text-ink-muted">Running</span>
+        <span className="font-normal text-ink-muted">
+          {openStepLabel(state)}
+        </span>
       ) : (
         duration(row.wallSeconds)
       ),
@@ -796,7 +802,8 @@ function RunList({
                       <span className="block truncate font-mono text-sm font-medium">
                         {run.runId.slice(0, 8)}
                       </span>
-                      <span className="block truncate text-xs text-ink-muted">
+                      {/* A task id can be 128 characters; it wraps, never hides. */}
+                      <span className="block text-xs text-ink-muted [overflow-wrap:anywhere]">
                         {run.taskId}
                       </span>
                     </span>

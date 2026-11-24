@@ -65,6 +65,7 @@ test("every focus stop on the main pages shows a visible focus indicator", async
     `/live?liveRun=${seeded.live}`,
     `/compare?run=${seeded.candidate}&baseline=${seeded.baseline}`,
     "/controls",
+    `/runs/${seeded.live}?tab=attribution`,
   ]) {
     await page.goto(path);
     await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
@@ -217,4 +218,32 @@ test("a live run is chosen and exported from the keyboard", async ({
     page.keyboard.press("Enter"),
   ]);
   expect(download.suggestedFilename()).toContain(seeded.live);
+});
+
+test("an attributed step is chosen and its evidence read from the keyboard", async ({
+  page,
+  request,
+}) => {
+  const seeded = await seedWorkspace(request);
+  await page.goto(`/runs/${seeded.live}`);
+  // Reach the Attribution tab with the arrow keys, as a tab list is used.
+  await page.getByRole("tab", { name: "Diagnosis" }).focus();
+  await page.keyboard.press("End");
+  const attribution = page.getByRole("tab", { name: "Attribution" });
+  await expect(attribution).toBeFocused();
+  await expect(attribution).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/tab=attribution/);
+
+  const table = page.getByRole("region", { name: "Step attributions table" });
+  const step = table.getByRole("button", { name: "tool-2", exact: true });
+  await step.focus();
+  await page.keyboard.press("Enter");
+  await expect(step).toHaveAttribute("aria-pressed", "true");
+  const evidence = page.getByRole("region", { name: "Step evidence" });
+  await expect(evidence.getByText("tool-2", { exact: true })).toBeVisible();
+  // The evidence body scrolls from the keyboard too.
+  await page.getByRole("group", { name: "Step evidence content" }).focus();
+  await expect(
+    page.getByRole("group", { name: "Step evidence content" }),
+  ).toBeFocused();
 });

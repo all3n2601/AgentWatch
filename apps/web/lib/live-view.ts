@@ -92,3 +92,13 @@ export function liveTimelineSteps<S extends Pick<LiveStep, "stepId" | "state">>(
     },
   };
 }
+
+/**
+ * The timeline value for a step with no terminal event yet. A queued step has not started,
+ * so it is never called Running; with no applied state the view does not guess.
+ */
+export function openStepLabel(state: StepState | null): string {
+  if (state === "queued") return "Queued";
+  if (state === "running") return "Running";
+  return "In progress";
+}

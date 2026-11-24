@@ -62,6 +62,35 @@ export const savedRunSchema = z.object({
 export type SavedRun = z.infer<typeof savedRunSchema>;
 export type FixtureState = FixtureRun["states"][number];
 
+/** One request the web server made to the fixture API (see `requestLog` there). */
+export const requestLogEntrySchema = z.object({
+  method: z.string(),
+  path: z.string(),
+  query: z.string(),
+  /** The fixture API's wall time when the request arrived. */
+  atMs: z.number(),
+});
+export type RequestLogEntry = z.infer<typeof requestLogEntrySchema>;
+
+/** Every request the web server made to the fixture API since the last reset. */
+export async function fixtureRequests(
+  request: APIRequestContext,
+): Promise<RequestLogEntry[]> {
+  const response = await request.get(`${CONTROL_URL}/requests`);
+  if (!response.ok()) throw new Error("Reading the fixture request log failed");
+  return z.array(requestLogEntrySchema).parse(await response.json());
+}
+
+/** Snapshot reads of one live run (not its attributions), from the request log. */
+export async function snapshotRequests(
+  request: APIRequestContext,
+  runId: string,
+) {
+  return (await fixtureRequests(request)).filter(
+    (entry) => entry.path === `/v1/live/runs/${runId}`,
+  );
+}
+
 export async function resetFixtureApi(request: APIRequestContext) {
   const response = await request.post(`${CONTROL_URL}/reset`);
   if (!response.ok()) throw new Error("Fixture API reset failed");

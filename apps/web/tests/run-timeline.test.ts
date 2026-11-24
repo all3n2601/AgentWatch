@@ -151,6 +151,30 @@ test("wallTimeline leaves running steps open with no duration", () => {
   assert.equal(wallTimeline([]), null);
 });
 
+test("wallTimeline draws a step that is only queued as waiting, not as work", () => {
+  const timeline = wallTimeline([
+    {
+      stepId: "run",
+      stepType: "tool",
+      state: "running",
+      startMs: 0,
+      endMs: null,
+    },
+    {
+      stepId: "wait",
+      stepType: "tool",
+      state: "queued",
+      startMs: 500,
+      endMs: null,
+    },
+  ]);
+  assert.ok(timeline);
+  const kind = (id: string) =>
+    timeline.rows.find((row) => row.step.stepId === id)?.segments[0].kind;
+  assert.equal(kind("run"), "work");
+  assert.equal(kind("wait"), "wait");
+});
+
 const sampleLine = (atSeconds: number, avg10: number | null, missing = []) =>
   JSON.stringify({
     timestamp_ns: START_NS + atSeconds * SECOND_NS,

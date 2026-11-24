@@ -54,6 +54,18 @@ const PAGE_ACTIONS: Record<
     page.getByRole("link", { name: "Export JSON" }),
     page.getByRole("tab", { name: "Evidence" }),
   ],
+  "run-live-attribution": (page) => [
+    page
+      .getByRole("region", { name: "Step attributions table" })
+      .getByRole("button", { name: "tool-1", exact: true }),
+    page.getByRole("tab", { name: "Attribution" }),
+  ],
+  "live-attribution": (page) => [
+    page
+      .getByRole("region", { name: "Step attributions table" })
+      .getByRole("button", { name: "tool-2", exact: true }),
+    page.getByRole("tab", { name: "Attribution" }),
+  ],
   live: (page, seeded) => [
     page.getByRole("link", { name: new RegExp(seeded.live.slice(0, 8)) }),
     page.getByRole("link", { name: "Open run page" }),
@@ -107,7 +119,10 @@ test("every page fits the viewport and keeps navigation and actions reachable", 
               for (const element of document.querySelectorAll<HTMLElement>(
                 "a[href],button,input,select,[role=tab],[role=combobox]",
               )) {
-                const box = element.getBoundingClientRect();
+                // A control inside a <label> is hit anywhere on the label.
+                const box = (
+                  element.closest("label") ?? element
+                ).getBoundingClientRect();
                 if (box.width === 0 || box.height === 0) continue;
                 if (box.width < minimum || box.height < minimum)
                   found.push(

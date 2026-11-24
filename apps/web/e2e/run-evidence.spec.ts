@@ -1,6 +1,6 @@
-import { mkdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { seedWorkspace, servePolicy } from "./audit";
 import { resetFixtureApi, takeSavedHistoryDown } from "./fixture-control";
 import { E2E_DATA_DIR } from "./local-data";
@@ -217,3 +217,61 @@ for (const file of ["spans.jsonl", "samples.jsonl"])
       ).status(),
     ).toBe(200);
   });
+
+/** Clicks a link that downloads, returning the file's suggested name and text. */
+async function download(page: Page, name: string) {
+  const [file] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("link", { name, exact: true }).click(),
+  ]);
+  return {
+    filename: file.suggestedFilename(),
+    text: await readFile(await file.path(), "utf8"),
+  };
+}
+
+test("a saved run's evidence files download from history for that run only", async ({
+  page,
+  request,
+}) => {
+  const { baseline, candidate } = await seedWorkspace(request);
+  await page.goto(`/runs/${candidate}?tab=evidence`);
+  for (const file of ["results.json", "spans.jsonl", "samples.jsonl"]) {
+    const { filename, text } = await download(page, `Download ${file}`);
+    expect(filename).toBe(`agentwatch-${candidate}-${file}`);
+    expect(text).toContain(candidate);
+    expect(text).not.toContain(baseline);
+  }
+  const exported = await download(page, "Export results.json");
+  expect(JSON.parse(exported.text).run_id).toBe(candidate);
+
+  // Compare offers each run's evidence; each download is that run's file.
+  await page.goto(`/compare?run=${candidate}&baseline=${baseline}`);
+  for (const [role, id] of [
+    ["baseline", baseline],
+    ["candidate", candidate],
+  ]) {
+    const { filename, text } = await download(page, `Export ${role} evidence`);
+    expect(filename).toBe(`agentwatch-${id}-results.json`);
+    expect(JSON.parse(text).run_id).toBe(id);
+  }
+});
+
+test("a saved evidence download fails visibly when history is unavailable", async ({
+  request,
+}) => {
+  const { candidate } = await seedWorkspace(request);
+  const href = `/api/experiments/coding/artifact?file=spans.jsonl&run_id=${candidate}`;
+  expect((await request.get(href)).status()).toBe(200);
+  await takeSavedHistoryDown(request);
+  const failed = await request.get(href);
+  expect(failed.status()).toBe(503);
+  expect(failed.headers()["content-disposition"]).toBeUndefined();
+  expect(
+    (
+      await request.get(
+        `/api/experiments/coding/artifact?file=spans.jsonl&run_id=${newSavedRunId()}`,
+      )
+    ).status(),
+  ).toBe(503);
+});
