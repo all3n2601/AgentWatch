@@ -205,7 +205,7 @@ These can be completed before adding an agent.
 ### Dashboard and contract coverage
 
 - [ ] Automated browser tests for overview → selected run → step evidence → export.
-  F04, November 23, 2026 (PR #110, branch `test/frontend-audit`, phase 1, in review):
+  F04 phase 1, November 23, 2026 (PR #110, branch `test/frontend-audit`, merged 2026-11-24):
   `apps/web/e2e/run-evidence.spec.ts` follows a selected saved run to its Evidence tab and checks
   that every download and export link names that UUID; a live run's export downloads only that
   run; an unknown UUID is a 404 showing no other run. Fixed: the artifact route accepted any 36
@@ -214,26 +214,35 @@ These can be completed before adding an agent.
   when `results.json` records another run or the requested file is newer than `results.json`
   (the worker demo writes spans and samples before `results.json`, so a newer file belongs to
   an unfinished rerun); `run-evidence.spec.ts` covers spans and samples from a rerun beside an
-  older `results.json`. Follow-up PR (F04 phase 2): downloading saved artifacts end to end (the
-  e2e fixture API does not serve `/v1/runs/{id}/artifacts/*` yet), the overview step, and
-  Attribution tab checks.
+  older `results.json`.
+  F04 phase 2, November 25, 2026 (branch `test/frontend-audit-phase2`, in the phase 2 PR):
+  the e2e fixture API now serves `/v1/runs/{id}/artifacts/*`, so `run-evidence.spec.ts`
+  downloads each saved evidence file and the Compare exports end to end and checks that every
+  file belongs to the selected run; with history down the route answers 503 without a file. The
+  Attribution tab is in the responsive, axe, keyboard and evidence checks. Open: the overview
+  step.
 - [ ] Automated comparison tests, including different workload settings and removed selections.
-  F04, November 23, 2026 (PR #110, branch `test/frontend-audit`, phase 1, in review):
+  F04 phase 1, November 23, 2026 (PR #110, branch `test/frontend-audit`, merged 2026-11-24):
   `apps/web/e2e/compare-runs.spec.ts` adds the Runs comparison selection (at most two saved runs,
   no tick for live runs, Clear selection), a run page's Compare button opening Compare with that
   run as candidate, and Swap. Ticked runs that no longer name a loaded run are dropped from a
   reloaded or shared address (`apps/web/e2e/runs-filters.spec.ts`).
 - [ ] Automated refresh, reconnect, empty-history, invalid-history, and local-fallback tests.
-  F04, November 23, 2026 (PR #110, branch `test/frontend-audit`, phase 1, in review):
+  F04 phase 1, November 23, 2026 (PR #110, branch `test/frontend-audit`, merged 2026-11-24):
   a reload keeps the Runs filters, page, preview and ticked runs, and the open tab on `/live`
   and on a run page; back/forward now restore a run page's tab (it reopened Diagnosis while the
   address named another tab), and a reload of `/live?tab=` now opens that tab
   (`apps/web/e2e/run-evidence.spec.ts`, `runs-filters.spec.ts`). The local-file fallback is
-  checked as above. Follow-up PR (F04 phase 2): reconnect on the run page, hidden-tab pause,
-  offline and recovery, which need the fixture API's read log.
+  checked as above.
+  F04 phase 2, November 25, 2026 (branch `test/frontend-audit-phase2`, in the phase 2 PR):
+  the fixture API logs every request it answers. `apps/web/e2e/live-run-page.spec.ts`, on the
+  browser's controlled clock, covers a failed read on a live run's page that keeps the last data
+  and recovers, one poll shared by all of its tabs, no reads while the page is hidden and one read
+  as soon as it is shown, reload keeping the run and tab, and offline keeping the last data
+  labelled Stale until the API is back. The Attribution tab reads its route only while open.
 - [ ] Confirm empty database instructions work with the recording command and ingestion API active.
 - [ ] Sorting, combined filters, zero matches, older history pages, and long run/step labels.
-  F04, November 23, 2026 (PR #110, branch `test/frontend-audit`, phase 1, in review):
+  F04 phase 1, November 23, 2026 (PR #110, branch `test/frontend-audit`, merged 2026-11-24):
   `apps/web/e2e/runs-filters.spec.ts` covers combined filters with the match count, search and
   Clear filters, zero matches, paging, loading older saved runs and its failure, the older/newest
   live-run links, and malformed addresses falling back to the defaults. Fixed: only `?q=` was kept
@@ -241,9 +250,15 @@ These can be completed before adding an agent.
   and the ticked runs; and the preview could show a run that was not on the visible page
   (`apps/web/tests/runs-page.test.ts` covers parsing and writing the address). A kind or
   resource in a shared address that no loaded run has yet is kept and labelled "not in loaded
-  runs" until older history loads, not cleared. Follow-up PR (F04 phase 2): long labels.
+  runs" until older history loads, not cleared.
+  F04 phase 2, November 25, 2026 (branch `test/frontend-audit-phase2`, in the phase 2 PR):
+  `apps/web/e2e/long-labels.spec.ts` uses live task and step ids at the live contract's
+  128-character maximum and 200-character saved models and workloads, at 390 and 1440 px. Fixed:
+  the Runs list and the live run list cut long task ids and model names off with an ellipsis;
+  they now wrap. Found, not fixed (shared components): the timeline widget clips row labels (the
+  selected step's panel shows the full id) and the Compare picker clips long one-word options.
 - [ ] Keyboard navigation, focus restoration, screen-reader labels, and color contrast audit.
-  F04, November 23, 2026 (PR #110, branch `test/frontend-audit`, phase 1, in review):
+  F04 phase 1, November 23, 2026 (PR #110, branch `test/frontend-audit`, merged 2026-11-24):
   `apps/web/e2e/keyboard.spec.ts` checks a visible focus indicator at every stop on Runs, a run's
   Evidence tab, `/live`, Compare and Controls; the skip link; run tabs with arrow keys; a filter
   chosen and dismissed with Escape, focus returning to it; preview, ticks and Compare; a live run
@@ -253,20 +268,37 @@ These can be completed before adding an agent.
   assistant rail before the page content, kept as a declared known failure; the shared CopyChip's
   visible text is not in its accessible name for one-word values such as checksums, kept as one
   node-scoped axe exception. Manual screen-reader checks have not been done.
+  F04 phase 2, November 25, 2026 (branch `test/frontend-audit-phase2`, in the phase 2 PR):
+  the Attribution tab on a run page and on `/live` joins the axe matrix (18 page states at seven
+  viewports) and the keyboard checks (reached with the arrow keys, a step chosen with Enter, its
+  evidence scrollable). Found, not fixed (shared shell): the skip link is 42 px tall.
 - [ ] Tooltip/detail readability on small screens and charts under reduced-motion preferences.
-  F04, November 23, 2026 (PR #110, branch `test/frontend-audit`, phase 1, in review):
+  F04 phase 1, November 23, 2026 (PR #110, branch `test/frontend-audit`, merged 2026-11-24):
   `apps/web/e2e/responsive.spec.ts` finds no page-level horizontal overflow, no unlabelled
   sideways-scrolling content, and navigation plus each page's main actions reachable on 16 page
   states at 360, 390, 768, 1280×720, 1280×800 and 1440 px and 200% zoom (640×400 CSS px);
   touch targets under 44 px are reported, not failed. Tooltip readability and reduced motion
   were not checked.
+  F04 phase 2, November 25, 2026 (branch `test/frontend-audit-phase2`, in the phase 2 PR):
+  the touch-target report now measures a labelled control by its label; at 360, 390 and 768 px
+  the only target under 44 px is the shared shell's skip link (144×42).
 - [ ] Large-run performance, rendering limits, and table/waterfall virtualization if needed.
-  F04, November 23, 2026 (PR #110, branch `test/frontend-audit`, phase 1, in review):
+  F04 phase 1, November 23, 2026 (PR #110, branch `test/frontend-audit`, merged 2026-11-24):
   the live timeline searched every step once per row on every 2 s poll and named every step
   not yet charted in one sentence; it now indexes steps once per snapshot and names at most 20,
   counting the rest (`apps/web/tests/live-view.test.ts`, `apps/web/e2e/live-feed.spec.ts`).
-  Follow-up PR (F04 phase 2): large-run fixtures (thousands of steps and samples) with budgets
-  declared before the first measurement.
+  F04 phase 2, November 25, 2026 (branch `test/frontend-audit-phase2`, in the phase 2 PR):
+  `apps/web/e2e/large-runs.spec.ts` holds seeded synthetic runs (300 saved and 120 live runs; a
+  live run with 2,000 steps, 10,000 records and 5,000 samples, 10% unavailable; a saved run
+  with 1,000 steps and 500 agent messages) to budgets committed on the branch before the
+  spec's first run: the first tab within 5 s, a tab switch within 1 s, no task over 500 ms while
+  polling. Before the fix, returning to Timeline on a large live run's page took 708–1,091 ms
+  and missed in 3 of 6 runs: the run page rebuilt the 2,000-step chart on each return. It now
+  keeps the Timeline mounted, as `/live` does (Attribution still mounts only while open), and
+  took 386–513 ms in 5 runs. Slowest first tab: 3.4–4.5 s on that page. One run of 11 stalled
+  100.5 s on a tab switch with no main-thread task over 220 ms; not reproduced in 6 repeats and
+  not explained. Fixed: a queued step was labelled Running and drawn as work on the live
+  timeline; it is now Queued and drawn as waiting.
 - [ ] Cross-browser checks beyond the in-app browser used so far.
 - [ ] Full repository checks, including Go and shared packages, on the final integrated branch.
 - [ ] Observe a successful remote CI run; configuration alone does not establish this.
@@ -1183,7 +1215,7 @@ frozen evaluation sets without tuning against them.
   2026-11-12: what the dashboard must show (model identity and promotion state, abstention as
   its own state, missing telemetry beside the prediction, the excess fraction as an estimate)
   is in the [serving contract](model-serving-contract.md); no UI change yet.
-  2026-11-22 (F03, PR #106, branch `feature/verdict-evidence`, open, not merged): live runs gain an
+  2026-11-22 (F03, PR #106, branch `feature/verdict-evidence`, merged 2026-11-24): live runs gain an
   Attribution tab on `/live` and on a live run's page, read by UUID from
   `GET /v1/live/runs/{UUID}/attributions` through `/api/live/runs/[runId]/attributions`. Each
   terminal step shows the rules verdict beside the model outcome; measured queue, execution and
@@ -1199,7 +1231,7 @@ frozen evaluation sets without tuning against them.
   mixed evidence, compatible comparisons, draining, not found versus empty, no page overflow at
   390, 720, 768 and 1440 px; full Playwright suite 72 passed). Open: checking against a running
   worker with a real model pair, and saved runs, which have no attribution endpoint.
-  2026-11-23 (PR #106 review fixes, same branch, not merged): rows are also malformed when
+  2026-11-23 (PR #106 review fixes, same branch, merged with #106): rows are also malformed when
   they break the remaining `step-features-v1` invariants (present telemetry if and only if it
   has samples, no coverage for missing, empty or unaligned telemetry, an observed interval only
   with two or more samples, and `queue_fraction` equal to queue over duration within 1e-6, null
