@@ -72,8 +72,11 @@ JOURNAL_FILE = "live-journal.jsonl"
 MAX_JOURNAL_BYTES = 64 * 1024 * 1024
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 MAX_VERDICT_BYTES = 4 * 1024 * 1024
-# The agent's admission overhead measurement (agentwatch_agent.admission_overhead).
-ADMISSION_PROTOCOL = "admission-overhead-v1"
+# The agent's admission overhead measurement (agentwatch_agent.admission_overhead). Only v2
+# judges the gate: v1 paused before admission_on requests alone, so its conditions were paced
+# differently. Groups of any admission protocol never judge the instrumentation gate.
+ADMISSION_PROTOCOL = "admission-overhead-v2"
+ADMISSION_PROTOCOLS = ("admission-overhead-v1", ADMISSION_PROTOCOL)
 # Gates whose threshold is zero occurrences: one observed failure decides them on any sample.
 ZERO_TOLERANCE_GATES = ("failures_and_timeouts", "quality", "starvation_and_leaks")
 
@@ -378,9 +381,10 @@ def overhead_gate(
     """An overhead verdict's group for this experiment's model and host, when one was given.
 
     Overhead depends on the host, so only a group measured on the manifest's host
-    (`hardware.host_id`, the verdict's `host_label`) counts. Admission groups
-    (`admission-overhead-v1`) judge the admission gate and every other protocol the
-    instrumentation gate, so one verdict file can never stand in for the other. A verdict
+    (`hardware.host_id`, the verdict's `host_label`) counts. `admission-overhead-v2` groups
+    judge the admission gate; groups of any admission protocol never judge the instrumentation
+    gate, so one verdict file can never stand in for the other. `admission-overhead-v1` groups
+    judge neither: v1 paced its two conditions differently. A verdict
     judged under another contract, or against a budget other than this gate's threshold, is
     not used either. The gate records the verdict file's hash, its contract and the matched
     group's settings, task and budget.
@@ -415,7 +419,11 @@ def overhead_gate(
         and isinstance(group.get("settings"), dict)
         and group["settings"].get("model") == model
         and group["settings"].get("host_label") == host_id
-        and (group["settings"].get("protocol") == ADMISSION_PROTOCOL) == admission
+        and (
+            group["settings"].get("protocol") == ADMISSION_PROTOCOL
+            if admission
+            else group["settings"].get("protocol") not in ADMISSION_PROTOCOLS
+        )
     ]
     if len(groups) != 1:
         return gate(
@@ -663,7 +671,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--overhead-verdict", type=Path, help="A07 overhead-verdict.json")
     parser.add_argument(
-        "--admission-verdict", type=Path, help="overhead-verdict.json of admission-overhead-v1"
+        "--admission-verdict", type=Path, help="overhead-verdict.json of admission-overhead-v2"
     )
     parser.add_argument("--output", type=Path, help=f"report directory (default {DEFAULT_REPORTS})")
     args = parser.parse_args(argv)

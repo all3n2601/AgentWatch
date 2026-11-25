@@ -1502,6 +1502,16 @@ from M3 through M6 and do not renumber the implementation milestones above.
   overhead comes from an `admission-overhead-v1` verdict (`ADMISSION_VERDICT`); without one it
   is not evaluated and no candidate can pass. Verified on synthetic experiments only:
   `pipelines/data/tests/test_optimization_gates.py`.
+  2026-11-25 admission pacing fix (branch `fix/admission-overhead-pacing`): Akshay's acceptance
+  on #109 found that `admission-overhead-v1` paused only before `admission_on` requests, so
+  idle time before the timer differed by condition. `admission-overhead-v2` pauses before
+  every timed request in both conditions, drawn from the same seeded distribution and recorded
+  as `untimed_pause_seconds`. The verdict judges v1 and v2 against the admission budget; the
+  optimization gates use only v2 groups, and no admission group judges instrumentation
+  overhead. Regression tests in `services/agent/tests/test_admission_overhead.py` and
+  `pipelines/data/tests/test_optimization_gates.py` fail on v1 and pass on v2; agent, data and
+  contract suites 2,425 passed in WSL with PostgreSQL. The admission verdict O06 uses is
+  re-measured with v2 on the GPU laptop, under the clean setup.
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.

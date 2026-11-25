@@ -332,7 +332,7 @@ def test_the_command_writes_the_report_and_refuses_a_bad_manifest(tmp_path, caps
 
 
 ADMISSION = {
-    "settings": {"protocol": "admission-overhead-v1", "model": MODEL["name"], "host_label": HOST},
+    "settings": {"protocol": "admission-overhead-v2", "model": MODEL["name"], "host_label": HOST},
     "verdict": "within_budget",
 }
 INSTRUMENTATION = {
@@ -364,6 +364,23 @@ def test_with_both_overhead_verdicts_every_gate_can_pass(tmp_path):
     assert (entry["outcome"], entry["reasons"]) == (PASS, [])
     # A pass under a proposed contract still promotes nothing.
     assert report["promotion"]["promoted"] is None
+
+
+def test_an_admission_overhead_v1_verdict_judges_neither_gate(tmp_path):
+    # v1 paced its two conditions differently, so its verdict cannot judge the admission gate,
+    # and no admission protocol ever stands in for instrumentation overhead.
+    experiment(tmp_path / "experiment")
+    v1 = ADMISSION | {"settings": ADMISSION["settings"] | {"protocol": "admission-overhead-v1"}}
+    report = evaluate(
+        tmp_path / "experiment",
+        CONTRACT_PATH,
+        overhead_verdict=write_verdict(tmp_path / "a07.json", v1),
+        admission_verdict=write_verdict(tmp_path / "admission.json", v1),
+    )
+    shared = {item["gate"]: item for item in report["experiment_gates"]}
+    for name in ("admission_overhead", "instrumentation_overhead"):
+        assert shared[name]["status"] == NOT_EVALUATED
+        assert "0 matching groups" in shared[name]["reason"]
 
 
 def test_a_verdict_given_for_the_other_gate_is_not_used(tmp_path):

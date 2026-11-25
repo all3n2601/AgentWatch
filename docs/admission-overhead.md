@@ -1,7 +1,8 @@
 # Admission overhead
 
-Status: O06 measurement, implemented 2026-11-22 on branch `feature/admission-overhead` and
-verified with test doubles only. Nothing has been measured on hardware yet.
+Status: O06 measurement, merged 2026-11-23 (#104) as `admission-overhead-v1` and measured on
+the GPU laptop ([project checklist](project-checklist.md)). `admission-overhead-v2` (2026-11-25)
+paces both conditions the same way; see [Versions](#versions).
 
 The [optimization contract](optimization-contract.md) gates admission overhead: the median
 wall-time increase with unchanged limits must be at most `max_median_admission_overhead` (5%),
@@ -9,7 +10,7 @@ measured separately from instrumentation. Runner-process admission
 ([ADR 0010](adr/0010-runner-process-admission-limits.md)) adds, around every model request, a
 permit from the admission controller and a policy watcher polling the policy service.
 
-## Protocol `admission-overhead-v1`
+## Protocol `admission-overhead-v2`
 
 `make agent-admission-overhead ADMISSION_ARGS="--model-backend vllm"` (the live API must be
 running, since admission reads its policy) sends the runner's first model request for one task
@@ -26,6 +27,10 @@ running, since admission reads its policy) sends the runner's first model reques
      `poll_phase_seed`), then starts the timer; the watcher stops after the timer. Each
      measurement records `poll_phase_seconds` and `polls_during_request`, and the report counts
      `requests_overlapping_a_poll`.
+   - Both conditions are paced alike: every timed request, `admission_off` too, follows an
+     untimed pause drawn from the same seeded uniform distribution over one poll interval, and
+     each measurement records it as `untimed_pause_seconds`. Idle time before the timer never
+     differs by condition. Warm-ups are not paced.
 3. The active policy is read once before the first request and once after the last. A
    version change at any point fails the measurement: limits must stay unchanged.
 
@@ -38,6 +43,13 @@ measurement is saved with its status and error.
 For O06, measure with the policy the experiment's candidates use set on this runner's model
 server (for example `inference_requests` 1 on vLLM): with sequential requests the limit is
 enforced but never binds, so the permit path a limited run takes is the one timed.
+
+## Versions
+
+| Version | Change |
+|---|---|
+| `admission-overhead-v1` (2026-11-22, #104) | Paused only before `admission_on` requests, so idle time before the timer differed by condition (found on #109). Its verdicts stay judgeable as history but never judge the optimization gates. |
+| `admission-overhead-v2` (2026-11-25) | Pauses before every timed request in both conditions, from the same seeded distribution. |
 
 ## Verdict
 

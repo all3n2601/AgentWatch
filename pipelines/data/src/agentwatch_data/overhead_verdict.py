@@ -17,7 +17,7 @@ given twice is refused. A completed attempt needs the declared 30 pairs. Failed 
 attempts saved without per-repetition walls are kept as `not_evaluated`, and a group in which
 nothing could be evaluated is `not_evaluated` too.
 
-The agent's `admission-overhead` measurements (`admission-overhead-v1`) are judged by the same
+The agent's `admission-overhead` measurements (`admission-overhead-v1` and `-v2`) are judged by the same
 rule against the contract's admission overhead budget (`max_median_admission_overhead`):
 `admission_off` takes the uninstrumented side of each pair and `admission_on` the instrumented
 one, so the report's "uninstrumented"/"instrumented" fields mean "without"/"with admission".
@@ -64,8 +64,11 @@ CONDITIONS = {
     "resource-sampling-overhead-v1": ("unsampled", "sampled"),
     "resource-sampling-overhead-v2": ("unsampled", "sampled"),
     "admission-overhead-v1": ("admission_off", "admission_on"),
+    "admission-overhead-v2": ("admission_off", "admission_on"),
 }
-ADMISSION_PROTOCOL = "admission-overhead-v1"
+# Every admission measurement protocol: judged against the admission budget, never the
+# instrumentation one. v1 paused only before admission_on requests; v2 paces both conditions.
+ADMISSION_PROTOCOLS = ("admission-overhead-v1", "admission-overhead-v2")
 STATUSES = ("completed", "failed", "cancelled")
 WITHIN, OVER, INCONCLUSIVE, NOT_EVALUATED = (
     "within_budget",
@@ -167,7 +170,7 @@ def _settings(document: dict, version: str) -> dict:
     metrics = _probe_metrics(document)
     if metrics is not None:
         settings["probe_metrics"] = metrics
-    if version == ADMISSION_PROTOCOL:
+    if version in ADMISSION_PROTOCOLS:
         settings |= _admission_settings(document)
     return settings
 
@@ -246,7 +249,7 @@ def read_attempt(path: Path, number: int = 1) -> Attempt:
 
 def budget_for(protocol: str, contract: OptimizationContract) -> float:
     """The contract's budget for what a measurement protocol adds to the workload."""
-    if protocol == ADMISSION_PROTOCOL:
+    if protocol in ADMISSION_PROTOCOLS:
         return contract.max_median_admission_overhead
     return contract.max_median_instrumentation_overhead
 
