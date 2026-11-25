@@ -80,3 +80,10 @@ experiment's model.
 - The verdict report's top-level `protocol` names the shared acceptance rule
   (`instrumentation-overhead-acceptance-v1`); which budget applied is per group.
 - One task, one model and one host per attempt; the verdict describes that setup only.
+- The order is fixed: `admission_off` runs first in every pair, in v1 and v2, and is not
+  counterbalanced. v2 removes the pause asymmetry but not a position effect, so a residual
+  effect of running second is not separated from admission's cost. If running second is
+  systematically faster, the measurement understates admission overhead. A negative median
+  therefore reads as "no measurable overhead", never as a speed-up. Counterbalancing needs a
+  verdict change too (`overhead_verdict` pairs index 2k with 2k+1 as baseline then treated),
+  and the A07 protocols share the same fixed order, so it is one follow-up for both.

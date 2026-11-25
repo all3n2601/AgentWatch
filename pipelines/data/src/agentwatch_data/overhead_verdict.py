@@ -17,8 +17,9 @@ given twice is refused. A completed attempt needs the declared 30 pairs. Failed 
 attempts saved without per-repetition walls are kept as `not_evaluated`, and a group in which
 nothing could be evaluated is `not_evaluated` too.
 
-The agent's `admission-overhead` measurements (`admission-overhead-v1` and `-v2`) are judged by the same
-rule against the contract's admission overhead budget (`max_median_admission_overhead`):
+The agent's `admission-overhead` measurements (`admission-overhead-v1` and `-v2`) are judged
+by the same rule against the contract's admission overhead budget
+(`max_median_admission_overhead`):
 `admission_off` takes the uninstrumented side of each pair and `admission_on` the instrumented
 one, so the report's "uninstrumented"/"instrumented" fields mean "without"/"with admission".
 
