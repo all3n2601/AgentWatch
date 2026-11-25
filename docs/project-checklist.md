@@ -1277,7 +1277,7 @@ are unimplemented/unverified; the planning update is not execution evidence. O l
 task titles on the Team Planner; its generated card IDs are separate. The board stages run
 from M3 through M6 and do not renumber the implementation milestones above.
 
-- [ ] O01 — Rohit: accept policy/evaluation contracts and numerical gates after C01/A04/M01.
+- [x] O01 — Rohit: accept policy/evaluation contracts and numerical gates after C01/A04/M01.
   Proposed as `opt-contract-v1` (2026-10-26): [the optimization contract](optimization-contract.md)
   and `pipelines/model/optimization-contract.toml`. Open until all three teams accept it.
   2026-11-20 (Benoy, branch `docs/optimization-contract-v2`): proposed `opt-contract-v2` replaces
@@ -1292,17 +1292,21 @@ from M3 through M6 and do not renumber the implementation milestones above.
   Still proposed: acceptance needs every team's row in the contract page's acceptance table.
   2026-11-24 (Benoy): acceptance of `opt-contract-v2` requested in #109; each team accepts on
   that pull request, then one commit fills the table and sets `status` to `accepted`.
-  2026-11-25: accepted by every team on #109 (Agent & experiments: Benoy Joseph (2026-11-24); Frontend & ML: Rohit Biju (2026-11-24); Data & backend: Akshay Keerthi AS (2026-11-25)). `status = "accepted"` changes the
-  contract's canonical hash from `8e9bba65` to `0981612d`, so the clean 2026-11-24 A07 GPU
-  vLLM verdict (O06 above) was re-judged from the same saved attempts, host label
-  `rtx5070-laptop-wsl2`. No new measurement: `within_budget` with every figure unchanged;
-  only the contract's status and hash differ. SHA-256:
+  2026-11-25: accepted by every team on #109 (Agent & experiments: Benoy Joseph
+  (2026-11-24); Frontend & ML: Rohit Biju (2026-11-24); Data & backend: Akshay Keerthi AS
+  (2026-11-25)). `status = "accepted"` changes the contract's canonical hash from `8e9bba65`
+  to `0981612d`, so the clean 2026-11-24 A07 GPU vLLM verdict (O06 above) was re-judged from
+  the same saved attempts, host label `rtx5070-laptop-wsl2`. No new measurement:
+  `within_budget` with every figure unchanged; only the contract's status and hash differ.
+  SHA-256:
   - `accepted-verdict-sampling/overhead-verdict.json`: `6f2e5e3f1a9fa085bbdf8ccc5bb9baa6ba6a6c0ce360fd63d0e7202d0931d03c`
   The admission verdict is not re-judged here: Akshay's acceptance found that
   `admission-overhead-v1` pauses only before `admission_on` requests, so the two
   conditions are paced differently. The evaluation uses an admission verdict re-measured
   after that fix.
   Verified: `tests/contract/test_optimization_contract.py` with the table filled.
+  O01 complete 2026-11-25: `opt-contract-v2` accepted here (#109) and `eval-contract-v3`
+  accepted on 2026-11-12 ([evaluation contract](evaluation-contract.md)).
 - [ ] O02 — Allen: validated versioned manual controls and audit history after O01/B01/B02.
   Implemented 2026-11-03 on branch `feature/concurrency-policy` (not yet merged):
   [versioned manual concurrency policy](concurrency-policy.md), migration
