@@ -381,6 +381,11 @@ def test_an_admission_overhead_v1_verdict_judges_neither_gate(tmp_path):
     for name in ("admission_overhead", "instrumentation_overhead"):
         assert shared[name]["status"] == NOT_EVALUATED
         assert "0 matching groups" in shared[name]["reason"]
+    # The admission gate says which protocol it needs, so the fix is obvious.
+    assert shared["admission_overhead"]["reason"].endswith(
+        "admission verdicts must be admission-overhead-v2, this one has admission-overhead-v1"
+    )
+    assert "must be" not in shared["instrumentation_overhead"]["reason"]
 
 
 def test_a_verdict_given_for_the_other_gate_is_not_used(tmp_path):

@@ -412,6 +412,14 @@ def overhead_gate(
             None,
             threshold,
         ) | {"source": source}
+    measured_here = [
+        group["settings"].get("protocol")
+        for group in verdict.get("groups") or []
+        if isinstance(group, dict)
+        and isinstance(group.get("settings"), dict)
+        and group["settings"].get("model") == model
+        and group["settings"].get("host_label") == host_id
+    ]
     groups = [
         group
         for group in verdict.get("groups") or []
@@ -426,14 +434,21 @@ def overhead_gate(
         )
     ]
     if len(groups) != 1:
-        return gate(
-            name,
-            NOT_EVALUATED,
+        reason = (
             f"the verdict has {len(groups)} matching groups for model {model} on host "
-            f"{host_id}, not one",
-            None,
-            threshold,
-        ) | {"source": source}
+            f"{host_id}, not one"
+        )
+        outdated = sorted(
+            {protocol for protocol in measured_here if protocol in ADMISSION_PROTOCOLS}
+            - {ADMISSION_PROTOCOL}
+        )
+        if admission and outdated:
+            # Say why a group for this model and host was passed over, so the fix is obvious.
+            reason += (
+                f"; admission verdicts must be {ADMISSION_PROTOCOL}, this one has "
+                f"{', '.join(map(str, outdated))}"
+            )
+        return gate(name, NOT_EVALUATED, reason, None, threshold) | {"source": source}
     (group,) = groups
     budget = verdict_budget(verdict, group, admission=admission)
     source |= {
