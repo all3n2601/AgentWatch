@@ -5,7 +5,7 @@
 # as canonical JSON, the same method as eval-contract-v1.
 version = "opt-contract-v2"
 # "proposed" until every team has accepted it; values marked "proposed" have no supporting data.
-status = "proposed"
+status = "accepted"
 
 [policy]
 # Two independent positive-integer limits on future admissions to the designated workload.

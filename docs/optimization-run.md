@@ -2,8 +2,8 @@
 
 Status: O06 batch runner, implemented 2026-11-22 on branch `test/optimization-evaluation`,
 verified with test doubles and by a short development pilot on the GPU laptop
-([below](#development-pilot-2026-11-22)). The contract is still proposed, and no evaluation has
-run. Nothing here is an optimization result.
+([below](#development-pilot-2026-11-22)). `opt-contract-v2` was accepted on 2026-11-25 (#109); no
+evaluation has run yet. Nothing here is an optimization result.
 
 The runner executes a preregistered experiment ([experiment evidence](optimization-evidence.md))
 on one host and writes the batch records that `make compare-optimization` validates. It applies

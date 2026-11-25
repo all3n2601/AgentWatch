@@ -1,6 +1,6 @@
 # AgentWatch optimization contract
 
-Status: proposed `opt-contract-v2`, pending acceptance by all three teams. Thresholds live in
+Status: accepted `opt-contract-v2` (2026-11-25, #109). Thresholds live in
 `pipelines/model/optimization-contract.toml`. O02 stores and serves versioned manual policy
 ([concurrency policy](concurrency-policy.md)), and agent runner processes enforce it for their own
 work ([ADR 0010](adr/0010-runner-process-admission-limits.md), O03). No optimization has been
@@ -138,9 +138,9 @@ Acceptance of `opt-contract-v2` was requested on 2026-11-24 in #109.
 
 | Team | Members | Accepted by | Date |
 |---|---|---|---|
-| Agent & experiments | Benoy, Akshayaa | | |
-| Frontend & ML | Rohit, Meghana | | |
-| Data & backend | Allen, Akshay | | |
+| Agent & experiments | Benoy, Akshayaa | Benoy Joseph | 2026-11-24 |
+| Frontend & ML | Rohit, Meghana | Rohit Biju | 2026-11-24 |
+| Data & backend | Allen, Akshay | Akshay Keerthi AS | 2026-11-25 |
 
 ## Change policy
 
