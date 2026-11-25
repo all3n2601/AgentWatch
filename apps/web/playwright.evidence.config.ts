@@ -3,8 +3,8 @@ import base from "./playwright.config";
 
 // F04 handoff evidence: screenshots of each audited flow at desktop, tablet and phone widths,
 // an INDEX.md describing them, and an HTML report, all under f04-evidence/ (gitignored).
-// Run with `pnpm exec playwright test -c playwright.evidence.config.ts` after `pnpm build`;
-// it uses the same fixture API and production build as the browser tests.
+// Run with `pnpm test:evidence` after `pnpm build`; it uses the same fixture API and
+// production build as the browser tests.
 
 export default defineConfig({
   ...base,

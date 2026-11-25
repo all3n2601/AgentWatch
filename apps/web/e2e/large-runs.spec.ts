@@ -176,7 +176,8 @@ test("the Runs list with 300 saved and 120 live runs", async ({
     "load older saved runs",
     await timed(
       () => page.getByRole("button", { name: "Load older saved runs" }).click(),
-      () => expect(pager).toContainText("Page 1 of 10"),
+      // The list stays on the page it was on; older runs add pages.
+      () => expect(pager).toContainText("Page 2 of 10"),
     ),
     null,
   );
@@ -211,7 +212,7 @@ test(`/live with a ${LARGE_LIVE_STEPS}-step, 10,000-record run selected`, async 
       () => page.goto(`/live?liveRun=${runId}`),
       () =>
         expect(
-          page.getByText(`${LARGE_LIVE_RECORDS} records received`),
+          page.getByText(`${LARGE_LIVE_RECORDS} records received`).first(),
         ).toBeVisible({ timeout: MEASURE_TIMEOUT_MS }),
     ),
     BUDGETS.firstTabVisibleMs,
@@ -222,7 +223,10 @@ test(`/live with a ${LARGE_LIVE_STEPS}-step, 10,000-record run selected`, async 
       "Resources",
       () => page.getByRole("heading", { name: /Resource/ }).first(),
     ],
-    ["Evidence", () => page.getByRole("link", { name: "Export JSON" })],
+    [
+      "Evidence",
+      () => page.getByRole("link", { name: "Download live records (JSON)" }),
+    ],
     ["Status", () => page.getByText("Run state", { exact: true })],
   ] as const) {
     at(
@@ -234,6 +238,8 @@ test(`/live with a ${LARGE_LIVE_STEPS}-step, 10,000-record run selected`, async 
       BUDGETS.tabSwitchMs,
     );
   }
+  // No budget: shows the long-task observer works, so a 0 ms result while polling is real.
+  at("longest task while loading", await longestTaskSince(page, 0), null);
   at(
     `longest task over ${POLLS_OBSERVED} polls (Status tab)`,
     await longestTaskWhilePolling(page, request, runId),
@@ -287,6 +293,7 @@ test(`a live run's page with ${LARGE_LIVE_STEPS} steps and ${LARGE_LIVE_SAMPLES}
       BUDGETS.tabSwitchMs,
     );
   }
+  at("longest task while loading", await longestTaskSince(page, 0), null);
   at(
     `longest task over ${POLLS_OBSERVED} polls (Timeline tab)`,
     await longestTaskWhilePolling(page, request, runId),

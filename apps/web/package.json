@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:evidence": "playwright test -c playwright.evidence.config.ts"
   },
   "dependencies": {
     "@agentwatch/ui": "workspace:*",

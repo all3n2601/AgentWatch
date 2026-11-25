@@ -45,6 +45,9 @@ async function capture(
   );
   // Let charts finish their first layout so the picture matches what a viewer sees.
   await page.waitForLoadState("networkidle");
+  // A full-page capture taken while scrolled draws fixed elements (the skip link, parked
+  // just above the viewport) part-way down the page, where no viewer sees them.
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
     path: path.join(EVIDENCE_DIR, file),
     fullPage: true,
@@ -127,6 +130,26 @@ async function walkFlows(
   await page.goto(`/runs/${seeded.live}?tab=evidence`);
   await shot("live-run", "evidence-export");
 
+  // Attribution (F03): the verdicts table, then one step's evidence.
+  const attributions = page.getByRole("region", {
+    name: "Step attributions table",
+  });
+  await page.goto(`/runs/${seeded.live}?tab=attribution`);
+  await expect(attributions).toBeVisible();
+  await shot("live-run", "attribution");
+  await attributions
+    .getByRole("button", { name: "tool-2", exact: true })
+    .click();
+  await expect(
+    page
+      .getByRole("region", { name: "Step evidence" })
+      .getByText("tool-2", { exact: true }),
+  ).toBeVisible();
+  await shot("live-run", "attribution-step-evidence");
+  await page.goto(`/live?liveRun=${seeded.live}&tab=attribution`);
+  await expect(attributions).toBeVisible();
+  await shot("live", "attribution");
+
   // Controls and the not-found state.
   await page.goto("/controls");
   await shot("controls", "policy");
@@ -202,8 +225,7 @@ test.afterAll(async () => {
       "- **Page overflow**: how far the document is wider than the viewport (none expected).",
       "- **axe**: serious or critical WCAG 2.x A/AA findings (`@axe-core/playwright`), before the",
       "  documented exceptions in `e2e/a11y.spec.ts`.",
-      "- Not yet covered: the Attribution tab (PR #106) and large-run fixtures, which follow once",
-      "  #106 merges.",
+      "- Large-run budgets are measured by `e2e/large-runs.spec.ts` in the browser suite, not here.",
       "",
       "| Viewport | Flow | Step | Screenshot | Page overflow | axe |",
       "| --- | --- | --- | --- | --- | --- |",

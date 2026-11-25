@@ -108,7 +108,9 @@ export function largeLiveRun(
     } else applied.push(running);
   }
   for (let index = 0; index < LARGE_LIVE_SAMPLES; index += 1) {
-    const second = index * 0.2;
+    // A quarter second is exact in binary, so tick_ns (second × 1e9) stays an integer
+    // as the contract requires.
+    const second = index * 0.25;
     const unavailable = index % UNAVAILABLE_EVERY === 0;
     timed.push({
       at: second,

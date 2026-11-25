@@ -9,6 +9,7 @@ import { useLiveRun } from "@/components/use-live-feed";
 import { GlassPanel, PanelHeader } from "@/components/ui/glass-panel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { RunDetailModel } from "@/lib/run-detail";
+import { cn } from "@/lib/utils";
 import type { RunTab } from "@/lib/routes";
 import type { RunView } from "@/lib/unified-runs";
 import { DiagnosisTab } from "./diagnosis-tab";
@@ -106,7 +107,13 @@ function WrappedTab({
  * live API feeds the first four; Attribution reads its own route. Inactive tab panels are
  * unmounted, so Attribution polls only while open. Until the run has data each tab shows the
  * same notice.
+ *
+ * Timeline is the exception: it stays mounted (hidden) while another tab is open, as on
+ * /live. Rebuilding a 2,000-step timeline on each return missed the 1 s tab-switch budget
+ * (e2e/large-runs.spec.ts), and the chosen step is kept.
  */
+const KEPT_MOUNTED = new Set<string>(["timeline"]);
+
 function LiveTabs({ runId }: { runId: string }) {
   const live = useLiveRun(runId);
   const tabs = liveRunTabs(live);
@@ -116,7 +123,12 @@ function LiveTabs({ runId }: { runId: string }) {
       {(
         ["status", "timeline", "resources", "evidence", "attribution"] as const
       ).map((id) => (
-        <TabsContent key={id} value={id} className={TAB_PANEL}>
+        <TabsContent
+          key={id}
+          value={id}
+          forceMount={KEPT_MOUNTED.has(id) ? true : undefined}
+          className={cn(TAB_PANEL, "data-[state=inactive]:hidden")}
+        >
           {tabs ? tabs[id] : notice}
         </TabsContent>
       ))}

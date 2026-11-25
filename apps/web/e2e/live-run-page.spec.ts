@@ -1,11 +1,18 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { servePolicy } from "./audit";
 import {
   advanceRun,
+  attributionReads,
   registerRun,
   resetFixtureApi,
   snapshotRequests,
 } from "./fixture-control";
+import {
+  attributedRun,
+  attributionItem,
+  attributionRecord,
+  attributionState,
+} from "./fixtures/attributions";
 import { fixtureRun, newRunId, snapshot, stepEvent } from "./live-runs";
 
 // F04 phase 2: a live run's own page (/runs/{id}) while it is polled. The browser's clock is
@@ -18,6 +25,8 @@ const POLL_MS = 2_000;
 const STALE_AFTER_MS = 30_000;
 /** The longest jittered retry delay (lib/live-poll.ts: 30 s cap, +20%). */
 const MAX_RETRY_MS = 36_000;
+/** Fake time advanced per attempt while waiting for a retry to land. */
+const CLOCK_STEP_MS = 500;
 
 test.beforeEach(async ({ page, request }) => {
   await resetFixtureApi(request);
@@ -42,6 +51,25 @@ const connection = (page: Page) =>
   page.getByRole("status").filter({ hasText: "Live API connection" });
 const feedTile = (page: Page) =>
   page.getByRole("status").filter({ hasText: "Feed" }).first();
+
+/**
+ * Advances the page clock in short steps until `locator` shows `text`, within the longest
+ * retry delay. One large jump would also fire the page's 10 s request timeout (a fake-clock
+ * timer) while a real response is still on its way, and the retry would fail again.
+ */
+async function advanceUntil(page: Page, locator: Locator, text: string) {
+  let advancedMs = 0;
+  await expect(async () => {
+    const shown = (await locator.textContent()) ?? "";
+    if (shown.includes(text)) return;
+    expect(advancedMs, `"${text}" within the retry delay`).toBeLessThan(
+      MAX_RETRY_MS,
+    );
+    await page.clock.runFor(CLOCK_STEP_MS);
+    advancedMs += CLOCK_STEP_MS;
+    throw new Error(`waiting for "${text}"`);
+  }).toPass({ timeout: 60_000, intervals: [250] });
+}
 
 /** Hides or shows the page as a background browser tab does. */
 async function setHidden(page: Page, hidden: boolean) {
@@ -90,9 +118,8 @@ test("a failed read on the run page keeps the last data and recovers", async ({
   await expect(page.getByRole("button", { name: /tool-1/ })).toBeVisible();
 
   await advanceRun(request, runId);
-  await page.clock.runFor(MAX_RETRY_MS);
   await page.getByRole("tab", { name: "Live status" }).click();
-  await expect(connection(page)).toContainText("Connected");
+  await advanceUntil(page, connection(page), "Connected");
   await page.getByRole("tab", { name: "Timeline" }).click();
   await expect(page.getByRole("button", { name: /tool-2/ })).toBeVisible();
 });
@@ -222,8 +249,7 @@ test("offline, the last data stays shown and is labelled stale until the API is 
   await expect(runState).toContainText("Running");
 
   await page.context().setOffline(false);
-  await page.clock.runFor(MAX_RETRY_MS);
-  await expect(connection(page)).toContainText("Connected");
+  await advanceUntil(page, connection(page), "Connected");
 });
 
 test("a step that is only queued is labelled Queued on the timeline, never Running", async ({
@@ -250,4 +276,76 @@ test("a step that is only queued is labelled Queued on the timeline, never Runni
   await expect(step("tool-2")).toContainText("Queued");
   await expect(step("tool-2")).not.toContainText("Running");
   await expect(step("tool-1")).toContainText("Running");
+});
+
+test("the Timeline stays mounted while another tab is open, keeping the chosen step", async ({
+  page,
+  request,
+}) => {
+  // Rebuilding a 2,000-step timeline on every return to the tab missed the 1 s tab-switch
+  // budget (large-runs.spec.ts), so the run page keeps it mounted, as /live does.
+  const runId = newRunId();
+  const { queued, running, completed } = toolSteps(runId);
+  const waiting = stepEvent("tool-2", 0, "queued", { runId, second: 4 });
+  const started = stepEvent("tool-2", 1, "running", {
+    runId,
+    started: 5,
+    second: 5,
+  });
+  await registerRun(
+    request,
+    fixtureRun(runId, [
+      snapshot(runId, {
+        steps: [completed, started],
+        records: [queued, running, completed, waiting, started],
+      }),
+    ]),
+  );
+  await page.goto(`/runs/${runId}?tab=timeline`);
+  const timeline = page.locator("[aria-label='Step timeline']");
+  const step = (id: string) =>
+    timeline.getByRole("button", { name: new RegExp(`\\b${id}\\b`) });
+  // Without a choice the running step is selected; choose the completed one instead.
+  await expect(step("tool-2")).toHaveAttribute("aria-pressed", "true");
+  await step("tool-1").click();
+  await expect(step("tool-1")).toHaveAttribute("aria-pressed", "true");
+
+  await page.getByRole("tab", { name: "Live status" }).click();
+  await expect(timeline).toBeAttached();
+  await expect(timeline).toBeHidden();
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  // A remounted timeline would have dropped the choice and selected tool-2 again.
+  await expect(step("tool-1")).toHaveAttribute("aria-pressed", "true");
+});
+
+test("the Attribution tab polls only while it is open", async ({
+  page,
+  request,
+}) => {
+  const runId = newRunId();
+  await registerRun(
+    request,
+    attributedRun(runId, [
+      attributionState(runId, [
+        attributionItem(1, attributionRecord(runId, "tool-1")),
+      ]),
+    ]),
+  );
+  await page.goto(`/runs/${runId}?tab=attribution`);
+  await expect(
+    page.getByRole("region", { name: "Step attributions table" }),
+  ).toBeVisible();
+  await page.clock.runFor(POLL_MS * 2);
+  await expect
+    .poll(async () => (await attributionReads(request, runId)).length)
+    .toBeGreaterThanOrEqual(2);
+
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  const closedAt = (await attributionReads(request, runId)).length;
+  await page.clock.runFor(POLL_MS * 10);
+  // The live snapshot keeps being read for the open tab, so time did pass for polling.
+  await expect
+    .poll(async () => (await snapshotRequests(request, runId)).length)
+    .toBeGreaterThan(5);
+  expect((await attributionReads(request, runId)).length).toBe(closedAt);
 });
