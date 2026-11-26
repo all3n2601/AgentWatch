@@ -218,9 +218,12 @@ These can be completed before adding an agent.
   F04 phase 2, November 25, 2026 (branch `test/frontend-audit-phase2`, in the phase 2 PR):
   the e2e fixture API now serves `/v1/runs/{id}/artifacts/*`, so `run-evidence.spec.ts`
   downloads each saved evidence file and the Compare exports end to end and checks that every
-  file belongs to the selected run; with history down the route answers 503 without a file. The
-  Attribution tab is in the responsive, axe, keyboard and evidence checks. Open: the overview
-  step.
+  file belongs to the selected run; with history down the route answers 503 without a file.
+  Fixed: a failed download (history down, a rewritten local file, no answer) replaced the run page
+  with the route's raw JSON error; every evidence and export link now downloads in the page and
+  reports a failure in place, with Try again (`components/evidence-download.tsx`,
+  `apps/web/tests/evidence-download.test.ts`, `run-evidence.spec.ts`). The Attribution tab is in
+  the responsive, axe, keyboard and evidence checks. Open: the overview step.
 - [ ] Automated comparison tests, including different workload settings and removed selections.
   F04 phase 1, November 23, 2026 (PR #110, branch `test/frontend-audit`, merged 2026-11-24):
   `apps/web/e2e/compare-runs.spec.ts` adds the Runs comparison selection (at most two saved runs,
@@ -295,9 +298,11 @@ These can be completed before adding an agent.
   polling. Before the fix, returning to Timeline on a large live run's page took 708–1,091 ms
   and missed in 3 of 6 runs: the run page rebuilt the 2,000-step chart on each return. It now
   keeps the Timeline mounted, as `/live` does (Attribution still mounts only while open), and
-  took 386–513 ms in 5 runs. Slowest first tab: 3.4–4.5 s on that page. One run of 11 stalled
-  100.5 s on a tab switch with no main-thread task over 220 ms; not reproduced in 6 repeats and
-  not explained. Fixed: a queued step was labelled Running and drawn as work on the live
+  took 386–513 ms in 5 runs. Slowest first tab: 3.4–4.5 s on that page. Three runs stalled
+  for 90–150 s at random points (a large-run tab switch, `/live` polling, and an unrelated
+  Controls test, whose 30 s test timeout fired about 90 s late), with no main-thread task over
+  220 ms; this points to the host pausing rather than the app, but it is not proven.
+  Fixed: a queued step was labelled Running and drawn as work on the live
   timeline; it is now Queued and drawn as waiting.
 - [ ] Cross-browser checks beyond the in-app browser used so far.
 - [ ] Full repository checks, including Go and shared packages, on the final integrated branch.
