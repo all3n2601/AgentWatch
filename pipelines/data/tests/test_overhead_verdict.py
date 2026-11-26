@@ -33,6 +33,7 @@ def attempt_document(baseline, treated, protocol="agent-overhead-v1", **changes)
     names = {
         "agent-overhead-v1": ("uninstrumented", "instrumented"),
         "admission-overhead-v1": ("admission_off", "admission_on"),
+        "admission-overhead-v2": ("admission_off", "admission_on"),
     }.get(protocol, ("unsampled", "sampled"))
     measurements = []
     for pair, (base, test) in enumerate(zip(baseline, treated, strict=True)):
@@ -421,7 +422,9 @@ def test_admission_measurements_are_judged_against_the_admission_budget(tmp_path
     contract = load_optimization_contract(contract_path)
     treated = [wall * 1.10 for wall in STABLE]
     for protocol, expected in (
+        # Both admission protocols take the admission budget; v1 stays judgeable as history.
         ("admission-overhead-v1", "within_budget"),
+        ("admission-overhead-v2", "within_budget"),
         ("resource-sampling-overhead-v1", "over_budget"),
     ):
         paths = [
@@ -449,7 +452,7 @@ def admission_attempt(limits, enforced, poll_seconds=1.0, service="vllm") -> dic
     return attempt_document(
         STABLE,
         STABLE,
-        "admission-overhead-v1",
+        "admission-overhead-v2",
         policy={
             "version": 3,
             "limits": limits,
@@ -501,7 +504,7 @@ def test_each_group_records_its_protocols_budget(tmp_path):
     }
     assert budgets == {
         "resource-sampling-overhead-v1": CONTRACT.max_median_instrumentation_overhead,
-        "admission-overhead-v1": CONTRACT.max_median_admission_overhead,
+        "admission-overhead-v2": CONTRACT.max_median_admission_overhead,
     }
 
 

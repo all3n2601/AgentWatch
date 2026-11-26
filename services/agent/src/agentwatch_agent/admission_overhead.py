@@ -15,6 +15,10 @@ sends it. Warm-up requests are discarded so the model is loaded, then `admission
   one poll interval (seeded and recorded), and only then starts the timer; the watcher stops
   after the timer. Each measurement records its phase and the polls that ran while it was
   timed.
+- Both conditions are paced the same way: every timed request, `admission_off` too, follows
+  an untimed pause drawn from the same seeded uniform distribution over one poll interval, so
+  idle time before the timer never differs by condition. `admission-overhead-v1` paused only
+  before `admission_on` requests.
 
 The active policy is read once, before the first request, and applied to the controller; the
 limits stay unchanged for the whole measurement (the contract's admission overhead gate is
@@ -58,7 +62,7 @@ from agentwatch_agent.stats import summarize
 from agentwatch_agent.tasks import Task
 
 PROTOCOL = {
-    "version": "admission-overhead-v1",
+    "version": "admission-overhead-v2",
     "workload": "the runner's first chat request for the task, against the real model server",
     "warmup_requests": 3,
     "repetitions_per_condition": 30,
@@ -67,6 +71,10 @@ PROTOCOL = {
         "a policy watcher polling the policy service, and an inference permit acquired before "
         "and released after the request, under the active policy, limits unchanged; the timed "
         "request starts at a seeded, uniformly random phase of the watcher's poll cycle"
+    ),
+    "pacing": (
+        "every timed request in either condition follows an untimed pause drawn from the same "
+        "seeded uniform distribution over one poll interval"
     ),
     "statistics": "median and p90 of runner wall and server durations; admission waits",
     "threshold": None,
@@ -130,6 +138,13 @@ def measure_admission_overhead(
     def alone(send: Callable[[], dict]) -> dict:
         return send()
 
+    def paused_measurement(index: int) -> dict:
+        # Paced like admission_on: the same untimed idle time before the timer, from the
+        # same distribution, so the conditions differ only by admission.
+        pause_seconds = phases.uniform(0, policy_poll_seconds)
+        pause(pause_seconds)
+        return timed("admission_off", index, alone) | {"untimed_pause_seconds": pause_seconds}
+
     def admitted_measurement(index: int) -> dict:
         watcher = PolicyWatcher(source, controller, policy_poll_seconds)
         held = []
@@ -159,7 +174,11 @@ def measure_admission_overhead(
             polls_before = watcher.polls
             measurement = timed("admission_on", index, admitted)
             polls_during = watcher.polls - polls_before
-        measurement |= {"poll_phase_seconds": phase, "polls_during_request": polls_during}
+        measurement |= {
+            "untimed_pause_seconds": phase,
+            "poll_phase_seconds": phase,
+            "polls_during_request": polls_during,
+        }
         watchers.append(watcher.summary())
         if watcher.error is not None:
             raise watcher.error
@@ -181,7 +200,7 @@ def measure_admission_overhead(
             measurements.append(
                 admitted_measurement(index)
                 if condition == "admission_on"
-                else timed(condition, index, alone)
+                else paused_measurement(index)
             )
         # A change between two watcher polls would otherwise go unseen: read once more.
         final = load_policy(source, retry or RetryPolicy())
