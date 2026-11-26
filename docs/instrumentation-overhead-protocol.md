@@ -17,9 +17,8 @@ version, and results under the old version are kept.
 | Baseline stability | Coefficient of variation of uninstrumented wall time per repetition at most 15% | Value borrowed from `max_baseline_root_step_cv = 0.15` in the same file (see below) |
 | Sampling coverage | Limits in [Sampling coverage](#sampling-coverage) | Declared here (proposed) |
 
-The 5% budget is still proposed under O01 (Rohit). If O01 adopts a different value, the A07
-report states both the verdict under this protocol and the value O01 accepted. It does not
-re-label old results.
+The 5% budget was accepted with `opt-contract-v2` on 2026-11-25 (#109, O01), at the same value,
+so verdicts judged under this protocol need no restatement. Old results are not re-labelled.
 
 The stability gate borrows the value of `max_baseline_root_step_cv`, which the contract defines
 for a different statistic: the CV of the root step's total duration across baseline batches.

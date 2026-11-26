@@ -107,8 +107,8 @@ def test_every_measured_gate_passes_but_unmeasured_overhead_keeps_it_inconclusiv
     }
     assert entry["outcome"] == INCONCLUSIVE
     assert "experiment: admission_overhead not_evaluated" in entry["reasons"]
+    # Inconclusive promotes nothing under either contract status.
     assert report["promotion"]["promoted"] is None
-    assert "proposed" in report["promotion"]["reason"]
     assert report["thresholds"]["min_median_batch_time_reduction"] == 0.10
 
 
@@ -294,10 +294,12 @@ def test_at_most_one_candidate_is_promoted_and_only_under_an_accepted_contract()
         {**passing("inference-4", 7.0, {"inference_requests": 4}), "outcome": FAIL},
     ]
     accepted = dataclasses.replace(CONTRACT, status="accepted")
+    proposed = dataclasses.replace(CONTRACT, status="proposed")
     result = promotion(candidates, accepted)
     # The fastest passing candidate; the smaller limit wins the tie. A failed one never does.
     assert result["promoted"] == "inference-1" and result["candidates_tried"] == 4
-    assert promotion(candidates, CONTRACT)["promoted"] is None
+    held = promotion(candidates, proposed)
+    assert held["promoted"] is None and "proposed" in held["reason"]
     assert promotion([candidates[3]], accepted)["promoted"] is None
 
 
@@ -362,8 +364,12 @@ def test_with_both_overhead_verdicts_every_gate_can_pass(tmp_path):
     assert shared == {"admission_overhead": PASS, "instrumentation_overhead": PASS}
     entry, _gates = by_condition(report)
     assert (entry["outcome"], entry["reasons"]) == (PASS, [])
-    # A pass under a proposed contract still promotes nothing.
-    assert report["promotion"]["promoted"] is None
+    # The repository's contract decides promotion: a pass promotes a candidate only once the
+    # contract is accepted (the rule itself is tested with both statuses below).
+    if CONTRACT.status == "accepted":
+        assert report["promotion"]["promoted"] is not None
+    else:
+        assert report["promotion"]["promoted"] is None
 
 
 def test_an_admission_overhead_v1_verdict_judges_neither_gate(tmp_path):

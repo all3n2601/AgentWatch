@@ -1,8 +1,9 @@
 # Optimization gates
 
 Status: O06 gate evaluation, implemented 2026-11-22 on branch `feature/optimization-gates`
-and verified on synthetic experiments only. The contract is still proposed, so nothing is
-promoted, and no hardware experiment has been judged. Nothing here is an optimization result.
+and verified on synthetic experiments only. `opt-contract-v2` was accepted on 2026-11-25 (#109),
+so an evaluation can now promote a candidate; no hardware experiment has been judged yet.
+Nothing here is an optimization result.
 
 `make optimization-gates EXPERIMENT=<dir> [OVERHEAD_VERDICT=<A07 overhead-verdict.json>]
 [ADMISSION_VERDICT=<admission overhead-verdict.json>]`

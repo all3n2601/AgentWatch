@@ -128,7 +128,7 @@ def test_budget_and_bootstrap_settings_come_from_the_contract(tmp_path):
     assert only_attempt(report)["verdict"] == "within_budget"
     assert report["budget"]["max_median_instrumentation_overhead"] == 0.3
     assert report["contract"]["sha256"] == loose.sha256[:8]
-    assert report["contract"]["status"] == "proposed"
+    assert report["contract"]["status"] == loose.status
 
 
 def write_text(path: Path, text: str) -> Path:

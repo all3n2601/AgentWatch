@@ -1,6 +1,6 @@
 # AgentWatch optimization contract
 
-Status: proposed `opt-contract-v2`, pending acceptance by all three teams. Thresholds live in
+Status: accepted `opt-contract-v2` (2026-11-25, #109). Thresholds live in
 `pipelines/model/optimization-contract.toml`. O02 stores and serves versioned manual policy
 ([concurrency policy](concurrency-policy.md)), and agent runner processes enforce it for their own
 work ([ADR 0010](adr/0010-runner-process-admission-limits.md), O03). No optimization has been
@@ -60,7 +60,7 @@ seed, queue bounds and the frozen evaluation tasks. Anything not preregistered i
 | Quality | No frozen task whose acceptance tests pass at baseline fails with the candidate | Clean and contended | Plan, metric chosen here |
 | Starvation and leaks | No admission waits longer than the declared maximum; no permit still held after its batch ends | Clean and contended | Plan, metric chosen here |
 | Admission overhead | Median wall-time increase at most 5% with unchanged limits, measured separately from instrumentation | Clean | Plan |
-| Instrumentation overhead | Median wall-time increase at most 5%, shared with [the evaluation contract](evaluation-contract.md) | Clean | Proposed |
+| Instrumentation overhead | Median wall-time increase at most 5%, shared with [the evaluation contract](evaluation-contract.md) | Clean | Proposed, then checked on hardware ([below](#overhead-evidence)) |
 | Baseline stability (`max_baseline_root_step_cv`) | Coefficient of variation of the root step's total duration across baseline batches at most 15%, the existing gate in `services/agent`; otherwise every comparison on that baseline is inconclusive | Clean and contended | Plan |
 
 With 5 pairs, the bootstrap interval excludes zero only when every pair shows a reduction, so at
@@ -70,6 +70,38 @@ multiplicity correction is applied across candidates in v1 (see below). Reports 
 for median batch time, median and p95 task latency, throughput, admission wait, service queue
 when observable, failures, timeouts and variability. Passing does not establish a general
 causal improvement beyond the declared workload and hardware.
+
+### Overhead evidence
+
+The 5% instrumentation budget was proposed without data and has since been checked on one host,
+an RTX 5070 laptop under WSL2 (A07, [project checklist](project-checklist.md)): GPU vLLM
+`within_budget` and GPU Ollama `inconclusive` (baseline variability). CPU-container attempts
+are still open, so the value rests on one host and one shared GPU. The O06 admission-overhead
+measurement on the same host was `within_budget` against the 5% admission budget. Browsers
+were open during all of these attempts, so under the rule below none of them can support a
+promotion; they stay on record, and the verdicts an evaluation uses are re-measured.
+
+**Shared gate.** The instrumentation budget is the same value as the evaluation contract's
+`max_median_wall_time_increase`, and the contract test requires the two to be equal. Accepting
+this contract does not accept the evaluation contract, which has its own acceptance; changing
+either value needs a new version of both contracts, so they cannot diverge.
+
+**Recorded deviations.** On a host whose display shares the measured GPU, some processes hold
+GPU contexts without running GPU work and cannot be closed: the operating system's display
+processes, and the one terminal or editor the operator runs the measurement from. An overhead
+verdict whose only recorded protocol deviation is those processes may support a promotion only
+when the evaluation ran on the same host under the same condition; the report lists it as a
+limitation. A verdict with any other deviation, such as an open browser, video, a game or another
+workload on the measured GPU, never supports a promotion. This rule was fixed before any
+evaluation result existed. The gates cannot see deviations, so whoever runs the evaluation
+applies this rule by hand, and the evaluation report names every overhead verdict admitted under
+it.
+
+**One value, two uses.** `max_baseline_root_step_cv` (15%) gates the root step's duration
+across baseline batches here, and the [instrumentation overhead
+protocol](instrumentation-overhead-protocol.md) borrows the same value for per-repetition
+uninstrumented wall time. Accepting this contract fixes both uses together, so a later change
+to the value moves both.
 
 ## Outcomes and no-action conditions
 
@@ -102,11 +134,13 @@ pull request; once all three have, one commit fills every row below and sets `st
 any row lacks a name and an ISO date, or if a row is filled while it is still `proposed`.
 Repository merge still requires owner approval as usual.
 
+Acceptance of `opt-contract-v2` was requested on 2026-11-24 in #109.
+
 | Team | Members | Accepted by | Date |
 |---|---|---|---|
-| Agent & experiments | Benoy, Akshayaa | | |
-| Frontend & ML | Rohit, Meghana | | |
-| Data & backend | Allen, Akshay | | |
+| Agent & experiments | Benoy, Akshayaa | Benoy Joseph | 2026-11-24 |
+| Frontend & ML | Rohit, Meghana | Rohit Biju | 2026-11-24 |
+| Data & backend | Allen, Akshay | Akshay Keerthi AS | 2026-11-25 |
 
 ## Change policy
 
