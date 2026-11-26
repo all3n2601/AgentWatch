@@ -263,7 +263,8 @@ def test_design_fields_name_the_policy_and_injection_metadata():
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ('status = "proposed"', 'status = "draft"', "status"),
+        # Prefixes whichever status the file declares, so it never names an allowed one.
+        ('\nstatus = "', '\nstatus = "draft-', "status"),
         ("[repetitions]", "[repeats]", r"no \[repetitions\] table"),
         ("min_paired_batches = 5", "minimum_pairs = 5", "lacks 'min_paired_batches'"),
         ('version = "opt-contract-v2"', 'version = "opt-contract-v2', "cannot be read"),

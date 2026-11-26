@@ -350,6 +350,8 @@ These can be completed before adding an agent.
   variation". The new reports are not in the repository; SHA-256:
   - `ollama-gpu/overhead-verdict.json`: `d694049117c88ef5b997a461c6d024d9c71e4907855b27a9ded211e34d7e60d7`
   - `vllm-gpu/overhead-verdict.json`: `8d1b8a93d44abd049287590436329871d8a73f9c2d3bc40dda08fc9317b937be`
+  These browser-open verdicts cannot support an O06 promotion under the contract's deviation
+  rule; GPU vLLM was re-measured clean on 2026-11-24 (see O06 below).
   **Protocol deviation:** display apps shared the measured GPU in all four attempts (WSL2
   laptop; the protocol requires nothing else on it during an attempt), so both GPU verdicts
   carry this limitation and are not clean-condition results. Open: CPU container attempts
@@ -1275,7 +1277,7 @@ are unimplemented/unverified; the planning update is not execution evidence. O l
 task titles on the Team Planner; its generated card IDs are separate. The board stages run
 from M3 through M6 and do not renumber the implementation milestones above.
 
-- [ ] O01 — Rohit: accept policy/evaluation contracts and numerical gates after C01/A04/M01.
+- [x] O01 — Rohit: accept policy/evaluation contracts and numerical gates after C01/A04/M01.
   Proposed as `opt-contract-v1` (2026-10-26): [the optimization contract](optimization-contract.md)
   and `pipelines/model/optimization-contract.toml`. Open until all three teams accept it.
   2026-11-20 (Benoy, branch `docs/optimization-contract-v2`): proposed `opt-contract-v2` replaces
@@ -1288,6 +1290,23 @@ from M3 through M6 and do not renumber the implementation milestones above.
   say so. Page wording only; the TOML's parsed values and hash are unchanged.
   Verified in WSL Ubuntu: `pipelines/data/tests` and `tests/contract` 1,306 passed; Ruff clean.
   Still proposed: acceptance needs every team's row in the contract page's acceptance table.
+  2026-11-24 (Benoy): acceptance of `opt-contract-v2` requested in #109; each team accepts on
+  that pull request, then one commit fills the table and sets `status` to `accepted`.
+  2026-11-25: accepted by every team on #109 (Agent & experiments: Benoy Joseph
+  (2026-11-24); Frontend & ML: Rohit Biju (2026-11-24); Data & backend: Akshay Keerthi AS
+  (2026-11-25)). `status = "accepted"` changes the contract's canonical hash from `8e9bba65`
+  to `0981612d`, so the clean 2026-11-24 A07 GPU vLLM verdict (O06 above) was re-judged from
+  the same saved attempts, host label `rtx5070-laptop-wsl2`. No new measurement:
+  `within_budget` with every figure unchanged; only the contract's status and hash differ.
+  SHA-256:
+  - `accepted-verdict-sampling/overhead-verdict.json`: `6f2e5e3f1a9fa085bbdf8ccc5bb9baa6ba6a6c0ce360fd63d0e7202d0931d03c`
+  The admission verdict is not re-judged here: Akshay's acceptance found that
+  `admission-overhead-v1` pauses only before `admission_on` requests, so the two
+  conditions are paced differently. The evaluation uses an admission verdict re-measured
+  after that fix.
+  Verified: `tests/contract/test_optimization_contract.py` with the table filled.
+  O01 complete 2026-11-25: `opt-contract-v2` accepted here (#109) and `eval-contract-v3`
+  accepted on 2026-11-12 ([evaluation contract](evaluation-contract.md)).
 - [ ] O02 — Allen: validated versioned manual controls and audit history after O01/B01/B02.
   Implemented 2026-11-03 on branch `feature/concurrency-policy` (not yet merged):
   [versioned manual concurrency policy](concurrency-policy.md), migration
@@ -1460,6 +1479,28 @@ from M3 through M6 and do not renumber the implementation milestones above.
   - `attempt-1/…-0117df/admission-overhead.json`: `3e638f3bd5dd9bceb98407fdbe825360cd10a2880e6ec748c79a82081839fada`
   - `attempt-2/…-59606a/admission-overhead.json`: `7606f7e6e47a9a935430994d0139322444b1df4cec4b07b9b43da3257e566614`
   - `verdict/overhead-verdict.json`: `bc8fc5c595c9abd3fd04ba6de5c6c3e601188337c072708b4a18ac7c16b53536`
+  2026-11-24 clean re-measurement for O06 (Benoy, same host, label `rtx5070-laptop-wsl2`, main
+  `f5f4fdd`): the attempts above had browsers open, which the contract's deviation rule
+  (#109) excludes from promotion, so the two verdicts the vLLM evaluation needs were measured
+  again with browsers and other apps closed. Only Windows display processes (shell, Start,
+  Search, input, Widgets) and the operator's VS Code held contexts on the GPU, the same list
+  before and after the attempts. Same settings as before; under `opt-contract-v2` (`8e9bba65`):
+  - A07 GPU vLLM (`resource-sampling-overhead-v2`, DCGM and GPM probes, 0.25 s):
+    `within_budget`; attempt 1 +1.13% [−0.50%, +3.17%], CV 0.026; attempt 2 +0.80%
+    [+0.63%, +1.15%], CV 0.016; 30 pairs each.
+  - Admission (`inference_requests` 1 on vLLM, enforced, policy version 16, 1 s poll):
+    `within_budget`; attempt 1 −1.93% [−3.20%, +1.72%], CV 0.028, 4 of 30 requests
+    overlapped a poll; attempt 2 −0.33% [−3.34%, +4.00%], CV 0.029, 7 of 30; 22 tokens and
+    one reply digest throughout. Negative medians again read as the ABAB order effect. The
+    policy was restored to no limits (version 17).
+
+  Reports are not in the repository; SHA-256:
+  - `vllm-sampling-attempt-1/…-3b93ea/sampling-overhead.json`: `7aa92658bb65a3a513f8ca4d1998a534016577af7d904ef8a815be2230b7ef25`
+  - `vllm-sampling-attempt-2/…-dae3b6/sampling-overhead.json`: `46445a4bf388a1aab851fbe77c6efadfceefa977917b92366870fe03658d64f7`
+  - `admission-attempt-1/…-f22a73/admission-overhead.json`: `9e0a69fd3f58148fb18050c5c6e8728bc300c6a7d0938c00b3277bb5b4663c90`
+  - `admission-attempt-2/…-fb0554/admission-overhead.json`: `dea7197990c6d7fe07dadf269fd38f7c36ccdd36eaaa8d516bfaa93f1d49275e`
+  - `verdict-sampling/overhead-verdict.json`: `0b3ccab4a3fdea69f665909e7b3cca04dca497476e9dfa5e91fcc2f139f88476`
+  - `verdict-admission/overhead-verdict.json`: `002b8a8858b46c695db8bf7be316e6e9380ce7b3f0f496a701b932d783834806`
   2026-11-22 batch runner (branch `test/optimization-evaluation`,
   [running an optimization experiment](optimization-run.md)): `make optimization-plan` prints
   the manifest blocks this host preregisters (task configuration digests, queue bounds, and the

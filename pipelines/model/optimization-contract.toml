@@ -5,7 +5,7 @@
 # as canonical JSON, the same method as eval-contract-v1.
 version = "opt-contract-v2"
 # "proposed" until every team has accepted it; values marked "proposed" have no supporting data.
-status = "proposed"
+status = "accepted"
 
 [policy]
 # Two independent positive-integer limits on future admissions to the designated workload.
@@ -81,7 +81,7 @@ max_starved_admissions = 0
 max_leaked_permits = 0
 # Admission overhead with unchanged limits, measured separately from instrumentation overhead.
 max_median_admission_overhead = 0.05
-# Proposed, shared with eval-contract-v1.
+# Proposed, checked on one host (A07); must equal the evaluation contract's max_median_wall_time_increase.
 max_median_instrumentation_overhead = 0.05
 # The existing gate in services/agent experiment.py: coefficient of variation of the root
 # step's total duration across baseline batches, at most this value; otherwise every
