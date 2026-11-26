@@ -110,7 +110,10 @@ function WrappedTab({
  *
  * Timeline is the exception: it stays mounted (hidden) while another tab is open, as on
  * /live. Rebuilding a 2,000-step timeline on each return missed the 1 s tab-switch budget
- * (e2e/large-runs.spec.ts), and the chosen step is kept.
+ * (e2e/large-runs.budget.ts), and the chosen step is kept. While hidden it still receives
+ * every poll. The longest main-thread task over three polls of a 2,000-step run was 0 ms
+ * with the panel hidden (Live status tab open) as well as shown, on a development machine on
+ * 2026-11-26: polls that bring no new records don't re-render the chart.
  */
 const KEPT_MOUNTED = new Set<string>(["timeline"]);
 

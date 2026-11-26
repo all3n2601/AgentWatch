@@ -10,7 +10,8 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
-    "test:evidence": "playwright test -c playwright.evidence.config.ts"
+    "test:evidence": "playwright test -c playwright.evidence.config.ts",
+    "test:budgets": "playwright test -c playwright.budgets.config.ts"
   },
   "dependencies": {
     "@agentwatch/ui": "workspace:*",
