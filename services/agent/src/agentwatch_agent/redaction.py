@@ -117,12 +117,13 @@ _RULES: tuple[tuple[str, re.Pattern, str], ...] = (
         "<path>",
     ),
 )
+# Written into every redacted copy, so the wording gives no example that a rule would match.
 LIMITATIONS = (
     "Pattern-based: an unlabeled random secret is indistinguishable from data",
     "A path containing spaces is replaced only up to the first space; later folder names stay",
     "Host names inside URLs are kept",
-    "An upper-case name such as TOKEN: followed by prose is redacted, as in .env output",
-    "A web route such as /a/home/page is read as an MSYS drive path and redacted",
+    "An upper-case secret name followed by a colon and prose is redacted, as in .env output",
+    "A route whose first folder is one letter, then home or Users, is read as an MSYS drive path",
 )
 
 

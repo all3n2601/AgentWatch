@@ -1257,6 +1257,15 @@ Retraining reproduces evaluation, promotion updates the served version, and roll
   replacements were vLLM in-container library paths. Host paths remain in those folders'
   scripts and logs, which `redact` does not copy. The four A07 attempt folders: 0
   replacements; all copies reviewed by hand. Open: handle paths containing spaces.
+  2026-11-26 (A07, branch `feature/evidence-redaction-check`): `check-redaction`
+  (`evidence-redaction-check-v1`) scans a folder or `.zip` before sharing and refuses it (exit 1)
+  on any finding or any file it cannot check, including scripts, logs and hidden files that
+  `redact` does not copy. Findings give the location and kind, never the value. The redaction
+  limitations written into `redaction.json` were reworded: two of their examples matched the
+  rules, so every redacted copy would have been refused. Tests:
+  `services/agent/tests/test_redaction_check.py` (findings, escaped JSON paths, repeated keys,
+  unreadable and linked files, zip members, a `redact` copy passing). Not yet run on real
+  evidence bundles.
 - [ ] Document threat boundaries, backups, restoration, deployment, and incident procedures.
 - [ ] Set cloud budgets and measure workload, instrumentation, and serving costs.
 - [ ] Reconcile the unused Go control plane/CLI and placeholder SDK/Protobuf contracts with the
