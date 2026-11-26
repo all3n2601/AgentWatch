@@ -222,7 +222,11 @@ These can be completed before adding an agent.
   Fixed: a failed download (history down, a rewritten local file, no answer) replaced the run page
   with the route's raw JSON error; every evidence and export link now downloads in the page and
   reports a failure in place, with Try again (`components/evidence-download.tsx`,
-  `apps/web/tests/evidence-download.test.ts`, `run-evidence.spec.ts`). The Attribution tab is in
+  `apps/web/tests/evidence-download.test.ts`, `run-evidence.spec.ts`). After review (PR #112,
+  November 26, 2026) the message gives the route's own reason first, so a failed live records
+  export names the live API rather than run history and a missing run is not called a missing
+  file; downloads also work in browsers without `AbortSignal.any`, and the saved file's object
+  URL is no longer revoked in the same task as the click. The Attribution tab is in
   the responsive, axe, keyboard and evidence checks. Open: the overview step.
 - [ ] Automated comparison tests, including different workload settings and removed selections.
   F04 phase 1, November 23, 2026 (PR #110, branch `test/frontend-audit`, merged 2026-11-24):
@@ -304,6 +308,21 @@ These can be completed before adding an agent.
   220 ms; this points to the host pausing rather than the app, but it is not proven.
   Fixed: a queued step was labelled Running and drawn as work on the live
   timeline; it is now Queued and drawn as waiting.
+  F04 phase 2 review, November 26, 2026 (PR #112): the required `javascript` CI check at
+  `6b80a42` missed five budgets on the CI runner: `/runs/{live}` first tab (Timeline, all
+  records read) 15,078 ms and switch to Resources 2,148 ms; `/live` first tab (all records read)
+  5,329 ms, switch to Resources 1,770 ms and switch to Timeline 1,126 ms. On the development
+  machine (one `pnpm test:budgets` run, 2026-11-26) the same five were 4,414, 583, 2,291, 498
+  and 416 ms; earlier development runs put the `/runs/{live}` first tab at 3.4–4.5 s.
+  The `/live` misses are `main`'s existing performance on CI hardware, measured for the first
+  time, not a regression from this branch (its `/live` changes are the queued label, the task-id
+  wrap and the export link). The budgets are unchanged; the timed checks moved out of the
+  required suite to `apps/web/e2e/large-runs.budget.ts` (`pnpm test:budgets`), and
+  `large-runs.spec.ts` keeps the same flows as functional checks without timing. That run met
+  all 20 budgeted measurements, including a new one: the longest task over three polls of a
+  live run's page with the Timeline panel hidden, 0 ms.
+  Open: the `/runs/{live}` first render on CI (15 s, follow-up issue), and the budgets on CI
+  hardware generally.
 - [ ] Cross-browser checks beyond the in-app browser used so far.
 - [ ] Full repository checks, including Go and shared packages, on the final integrated branch.
 - [ ] Observe a successful remote CI run; configuration alone does not establish this.
