@@ -170,9 +170,11 @@ must contain none of:
 - Email addresses or any real user data. The workloads are repository fixtures, so prompts and
   code come from the repository.
 
-A later A07 change adds a check that scans an evidence bundle for these. Until it is merged,
-the sharer makes the copy with `redact`, reviews each file by hand, and records in the report
-that they did.
+The sharer makes the copy with `redact`, runs `check-redaction` on the folder or `.zip` to be
+shared, and shares it only when the check reports `clean` (exit 0). The check scans every file,
+including scripts, logs and hidden files that `redact` does not copy, and refuses the bundle
+when anything matches or cannot be read. It is pattern-based like `redact`, so the sharer still
+reviews each file by hand and records in the report that they did.
 
 ## Outputs and handoff
 

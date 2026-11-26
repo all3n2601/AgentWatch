@@ -11,6 +11,9 @@ if the measurement did not complete (its partial evidence is kept). `coverage` r
 recorded run's samples cover its steps; it exits 2 if the run directory cannot support one.
 `redact` writes a redacted copy of an evidence folder for sharing; it exits 2 if the copy is
 refused (existing output, links, unreadable files) and leaves no partial output.
+`check-redaction` scans an evidence folder or `.zip` before it is shared; it exits 1 and
+refuses the bundle if any file has a finding or cannot be checked, and 2 if the bundle cannot
+be read at all.
 `experiment` replays one verified run cleanly and under bounded contention; it exits 1 when
 it stopped early or a declared check failed (its evidence is kept), and 3 when a replay's live
 evidence needs `resend`. `capacity-sweep` ramps concurrent replays on one vLLM configuration
@@ -108,6 +111,7 @@ from agentwatch_agent.optimization_host import (
 from agentwatch_agent.optimization_run import ExperimentRunner, Host
 from agentwatch_agent.overhead import OverheadFailed, measure_overhead
 from agentwatch_agent.redacted_copy import RedactionError, write_redacted_copy
+from agentwatch_agent.redaction_check import CLEAN, BundleError, check_bundle
 from agentwatch_agent.replay import (
     ReplayPlan,
     ReplayPlanError,
@@ -592,6 +596,13 @@ def parser() -> argparse.ArgumentParser:
     )
     redact.add_argument("source", type=Path, help="An evidence folder, such as a run's output")
     redact.add_argument("--output", type=Path, required=True, help="A new folder for the copy")
+
+    check = commands.add_parser(
+        "check-redaction",
+        help="Scan an evidence folder or .zip and refuse it if anything sensitive is left",
+    )
+    check.add_argument("bundle", type=Path, help="An evidence folder or .zip file to share")
+    check.add_argument("--report", type=Path, help="Also write the JSON report to this new file")
 
     resend = commands.add_parser("resend", help="Resend a run journal with original identities")
     resend.add_argument("journal", type=Path)
@@ -1721,6 +1732,43 @@ def redact_command(args: argparse.Namespace) -> int:
     return EXIT_PASSED
 
 
+def check_redaction_command(args: argparse.Namespace) -> int:
+    if args.report is not None and (args.report.exists() or args.report.is_symlink()):
+        print(
+            f"error: {args.report.name} already exists; choose a new report file", file=sys.stderr
+        )
+        return EXIT_USAGE
+    try:
+        report = check_bundle(args.bundle)
+    except (BundleError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    if args.report is not None:
+        try:
+            with args.report.open("x", encoding="utf-8") as handle:
+                handle.write(json.dumps(report, indent=2) + "\n")
+        except OSError as error:
+            print(f"error: cannot write the report: {error}", file=sys.stderr)
+            return EXIT_USAGE
+    for finding in report["findings"]:
+        kinds = ", ".join(f"{kind} {count}" for kind, count in finding["kinds"].items())
+        print(f"FOUND  {finding['file']} ({finding['location']}): {kinds}")
+    for unscanned in report["unscanned"]:
+        print(f"NOT CHECKED  {unscanned['file']}: {unscanned['reason']}")
+    for name in report["json_read_as_text"]:
+        print(f"note: {name} is not valid JSON and was checked as text")
+    print(
+        f"{report['files_scanned']} files checked, {len(report['findings'])} findings, "
+        f"{len(report['unscanned'])} not checked"
+    )
+    if report["verdict"] == CLEAN:
+        print("Clean: no rule matched. Redaction is pattern-based; review before sharing.")
+        return EXIT_PASSED
+    print("Refused: do not share this bundle. Make a copy with `redact`, remove the files that")
+    print("cannot be checked, and run this check again.")
+    return EXIT_FAILED
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.command == "run":
@@ -1753,4 +1801,6 @@ def main(argv: list[str] | None = None) -> int:
         return coverage_command(args)
     if args.command == "redact":
         return redact_command(args)
+    if args.command == "check-redaction":
+        return check_redaction_command(args)
     return resend_command(args)

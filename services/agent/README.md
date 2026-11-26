@@ -343,11 +343,28 @@ symbolic links and an existing output are refused (exit 2, no partial output), a
 the limitations. Live reasons use the same rules. Redaction is pattern-based: an unlabeled
 secret is not found, a path containing spaces is replaced only up to the first space, and
 hostnames in URLs are kept, an upper-case name such as `TOKEN: expired` is redacted as in `.env`
-output, and a route such as `/a/home/page` is read as an MSYS drive path, so review the copy
+output, and a route whose first folder is one letter, then `home` or `Users`, is read as an MSYS drive path, so review the copy
 before sharing. A file with no replacements and no changed keys is copied byte for byte; any
 other file is re-serialized as indented JSON (or one-line JSONL), so its hash differs from
 the source's, which `redaction.json` records. `experiment --source` refuses a redacted copy whose evidence was changed, because it
 could no longer resend the original requests.
+
+Before sharing a folder or `.zip`, check it:
+`uv run --package agentwatch-agent python -m agentwatch_agent check-redaction <folder or zip>
+[--report <new file>]` (`evidence-redaction-check-v1`, `redaction_check.py`). It reads the
+bundle without changing it and checks every file, hidden files included, with the same rules
+as `redact`, plus a private key's `BEGIN` line on its own. `.json` and `.jsonl` files are parsed,
+so every string value and object key is checked, including escaped paths and earlier values of
+a repeated key; a JSON file that does not parse is checked as text and listed. Other files are
+checked line by line as UTF-8 text. Each finding names the file, the line or JSON location and
+the kinds found, never the value, and file names and keys in the output are themselves
+redacted. It exits 0 when the bundle is `clean`, 1 when it is `refused` (any finding, or any
+file it could not check: not UTF-8 text, such as images, nested archives or `.DS_Store`, larger
+than 256 MiB, an encrypted zip member, or a symbolic link), and 2 when the bundle cannot be
+read at all or the report file already exists. A copy made by `redact` passes unless it was
+edited afterwards; a copy made before this check existed is refused for two lines of its
+`redaction.json` limitations, so make it again. Clean means no rule matched, not that nothing sensitive is left, so review
+the bundle before sharing it.
 
 ## Sampling evidence
 
