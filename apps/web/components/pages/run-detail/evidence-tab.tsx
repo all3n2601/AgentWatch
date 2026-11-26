@@ -8,6 +8,7 @@ import {
   Ruler,
   type LucideIcon,
 } from "lucide-react";
+import { EvidenceDownload } from "@/components/evidence-download";
 import { Button } from "@/components/ui/button";
 import {
   GlassPanel,
@@ -88,15 +89,14 @@ function EvidenceFiles({ run }: { run: Experiment }) {
                 </span>
                 <span className="block text-sm text-ink-muted">{contents}</span>
               </span>
-              <Button asChild variant="glass" size="pill">
-                <a
-                  href={evidenceUrl(run, file)}
-                  aria-label={`Download ${file}`}
-                >
-                  <ArrowDownToLine aria-hidden />
-                  Download
-                </a>
-              </Button>
+              <EvidenceDownload
+                href={evidenceUrl(run, file)}
+                file={file}
+                aria-label={`Download ${file}`}
+              >
+                <ArrowDownToLine aria-hidden />
+                Download
+              </EvidenceDownload>
             </li>
           ))}
         </ul>

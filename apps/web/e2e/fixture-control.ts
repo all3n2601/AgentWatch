@@ -143,6 +143,12 @@ export async function takeSavedHistoryDown(request: APIRequestContext) {
   if (!response.ok()) throw new Error("Taking saved history down failed");
 }
 
+/** Brings saved history back after `takeSavedHistoryDown`. */
+export async function restoreSavedHistory(request: APIRequestContext) {
+  const response = await request.post(`${CONTROL_URL}/saved-history-up`);
+  if (!response.ok()) throw new Error("Restoring saved history failed");
+}
+
 /** Moves a run's attributions to their next scripted state; the last state then repeats. */
 export async function advanceAttributions(
   request: APIRequestContext,

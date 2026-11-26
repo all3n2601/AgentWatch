@@ -6,6 +6,7 @@ import {
   GitCompareArrows,
 } from "lucide-react";
 import { PageHeader } from "@/components/shell/page-header";
+import { EvidenceDownload } from "@/components/evidence-download";
 import { Button } from "@/components/ui/button";
 import { CopyChip } from "@/components/ui/copy-chip";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -84,18 +85,17 @@ export function RunHeader({
               </Link>
             </Button>
           )}
-          <Button asChild variant="glass" size="pill">
-            <a
-              href={
-                view.source === "live"
-                  ? routes.liveExport(model.runId)
-                  : evidenceUrl(view.run)
-              }
-            >
-              <ArrowDownToLine aria-hidden />
-              {view.source === "live" ? "Export JSON" : "Export results.json"}
-            </a>
-          </Button>
+          <EvidenceDownload
+            href={
+              view.source === "live"
+                ? routes.liveExport(model.runId)
+                : evidenceUrl(view.run)
+            }
+            file={view.source === "live" ? "live-records.json" : "results.json"}
+          >
+            <ArrowDownToLine aria-hidden />
+            {view.source === "live" ? "Export JSON" : "Export results.json"}
+          </EvidenceDownload>
         </>
       }
     />

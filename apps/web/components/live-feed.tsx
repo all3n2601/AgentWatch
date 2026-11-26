@@ -30,6 +30,7 @@ import {
   TAB_GRID,
 } from "@/components/shell/panel-layout";
 import { TabbedView } from "@/components/shell/tabbed-view";
+import { EvidenceDownload } from "@/components/evidence-download";
 import { Button } from "@/components/ui/button";
 import { CopyChip } from "@/components/ui/copy-chip";
 import {
@@ -651,12 +652,14 @@ export function LiveEvidenceView({
               unchanged. Run state, steps and gaps are as of the time of
               reading.
             </p>
-            <Button asChild variant="brand-soft" size="pill">
-              <a href={routes.liveExport(runId)}>
-                <Download aria-hidden />
-                Download live records (JSON)
-              </a>
-            </Button>
+            <EvidenceDownload
+              href={routes.liveExport(runId)}
+              file="live-records.json"
+              variant="brand-soft"
+            >
+              <Download aria-hidden />
+              Download live records (JSON)
+            </EvidenceDownload>
           </InsetCard>
           <LiveGaps view={run.view} />
         </div>

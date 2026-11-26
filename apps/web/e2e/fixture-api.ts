@@ -174,6 +174,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       savedHistoryDown = true;
       return send(res, 204);
     }
+    if (req.method === "POST" && parts[1] === "saved-history-up") {
+      savedHistoryDown = false;
+      return send(res, 204);
+    }
     const run = runs.get(parts[2] ?? "");
     if (req.method === "PUT" && parts[1] === "runs") {
       const fixture = fixtureRunSchema.safeParse(await bodyOf(req));

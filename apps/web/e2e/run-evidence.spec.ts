@@ -2,7 +2,11 @@ import { mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { seedWorkspace, servePolicy } from "./audit";
-import { resetFixtureApi, takeSavedHistoryDown } from "./fixture-control";
+import {
+  resetFixtureApi,
+  restoreSavedHistory,
+  takeSavedHistoryDown,
+} from "./fixture-control";
 import { E2E_DATA_DIR } from "./local-data";
 import { newSavedRunId, savedRun } from "./saved-runs";
 
@@ -274,4 +278,65 @@ test("a saved evidence download fails visibly when history is unavailable", asyn
       )
     ).status(),
   ).toBe(503);
+});
+
+test("a failed saved download is reported in the page, which stays usable, and can be retried", async ({
+  page,
+  request,
+}) => {
+  const { baseline, candidate } = await seedWorkspace(request);
+  const evidencePage = `/runs/${candidate}?tab=evidence`;
+  await page.goto(evidencePage);
+  await takeSavedHistoryDown(request);
+
+  await page.getByRole("link", { name: "Download spans.jsonl" }).click();
+  const failure = page
+    .getByRole("alert")
+    .filter({ hasText: "spans.jsonl not downloaded" });
+  await expect(failure).toContainText("Run history is unavailable");
+  await expect(failure).toContainText("HTTP 503");
+  await expect(failure).toContainText("The run shown here is unchanged");
+  // The run page is still there, not the route's raw JSON.
+  await expect(page).toHaveURL(
+    new RegExp(`${evidencePage.replace("?", "\\?")}$`),
+  );
+  await expect(page.getByText('"error"')).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Download results.json" }),
+  ).toBeVisible();
+
+  // History is back: Try again saves the file and clears the error.
+  await restoreSavedHistory(request);
+  const [file] = await Promise.all([
+    page.waitForEvent("download"),
+    failure.getByRole("button", { name: "Try again" }).click(),
+  ]);
+  expect(file.suggestedFilename()).toBe(`agentwatch-${candidate}-spans.jsonl`);
+  await expect(failure).toHaveCount(0);
+
+  // The header export and the other pages' exports report failures the same way.
+  await takeSavedHistoryDown(request);
+  await page.getByRole("link", { name: "Export results.json" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "results.json not downloaded" }),
+  ).toBeVisible();
+  await page.getByRole("tab", { name: "Timeline" }).click();
+  await expect(page.getByRole("tab", { name: "Timeline" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.getByRole("link", { name: "Download spans.jsonl" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "spans.jsonl not downloaded" }),
+  ).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/runs/${candidate}`));
+
+  await restoreSavedHistory(request);
+  await page.goto(`/compare?run=${candidate}&baseline=${baseline}`);
+  await takeSavedHistoryDown(request);
+  await page.getByRole("link", { name: "Export candidate evidence" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "results.json not downloaded" }),
+  ).toBeVisible();
+  await expect(page).toHaveURL(/\/compare\?/);
 });
