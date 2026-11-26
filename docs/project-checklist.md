@@ -1491,8 +1491,11 @@ from M3 through M6 and do not renumber the implementation milestones above.
   - Admission (`inference_requests` 1 on vLLM, enforced, policy version 16, 1 s poll):
     `within_budget`; attempt 1 −1.93% [−3.20%, +1.72%], CV 0.028, 4 of 30 requests
     overlapped a poll; attempt 2 −0.33% [−3.34%, +4.00%], CV 0.029, 7 of 30; 22 tokens and
-    one reply digest throughout. Negative medians again read as the ABAB order effect. The
-    policy was restored to no limits (version 17).
+    one reply digest throughout. The policy was restored to no limits (version 17).
+    **Superseded** (2026-11-26): these attempts are `admission-overhead-v1`, which paced the
+    two conditions unevenly (#111), so this verdict cannot judge the admission gate and is
+    replaced by a v2 re-measurement. The cause of the negative medians (fixed order, the
+    uneven pause, or both) is undetermined; they mean no measurable overhead, not a speed-up.
 
   Reports are not in the repository; SHA-256:
   - `vllm-sampling-attempt-1/…-3b93ea/sampling-overhead.json`: `7aa92658bb65a3a513f8ca4d1998a534016577af7d904ef8a815be2230b7ef25`
