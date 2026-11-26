@@ -5,13 +5,25 @@ import type { VariantProps } from "class-variance-authority";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ErrorState } from "@/components/widgets/state-views";
 import {
+  anySignal,
   downloadFailure,
   downloadFilename,
   type DownloadFailure,
 } from "@/lib/evidence-download";
 
-/** Long enough for the route's own wait on run history; a stuck download is reported. */
+/**
+ * Long enough for the route's own wait on run history; a stuck download is reported. It
+ * covers reading the body too, so a very large file on a slow link is reported as "did not
+ * answer in time" where a native download would have finished; local evidence files are far
+ * smaller than that.
+ */
 const DOWNLOAD_TIMEOUT_MS = 30_000;
+
+/**
+ * How long the saved file's object URL is kept after the click. Firefox and Safari can
+ * cancel a download whose URL is revoked before the download starts, so it is revoked later.
+ */
+const OBJECT_URL_LIFETIME_MS = 10_000;
 
 type Download =
   | { status: "idle" }
@@ -28,7 +40,7 @@ function saveBlob(blob: Blob, filename: string) {
   document.body.append(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), OBJECT_URL_LIFETIME_MS);
 }
 
 /** Reads an error response's JSON body, or null when it has none. */
@@ -69,15 +81,24 @@ export function EvidenceDownload({
   React.useEffect(() => () => request.current?.abort(), []);
 
   async function start() {
-    if (download.status === "downloading") return;
+    // A ref, not the rendered status: a fast double click arrives before the re-render.
+    if (request.current) return;
     const controller = new AbortController();
     request.current = controller;
     setDownload({ status: "downloading" });
+    try {
+      await fetchFile(controller);
+    } finally {
+      request.current = null;
+    }
+  }
+
+  async function fetchFile(controller: AbortController) {
     let failure: DownloadFailure;
     try {
       const response = await fetch(href, {
         cache: "no-store",
-        signal: AbortSignal.any([
+        signal: anySignal([
           controller.signal,
           AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
         ]),
