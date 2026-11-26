@@ -13,6 +13,7 @@ import {
   Scale,
   Stethoscope,
 } from "lucide-react";
+import { EvidenceDownload } from "@/components/evidence-download";
 import { Button } from "@/components/ui/button";
 import { CopyChip } from "@/components/ui/copy-chip";
 import {
@@ -245,17 +246,15 @@ function PreviewActions({ row }: { row: RunsPageRow }) {
           </Link>
         </Button>
       )}
-      <Button asChild variant="glass" size="pill">
-        <a
-          href={evidence ? evidence.evidenceHref : routes.liveExport(row.id)}
-          download
-        >
-          <Download aria-hidden />
-          {evidence && !evidence.persisted
-            ? "Export local file"
-            : "Export evidence"}
-        </a>
-      </Button>
+      <EvidenceDownload
+        href={evidence ? evidence.evidenceHref : routes.liveExport(row.id)}
+        file={evidence ? "results.json" : "live-records.json"}
+      >
+        <Download aria-hidden />
+        {evidence && !evidence.persisted
+          ? "Export local file"
+          : "Export evidence"}
+      </EvidenceDownload>
     </div>
   );
 }

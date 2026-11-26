@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   NOT_CHARTED_SHOWN,
   liveTimelineSteps,
+  openStepLabel,
   type StepState,
 } from "../lib/live-view";
 
@@ -52,4 +53,11 @@ test("a large run is indexed in linear time", () => {
   for (const step of large) model.stateById.get(step.stepId);
   assert.ok(performance.now() - started < 1_000);
   assert.equal(model.notCharted.more, 0);
+});
+
+test("an open step's timeline value names its state; a queued step is never Running", () => {
+  assert.equal(openStepLabel("queued"), "Queued");
+  assert.equal(openStepLabel("running"), "Running");
+  // No applied state yet (only unapplied events): say so rather than guess.
+  assert.equal(openStepLabel(null), "In progress");
 });

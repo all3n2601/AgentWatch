@@ -15,9 +15,21 @@ type Options = {
   passed?: boolean;
   /** Agent model; adds synthetic agent evidence. Omitted, the run records no model. */
   model?: string;
+  workload?: string;
+  /** Baseline steps (built with `step`); three short ones by default. */
+  baselineSteps?: ReturnType<typeof step>[];
+  /** The agent conversation and model calls; one empty call by default. */
+  conversation?: {
+    messages: { role: string; content: string; tool_name?: string }[];
+    inference: {
+      request_index: number;
+      wall_seconds: number;
+      metrics: Record<string, number>;
+    }[];
+  };
 };
 
-function step(
+export function step(
   stepId: string,
   endMs: number,
   queueSeconds: number,
@@ -53,9 +65,18 @@ export function savedRun(
     cleanSeconds = 3,
     passed = true,
     model,
+    workload = "fixed Python project: run three tests",
+    baselineSteps,
+    conversation = {
+      messages: [],
+      inference: [{ request_index: 0, wall_seconds: 1, metrics: {} }],
+    },
   }: Options,
 ): SavedRun {
   const endMs = Date.parse("2026-11-01T12:00:00Z") + sequence * 3_600_000;
+  const baseline =
+    baselineSteps ??
+    [0, 1, 2].map((i) => step(`baseline-${i}`, endMs - 60_000 + i, 0.5, 2));
   return {
     run_id: runId,
     kind: "coding",
@@ -69,16 +90,14 @@ export function savedRun(
         ...(competingIterations !== null && {
           competing_iterations: competingIterations,
         }),
-        baseline_repeats: 3,
-        workload: "fixed Python project: run three tests",
+        baseline_repeats: baseline.length,
+        workload,
         tests_per_step: 3,
       },
       baseline: {
         execution_cv: 0.01,
         queue_threshold_seconds: 0.01,
-        steps: [0, 1, 2].map((i) =>
-          step(`baseline-${i}`, endMs - 60_000 + i, 0.5, 2),
-        ),
+        steps: baseline,
       },
       clean: step("clean", endMs - 30_000, 1, cleanSeconds - 1),
       contended: step("contended", endMs, 2, 3),
@@ -89,8 +108,7 @@ export function savedRun(
           model,
           status: "passed",
           limitations: [],
-          messages: [],
-          inference: [{ request_index: 0, wall_seconds: 1, metrics: {} }],
+          ...conversation,
         },
       }),
     },

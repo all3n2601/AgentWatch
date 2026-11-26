@@ -9,6 +9,7 @@ import {
   ListOrdered,
   ShieldCheck,
 } from "lucide-react";
+import { EvidenceDownload } from "@/components/evidence-download";
 import { Button } from "@/components/ui/button";
 import { GlassPanel, PanelHeader } from "@/components/ui/glass-panel";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -439,14 +440,12 @@ function RunActions({ run, role }: { run: RunSummary; role: string }) {
           Open {role}
         </Link>
       </Button>
-      <Button asChild variant="glass" size="pill">
-        <a href={run.evidenceHref} download>
-          <Download aria-hidden />
-          {run.persisted
-            ? `Export ${role} evidence`
-            : `Export ${role} local artifact`}
-        </a>
-      </Button>
+      <EvidenceDownload href={run.evidenceHref} file="results.json">
+        <Download aria-hidden />
+        {run.persisted
+          ? `Export ${role} evidence`
+          : `Export ${role} local artifact`}
+      </EvidenceDownload>
     </div>
   );
 }

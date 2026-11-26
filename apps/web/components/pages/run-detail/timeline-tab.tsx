@@ -15,7 +15,6 @@ import {
   Timer,
   Waypoints,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { CopyChip } from "@/components/ui/copy-chip";
 import {
   GlassPanel,
@@ -32,6 +31,7 @@ import {
   TimelineChart,
   type TimelineChartRow,
 } from "@/components/widgets/timeline-chart";
+import { EvidenceDownload } from "@/components/evidence-download";
 import { evidenceUrl } from "@/lib/dashboard-data";
 import type { Experiment, Step } from "@/lib/experiment-schema";
 import { formatQuantity } from "@/lib/measurement-format";
@@ -200,12 +200,13 @@ function SelectedSpan({ run, step }: { run: Experiment; step: Step }) {
             {step.evidence}
           </p>
         </InsetCard>
-        <Button asChild variant="glass" size="pill">
-          <a href={evidenceUrl(run, "spans.jsonl")}>
-            <ArrowDownToLine aria-hidden />
-            Download spans.jsonl
-          </a>
-        </Button>
+        <EvidenceDownload
+          href={evidenceUrl(run, "spans.jsonl")}
+          file="spans.jsonl"
+        >
+          <ArrowDownToLine aria-hidden />
+          Download spans.jsonl
+        </EvidenceDownload>
       </div>
     </GlassPanel>
   );

@@ -20,7 +20,6 @@ import {
   YAxis,
 } from "recharts";
 import { chartAxisTick, chartTooltipStyle } from "@/components/chart-kit";
-import { Button } from "@/components/ui/button";
 import {
   GlassPanel,
   InsetCard,
@@ -33,6 +32,7 @@ import {
   Skeleton,
   UnavailableState,
 } from "@/components/widgets/state-views";
+import { EvidenceDownload } from "@/components/evidence-download";
 import { evidenceUrl } from "@/lib/dashboard-data";
 import type { Experiment, Step } from "@/lib/experiment-schema";
 import { formatQuantity, MISSING_VALUE } from "@/lib/measurement-format";
@@ -212,12 +212,14 @@ function PressureChart({
             {band.label}
           </span>
         ))}
-        <Button asChild variant="glass" size="pill" className="ml-auto">
-          <a href={evidenceUrl(run, "samples.jsonl")}>
-            <ArrowDownToLine aria-hidden />
-            samples.jsonl
-          </a>
-        </Button>
+        <EvidenceDownload
+          href={evidenceUrl(run, "samples.jsonl")}
+          file="samples.jsonl"
+          className="ml-auto"
+        >
+          <ArrowDownToLine aria-hidden />
+          samples.jsonl
+        </EvidenceDownload>
       </div>
       <p className="mt-2 text-xs text-ink-muted fit:shrink-0">
         {summary.peak === 0

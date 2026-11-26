@@ -30,6 +30,7 @@ import {
   TAB_GRID,
 } from "@/components/shell/panel-layout";
 import { TabbedView } from "@/components/shell/tabbed-view";
+import { EvidenceDownload } from "@/components/evidence-download";
 import { Button } from "@/components/ui/button";
 import { CopyChip } from "@/components/ui/copy-chip";
 import {
@@ -76,7 +77,11 @@ import {
   type RunListFeed,
 } from "@/lib/live-poll";
 import { wallSecondsInto, wallTimeline } from "@/lib/run-timeline";
-import { liveTimelineSteps, type StepState } from "@/lib/live-view";
+import {
+  liveTimelineSteps,
+  openStepLabel,
+  type StepState,
+} from "@/lib/live-view";
 import type { Tone } from "@/lib/tone";
 import { cn } from "@/lib/utils";
 
@@ -297,7 +302,9 @@ function stepRow(
     failed: state === "failed" || state === "cancelled",
     value:
       row.wallSeconds === null ? (
-        <span className="font-normal text-ink-muted">Running</span>
+        <span className="font-normal text-ink-muted">
+          {openStepLabel(state)}
+        </span>
       ) : (
         duration(row.wallSeconds)
       ),
@@ -645,12 +652,14 @@ export function LiveEvidenceView({
               unchanged. Run state, steps and gaps are as of the time of
               reading.
             </p>
-            <Button asChild variant="brand-soft" size="pill">
-              <a href={routes.liveExport(runId)}>
-                <Download aria-hidden />
-                Download live records (JSON)
-              </a>
-            </Button>
+            <EvidenceDownload
+              href={routes.liveExport(runId)}
+              file="live-records.json"
+              variant="brand-soft"
+            >
+              <Download aria-hidden />
+              Download live records (JSON)
+            </EvidenceDownload>
           </InsetCard>
           <LiveGaps view={run.view} />
         </div>
@@ -796,7 +805,8 @@ function RunList({
                       <span className="block truncate font-mono text-sm font-medium">
                         {run.runId.slice(0, 8)}
                       </span>
-                      <span className="block truncate text-xs text-ink-muted">
+                      {/* A task id can be 128 characters; it wraps, never hides. */}
+                      <span className="block text-xs text-ink-muted [overflow-wrap:anywhere]">
                         {run.taskId}
                       </span>
                     </span>

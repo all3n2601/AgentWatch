@@ -4,6 +4,7 @@ import {
   fixtureRunSchema,
   savedRunSchema,
   type FixtureRun,
+  type RequestLogEntry,
   type SavedRun,
 } from "./fixture-control";
 
@@ -24,6 +25,12 @@ type AttributionRow = { sequence: number };
 
 const runs = new Map<string, RunState>();
 const savedRuns = new Map<string, SavedRun>();
+/**
+ * Every request the web server made to this API (control requests excluded), in arrival
+ * order with this process's wall time. Tests read it to count polls and to show that no
+ * read happened in a window.
+ */
+const requestLog: RequestLogEntry[] = [];
 /** While set, saved history answers 503, as the worker does without its database. */
 let savedHistoryDown = false;
 
@@ -118,6 +125,30 @@ function serveAttributions(res: http.ServerResponse, run: RunState, url: URL) {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const ARTIFACT_FILES = ["results.json", "spans.jsonl", "samples.jsonl"];
+
+/**
+ * A saved run's evidence file, as the worker serves /v1/runs/{id}/artifacts/{file}:
+ * results.json is the registered result; spans and samples are synthetic lines tagged with
+ * the run id, so a test can tell which run a download came from.
+ */
+function serveArtifact(
+  res: http.ServerResponse,
+  saved: SavedRun,
+  file: string,
+) {
+  if (file === "results.json") return send(res, 200, saved.result);
+  const kind = file === "spans.jsonl" ? "span" : "sample";
+  const lines = [0, 1, 2].map((index) =>
+    JSON.stringify({
+      synthetic: `browser-test ${kind} ${index}`,
+      "agentwatch.run_id": saved.run_id,
+    }),
+  );
+  res.writeHead(200, { "content-type": "application/x-ndjson" });
+  res.end(`${lines.join("\n")}\n`);
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
   const url = new URL(req.url ?? "/", "http://fixture");
   const parts = url.pathname.split("/").filter(Boolean);
@@ -126,9 +157,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     if (req.method === "POST" && parts[1] === "reset") {
       runs.clear();
       savedRuns.clear();
+      requestLog.length = 0;
       savedHistoryDown = false;
       return send(res, 204);
     }
+    if (req.method === "GET" && parts[1] === "requests")
+      return send(res, 200, requestLog);
     if (req.method === "PUT" && parts[1] === "saved-runs") {
       const saved = savedRunSchema.safeParse(await bodyOf(req));
       if (!saved.success)
@@ -138,6 +172,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     }
     if (req.method === "POST" && parts[1] === "saved-history-down") {
       savedHistoryDown = true;
+      return send(res, 204);
+    }
+    if (req.method === "POST" && parts[1] === "saved-history-up") {
+      savedHistoryDown = false;
       return send(res, 204);
     }
     const run = runs.get(parts[2] ?? "");
@@ -171,6 +209,27 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     return send(res, 404, { detail: "Unknown control request" });
   }
 
+  requestLog.push({
+    method: req.method ?? "GET",
+    path: url.pathname,
+    query: url.search,
+    atMs: Date.now(),
+  });
+
+  if (
+    parts.length === 5 &&
+    parts[0] === "v1" &&
+    parts[1] === "runs" &&
+    parts[3] === "artifacts"
+  ) {
+    if (savedHistoryDown)
+      return send(res, 503, { detail: "Database unavailable" });
+    const saved = savedRuns.get(parts[2]);
+    if (!saved) return send(res, 404, { detail: "Run not found" });
+    return ARTIFACT_FILES.includes(parts[4])
+      ? serveArtifact(res, saved, parts[4])
+      : send(res, 404, { detail: "Unknown artifact" });
+  }
   if (parts[0] === "v1" && parts[1] === "runs" && parts.length <= 3) {
     if (savedHistoryDown)
       return send(res, 503, { detail: "Database unavailable" });

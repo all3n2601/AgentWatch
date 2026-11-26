@@ -2,6 +2,14 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { registerRun, registerSavedRun } from "./fixture-control";
 import {
+  attributionItem,
+  attributionRecord,
+  attributionState,
+  CONFIDENT_CPU,
+  scored,
+  UNCERTAIN,
+} from "./fixtures/attributions";
+import {
   fixtureRun,
   newRunId,
   resourceSample,
@@ -17,7 +25,10 @@ export type SeededWorkspace = {
   /** Two saved runs with matching settings (older is the baseline) and an agent model. */
   baseline: string;
   candidate: string;
-  /** A live run with completed, running and queued steps and resource samples. */
+  /**
+   * A live run with completed, running and queued steps, resource samples and attributions
+   * for its completed steps.
+   */
   live: string;
 };
 
@@ -85,7 +96,25 @@ export async function seedWorkspace(
       model: "qwen3:1.7b",
     }),
   );
-  await registerRun(request, fixtureRun(live, [busyLiveRun(live)]));
+  await registerRun(request, {
+    ...fixtureRun(live, [busyLiveRun(live)]),
+    // B03 attributions for the two completed steps: one confident, one uncertain.
+    attributions: [
+      attributionState(live, [
+        attributionItem(
+          1,
+          attributionRecord(live, "tool-1", {
+            verdict: "cpu_sandbox",
+            model: scored(CONFIDENT_CPU),
+          }),
+        ),
+        attributionItem(
+          2,
+          attributionRecord(live, "tool-2", { model: scored(UNCERTAIN) }),
+        ),
+      ]),
+    ],
+  });
   return { baseline, candidate, live };
 }
 
@@ -191,6 +220,18 @@ export function auditPages(seeded: SeededWorkspace): AuditPage[] {
       name: "run-live-timeline",
       path: `/runs/${seeded.live}?tab=timeline`,
       ready: (page) => page.getByText("Steps over time").first(),
+    },
+    {
+      name: "run-live-attribution",
+      path: `/runs/${seeded.live}?tab=attribution`,
+      ready: (page) =>
+        page.getByRole("region", { name: "Step attributions table" }),
+    },
+    {
+      name: "live-attribution",
+      path: `/live?liveRun=${seeded.live}&tab=attribution`,
+      ready: (page) =>
+        page.getByRole("region", { name: "Step attributions table" }),
     },
     {
       name: "live",
@@ -312,4 +353,50 @@ export async function seriousA11yViolations(
             `${violation.id} (${violation.impact}) at ${node.target.join(" ")}: ${node.failureSummary?.split("\n").join(" ")}`,
         ),
     );
+}
+
+/**
+ * Elements that show part of `label` but clip the rest (ellipsis or hidden overflow) with no
+ * copy control for the full value in the same row or panel. AGENTS.md: long IDs either wrap
+ * or offer an accessible way to view or copy the whole value.
+ */
+export function clippedLabels(
+  page: Page,
+  label: string,
+  /** Selectors of documented exceptions: clipping inside them is not reported. */
+  exempt: readonly string[] = [],
+) {
+  return page.evaluate(
+    ({ full, exempt }) => {
+      const probe = full.slice(0, 24);
+      const problems: string[] = [];
+      for (const element of document.querySelectorAll("body *")) {
+        if (!(element instanceof HTMLElement) || element.offsetParent === null)
+          continue;
+        const ownText = [...element.childNodes]
+          .filter((node) => node.nodeType === Node.TEXT_NODE)
+          .map((node) => node.textContent ?? "")
+          .join("");
+        if (!ownText.includes(probe)) continue;
+        if (exempt.some((selector) => element.closest(selector))) continue;
+        const style = getComputedStyle(element);
+        const clipped =
+          element.scrollWidth > element.clientWidth + 1 &&
+          (style.textOverflow === "ellipsis" || style.overflowX !== "visible");
+        const shownInPart = ownText.includes(probe) && !ownText.includes(full);
+        if (!clipped && !shownInPart) continue;
+        const scope =
+          element.closest("li, tr, section, [role=region]") ?? document;
+        const copyable = [...scope.querySelectorAll("button[aria-label]")].some(
+          (button) => button.getAttribute("aria-label")?.includes(full),
+        );
+        if (!copyable)
+          problems.push(
+            `${element.tagName.toLowerCase()} "${ownText.trim().slice(0, 40)}…" (${clipped ? "clipped" : "shortened"})`,
+          );
+      }
+      return problems;
+    },
+    { full: label, exempt },
+  );
 }

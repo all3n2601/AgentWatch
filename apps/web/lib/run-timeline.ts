@@ -130,7 +130,10 @@ export const wallSecondsInto = (atMs: number, window: WallWindow) =>
 export type WallTimelineRow = {
   step: WallStep;
   startShare: number;
-  /** One solid segment: the wall window covers the step's running time, not its queue. */
+  /**
+   * One segment: solid `work` for a step that has started, hatched `wait` for one that is
+   * still only queued (its bar starts at the queued event, so it covers waiting time).
+   */
   segments: TimelineSegment[];
   /** Still running: the bar reaches the window end and has no duration yet. */
   open: boolean;
@@ -152,7 +155,12 @@ export function wallTimeline(steps: readonly WallStep[]) {
       return {
         step,
         startShare: start / span,
-        segments: [{ kind: "work", share: (end - start) / span }],
+        segments: [
+          {
+            kind: step.state === "queued" ? "wait" : "work",
+            share: (end - start) / span,
+          },
+        ],
         open: step.endMs === null,
         wallSeconds: step.endMs === null ? null : end - start,
       };

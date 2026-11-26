@@ -199,7 +199,8 @@ export function RunRow({
             className={cn("size-4 shrink-0", TONE_TEXT[state.tone])}
             aria-hidden
           />
-          <span className="truncate text-sm font-semibold text-ink">
+          {/* Long task ids and model names wrap rather than hide their ends. */}
+          <span className="min-w-0 text-sm font-semibold text-ink [overflow-wrap:anywhere]">
             {row.title}
           </span>
         </span>
@@ -210,7 +211,9 @@ export function RunRow({
           <span className="sr-only">(run {row.id})</span>
           <SourceChip row={row} />
           {evidence?.model && evidence.model !== row.title && (
-            <span className="truncate">{evidence.model}</span>
+            <span className="min-w-0 [overflow-wrap:anywhere]">
+              {evidence.model}
+            </span>
           )}
         </span>
         <span className="sr-only">Show in run preview</span>
