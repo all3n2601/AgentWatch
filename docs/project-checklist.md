@@ -1491,8 +1491,11 @@ from M3 through M6 and do not renumber the implementation milestones above.
   - Admission (`inference_requests` 1 on vLLM, enforced, policy version 16, 1 s poll):
     `within_budget`; attempt 1 −1.93% [−3.20%, +1.72%], CV 0.028, 4 of 30 requests
     overlapped a poll; attempt 2 −0.33% [−3.34%, +4.00%], CV 0.029, 7 of 30; 22 tokens and
-    one reply digest throughout. Negative medians again read as the ABAB order effect. The
-    policy was restored to no limits (version 17).
+    one reply digest throughout. The policy was restored to no limits (version 17).
+    **Superseded** (2026-11-26): these attempts are `admission-overhead-v1`, which paced the
+    two conditions unevenly (#111), so this verdict cannot judge the admission gate and is
+    replaced by a v2 re-measurement. The cause of the negative medians (fixed order, the
+    uneven pause, or both) is undetermined; they mean no measurable overhead, not a speed-up.
 
   Reports are not in the repository; SHA-256:
   - `vllm-sampling-attempt-1/…-3b93ea/sampling-overhead.json`: `7aa92658bb65a3a513f8ca4d1998a534016577af7d904ef8a815be2230b7ef25`
@@ -1543,6 +1546,48 @@ from M3 through M6 and do not renumber the implementation milestones above.
   overhead comes from an `admission-overhead-v1` verdict (`ADMISSION_VERDICT`); without one it
   is not evaluated and no candidate can pass. Verified on synthetic experiments only:
   `pipelines/data/tests/test_optimization_gates.py`.
+  2026-11-25 admission pacing fix (branch `fix/admission-overhead-pacing`): Akshay's acceptance
+  on #109 found that `admission-overhead-v1` paused only before `admission_on` requests, so
+  idle time before the timer differed by condition. `admission-overhead-v2` pauses before
+  every timed request in both conditions, drawn from the same seeded distribution and recorded
+  as `untimed_pause_seconds`. The verdict judges v1 and v2 against the admission budget; the
+  optimization gates use only v2 groups, and no admission group judges instrumentation
+  overhead. Regression tests in `services/agent/tests/test_admission_overhead.py` and
+  `pipelines/data/tests/test_optimization_gates.py` fail on v1 and pass on v2; agent, data and
+  contract suites 2,425 passed in WSL with PostgreSQL. The admission verdict O06 uses is
+  re-measured with v2 on the GPU laptop, under the clean setup.
+  2026-11-26 v2 measurement (Benoy, same host, label `rtx5070-laptop-wsl2`, branch at
+  `3a27801`, `opt-contract-v2` accepted `0981612d`): `inconclusive`, so the O06 admission gate
+  cannot pass and the evaluation can at most conclude "no promotion". vLLM
+  `Qwen/Qwen3-1.7B@70d244cc86cc`, `inference_requests` 1 on vLLM (enforced), 1 s poll, 30
+  pairs per attempt, 22 tokens and one reply digest in every request. Both runs are kept:
+  - Run 1 (policy version 18): attempt 1 +1.55% [−3.91%, +10.88%], CV 0.083; attempt 2 −0.99%
+    [−8.60%, +6.66%], CV 0.078. Deviation: Phone Link restarted itself 27 s before attempt 1
+    and held a context on the GPU throughout, so under the contract's rule this run could
+    never support a promotion; the per-process GPU utilization capture also failed (a path
+    error in the operator's script), so none was recorded.
+  - Run 2, repeated once because of that deviation (policy version 20): attempt 1 +5.91%
+    [−2.38%, +10.40%], CV 0.084, `inconclusive`; attempt 2 −0.04% [−0.34%, +0.19%], CV 0.058,
+    `within_budget`. Clean: a watcher stopped Phone Link every 2 s and logged no restart, the
+    GPU process list was the same before and after, and only Windows display processes and
+    the operator's VS Code held contexts. Their GPU utilization before and after each attempt
+    (Windows per-process GPU Engine counters, NVIDIA adapter): `dwm` 0.06–0.34%, VS Code
+    0.08–0.19%, System 0.04–0.17%.
+
+  No further run was made: run 2 had no deviation, so repeating it would only be rerunning
+  until it passes. v2's attempts are noisier than v1's (baseline CV 0.06–0.08 against
+  about 0.03), and run 2's baseline median moved from 0.28 s to 0.32 s between attempts a
+  minute apart, more than the 5% budget. A likely but unverified cause is the GPU clocking
+  down during the idle pauses v2 adds before every request. A protocol that keeps the GPU
+  warm, uses more pairs and counterbalances the order would need declaring and reviewing
+  before any new measurement. The policy was restored to no limits after each run (versions
+  19 and 21). Reports are not in the repository; SHA-256:
+  - run 1 `attempt-1/…-2c9a2a/admission-overhead.json`: `62d692a63a29196486c7e86b9c406f1e184604cf217951271aca094344175535`
+  - run 1 `attempt-2/…-718c33/admission-overhead.json`: `e0fd4cfeb1c5eb72599003285511c7dc4b130865e6ca67287f54bf4441cad0ad`
+  - run 1 `verdict/overhead-verdict.json`: `581268d4a0064c9a50bbd800b62993b4a6a40f6546560011e50b1d8855950219`
+  - run 2 `attempt-1/…-d7e2e4/admission-overhead.json`: `dc18b579760d6c3e0e0344cd3f9ef9a740acc1200cfe26ab956841e69322098e`
+  - run 2 `attempt-2/…-dc715d/admission-overhead.json`: `2d98618a64eb4498e99c13e494291f288ac08aad87dea3dd36d6808c8ad65c5b`
+  - run 2 `verdict/overhead-verdict.json`: `f099280f38f4265b0f71ebdc1d1ac7ce16b785a9b6969a45d422d0736767cb97`
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.

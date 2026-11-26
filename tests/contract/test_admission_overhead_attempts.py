@@ -1,7 +1,7 @@
 """The agent's admission overhead measurement is an attempt the overhead verdict can judge.
 
 The measurement (`services/agent`) and the verdict (`pipelines/data`) declare
-`admission-overhead-v1` separately, because neither package imports the other. This test saves
+`admission-overhead-v2` separately, because neither package imports the other. This test saves
 a measurement made with test doubles and reads it back through the verdict's attempt reader.
 """
 
@@ -32,7 +32,7 @@ def test_a_saved_measurement_reads_as_paired_admission_attempt(tmp_path):
     attempt = read_attempt(path)
     assert attempt.status == "completed" and len(attempt.pairs) == 4
     assert attempt.unpaired_repetitions == 0
-    assert attempt.settings["protocol"] == "admission-overhead-v1"
+    assert attempt.settings["protocol"] == "admission-overhead-v2"
     for field in ("task_id", "model", "request_sha256", "runner_version", "policy_poll_seconds"):
         assert attempt.settings[field] == report[field]
     # The admission settings the measurement ran under are part of the group key.

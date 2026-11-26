@@ -1,4 +1,4 @@
-"""Admission overhead measurement (admission-overhead-v1): alternating requests without and with
+"""Admission overhead measurement (admission-overhead-v2): alternating requests without and with
 runner-process admission, under unchanged limits.
 
 The model server and the policy service are test doubles; nothing here is recorded evidence or
@@ -48,7 +48,7 @@ def measure(source, model=None, **overrides):
 def test_requests_alternate_and_each_admitted_one_holds_a_permit():
     report, model = measure(FakePolicySource(policy_version(1, inference=2)))
     assert report["status"] == "completed" and report["error"] is None
-    assert report["protocol"]["version"] == PROTOCOL["version"] == "admission-overhead-v1"
+    assert report["protocol"]["version"] == PROTOCOL["version"] == "admission-overhead-v2"
     assert model.requests == 2 + 6
     assert [m["condition"] for m in report["measurements"]] == list(CONDITIONS) * 3
     assert [m["index"] for m in report["measurements"]] == list(range(6))
@@ -139,9 +139,9 @@ def test_each_admitted_request_starts_at_a_recorded_random_phase_of_the_poll_cyc
     )
     admitted = [m for m in report["measurements"] if m["condition"] == "admission_on"]
     phases = [m["poll_phase_seconds"] for m in admitted]
-    # The untimed wait before each timed request is its recorded phase, within one interval.
-    assert waited == phases and all(0 <= phase < 0.5 for phase in phases)
-    assert len(set(phases)) == 3
+    # The untimed wait before each admitted request is its recorded phase, within one interval.
+    assert [m["untimed_pause_seconds"] for m in admitted] == phases
+    assert all(0 <= phase < 0.5 for phase in phases) and len(set(phases)) == 3
     assert report["poll_phase_seed"] == 11 and report["policy_poll_seconds"] == 0.5
     again, _model = measure(
         FakePolicySource(policy_version(1, inference=2)),
@@ -151,6 +151,26 @@ def test_each_admitted_request_starts_at_a_recorded_random_phase_of_the_poll_cyc
     replayed = [m["poll_phase_seconds"] for m in again["measurements"] if "poll_phase_seconds" in m]
     assert replayed == phases  # the seed reproduces the phases
     assert all("poll_phase_seconds" not in m for m in report["measurements"][0::2])
+
+
+def test_both_conditions_are_paced_by_the_same_untimed_pause():
+    # Regression: v1 paused only before admission_on requests, so idle time before the timer
+    # differed by condition. Every timed request now follows a recorded pause from one
+    # seeded distribution; warm-ups are not paced.
+    waited = []
+    report, _model = measure(
+        FakePolicySource(policy_version(1, inference=2)),
+        policy_poll_seconds=0.5,
+        phase_seed=11,
+        pause=waited.append,
+    )
+    pauses = [m["untimed_pause_seconds"] for m in report["measurements"]]
+    assert waited == pauses and len(pauses) == 6
+    assert all(0 <= seconds < 0.5 for seconds in pauses)
+    off = [m for m in report["measurements"] if m["condition"] == "admission_off"]
+    assert len(off) == 3 and all("untimed_pause_seconds" in m for m in off)
+    assert all("untimed_pause_seconds" not in m for m in report["warmups"])
+    assert "pacing" in report["protocol"]
 
 
 def test_polls_that_fall_inside_a_timed_request_are_counted():

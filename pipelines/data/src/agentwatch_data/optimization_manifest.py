@@ -95,7 +95,7 @@ class OptimizationContract:
     # Instrumentation overhead gates (instrumentation-overhead-acceptance-v1).
     max_median_instrumentation_overhead: float
     max_baseline_cv: float
-    # The admission overhead gate, judged the same way (admission-overhead-v1 measurements).
+    # The admission overhead gate, judged the same way (admission-overhead-v2 measurements).
     max_median_admission_overhead: float
 
 
