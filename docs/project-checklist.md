@@ -1437,7 +1437,8 @@ from M3 through M6 and do not renumber the implementation milestones above.
   delta uncoloured; Controls notices are linked to their inputs, Retry states the change it
   resends and Read again keeps focus. Verified locally: web lint, typecheck, 261 unit tests,
   production build and 55 Playwright tests passed. Not yet pushed or re-reviewed.
-- [ ] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
+- [x] O06 — Benoy: real hardware evaluation and restore checks after O03/O04/O05/A05/A07.
+  Done 2026-11-26: no promotion, both candidates fail (evaluation entry at the end of this item).
   2026-11-21 prerequisite (branch `feature/vllm-inference-admission`,
   [ADR 0015](adr/0015-policy-versions-name-their-inference-service.md)): a policy `set` may
   name the inference service (`ollama` or `vllm`), stored in that version's
@@ -1588,6 +1589,54 @@ from M3 through M6 and do not renumber the implementation milestones above.
   - run 2 `attempt-1/…-d7e2e4/admission-overhead.json`: `dc18b579760d6c3e0e0344cd3f9ef9a740acc1200cfe26ab956841e69322098e`
   - run 2 `attempt-2/…-dc715d/admission-overhead.json`: `2d98618a64eb4498e99c13e494291f288ac08aad87dea3dd36d6808c8ad65c5b`
   - run 2 `verdict/overhead-verdict.json`: `f099280f38f4265b0f71ebdc1d1ac7ce16b785a9b6969a45d422d0736767cb97`
+  2026-11-26 evaluation (Benoy, same host, label `rtx5070-laptop-wsl2`, runner at main
+  `d84e0b6`, `opt-contract-v2` accepted `0981612d`): **no promotion**; both candidates fail.
+  One `evaluation` manifest, written before any batch: frozen tasks `fix-window-count-r1`,
+  `fix-slug-case-r1`, `fix-config-precedence-r1`, `fix-fahrenheit-offset-r1` at offsets 0, 5,
+  10 and 15 s (development tasks `fix-mean-empty-r1`, `fix-median-even-r1`); otherwise the
+  pilot's design unchanged: vLLM `Qwen/Qwen3-1.7B@70d244cc86cc` (`max_num_seqs` 2), candidates
+  `inference-1` and `tests-1`, conditions clean then contended (`prefill-flood-openai-chat-v1`,
+  concurrency 2, 2,048 prompt tokens), 10 pairs and 1 warm-up per condition, run timeout 450 s,
+  seed 2559796868923549909. A first manifest file failed validation (no `development_tasks`)
+  and was deleted before any batch; nothing ran from it. All 82 slots completed (21:52–22:50
+  UTC), every comparison was `sufficient` (10 of 10 pairs), and the baseline was restored and
+  read back at the end (policy version 89). Median batch time over 10 pairs:
+
+  | Condition | Baseline | `inference-1` | `tests-1` |
+  |---|---|---|---|
+  | clean | 17.0 s | 17.0 s | 17.0 s |
+  | contended | 31.9 s | 82.0 s | 31.6 s |
+
+  - `inference-1` fails under contention: −157% improvement [−236%, −154%], throughput 0.32
+    of baseline, p95 ratio 5.28. The flood reaches vLLM without admission, so a limit on the
+    agent's own requests only queues them behind it, as in the pilot. Clean guardrails pass.
+  - `tests-1`: improvement +0.7% [−14.6%, +23.6%] (below 10%, interval includes zero), p95
+    ratio 1.17 under contention (fail), throughput 1.11. Clean guardrails pass.
+  - Admission overhead `inconclusive` (v2 run 2 above); instrumentation overhead
+    `within_budget` (the clean 2026-11-24 A07 GPU vLLM verdict, re-judged under `0981612d`).
+  - Task outcomes: `fix-window-count-r1` failed its acceptance tests in every batch, baseline
+    included, and `fix-config-precedence-r1` passed in 5 of 20 contended baseline batches and
+    no clean batch. Its contended candidate failures count as new failures (4 for
+    `inference-1`, 1 for `tests-1`), failing quality and failures for both, and its spread
+    fails `inference-1`'s contended baseline stability (largest CV 0.352). The two other
+    tasks passed in every batch. Neither candidate was faster, so the result does not depend
+    on these tasks; a later evaluation should freeze tasks the model passes reliably.
+
+  Overhead verdicts admitted under the contract's deviation rule (OS display processes and
+  the operator's VS Code only): the A07 GPU vLLM verdict and admission v2 run 2. The
+  evaluation itself had the same processes on the NVIDIA adapter (Windows per-process GPU
+  Engine counters; before the run `dwm` 2.52%, VS Code 1.94%, System 0.15%, Explorer 0.02%;
+  after it `dwm` 0.50%, VS Code 0.32%), with one deviation: Phone Link restarted itself 4 times
+  and a watcher stopped it within a second each time. Under the rule that would bar a
+  promotion; none was possible. Evidence (manifest, schedule, 82 batch records, run evidence,
+  runner log, comparison and gates) is not in the repository; SHA-256:
+  - `manifest.json`: `5bd2bf47ed0219ee916865b67a51fc62e29673ca975491e48af0c0ad82c46b88`
+    (canonical `67cde32fe5312f4044e4e2e845d82d73e8f35f7e9fc1f34ed3bafe72478befc1`)
+  - `schedule.json`: `853c2c86a79af210e5c570ebd34157d678d14cd343012452e121d5d9d4ed1475`
+  - `runner-log.jsonl`: `326ec2b1718fd3739eeea2f330ae8bb727eb067df99d48a0bb7770117e384c0b`
+  - `comparison.json`: `6394ad90897576df7e11df277abbfe6fcb72cf03bd491320724cae02d2576acc`
+    (canonical `610a5898f4f3c46461bb13f190b5844e2f88da906fd9860b69abe322f3c1071f`)
+  - `gates.json`: `383c0be3a4710562d057687e9a16860de31b0190018b9566c93b34aa674936d0`
 - [ ] O07 — Rohit, stretch: shadow-first bounded adaptive rules after O06; accepted gates
   and operator opt-in required for actuation.
 - [ ] X01 includes evaluated manual controls and honest pass/fail/inconclusive results after O06.
