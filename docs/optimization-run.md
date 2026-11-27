@@ -2,8 +2,8 @@
 
 Status: O06 batch runner, implemented 2026-11-22 on branch `test/optimization-evaluation`,
 verified with test doubles and by a short development pilot on the GPU laptop
-([below](#development-pilot-2026-11-22)). `opt-contract-v2` was accepted on 2026-11-25 (#109); no
-evaluation has run yet. Nothing here is an optimization result.
+([below](#development-pilot-2026-11-22)). `opt-contract-v2` was accepted on 2026-11-25 (#109).
+The first evaluation ran on 2026-11-26 ([below](#evaluation-2026-11-26)): no promotion.
 
 The runner executes a preregistered experiment ([experiment evidence](optimization-evidence.md))
 on one host and writes the batch records that `make compare-optimization` validates. It applies
@@ -140,11 +140,40 @@ before the evaluation is preregistered. It is not evaluation evidence and was ne
 - **Evidence:** `.data/o06-pilot-20261122/{contended-first,clean-first}/` (manifest, schedule,
   batch records, run evidence, runner log), not committed.
 
+## Evaluation (2026-11-26)
+
+The first preregistered evaluation, on the same host and model as the pilot, with the pilot's
+design unchanged except for the tasks.
+
+- **Design:** one `evaluation` manifest (`opt-contract-v2`, accepted `0981612d`; runner
+  `d84e0b6`) freezing `fix-window-count-r1`, `fix-slug-case-r1`, `fix-config-precedence-r1` and
+  `fix-fahrenheit-offset-r1` at offsets 0, 5, 10 and 15 s, with the pilot's tasks named as
+  `development_tasks`. Candidates `inference-1` and `tests-1`, clean then contended, 10 pairs
+  and 1 warm-up per condition: 82 slots.
+- **Runner behaviour:** all 82 batches completed in 58 minutes, every pair was sufficient, and
+  the baseline was restored and read back at the end.
+- **Result:** no candidate promoted. Median batch time:
+
+  | Condition | Baseline | `inference-1` | `tests-1` |
+  |---|---|---|---|
+  | clean | 17.0 s | 17.0 s | 17.0 s |
+  | contended | 31.9 s | 82.0 s | 31.6 s |
+
+  `inference-1` was about 2.6 times slower under contention, for the reason the pilot showed.
+  `tests-1` changed contended batch time by less than 1% and its p95 latency ratio was 1.17.
+  The admission overhead verdict is `inconclusive`, so no candidate could pass every gate.
+- **Tasks:** `fix-window-count-r1` failed its acceptance tests in every batch and
+  `fix-config-precedence-r1` passed only in some contended batches. Its failures in candidate
+  batches fail the quality and failure gates for both candidates, and its spread fails or
+  leaves inconclusive their contended baseline stability. A later evaluation should freeze
+  tasks the model passes reliably.
+- **Details and evidence hashes:** O06 in the [project checklist](project-checklist.md).
+
 ## Known limitations
 
 - Verified with test doubles (`services/agent/tests/test_optimization_run.py`, and
   `tests/contract/test_optimization_batch_records.py`, which passes every record through the
-  O04 checker) and the development pilot above. No evaluation has run.
+  O04 checker), the development pilot and one evaluation on one host above.
 - Power is read from Windows (natively or through WSL interop). A native Linux or macOS host
   cannot run an experiment yet.
 - Supported injectors: `prefill-flood-openai-chat-v1` (kind `inference`) and
