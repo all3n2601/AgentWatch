@@ -1366,7 +1366,7 @@ from M3 through M6 and do not renumber the implementation milestones above.
   `test_runner_admission.py` and `test_coverage.py`, and each of the 13 fixes was removed once
   to confirm a test fails. The CPU batch above predates these fixes and was not rerun. Open:
   PR review and CI, Benoy's GPU validation, and O02's formal acceptance.
-- [ ] O04 — Akshay: paired-run manifests and comparison validation after O01/D02.
+- [x] O04 — Akshay: paired-run manifests and comparison validation after O01/D02.
   Implemented 2026-11-05 in PR #58, merged to `main` as `346525e` on 2026-11-10:
   [optimization experiment evidence](optimization-evidence.md), preregistration manifests checked
   against `opt-contract-v1` (contract hash, frozen tasks, model/hardware/power/state identity,
@@ -1390,6 +1390,10 @@ from M3 through M6 and do not renumber the implementation milestones above.
   admission evidence (final control state and every request's `limit_at_arrival`) shows exactly
   the slot's limits, for baseline and candidates alike. Synthetic experiments only: 169 cases
   in the same three test files.
+  2026-11-26 (Benoy, ticked with the O06 evaluation): the first real experiment in this format,
+  the O06 evaluation on the GPU laptop (manifest `67cde32f…`), validated all 82 batch records
+  and wrote a comparison with every pair `sufficient` (10 of 10 per condition and candidate;
+  details and hashes under O06).
 - [ ] O05 — Meghana: manual controls and UUID-specific comparison UI after O02/F02.
   Implemented 2026-11-11 on branch `feature/optimization-controls-compare`, rebuilt on the glass
   workspace (not yet pushed or reviewed; supersedes the unmerged `feature/optimization-view`).
